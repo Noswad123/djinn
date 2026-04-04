@@ -7,8 +7,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Noswad123/butler/internal/styles"
-	"github.com/Noswad123/butler/internal/parser"
+	"github.com/Noswad123/djinn/internal/parser"
+	"github.com/Noswad123/djinn/internal/styles"
 )
 
 type Model struct {
@@ -20,7 +20,7 @@ type Model struct {
 }
 
 func (m Model) Init() tea.Cmd {
-    return nil
+	return nil
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -46,7 +46,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h, v := m.Styles.Doc.GetFrameSize()
 		listWidth := 100
 		m.List.SetSize(listWidth, msg.Height-v)
-		
+
 		if !m.Ready {
 			m.Viewport = viewport.New(msg.Width-listWidth-h-4, msg.Height-v)
 			m.Ready = true
@@ -68,12 +68,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-    if !m.Ready { return "\n  Initializing Butler..." }
+	if !m.Ready {
+		return "\n  Initializing Djinn..."
+	}
 
-    listView := m.Styles.List.Width(35).Render(m.List.View())
-    previewView := m.Styles.Preview.Render(m.Viewport.View())
+	listView := m.Styles.List.Width(35).Render(m.List.View())
+	previewView := m.Styles.Preview.Render(m.Viewport.View())
 
-    return m.Styles.Doc.Render(
-        lipgloss.JoinHorizontal(lipgloss.Top, listView, previewView),
-    )
+	return m.Styles.Doc.Render(
+		lipgloss.JoinHorizontal(lipgloss.Top, listView, previewView),
+	)
 }

@@ -1,5 +1,5 @@
 
-APP_NAME = butler
+APP_NAME = djinn
 CMD_PATH = ./cmd/cli
 BIN_DIR = ./bin
 INSTALL_DIR = ~/.dotfiles/bin

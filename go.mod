@@ -1,4 +1,4 @@
-module github.com/Noswad123/butler
+module github.com/Noswad123/djinn
 
 go 1.25.1
 

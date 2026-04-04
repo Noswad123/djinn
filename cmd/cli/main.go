@@ -10,9 +10,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/Noswad123/butler/internal/parser"
-	"github.com/Noswad123/butler/internal/styles"
-	"github.com/Noswad123/butler/internal/ui"
+	"github.com/Noswad123/djinn/internal/parser"
+	"github.com/Noswad123/djinn/internal/styles"
+	"github.com/Noswad123/djinn/internal/ui"
 )
 
 func main() {
@@ -27,7 +27,7 @@ func main() {
 	}
 
 	if len(items) == 0 {
-		fmt.Fprintf(os.Stderr, "Butler found 0 tags. Check your @name format in %s\n", dotfilesPath)
+		fmt.Fprintf(os.Stderr, "Djinn found 0 tags. Check your @name format in %s\n", dotfilesPath)
 		os.Exit(1)
 	}
 
@@ -39,10 +39,10 @@ func main() {
 	m.List.SetShowStatusBar(false)
 
 	p := tea.NewProgram(&m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
-	
+
 	finalModel, err := p.Run()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error running Butler: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error running Djinn: %v\n", err)
 		os.Exit(1)
 	}
 
