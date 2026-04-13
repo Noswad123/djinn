@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,19 +18,113 @@ import (
 	"github.com/Noswad123/djinn/internal/ui"
 )
 
-func main() {
+type indexEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Path        string `json:"path"`
+	Line        int    `json:"line"`
+}
+
+type indexPayload struct {
+	SchemaVersion int          `json:"schema_version"`
+	Source        string       `json:"source"`
+	Root          string       `json:"root"`
+	Count         int          `json:"count"`
+	Entries       []indexEntry `json:"entries"`
+}
+
+func defaultRoot() string {
 	home, _ := os.UserHomeDir()
-	dotfilesPath := filepath.Join(home, ".dotfiles")
+	return filepath.Join(home, ".dotfiles")
+}
+
+func defaultIndexPath(root string) string {
+	return filepath.Join(root, "opencode", ".config", "opencode", "djinn-index.json")
+}
+
+func runSyncCache(root string, indexPath string) error {
+	items, err := parser.ScanItems(root)
+	if err != nil {
+		return fmt.Errorf("error scanning dotfiles: %w", err)
+	}
+
+	entries := make([]indexEntry, 0, len(items))
+	for _, item := range items {
+		relPath, relErr := filepath.Rel(root, item.Path)
+		if relErr != nil {
+			relPath = item.Path
+		}
+
+		entries = append(entries, indexEntry{
+			Name:        item.Name,
+			Description: item.Summary,
+			Path:        filepath.ToSlash(relPath),
+			Line:        item.Line,
+		})
+	}
+
+	payload := indexPayload{
+		SchemaVersion: 1,
+		Source:        "djinn-tag-scan",
+		Root:          "~/.dotfiles",
+		Count:         len(entries),
+		Entries:       entries,
+	}
+
+	rendered, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("error creating djinn index JSON: %w", err)
+	}
+	rendered = append(rendered, '\n')
+
+	if existing, readErr := os.ReadFile(indexPath); readErr == nil {
+		if string(existing) == string(rendered) {
+			fmt.Fprintf(os.Stderr, "djinn sync-cache: unchanged (%s)\n", indexPath)
+			return nil
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(indexPath), 0o755); err != nil {
+		return fmt.Errorf("error creating index directory: %w", err)
+	}
+
+	if err := os.WriteFile(indexPath, rendered, 0o644); err != nil {
+		return fmt.Errorf("error writing djinn index: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "djinn sync-cache: updated %s (%d entries)\n", indexPath, len(entries))
+	return nil
+}
+
+func main() {
+	syncCache := flag.Bool("sync-cache", false, "scan tags and update cached djinn index JSON")
+	root := flag.String("root", defaultRoot(), "dotfiles root path to scan")
+	index := flag.String("index", "", "path to index JSON file (defaults under --root)")
+	flag.Parse()
+
+	indexPath := strings.TrimSpace(*index)
+	if indexPath == "" {
+		indexPath = defaultIndexPath(*root)
+	}
+
+	if *syncCache {
+		if err := runSyncCache(*root, indexPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error running sync-cache: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	lipgloss.SetColorProfile(termenv.TrueColor)
 
-	items, err := parser.ScanDotfiles(dotfilesPath)
+	items, err := parser.ScanDotfiles(*root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error scanning dotfiles: %v\n", err)
 		os.Exit(1)
 	}
 
 	if len(items) == 0 {
-		fmt.Fprintf(os.Stderr, "Djinn found 0 tags. Check your @name format in %s\n", dotfilesPath)
+		fmt.Fprintf(os.Stderr, "Djinn found 0 tags. Check your @name format in %s\n", *root)
 		os.Exit(1)
 	}
 
