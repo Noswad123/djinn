@@ -2,7 +2,7 @@
 APP_NAME = djinn
 CMD_PATH = ./cmd/cli
 BIN_DIR = ./bin
-INSTALL_DIR = ~/.dotfiles/bin
+INSTALL_DIR = ~/.local/bin
 
 .PHONY: all build watch clean install visualize
 
