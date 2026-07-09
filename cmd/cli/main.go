@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -40,6 +41,32 @@ func defaultRoot() string {
 
 func defaultIndexPath(root string) string {
 	return filepath.Join(root, "opencode", ".config", "opencode", "djinn-index.json")
+}
+
+func defaultEditor() string {
+	for _, key := range []string{"VISUAL", "EDITOR"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+
+	return "nvim"
+}
+
+func openInEditor(item parser.Item, editor string) error {
+	parts := strings.Fields(strings.TrimSpace(editor))
+	if len(parts) == 0 {
+		return fmt.Errorf("editor command is empty")
+	}
+
+	args := append([]string{}, parts[1:]...)
+	args = append(args, fmt.Sprintf("+%d", item.Line), item.Path)
+
+	cmd := exec.Command(parts[0], args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func runSyncCache(root string, indexPath string) error {
@@ -100,6 +127,8 @@ func main() {
 	syncCache := flag.Bool("sync-cache", false, "scan tags and update cached djinn index JSON")
 	root := flag.String("root", defaultRoot(), "dotfiles root path to scan")
 	index := flag.String("index", "", "path to index JSON file (defaults under --root)")
+	open := flag.Bool("open", false, "open the selected item in an editor instead of printing path:line")
+	editor := flag.String("editor", "", "editor command for --open (defaults to $VISUAL, $EDITOR, then nvim; must accept +line file)")
 	flag.Parse()
 
 	indexPath := strings.TrimSpace(*index)
@@ -143,7 +172,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	if choice := finalModel.(*ui.Model).Choice; choice != "" {
+	result := finalModel.(*ui.Model)
+	if result.Selected != nil && *open {
+		editorCommand := strings.TrimSpace(*editor)
+		if editorCommand == "" {
+			editorCommand = defaultEditor()
+		}
+
+		if err := openInEditor(*result.Selected, editorCommand); err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening editor: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if choice := result.Choice; choice != "" {
 		fmt.Print(choice)
 	}
 }

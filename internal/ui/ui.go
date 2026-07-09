@@ -16,6 +16,7 @@ type Model struct {
 	Viewport viewport.Model
 	Styles   styles.Styles
 	Choice   string
+	Selected *parser.Item
 	Ready    bool
 }
 
@@ -38,6 +39,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if i, ok := m.List.SelectedItem().(parser.Item); ok {
 				m.Choice = fmt.Sprintf("%s:%d", i.Path, i.Line)
+				m.Selected = &i
 				return m, tea.Quit
 			}
 		}

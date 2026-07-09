@@ -11,6 +11,7 @@ It is built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and pr
 - Parses `@name:` and `@description:` tags into a searchable list
 - Shows syntax-highlighted preview of each snippet
 - Returns selected item as `file:line` on `Enter`
+- Can open the selected item directly in your editor with `--open`
 
 ## Tag format
 
@@ -71,6 +72,22 @@ djinn
 - `Enter`: select and emit `path:line`
 - `q`, `esc`, `ctrl+c`: quit
 
+### Open directly in your editor
+
+Run:
+
+```bash
+djinn --open
+```
+
+`--open` uses `$VISUAL`, then `$EDITOR`, then `nvim`. You can override it:
+
+```bash
+djinn --open --editor nvim
+```
+
+The editor command must accept `+line file` arguments.
+
 ## Editor integration example (Neovim)
 
 ```bash
@@ -78,6 +95,12 @@ pick="$(djinn)" || exit 1
 file="${pick%:*}"
 line="${pick##*:}"
 nvim "+${line}" "${file}"
+```
+
+With native open support, the wrapper can now be reduced to an alias:
+
+```bash
+alias h='djinn --open'
 ```
 
 ## Project layout
