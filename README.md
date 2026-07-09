@@ -39,8 +39,8 @@ with modular internals and a unified UX.
 | Legacy editor open mode | Legacy Go | Open selected snippet directly with `$VISUAL`, `$EDITOR`, or `nvim`. |
 | Cache/index generation | Rust scaffold | Write a JSON index for OpenCode/agent consumption. |
 | Agent memory registry | Rust scaffold | Store basic durable memories; retention/personas still planned. |
-| Chat store/search | Rust scaffold | Store file-backed AI interactions, list/show/search them, and share one as agent context. |
-| AI conversation watcher | Planned | Ingest OpenCode/agent conversations and extract lessons. |
+| Chat store/search | Rust scaffold | Store file-backed or exported AI interactions, list/show/search them, and share one as an extraction prompt. |
+| AI conversation watcher | Partial Rust scaffold | Import sanitized OpenCode exports into the generic chat store; polling is available, deeper event hooks are planned. |
 | Suggestion engine | Rust scaffold | Generate a prompt from memories and discovered local tools. |
 | Skill lifecycle management | Planned | Create, patch, archive, and inspect agent skills. |
 | Session search | Partial Rust scaffold | Search saved chats; automatic OpenCode trace ingestion is still planned. |
@@ -67,11 +67,15 @@ with modular internals and a unified UX.
   a first local memory registry slice.
 - `djinn add chat <file>`, `djinn list chats`, `djinn show chat <id>`,
   `djinn search chats <query>`, and `djinn share chat <id>` provide a first
-  local AI interaction store.
+  local AI interaction store and memory-extraction prompt.
+- Chat import accepts stdin and generic source metadata, so exported sessions can
+  be piped in without hard-coding an OpenCode dependency.
+- Djinn uses Linux-style local paths on every platform: durable state defaults
+  to `~/.config/djinn`, while chat/cache state defaults to `~/.cache/djinn`.
 - `djinn share tools` and `djinn share memories` emit agent-ready context.
 - `djinn share ideas` builds an insight prompt from memories and local tools.
-- `djinn watch opencode`, `djinn list skills`, and `djinn show ctx` exist as
-  planned command stubs.
+- `djinn watch opencode` imports sanitized OpenCode session exports into chats.
+- `djinn list skills` and `djinn show ctx` exist as planned command stubs.
 
 ## Legacy Go features
 
@@ -90,7 +94,8 @@ agent-companion model.
 
 ### AI conversation ingestion
 
-- Watch OpenCode session events or exported traces.
+- Watch OpenCode exported traces via `djinn watch opencode`; deeper event hooks
+  remain planned.
 - Buffer recent user/assistant turns.
 - Redact likely secrets before storing or reviewing content.
 - Trigger review on thresholds, idle events, or session exit.
@@ -273,11 +278,25 @@ Use the chat scaffold:
 
 ```bash
 djinn add chat ./session.md --title "Debugging session"
+opencode export <session-id> | djinn add chat - --source opencode --source-id <session-id>
+djinn watch opencode <session-id>
+djinn watch opencode --interval 60
 djinn list chats
 djinn show chat debugging-session
 djinn search chats registry
 djinn share chat debugging-session
+djinn share chat debugging-session --context-only
 ```
+
+`djinn share chat <id>` prints a memory-extraction prompt for an agent. It does
+not write memories automatically; review the suggested `djinn add memory "..."`
+commands before running them. Use `--context-only` when you only want the raw
+chat context.
+
+Chat records are stored under `~/.cache/djinn/chats.jsonl` by default. Durable
+memory records are stored under `~/.config/djinn/memories.jsonl` by
+default. Override these with `DJINN_CACHE_DIR`, `XDG_CACHE_HOME`,
+`DJINN_CONFIG_DIR`, or `XDG_CONFIG_HOME` if needed.
 
 Generate an insight prompt:
 
@@ -332,6 +351,7 @@ crates/djinn-chats/                # JSONL chat/session store
 crates/djinn-core/                 # shared paths, models, file helpers
 crates/djinn-tools/                # dotfile/script discovery and index writing
 crates/djinn-memory/               # basic JSONL memory store
+crates/djinn-opencode/             # OpenCode export watcher/import adapter
 crates/djinn-suggest/              # suggestion prompt generation
 crates/djinn-tui/                  # ratatui terminal interface
 legacy/go/                         # original Go implementation
@@ -356,9 +376,9 @@ crates/
   djinn-tui/        # ratatui dashboard
 ```
 
-The first Rust milestone is intentionally a vertical slice: tools, memories, and
-idea prompt generation. The legacy Go TUI remains as a reference while the Rust
-TUI is designed.
+The first Rust milestone is intentionally a vertical slice: tools, memories,
+chats, OpenCode export import, and idea prompt generation. The legacy Go TUI
+remains as a reference while the Rust TUI is designed.
 
 ## Design notes
 

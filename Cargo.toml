@@ -4,6 +4,7 @@ members = [
   "crates/djinn-chats",
   "crates/djinn-core",
   "crates/djinn-memory",
+  "crates/djinn-opencode",
   "crates/djinn-tools",
   "crates/djinn-suggest",
   "crates/djinn-tui",

@@ -14,6 +14,10 @@ pub struct ChatRecord {
     pub title: String,
     pub content: String,
     #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub source_id: String,
+    #[serde(default)]
     pub source_path: String,
     #[serde(default = "today")]
     pub created_at: String,
@@ -29,8 +33,8 @@ impl ChatStore {
         Self { path }
     }
 
-    pub fn default_in(data_dir: &Path) -> Self {
-        Self::new(data_dir.join("chats.jsonl"))
+    pub fn default_in(cache_dir: &Path) -> Self {
+        Self::new(cache_dir.join("chats.jsonl"))
     }
 
     pub fn path(&self) -> &Path {
@@ -53,7 +57,13 @@ impl ChatStore {
         Ok(records)
     }
 
-    pub fn add_file(&self, file: &Path, title: Option<&str>) -> Result<ChatRecord> {
+    pub fn add_file(
+        &self,
+        file: &Path,
+        title: Option<&str>,
+        source: Option<&str>,
+        source_id: Option<&str>,
+    ) -> Result<ChatRecord> {
         let content = fs::read_to_string(file)
             .with_context(|| format!("reading chat file {}", file.display()))?;
         let source_path = file
@@ -66,7 +76,7 @@ impl ChatStore {
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| infer_title(file, &content));
-        self.add_content(title, content, source_path)
+        self.add_content(title, content, source_path, source, source_id)
     }
 
     pub fn add_content(
@@ -74,6 +84,8 @@ impl ChatStore {
         title: String,
         content: String,
         source_path: String,
+        source: Option<&str>,
+        source_id: Option<&str>,
     ) -> Result<ChatRecord> {
         ensure_parent(&self.path)?;
         let mut records = self.list()?;
@@ -82,12 +94,58 @@ impl ChatStore {
             id,
             title,
             content,
+            source: clean_optional(source),
+            source_id: clean_optional(source_id),
             source_path,
             created_at: today(),
         };
         records.push(record.clone());
         self.save_all(&records)?;
         Ok(record)
+    }
+
+    pub fn upsert_content(
+        &self,
+        title: String,
+        content: String,
+        source_path: String,
+        source: Option<&str>,
+        source_id: Option<&str>,
+    ) -> Result<(ChatRecord, bool)> {
+        ensure_parent(&self.path)?;
+        let mut records = self.list()?;
+        let source = clean_optional(source);
+        let source_id = clean_optional(source_id);
+
+        if !source.is_empty() && !source_id.is_empty() {
+            if let Some(record) = records
+                .iter_mut()
+                .find(|record| record.source == source && record.source_id == source_id)
+            {
+                if !title.trim().is_empty() {
+                    record.title = title;
+                }
+                record.content = content;
+                record.source_path = source_path;
+                let updated = record.clone();
+                self.save_all(&records)?;
+                return Ok((updated, true));
+            }
+        }
+
+        let id = unique_id(slugify(&title), &records);
+        let record = ChatRecord {
+            id,
+            title,
+            content,
+            source,
+            source_id,
+            source_path,
+            created_at: today(),
+        };
+        records.push(record.clone());
+        self.save_all(&records)?;
+        Ok((record, false))
     }
 
     fn save_all(&self, records: &[ChatRecord]) -> Result<()> {
@@ -99,6 +157,14 @@ impl ChatStore {
         }
         fs::write(&self.path, rendered).with_context(|| format!("writing {}", self.path.display()))
     }
+}
+
+fn clean_optional(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn normalize_record(record: &mut ChatRecord) {

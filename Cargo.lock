@@ -299,6 +299,7 @@ dependencies = [
  "djinn-chats",
  "djinn-core",
  "djinn-memory",
+ "djinn-opencode",
  "djinn-suggest",
  "djinn-tools",
  "djinn-tui",
@@ -324,6 +325,13 @@ dependencies = [
  "djinn-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "djinn-opencode"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
 ]
 
 [[package]]

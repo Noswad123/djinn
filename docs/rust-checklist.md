@@ -9,6 +9,142 @@ inspired in part by Eric's
 [`opencode-autolearn`](https://github.com/ericmjl/opencode-autolearn)
 repository.
 
+## Handoff: 2026-07-08 session
+
+This section captures the state after the July 8 Rust rewrite session so work can
+resume quickly tomorrow.
+
+### Decisions locked in
+
+- Djinn is the long-term home for the useful Autolearn-inspired features.
+- `opencode-autolearn` should not keep running locally as a separate companion;
+  it was uninstalled after useful memories were migrated.
+- Keep Djinn practical and local-first in public positioning; Jamal Arcana lore is
+  optional/internal context.
+- Keep one `djinn` binary with modular Rust crates rather than separate tools.
+- Use verb-noun CLI grammar with short nouns:
+  - `tools`
+  - `memories`
+  - `chats`
+  - `skills`
+  - `ideas`
+  - `ctx` / `contexts`
+- `share` means “emit agent-ready context or prompts.” It is not a general ask
+  command.
+- Store durable Djinn state under Linux-style config paths on every platform:
+  - memories: `~/.config/djinn/memories.jsonl`
+- Store transient/raw chat/cache state under:
+  - chats: `~/.cache/djinn/chats.jsonl`
+- Do not use macOS `~/Library/Application Support` as a Djinn default.
+- Path overrides are:
+  - `DJINN_CONFIG_DIR`
+  - `XDG_CONFIG_HOME`
+  - `DJINN_CACHE_DIR`
+  - `XDG_CACHE_HOME`
+
+### Implemented today
+
+- Added native chat/session support:
+  - `djinn add chat <file> [--title ...] [--source ...] [--source-id ...]`
+  - `djinn add chat - --source opencode --source-id <session-id>` for stdin
+  - `djinn list chats`
+  - `djinn show chat <id>`
+  - `djinn search chats <query>`
+  - `djinn share chat <id>`
+  - `djinn share chat <id> --context-only`
+- Added `crates/djinn-chats/` for the JSONL chat store.
+- Added `source` and `source_id` metadata to chats so OpenCode can be one source
+  without hard-coding all chat behavior around OpenCode.
+- Changed `djinn share chat <id>` to emit a memory-extraction prompt by default.
+  It asks an agent to return reviewed `djinn add memory "..."` commands and does
+  not mutate memory automatically.
+- Preserved raw context export via `djinn share chat <id> --context-only`.
+- Added `crates/djinn-opencode/` as the small OpenCode adapter.
+- Implemented:
+  - `djinn watch opencode [session-id]`
+  - `djinn watch opencode --interval <seconds>`
+  - `djinn watch opencode --title "..."`
+  - `djinn watch opencode --unsafe-unsanitized`
+  - `djinn watch opencode --opencode-bin <bin>`
+- Watcher behavior today:
+  - calls `opencode export <session-id> --sanitize` by default;
+  - stores output in the generic chat store;
+  - if no session id is provided, uses the first row from `opencode session list`;
+  - upserts by `source=opencode` + `source_id=<session-id>` so repeated imports
+    update rather than duplicate.
+- Moved durable memory default from the previous platform data directory to
+  `~/.config/djinn`.
+- Moved chat/cache default to `~/.cache/djinn`.
+- Updated README and this checklist with the new storage and command behavior.
+- Added `jamal-changes/djinn.md` in the `opencode-autolearn` fork documenting
+  that Djinn is absorbing the Autolearn-inspired feature direction.
+
+### Migration and uninstall status
+
+- One-time memory merge completed into:
+  - `~/.config/djinn/memories.jsonl`
+- Merge result:
+  - existing target memories: 1
+  - old Library store memories added: 30
+  - old `~/.local/share/djinn` records found: 30 duplicates, skipped
+  - final total: 31 memories
+- Merge backup:
+  - `~/.config/djinn/memories.pre-merge-20260708-224542.jsonl`
+- Old source stores may still exist, but they are no longer authoritative:
+  - `~/Library/Application Support/djinn/memories.jsonl`
+  - `~/.local/share/djinn/memories.jsonl`
+- No old chat stores were found under Library, `.local/share`, or `.cache`.
+- Local Autolearn uninstall completed:
+  - removed `~/.config/opencode/plugins/autolearn.js`
+  - removed `~/.agents/skills/autolearn-reviewer`
+  - removed `~/.agents/skills/autolearn-curator`
+  - removed `~/.local/libs/autolearn`
+  - removed `~/.local/bin/autolearn`
+  - removed `~/.local/lib/autolearn`
+  - removed `~/.autolearn`
+  - removed Autolearn instruction reference from `~/.config/opencode/opencode.json`
+- Uninstall backups:
+  - `~/.config/djinn/autolearn-uninstall-backup-20260708-225148.tar.gz`
+  - `~/.config/opencode/opencode.pre-autolearn-uninstall-20260708-225148.json`
+- Verification completed:
+  - `autolearn` command is gone
+  - no Autolearn processes were found
+  - Autolearn skills are gone
+  - `opencode session list` still works after config cleanup
+- `self-improving-agent` was intentionally left installed because it is generic
+  and not Autolearn-named.
+- Restart OpenCode after config/plugin changes if a running session still has old
+  config loaded.
+
+### Validation commands run today
+
+- `cargo fmt --all --check`
+- `cargo check --workspace`
+- `make install`
+- `djinn add chat --help`
+- `djinn watch opencode --help`
+- `djinn share chat --help`
+- temp-cache smoke test for stdin chat import
+- temp-cache smoke test for memory-extraction prompt
+- temp-cache smoke test for real sanitized `opencode export` import
+- `djinn list memories`
+- `djinn search memories config`
+- `djinn search memories opencode-autolearn`
+
+### Watchouts for tomorrow
+
+- `djinn share chat <id>` now emits an extraction prompt, not raw context. Use
+  `--context-only` for the old behavior.
+- Some migrated memories describe older state, for example memories saying chats
+  and `watch opencode` were only stubs. Those should be pruned or rewritten.
+- Current chat records store full content directly inside `chats.jsonl`. This is
+  acceptable for the first slice, but large exports may eventually need
+  metadata-in-config plus body files under `~/.cache/djinn/chats/`.
+- `djinn watch opencode --interval` is a polling importer, not yet a true
+  OpenCode plugin/event hook.
+- Do not add permanent Autolearn import commands to Djinn. The one-time merge is
+  done; future work should be native Djinn behavior.
+
 ## Current Rust Djinn features
 
 Source reviewed: local Djinn repo at `~/projects/djinn` before the Rust
@@ -22,7 +158,18 @@ under `legacy/go/`; the root project contains the new Rust scaffold.
 - Memory commands: `add`, `list`, `rm`, `clear`, `search`, and `share`.
 - Chat commands: `add chat <file>`, `list chats`, `show chat <id>`,
   `search chats <query>`, and `share chat <id>`.
-- JSONL stores under Djinn's platform data directory for memories and chats.
+- Chat import supports stdin with `djinn add chat -` plus generic `--source` and
+  `--source-id` metadata for exported sessions.
+- `djinn watch opencode [session-id]` imports sanitized `opencode export` output
+  into the generic chat store; `--interval <seconds>` polls repeatedly.
+- `djinn share chat <id>` emits a memory-extraction prompt that returns reviewed
+  `djinn add memory "..."` commands instead of writing memories automatically.
+- `djinn share chat <id> --context-only` preserves the raw context export mode.
+- Linux-style paths on every platform; Djinn avoids macOS `Library` defaults.
+- Durable memory records default to `~/.config/djinn/memories.jsonl`.
+- Chat/cache records default to `~/.cache/djinn/chats.jsonl`.
+- Path overrides: `DJINN_CONFIG_DIR`, `XDG_CONFIG_HOME`, `DJINN_CACHE_DIR`, and
+  `XDG_CACHE_HOME`.
 - `share ideas` prompt generation from memories and local tools.
 - First unified Ratatui slice for browsing tools.
 
@@ -361,15 +508,143 @@ fork docs under `jamal-changes/`.
 - Review subprocesses are detached and isolated from the main session.
 - Recursive review spawning guard prevents runaway review loops.
 
-## Implications for a future Rust Djinn
+## Next implementation queue
 
-If Djinn absorbs Autolearn-like behavior, the natural expansion path is:
+Use this as the working queue after the 2026-07-08 handoff.
 
-1. Keep Djinn's existing TUI/discovery identity.
-2. Add memory registry inspection as a TUI domain.
-3. Add suggestion generation over memory and dotfile/docs/skills inventory.
-4. Add review/session ingestion as an integration layer, not the core identity.
-5. Treat OpenCode as one watcher backend among possible future agent backends.
+### 1. Clean and update migrated memories
+
+- Review the 31 merged memories in `~/.config/djinn/memories.jsonl`.
+- Remove or rewrite stale memories that describe now-implemented features as
+  stubs, especially older notes about chats and `watch opencode`.
+- Candidate commands:
+
+```bash
+djinn list memories
+djinn search memories stub
+djinn search memories watch
+djinn rm memory <keyword-or-id>
+djinn add memory "...updated fact..."
+```
+
+### 2. Add chat lifecycle commands
+
+- Add safe chat removal and cleanup:
+  - `djinn rm chat <id>`
+  - `djinn clear chats`
+  - maybe `djinn prune chats --older-than <duration>`
+- Keep clears interactive and backed up, mirroring memory safety.
+- Consider `djinn list chats --json` and `djinn show chat <id> --json` for
+  scripts/agents.
+
+### 3. Split large chat bodies from metadata
+
+- Current implementation stores full chat content in `~/.cache/djinn/chats.jsonl`.
+- Better long-term layout:
+
+```text
+~/.cache/djinn/chats.jsonl            # metadata/index
+~/.cache/djinn/chats/<id>.json        # raw exported OpenCode JSON or text body
+```
+
+- Keep `source`, `source_id`, title, timestamps, and content path in the index.
+- Make the migration automatic and backward-compatible for existing JSONL records.
+
+### 4. Improve OpenCode watcher behavior
+
+- Current watcher is an export importer with optional polling.
+- Next improvements:
+  - store last-import timestamp/hash to avoid unnecessary rewrites;
+  - better title extraction from exported JSON;
+  - better latest-session selection if `opencode session list` output changes;
+  - optional watch state under `~/.config/djinn/watchers/opencode.json`;
+  - consider a future OpenCode plugin/event hook only after the CLI importer is
+    stable.
+- Preserve generic chat abstractions so OpenCode is one backend, not the whole
+  model.
+
+### 5. Add reviewed promotion workflow
+
+- `djinn share chat <id>` already emits the extraction prompt.
+- Possible next command:
+
+```bash
+djinn promote chat <id>
+```
+
+- For the first version, this should still print a prompt or proposed commands,
+  not call an LLM or write memories automatically.
+- Later, optional flow could accept reviewed memory text from stdin:
+
+```bash
+djinn promote chat <id> --accept-file candidates.md
+```
+
+### 6. Expand TUI beyond tools
+
+- Keep one unified TUI.
+- Add tabs/views in this order:
+  1. Memories
+  2. Chats
+  3. Ideas
+  4. Skills
+  5. Ctx
+- Useful TUI actions:
+  - open selected tool;
+  - copy/share selected memory or chat;
+  - preview memory-extraction prompt for a selected chat;
+  - search within current tab.
+
+### 7. Add skill lifecycle management
+
+- Implement native Djinn skill commands after chats/memory feel stable:
+  - `djinn list skills`
+  - `djinn show skill <name>`
+  - `djinn add skill <name>`
+  - `djinn rm skill <name>`
+  - `djinn share skills`
+- Keep OpenCode-compatible skills discoverable but avoid hard-coding every skill
+  concept around OpenCode only.
+
+### 8. Add contexts/personas
+
+- Implement `ctx` as the short noun and `contexts` as an alias.
+- Desired commands:
+  - `djinn list ctx`
+  - `djinn show ctx`
+  - `djinn switch ctx <name>`
+- Keep `ctx` invariant; do not create `ctxs`.
+- This should eventually route memories/chats/tools by project or personal/work
+  context.
+
+### 9. Improve `share ideas`
+
+- Include chats and watcher state in the ideas prompt, not just memories + tools.
+- Ask for:
+  - stale memory cleanup;
+  - new local wrappers/scripts;
+  - skill candidates;
+  - chat sessions worth promoting;
+  - TUI/CLI workflow improvements.
+
+### 10. Add tests and fixtures
+
+- Add unit tests for:
+  - chat slug/id generation;
+  - upsert by `source` + `source_id`;
+  - OpenCode session list parsing;
+  - memory extraction prompt formatting;
+  - XDG path override behavior.
+- Add CLI smoke tests if the workspace gets an integration-test harness.
+
+### 11. Keep documentation current
+
+- README should stay practical and user-facing.
+- This checklist should remain the detailed implementation/handoff document.
+- Keep `opencode-autolearn/jamal-changes/djinn.md` as the fork-side explanation
+  of why the feature direction moved into Djinn.
 
 In lore terms, Djinn can become the bound familiar that reveals hidden commands,
-remembers recurring patterns, and recommends new bindings/skills/scripts.
+remembers recurring patterns, and recommends new bindings/skills/scripts — but
+the product should continue to present itself first as a practical local-first
+agent companion.

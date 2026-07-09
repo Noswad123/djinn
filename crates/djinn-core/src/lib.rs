@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -30,9 +31,17 @@ pub fn default_dotfiles_root() -> PathBuf {
 }
 
 pub fn default_data_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| home_dir().join(".local").join("share"))
-        .join("djinn")
+    env::var_os("DJINN_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_CONFIG_HOME").map(|path| PathBuf::from(path).join("djinn")))
+        .unwrap_or_else(|| home_dir().join(".config").join("djinn"))
+}
+
+pub fn default_cache_dir() -> PathBuf {
+    env::var_os("DJINN_CACHE_DIR")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_CACHE_HOME").map(|path| PathBuf::from(path).join("djinn")))
+        .unwrap_or_else(|| home_dir().join(".cache").join("djinn"))
 }
 
 pub fn default_index_path(root: &Path) -> PathBuf {

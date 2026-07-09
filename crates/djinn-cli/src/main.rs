@@ -1,7 +1,9 @@
 use std::env;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{bail, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -173,8 +175,8 @@ enum ShareNoun {
     Ideas,
     /// Emit agent-ready context for skills.
     Skills,
-    /// Emit agent-ready context for a chat/session.
-    Chat { id: String },
+    /// Emit a memory-extraction prompt for a chat/session.
+    Chat(ShareChatArgs),
 }
 
 #[derive(Debug, Args)]
@@ -202,7 +204,7 @@ struct WatchArgs {
 #[derive(Debug, Subcommand)]
 enum WatchSource {
     /// Watch OpenCode conversations.
-    Opencode,
+    Opencode(WatchOpencodeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -302,9 +304,43 @@ struct TuiArgs {
 
 #[derive(Debug, Args)]
 struct AddChatArgs {
-    /// Markdown, text, or JSON file containing one AI interaction/session.
+    /// Markdown, text, or JSON file containing one AI interaction/session. Use '-' for stdin.
     file: PathBuf,
     /// Human-friendly title. Defaults to the first non-empty line or file stem.
+    #[arg(long)]
+    title: Option<String>,
+    /// Generic source name, for example: opencode, manual, cursor, claude.
+    #[arg(long)]
+    source: Option<String>,
+    /// Source-native session id, if available.
+    #[arg(long = "source-id")]
+    source_id: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ShareChatArgs {
+    /// Chat id, source id, or unambiguous title fragment.
+    id: String,
+    /// Emit raw context only instead of a memory-extraction prompt.
+    #[arg(long)]
+    context_only: bool,
+}
+
+#[derive(Debug, Args)]
+struct WatchOpencodeArgs {
+    /// OpenCode session id. Defaults to the first row from `opencode session list`.
+    session_id: Option<String>,
+    /// OpenCode binary to execute.
+    #[arg(long, default_value = "opencode")]
+    opencode_bin: String,
+    /// Store unsanitized OpenCode export output. By default Djinn passes --sanitize.
+    #[arg(long)]
+    unsafe_unsanitized: bool,
+    /// Poll every N seconds instead of importing once. If no session id is provided,
+    /// each poll imports the current latest session.
+    #[arg(long)]
+    interval: Option<u64>,
+    /// Override the stored chat title.
     #[arg(long)]
     title: Option<String>,
 }
@@ -455,7 +491,7 @@ fn run_share(args: ShareArgs) -> Result<()> {
             "share skills",
             "will emit agent-ready context for known skills",
         ),
-        ShareNoun::Chat { id } => share_chat(&id),
+        ShareNoun::Chat(args) => share_chat(args),
     }
 }
 
@@ -469,10 +505,7 @@ fn run_search(args: SearchArgs) -> Result<()> {
 
 fn run_watch(args: WatchArgs) -> Result<()> {
     match args.source {
-        WatchSource::Opencode => planned(
-            "watch opencode",
-            "will ingest OpenCode conversations into Djinn chats",
-        ),
+        WatchSource::Opencode(args) => watch_opencode(args),
     }
 }
 
@@ -545,7 +578,7 @@ fn list_chats() -> Result<()> {
                 record.id,
                 record.title,
                 record.content.chars().count(),
-                format_source_suffix(&record.source_path)
+                format_chat_source_suffix(record)
             );
         }
         println!("\nTotal: {} chats", records.len());
@@ -554,13 +587,80 @@ fn list_chats() -> Result<()> {
 }
 
 fn add_chat(args: AddChatArgs) -> Result<()> {
-    let record = chat_store().add_file(&args.file, args.title.as_deref())?;
+    let record = if args.file.as_os_str() == "-" {
+        let mut content = String::new();
+        io::stdin().read_to_string(&mut content)?;
+        let title = args
+            .title
+            .clone()
+            .or_else(|| args.source_id.clone())
+            .unwrap_or_else(|| "stdin chat".to_string());
+        chat_store().add_content(
+            title,
+            content,
+            "-".to_string(),
+            args.source.as_deref(),
+            args.source_id.as_deref(),
+        )?
+    } else {
+        chat_store().add_file(
+            &args.file,
+            args.title.as_deref(),
+            args.source.as_deref(),
+            args.source_id.as_deref(),
+        )?
+    };
     println!(
         "Chat added [{}]: {} ({} chars)",
         record.id,
         record.title,
         record.content.chars().count()
     );
+    Ok(())
+}
+
+fn watch_opencode(args: WatchOpencodeArgs) -> Result<()> {
+    if let Some(0) = args.interval {
+        bail!("--interval must be greater than zero seconds");
+    }
+
+    let cli = djinn_opencode::OpencodeCli::new(args.opencode_bin.clone());
+    let sanitize = !args.unsafe_unsanitized;
+
+    loop {
+        let session_id = match &args.session_id {
+            Some(id) => id.clone(),
+            None => cli.latest_session_id()?,
+        };
+        let export = cli.export_session(&session_id, sanitize)?;
+        let title = args
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("OpenCode session {session_id}"));
+        let source_path = if sanitize {
+            format!("{} export {} --sanitize", args.opencode_bin, session_id)
+        } else {
+            format!("{} export {}", args.opencode_bin, session_id)
+        };
+        let (record, updated) = chat_store().upsert_content(
+            title,
+            export,
+            source_path,
+            Some("opencode"),
+            Some(&session_id),
+        )?;
+        let action = if updated { "updated" } else { "imported" };
+        println!(
+            "OpenCode session {action} as chat [{}] (source-id: {})",
+            record.id, record.source_id
+        );
+
+        let Some(seconds) = args.interval else {
+            break;
+        };
+        thread::sleep(Duration::from_secs(seconds));
+    }
+
     Ok(())
 }
 
@@ -609,8 +709,14 @@ fn show_chat(id: &str) -> Result<()> {
     println!("# {}\n", record.title);
     println!("ID: {}", record.id);
     println!("Created: {}", record.created_at);
+    if !record.source.trim().is_empty() {
+        println!("Source type: {}", record.source);
+    }
+    if !record.source_id.trim().is_empty() {
+        println!("Source ID: {}", record.source_id);
+    }
     if !record.source_path.trim().is_empty() {
-        println!("Source: {}", record.source_path);
+        println!("Source path: {}", record.source_path);
     }
     println!("\n## Content\n");
     println!("{}", record.content);
@@ -704,10 +810,18 @@ fn share_ideas() -> Result<()> {
     Ok(())
 }
 
-fn share_chat(id: &str) -> Result<()> {
+fn share_chat(args: ShareChatArgs) -> Result<()> {
     let records = chat_store().list()?;
-    let record = resolve_chat(&records, id)?;
-    println!("{}", format_chat_context(record));
+    let record = resolve_chat(&records, &args.id)?;
+    if args.context_only {
+        println!("{}", format_chat_context(record));
+    } else {
+        let memories = memory_store().list()?;
+        println!(
+            "{}",
+            format_chat_memory_extraction_prompt(record, &memories)
+        );
+    }
     Ok(())
 }
 
@@ -768,10 +882,58 @@ fn format_chat_context(record: &ChatRecord) -> String {
         record.id, record.title, record.created_at
     );
     if !record.source_path.trim().is_empty() {
-        out.push_str(&format!("- Source: {}\n", record.source_path));
+        out.push_str(&format!("- Source path: {}\n", record.source_path));
+    }
+    if !record.source.trim().is_empty() {
+        out.push_str(&format!("- Source type: {}\n", record.source));
+    }
+    if !record.source_id.trim().is_empty() {
+        out.push_str(&format!("- Source ID: {}\n", record.source_id));
     }
     out.push_str("\nUse this chat as source context for the next agent action.\n\n");
     out.push_str("## Chat Content\n\n```text\n");
+    out.push_str(&record.content);
+    if !record.content.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("```\n");
+    out
+}
+
+fn format_chat_memory_extraction_prompt(record: &ChatRecord, memories: &[MemoryRecord]) -> String {
+    let mut out = format!(
+        "# Djinn Chat Memory Extraction\n\nYou are reviewing a saved Djinn chat. Extract durable memories only when they are reusable in future work.\n\n## Chat Metadata\n\n- ID: `{}`\n- Title: {}\n- Created: {}\n",
+        record.id, record.title, record.created_at
+    );
+    if !record.source.trim().is_empty() {
+        out.push_str(&format!("- Source type: {}\n", record.source));
+    }
+    if !record.source_id.trim().is_empty() {
+        out.push_str(&format!("- Source ID: {}\n", record.source_id));
+    }
+    if !record.source_path.trim().is_empty() {
+        out.push_str(&format!("- Source path: {}\n", record.source_path));
+    }
+
+    out.push_str(
+        "\n## Extraction Rules\n\nExtract candidate memories for:\n\n- user preferences and corrections\n- repeated workflows or tool choices\n- project-specific conventions\n- safety rules or gotchas\n- reusable debugging/implementation patterns\n\nDo not extract:\n\n- one-off task status\n- secrets, credentials, tokens, private URLs, or sensitive raw data\n- facts that are already captured in existing memories\n- noisy transcript details that will not help future agents\n\nReturn only a short reviewed list of shell commands the user can run manually, using this exact form:\n\n```bash\ndjinn add memory \"...\"\n```\n\nIf there are no durable lessons, say: `No durable memories recommended.`\n",
+    );
+
+    out.push_str("\n## Existing Memories\n\n```text\n");
+    if memories.is_empty() {
+        out.push_str("No existing memories recorded.\n");
+    } else {
+        for record in memories.iter().take(100) {
+            out.push_str(&format!("- [{}] {}\n", record.id, record.text));
+        }
+        if memories.len() > 100 {
+            out.push_str(&format!(
+                "... {} more memories omitted ...\n",
+                memories.len() - 100
+            ));
+        }
+    }
+    out.push_str("```\n\n## Chat Content\n\n```text\n");
     out.push_str(&record.content);
     if !record.content.ends_with('\n') {
         out.push('\n');
@@ -852,6 +1014,7 @@ fn resolve_chat<'a>(records: &'a [ChatRecord], id: &str) -> Result<&'a ChatRecor
         .filter(|record| {
             record.id.to_lowercase().contains(&needle)
                 || record.title.to_lowercase().contains(&needle)
+                || record.source_id.to_lowercase().contains(&needle)
         })
         .collect::<Vec<_>>();
     match matches.as_slice() {
@@ -870,6 +1033,8 @@ fn resolve_chat<'a>(records: &'a [ChatRecord], id: &str) -> Result<&'a ChatRecor
 fn chat_matches(record: &ChatRecord, query: &str) -> bool {
     record.id.to_lowercase().contains(query)
         || record.title.to_lowercase().contains(query)
+        || record.source.to_lowercase().contains(query)
+        || record.source_id.to_lowercase().contains(query)
         || record.source_path.to_lowercase().contains(query)
         || record.content.to_lowercase().contains(query)
 }
@@ -901,11 +1066,15 @@ fn truncate(value: &str, max_chars: usize) -> String {
     }
 }
 
-fn format_source_suffix(source_path: &str) -> String {
-    if source_path.trim().is_empty() {
-        String::new()
+fn format_chat_source_suffix(record: &ChatRecord) -> String {
+    if !record.source.trim().is_empty() && !record.source_id.trim().is_empty() {
+        format!(" ({}:{})", record.source, record.source_id)
+    } else if !record.source_id.trim().is_empty() {
+        format!(" ({})", record.source_id)
+    } else if !record.source_path.trim().is_empty() {
+        format!(" ({})", record.source_path)
     } else {
-        format!(" ({source_path})")
+        String::new()
     }
 }
 
@@ -964,7 +1133,7 @@ fn memory_store() -> djinn_memory::MemoryStore {
 }
 
 fn chat_store() -> djinn_chats::ChatStore {
-    djinn_chats::ChatStore::default_in(&djinn_core::default_data_dir())
+    djinn_chats::ChatStore::default_in(&djinn_core::default_cache_dir())
 }
 
 fn planned(command: &str, description: &str) -> Result<()> {
