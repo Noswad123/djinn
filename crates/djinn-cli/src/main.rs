@@ -1,8 +1,11 @@
+use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
 use anyhow::{bail, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use djinn_chats::ChatRecord;
 use djinn_memory::MemoryRecord;
 use djinn_tools::ToolEntry;
 
@@ -40,6 +43,8 @@ enum Command {
     Switch(SwitchArgs),
     /// Open an item in the user's editor.
     Open(OpenArgs),
+    /// Open the unified terminal dashboard.
+    Tui(TuiArgs),
 }
 
 #[derive(Debug, Args)]
@@ -77,7 +82,7 @@ enum ShowNoun {
     /// Show the active context.
     Ctx,
     /// Show a tool by name.
-    Tool { name: String },
+    Tool(ToolLookupArgs),
     /// Show a skill by name.
     Skill { name: String },
 }
@@ -90,6 +95,8 @@ struct AddArgs {
 
 #[derive(Debug, Subcommand)]
 enum AddNoun {
+    /// Add a raw or summarized AI interaction from a file.
+    Chat(AddChatArgs),
     /// Add a distilled memory.
     Memory { text: String },
     /// Add or scaffold a skill.
@@ -181,7 +188,7 @@ enum SearchNoun {
     /// Search chats/sessions.
     Chats { query: String },
     /// Search local tools.
-    Tools { query: String },
+    Tools(SearchToolsArgs),
     /// Search memories.
     Memories { query: String },
 }
@@ -219,31 +226,106 @@ struct OpenArgs {
 #[derive(Debug, Subcommand)]
 enum OpenNoun {
     /// Open a local tool source by name.
-    Tool { name: String },
+    Tool(OpenToolArgs),
 }
 
 #[derive(Debug, Args, Clone)]
 struct ToolsScope {
-    /// Dotfiles/local tooling root to scan.
+    /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
+    #[arg(long = "root")]
+    roots: Vec<PathBuf>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
     #[arg(long)]
-    root: Option<PathBuf>,
+    json: bool,
 }
 
 #[derive(Debug, Args)]
 struct IndexToolsArgs {
-    /// Dotfiles/local tooling root to scan.
-    #[arg(long)]
-    root: Option<PathBuf>,
+    /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
+    #[arg(long = "root")]
+    roots: Vec<PathBuf>,
     /// Index JSON path. Defaults under the scanned root.
     #[arg(long)]
     index: Option<PathBuf>,
 }
 
+#[derive(Debug, Args)]
+struct ToolLookupArgs {
+    /// Tool name, case-insensitive. Falls back to substring matching.
+    name: String,
+    /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
+    #[arg(long = "root")]
+    roots: Vec<PathBuf>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SearchToolsArgs {
+    query: String,
+    /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
+    #[arg(long = "root")]
+    roots: Vec<PathBuf>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct OpenToolArgs {
+    /// Tool name, case-insensitive. Falls back to substring matching.
+    name: String,
+    /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
+    #[arg(long = "root")]
+    roots: Vec<PathBuf>,
+    /// Editor command. Defaults to VISUAL, then EDITOR, then nvim.
+    #[arg(long)]
+    editor: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct TuiArgs {
+    /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
+    #[arg(long = "root")]
+    roots: Vec<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct AddChatArgs {
+    /// Markdown, text, or JSON file containing one AI interaction/session.
+    file: PathBuf,
+    /// Human-friendly title. Defaults to the first non-empty line or file stem.
+    #[arg(long)]
+    title: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command.unwrap_or(Command::List(ListArgs {
-        noun: ListNoun::Tools(ToolsScope { root: None }),
-    })) {
+    let Some(command) = cli.command else {
+        if io::stdin().is_terminal() && io::stdout().is_terminal() {
+            return run_tui(TuiArgs { roots: Vec::new() });
+        }
+        Cli::command().print_help()?;
+        println!();
+        return Ok(());
+    };
+    match command {
         Command::List(args) => run_list(args),
         Command::Show(args) => run_show(args),
         Command::Add(args) => run_add(args),
@@ -256,6 +338,7 @@ fn main() -> Result<()> {
         Command::Watch(args) => run_watch(args),
         Command::Switch(args) => run_switch(args),
         Command::Open(args) => run_open(args),
+        Command::Tui(args) => run_tui(args),
     }
 }
 
@@ -263,7 +346,7 @@ fn run_list(args: ListArgs) -> Result<()> {
     match args.noun {
         ListNoun::Tools(scope) => list_tools(scope),
         ListNoun::Memories => list_memories(),
-        ListNoun::Chats => planned("list chats", "will list raw or summarized AI interactions"),
+        ListNoun::Chats => list_chats(),
         ListNoun::Skills => planned("list skills", "will list agent skills known to Djinn"),
         ListNoun::Contexts | ListNoun::Ctx => planned(
             "list ctx",
@@ -274,12 +357,9 @@ fn run_list(args: ListArgs) -> Result<()> {
 
 fn run_show(args: ShowArgs) -> Result<()> {
     match args.noun {
-        ShowNoun::Chat { id } => planned(
-            &format!("show chat {id}"),
-            "will show one raw or summarized AI interaction",
-        ),
+        ShowNoun::Chat { id } => show_chat(&id),
         ShowNoun::Ctx => planned("show ctx", "will show the active context"),
-        ShowNoun::Tool { name } => show_tool(&name),
+        ShowNoun::Tool(args) => show_tool(args),
         ShowNoun::Skill { name } => planned(
             &format!("show skill {name}"),
             "will show one agent skill and its source",
@@ -289,6 +369,7 @@ fn run_show(args: ShowArgs) -> Result<()> {
 
 fn run_add(args: AddArgs) -> Result<()> {
     match args.noun {
+        AddNoun::Chat(args) => add_chat(args),
         AddNoun::Memory { text } => {
             let record = memory_store().add(&text)?;
             println!("Memory added [{}]: {}", record.id, record.text);
@@ -320,9 +401,13 @@ fn run_clear(args: ClearArgs) -> Result<()> {
 fn run_scan(args: ScanArgs) -> Result<()> {
     match args.noun {
         ScanNoun::Tools(scope) => {
-            let root = tools_root(scope.root);
-            let entries = scan_tools(&root)?;
-            println!("Scanned {} tools under {}", entries.len(), root.display());
+            let roots = tool_roots(scope.roots);
+            let entries = scan_tools(&roots)?;
+            println!(
+                "Scanned {} tools under {}",
+                entries.len(),
+                format_roots(&roots)
+            );
             Ok(())
         }
     }
@@ -331,11 +416,17 @@ fn run_scan(args: ScanArgs) -> Result<()> {
 fn run_index(args: IndexArgs) -> Result<()> {
     match args.noun {
         IndexNoun::Tools(args) => {
-            let root = tools_root(args.root);
+            let roots = tool_roots(args.roots);
+            let root = roots
+                .first()
+                .cloned()
+                .unwrap_or_else(djinn_core::default_dotfiles_root);
             let index_path = args
                 .index
                 .unwrap_or_else(|| djinn_core::default_index_path(&root));
-            let (count, changed) = djinn_tools::write_index(&root, &index_path)?;
+            let entries = scan_tools(&roots)?;
+            let changed = write_tools_index(&roots, &entries, &index_path)?;
+            let count = entries.len();
             let status = if changed { "updated" } else { "unchanged" };
             eprintln!(
                 "djinn index tools: {status} {} ({count} entries)",
@@ -349,8 +440,8 @@ fn run_index(args: IndexArgs) -> Result<()> {
 fn run_share(args: ShareArgs) -> Result<()> {
     match args.noun {
         ShareNoun::Tools(scope) => {
-            let root = tools_root(scope.root);
-            let entries = scan_tools(&root)?;
+            let roots = tool_roots(scope.roots);
+            let entries = scan_tools(&roots)?;
             println!("{}", format_tools_context(&entries));
             Ok(())
         }
@@ -364,20 +455,14 @@ fn run_share(args: ShareArgs) -> Result<()> {
             "share skills",
             "will emit agent-ready context for known skills",
         ),
-        ShareNoun::Chat { id } => planned(
-            &format!("share chat {id}"),
-            "will summarize/export one AI interaction for an agent",
-        ),
+        ShareNoun::Chat { id } => share_chat(&id),
     }
 }
 
 fn run_search(args: SearchArgs) -> Result<()> {
     match args.noun {
-        SearchNoun::Chats { query } => planned(
-            &format!("search chats {query}"),
-            "will search raw or summarized AI interactions",
-        ),
-        SearchNoun::Tools { query } => search_tools(&query),
+        SearchNoun::Chats { query } => search_chats(&query),
+        SearchNoun::Tools(args) => search_tools(args),
         SearchNoun::Memories { query } => search_memories(&query),
     }
 }
@@ -402,28 +487,35 @@ fn run_switch(args: SwitchArgs) -> Result<()> {
 
 fn run_open(args: OpenArgs) -> Result<()> {
     match args.noun {
-        OpenNoun::Tool { name } => planned(
-            &format!("open tool {name}"),
-            "will open a discovered local tool in $VISUAL, $EDITOR, or nvim",
-        ),
+        OpenNoun::Tool(args) => open_tool(args),
     }
 }
 
+fn run_tui(args: TuiArgs) -> Result<()> {
+    let roots = tool_roots(args.roots);
+    let tools = scan_tools(&roots)?;
+    djinn_tui::run_tools(tools)
+}
+
 fn list_tools(scope: ToolsScope) -> Result<()> {
-    let root = tools_root(scope.root);
-    let entries = scan_tools(&root)?;
+    let roots = tool_roots(scope.roots);
+    let entries = scan_tools(&roots)?;
     if entries.is_empty() {
-        println!("Djinn found 0 tools under {}", root.display());
+        println!("Djinn found 0 tools under {}", format_roots(&roots));
         return Ok(());
     }
-    for entry in entries {
-        println!(
-            "{}\t{}:{}\t{}",
-            entry.name,
-            entry.path.display(),
-            entry.line,
-            entry.description
-        );
+    if output_format(scope.format, scope.json) == OutputFormat::Json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+    } else {
+        for entry in entries {
+            println!(
+                "{}\t{}:{}\t{}",
+                entry.name,
+                entry.path.display(),
+                entry.line,
+                entry.description
+            );
+        }
     }
     Ok(())
 }
@@ -438,6 +530,37 @@ fn list_memories() -> Result<()> {
         }
         println!("\nTotal: {} memories", records.len());
     }
+    Ok(())
+}
+
+fn list_chats() -> Result<()> {
+    let records = chat_store().list()?;
+    if records.is_empty() {
+        println!("Chats are empty.");
+    } else {
+        for (idx, record) in records.iter().enumerate() {
+            println!(
+                "  {}. [{}] {} — {} chars{}",
+                idx + 1,
+                record.id,
+                record.title,
+                record.content.chars().count(),
+                format_source_suffix(&record.source_path)
+            );
+        }
+        println!("\nTotal: {} chats", records.len());
+    }
+    Ok(())
+}
+
+fn add_chat(args: AddChatArgs) -> Result<()> {
+    let record = chat_store().add_file(&args.file, args.title.as_deref())?;
+    println!(
+        "Chat added [{}]: {} ({} chars)",
+        record.id,
+        record.title,
+        record.content.chars().count()
+    );
     Ok(())
 }
 
@@ -480,24 +603,40 @@ fn rm_memory(keyword: &str) -> Result<()> {
     Ok(())
 }
 
-fn show_tool(name: &str) -> Result<()> {
-    let entries = scan_tools(&djinn_core::default_dotfiles_root())?;
-    let Some(entry) = entries
-        .iter()
-        .find(|entry| entry.name.eq_ignore_ascii_case(name))
-    else {
-        bail!("no tool named {name:?} found");
-    };
-    println!("# {}\n", entry.name);
-    println!("{}\n", entry.description);
-    println!("Source: {}:{}\n", entry.path.display(), entry.line);
-    println!("```text\n{}\n```", entry.preview);
+fn show_chat(id: &str) -> Result<()> {
+    let records = chat_store().list()?;
+    let record = resolve_chat(&records, id)?;
+    println!("# {}\n", record.title);
+    println!("ID: {}", record.id);
+    println!("Created: {}", record.created_at);
+    if !record.source_path.trim().is_empty() {
+        println!("Source: {}", record.source_path);
+    }
+    println!("\n## Content\n");
+    println!("{}", record.content);
     Ok(())
 }
 
-fn search_tools(query: &str) -> Result<()> {
-    let query = query.to_lowercase();
-    let matches = scan_tools(&djinn_core::default_dotfiles_root())?
+fn show_tool(args: ToolLookupArgs) -> Result<()> {
+    let roots = tool_roots(args.roots);
+    let entries = scan_tools(&roots)?;
+    let entry = resolve_tool(&entries, &args.name)?;
+    if output_format(args.format, args.json) == OutputFormat::Json {
+        println!("{}", serde_json::to_string_pretty(entry)?);
+    } else {
+        println!("# {}\n", entry.name);
+        println!("{}\n", entry.description);
+        println!("Source: {}:{}\n", entry.path.display(), entry.line);
+        println!("## Preview\n");
+        println!("```text\n{}\n```", entry.preview);
+    }
+    Ok(())
+}
+
+fn search_tools(args: SearchToolsArgs) -> Result<()> {
+    let query = args.query.to_lowercase();
+    let roots = tool_roots(args.roots);
+    let matches = scan_tools(&roots)?
         .into_iter()
         .filter(|entry| {
             entry.name.to_lowercase().contains(&query)
@@ -505,16 +644,20 @@ fn search_tools(query: &str) -> Result<()> {
                 || entry.preview.to_lowercase().contains(&query)
         })
         .collect::<Vec<_>>();
-    for entry in &matches {
-        println!(
-            "{}\t{}:{}\t{}",
-            entry.name,
-            entry.path.display(),
-            entry.line,
-            entry.description
-        );
+    if output_format(args.format, args.json) == OutputFormat::Json {
+        println!("{}", serde_json::to_string_pretty(&matches)?);
+    } else {
+        for entry in &matches {
+            println!(
+                "{}\t{}:{}\t{}",
+                entry.name,
+                entry.path.display(),
+                entry.line,
+                entry.description
+            );
+        }
+        println!("\nTotal: {} matching tools", matches.len());
     }
-    println!("\nTotal: {} matching tools", matches.len());
     Ok(())
 }
 
@@ -534,10 +677,57 @@ fn search_memories(query: &str) -> Result<()> {
     Ok(())
 }
 
+fn search_chats(query: &str) -> Result<()> {
+    let query_lower = query.to_lowercase();
+    let matches = chat_store()
+        .list()?
+        .into_iter()
+        .filter(|record| chat_matches(record, &query_lower))
+        .collect::<Vec<_>>();
+    for (idx, record) in matches.iter().enumerate() {
+        println!(
+            "  {}. [{}] {} — {}",
+            idx + 1,
+            record.id,
+            record.title,
+            chat_snippet(record, &query_lower)
+        );
+    }
+    println!("\nTotal: {} matching chats", matches.len());
+    Ok(())
+}
+
 fn share_ideas() -> Result<()> {
     let memories = memory_store().list()?;
-    let tools = scan_tools(&djinn_core::default_dotfiles_root())?;
+    let tools = scan_tools(&tool_roots(Vec::new()))?;
     println!("{}", djinn_suggest::build_prompt(&memories, &tools));
+    Ok(())
+}
+
+fn share_chat(id: &str) -> Result<()> {
+    let records = chat_store().list()?;
+    let record = resolve_chat(&records, id)?;
+    println!("{}", format_chat_context(record));
+    Ok(())
+}
+
+fn open_tool(args: OpenToolArgs) -> Result<()> {
+    let roots = tool_roots(args.roots);
+    let entries = scan_tools(&roots)?;
+    let entry = resolve_tool(&entries, &args.name)?;
+    let editor = args.editor.unwrap_or_else(default_editor);
+    let mut parts = editor.split_whitespace();
+    let Some(program) = parts.next() else {
+        bail!("editor command is empty");
+    };
+    let mut cmd = ProcessCommand::new(program);
+    cmd.args(parts);
+    cmd.arg(format!("+{}", entry.line));
+    cmd.arg(&entry.path);
+    let status = cmd.status()?;
+    if !status.success() {
+        bail!("editor exited with status {status}");
+    }
     Ok(())
 }
 
@@ -572,16 +762,209 @@ fn format_memories_context(records: &[MemoryRecord]) -> String {
     out
 }
 
-fn tools_root(root: Option<PathBuf>) -> PathBuf {
-    root.unwrap_or_else(djinn_core::default_dotfiles_root)
+fn format_chat_context(record: &ChatRecord) -> String {
+    let mut out = format!(
+        "# Djinn Chat\n\n- ID: `{}`\n- Title: {}\n- Created: {}\n",
+        record.id, record.title, record.created_at
+    );
+    if !record.source_path.trim().is_empty() {
+        out.push_str(&format!("- Source: {}\n", record.source_path));
+    }
+    out.push_str("\nUse this chat as source context for the next agent action.\n\n");
+    out.push_str("## Chat Content\n\n```text\n");
+    out.push_str(&record.content);
+    if !record.content.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("```\n");
+    out
 }
 
-fn scan_tools(root: &Path) -> Result<Vec<ToolEntry>> {
-    djinn_tools::scan(root, &djinn_tools::default_extensions())
+fn tool_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    if !roots.is_empty() {
+        return roots;
+    }
+    if let Ok(raw) = env::var("DJINN_TOOL_ROOTS") {
+        let parsed = env::split_paths(&raw).collect::<Vec<_>>();
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+    vec![djinn_core::default_dotfiles_root()]
+}
+
+fn scan_tools(roots: &[PathBuf]) -> Result<Vec<ToolEntry>> {
+    let mut all = Vec::new();
+    for root in roots {
+        all.extend(djinn_tools::scan(root, &djinn_tools::default_extensions())?);
+    }
+    all.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then(left.path.cmp(&right.path))
+            .then(left.line.cmp(&right.line))
+    });
+    Ok(all)
+}
+
+fn resolve_tool<'a>(entries: &'a [ToolEntry], name: &str) -> Result<&'a ToolEntry> {
+    if let Some(entry) = entries.iter().find(|entry| entry.name == name) {
+        return Ok(entry);
+    }
+    if let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.name.eq_ignore_ascii_case(name))
+    {
+        return Ok(entry);
+    }
+    let needle = name.to_lowercase();
+    let matches = entries
+        .iter()
+        .filter(|entry| entry.name.to_lowercase().contains(&needle))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [entry] => Ok(entry),
+        [] => bail!("no tool named {name:?} found"),
+        many => {
+            eprintln!("multiple tools match {name:?}:");
+            for entry in many {
+                eprintln!("  - {} ({})", entry.name, entry.path.display());
+            }
+            bail!("tool name is ambiguous")
+        }
+    }
+}
+
+fn resolve_chat<'a>(records: &'a [ChatRecord], id: &str) -> Result<&'a ChatRecord> {
+    if let Some(record) = records.iter().find(|record| record.id == id) {
+        return Ok(record);
+    }
+    if let Some(record) = records
+        .iter()
+        .find(|record| record.id.eq_ignore_ascii_case(id))
+    {
+        return Ok(record);
+    }
+    let needle = id.to_lowercase();
+    let matches = records
+        .iter()
+        .filter(|record| {
+            record.id.to_lowercase().contains(&needle)
+                || record.title.to_lowercase().contains(&needle)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [record] => Ok(record),
+        [] => bail!("no chat named {id:?} found"),
+        many => {
+            eprintln!("multiple chats match {id:?}:");
+            for record in many {
+                eprintln!("  - [{}] {}", record.id, record.title);
+            }
+            bail!("chat id is ambiguous")
+        }
+    }
+}
+
+fn chat_matches(record: &ChatRecord, query: &str) -> bool {
+    record.id.to_lowercase().contains(query)
+        || record.title.to_lowercase().contains(query)
+        || record.source_path.to_lowercase().contains(query)
+        || record.content.to_lowercase().contains(query)
+}
+
+fn chat_snippet(record: &ChatRecord, query: &str) -> String {
+    record
+        .content
+        .lines()
+        .map(str::trim)
+        .find(|line| line.to_lowercase().contains(query))
+        .or_else(|| {
+            record
+                .content
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+        })
+        .map(|line| truncate(line, 96))
+        .unwrap_or_else(|| "(empty chat)".to_string())
+}
+
+fn truncate(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+fn format_source_suffix(source_path: &str) -> String {
+    if source_path.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" ({source_path})")
+    }
+}
+
+fn output_format(format: OutputFormat, json: bool) -> OutputFormat {
+    if json {
+        OutputFormat::Json
+    } else {
+        format
+    }
+}
+
+fn format_roots(roots: &[PathBuf]) -> String {
+    roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn default_editor() -> String {
+    env::var("VISUAL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            env::var("EDITOR")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| "nvim".to_string())
+}
+
+fn write_tools_index(roots: &[PathBuf], entries: &[ToolEntry], index_path: &Path) -> Result<bool> {
+    let index_entries = entries
+        .iter()
+        .map(|entry| djinn_core::IndexEntry {
+            name: entry.name.clone(),
+            description: entry.description.clone(),
+            path: entry.path.to_string_lossy().replace('\\', "/"),
+            line: entry.line,
+        })
+        .collect::<Vec<_>>();
+    let payload = djinn_core::IndexPayload {
+        schema_version: 1,
+        source: "djinn-rust-tool-scan".to_string(),
+        root: format_roots(roots),
+        count: index_entries.len(),
+        entries: index_entries,
+    };
+    let mut rendered = serde_json::to_vec_pretty(&payload)?;
+    rendered.push(b'\n');
+    djinn_core::write_if_changed(index_path, &rendered)
 }
 
 fn memory_store() -> djinn_memory::MemoryStore {
     djinn_memory::MemoryStore::default_in(&djinn_core::default_data_dir())
+}
+
+fn chat_store() -> djinn_chats::ChatStore {
+    djinn_chats::ChatStore::default_in(&djinn_core::default_data_dir())
 }
 
 fn planned(command: &str, description: &str) -> Result<()> {

@@ -30,14 +30,16 @@ with modular internals and a unified UX.
 | Area | Status | Summary |
 |------|--------|---------|
 | Dotfile/snippet discovery | Rust scaffold | Scan tagged `.zsh`, `.sh`, and `.lua` snippets from dotfiles. |
-| Legacy TUI picker | Legacy Go | Search snippets, preview source, return `path:line`. |
+| Tools TUI picker | Rust scaffold | Browse discovered tools with a list pane and preview pane. |
+| Legacy TUI picker | Legacy Go | Original Bubble Tea picker kept as a reference. |
 | Legacy editor open mode | Legacy Go | Open selected snippet directly with `$VISUAL`, `$EDITOR`, or `nvim`. |
 | Cache/index generation | Rust scaffold | Write a JSON index for OpenCode/agent consumption. |
 | Agent memory registry | Rust scaffold | Store basic durable memories; retention/personas still planned. |
+| Chat store/search | Rust scaffold | Store file-backed AI interactions, list/show/search them, and share one as agent context. |
 | AI conversation watcher | Planned | Ingest OpenCode/agent conversations and extract lessons. |
 | Suggestion engine | Rust scaffold | Generate a prompt from memories and discovered local tools. |
 | Skill lifecycle management | Planned | Create, patch, archive, and inspect agent skills. |
-| Session search | Planned | Search previous AI conversations and local agent traces. |
+| Session search | Partial Rust scaffold | Search saved chats; automatic OpenCode trace ingestion is still planned. |
 | Personas/contexts | Planned | Keep work, personal, OSS, and project-specific knowledge separate. |
 | Retention/cleanup | Planned | Strengthen, weaken, evict, merge, or clear memories safely. |
 | Sync | Possible later | Optional encrypted sync if Djinn needs cross-machine state. |
@@ -45,6 +47,12 @@ with modular internals and a unified UX.
 ## Current Rust scaffold features
 
 - `djinn list tools` scans `~/.dotfiles` recursively by default.
+- Tool commands accept repeatable `--root` flags and `DJINN_TOOL_ROOTS` for
+  scanning additional local tooling directories.
+- `djinn list tools --format json` and `djinn list tools --json` emit JSON.
+- `djinn show tool <name>` shows a polished detail view with source preview.
+- `djinn open tool <name>` opens the source in `$VISUAL`, `$EDITOR`, or `nvim`.
+- `djinn tui` opens the first Rust TUI slice: tools list plus preview pane.
 - Supports `.zsh`, `.sh`, and `.lua` files.
 - Skips noisy directories such as `.git`, `.opencode`, `node_modules`, `dist`,
   and `.tmux`.
@@ -53,6 +61,9 @@ with modular internals and a unified UX.
 - `djinn index tools` generates a JSON cache/index.
 - `djinn add memory`, `djinn list memories`, and `djinn clear memories` provide
   a first local memory registry slice.
+- `djinn add chat <file>`, `djinn list chats`, `djinn show chat <id>`,
+  `djinn search chats <query>`, and `djinn share chat <id>` provide a first
+  local AI interaction store.
 - `djinn share tools` and `djinn share memories` emit agent-ready context.
 - `djinn share ideas` builds an insight prompt from memories and local tools.
 - `djinn watch opencode`, `djinn list skills`, and `djinn show ctx` exist as
@@ -209,6 +220,15 @@ Override the scanned root:
 
 ```bash
 djinn list tools --root ~/.dotfiles
+djinn list tools --root ~/.dotfiles --root ~/.local/bin
+DJINN_TOOL_ROOTS="$HOME/.dotfiles:$HOME/.local/bin" djinn list tools
+```
+
+Emit JSON:
+
+```bash
+djinn list tools --format json
+djinn list tools --json
 ```
 
 Generate the agent-readable cache:
@@ -217,12 +237,42 @@ Generate the agent-readable cache:
 djinn index tools
 ```
 
+Inspect or open one tool:
+
+```bash
+djinn show tool wtui
+djinn show tool wtui --json
+djinn open tool wtui
+djinn open tool wtui --editor nvim
+```
+
+Open the Rust TUI:
+
+```bash
+djinn
+djinn tui
+djinn tui --root ~/.dotfiles --root ~/.local/bin
+```
+
+When run without arguments, `djinn` opens the TUI in an interactive terminal. In
+non-interactive contexts, it prints help instead.
+
 Use the memory scaffold:
 
 ```bash
 djinn add memory "Prefer uv for Python tooling"
 djinn list memories
 djinn clear memories
+```
+
+Use the chat scaffold:
+
+```bash
+djinn add chat ./session.md --title "Debugging session"
+djinn list chats
+djinn show chat debugging-session
+djinn search chats registry
+djinn share chat debugging-session
 ```
 
 Generate an insight prompt:
@@ -245,12 +295,14 @@ make -C legacy/go build
 legacy/go/bin/djinn
 ```
 
-## Keybindings
+## TUI keybindings
 
-- `↑/↓` or list defaults: move selection.
-- `ctrl+u` / `ctrl+d`: scroll preview.
-- `Enter`: select and emit `path:line`.
-- `q`, `esc`, `ctrl+c`: quit.
+- `↑` / `k`: move up.
+- `↓` / `j`: move down.
+- `PageUp` / `u`: scroll preview up.
+- `PageDown` / `d`: scroll preview down.
+- `Home` / `End`: jump to first/last tool.
+- `q` / `esc`: quit.
 
 ## Editor integration example
 
@@ -272,10 +324,12 @@ alias h='djinn --open'
 ```text
 Cargo.toml                         # Rust workspace
 crates/djinn-cli/                  # clap command surface and binary
+crates/djinn-chats/                # JSONL chat/session store
 crates/djinn-core/                 # shared paths, models, file helpers
 crates/djinn-tools/                # dotfile/script discovery and index writing
 crates/djinn-memory/               # basic JSONL memory store
 crates/djinn-suggest/              # suggestion prompt generation
+crates/djinn-tui/                  # ratatui terminal interface
 legacy/go/                         # original Go implementation
 docs/                              # planning and feature inventory
 ```
@@ -288,13 +342,14 @@ crates:
 ```text
 crates/
   djinn-cli/        # clap command surface
+  djinn-chats/      # raw/summarized AI interaction store
   djinn-core/       # config, paths, shared models
   djinn-tools/      # dotfile/script discovery
   djinn-memory/     # memory registry, retention, personas
   djinn-opencode/   # OpenCode watcher/integration
   djinn-skills/     # skill management
   djinn-suggest/    # prompt/suggestion generation
-  djinn-tui/        # future ratatui dashboard
+  djinn-tui/        # ratatui dashboard
 ```
 
 The first Rust milestone is intentionally a vertical slice: tools, memories, and

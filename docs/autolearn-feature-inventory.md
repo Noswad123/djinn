@@ -10,6 +10,17 @@ Source reviewed: local Djinn repo at `~/projects/djinn` before the Rust
 workspace scaffold. The original Go implementation described here now lives
 under `legacy/go/`; the root project contains the new Rust scaffold.
 
+### Rust scaffold additions
+
+- Verb-noun CLI surface under one `djinn` binary.
+- Tool commands: `list`, `scan`, `index`, `show`, `open`, `search`, and `share`.
+- Memory commands: `add`, `list`, `rm`, `clear`, `search`, and `share`.
+- Chat commands: `add chat <file>`, `list chats`, `show chat <id>`,
+  `search chats <query>`, and `share chat <id>`.
+- JSONL stores under Djinn's platform data directory for memories and chats.
+- `share ideas` prompt generation from memories and local tools.
+- First unified Ratatui slice for browsing tools.
+
 ### Core behavior
 
 - Terminal UI for discovering tagged snippets in dotfiles.

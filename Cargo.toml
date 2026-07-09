@@ -1,10 +1,12 @@
 [workspace]
 members = [
   "crates/djinn-cli",
+  "crates/djinn-chats",
   "crates/djinn-core",
   "crates/djinn-memory",
   "crates/djinn-tools",
   "crates/djinn-suggest",
+  "crates/djinn-tui",
 ]
 resolver = "2"
 
@@ -17,7 +19,9 @@ repository = "https://github.com/Noswad123/djinn"
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.28"
 dirs = "6.0"
+ratatui = "0.29"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 walkdir = "2.5"

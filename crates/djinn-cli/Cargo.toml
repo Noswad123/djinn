@@ -12,7 +12,10 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+djinn-chats = { path = "../djinn-chats" }
 djinn-core = { path = "../djinn-core" }
 djinn-memory = { path = "../djinn-memory" }
 djinn-tools = { path = "../djinn-tools" }
 djinn-suggest = { path = "../djinn-suggest" }
+djinn-tui = { path = "../djinn-tui" }
+serde_json.workspace = true
