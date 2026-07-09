@@ -1,10 +1,15 @@
-# Djinn and Autolearn Feature Inventory
+# Djinn Rust Checklist
 
-Purpose: capture what Djinn does today, then enumerate the feature surface of
-`opencode-autolearn` so we can decide whether a future Rust Djinn should absorb
-some or all of those responsibilities.
+Purpose: track what the Rust Djinn rewrite implements today, what the legacy Go
+Djinn already had, and which useful `opencode-autolearn` features remain
+candidates for native Djinn features.
 
-## Current Djinn features
+Acknowledgement: Djinn's agent-memory and conversation-learning direction is
+inspired in part by Eric's
+[`opencode-autolearn`](https://github.com/ericmjl/opencode-autolearn)
+repository.
+
+## Current Rust Djinn features
 
 Source reviewed: local Djinn repo at `~/projects/djinn` before the Rust
 workspace scaffold. The original Go implementation described here now lives
@@ -104,7 +109,7 @@ and `--editor`:
 Treat those as either planned features, stale README notes, or features to verify
 before porting the concept into a larger Rust app.
 
-## Autolearn feature inventory
+## Autolearn-derived feature checklist
 
 Source reviewed: local `opencode-autolearn` fork plus upstream-root README and
 fork docs under `jamal-changes/`.

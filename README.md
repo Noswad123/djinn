@@ -5,6 +5,10 @@ surveys your dotfiles, local scripts, and AI conversations, then turns what it
 learns into searchable knowledge, suggested skills, workflow improvements, and
 productivity automation.
 
+Some of Djinn's agent-memory and conversation-learning direction is inspired by
+Eric's [`opencode-autolearn`](https://github.com/ericmjl/opencode-autolearn)
+repository.
+
 The original Go implementation lives in `legacy/go/`. The root project is now a
 Rust workspace scaffold that preserves the core direction while we rebuild Djinn
 as a feature-rich agent companion.
@@ -331,7 +335,7 @@ crates/djinn-memory/               # basic JSONL memory store
 crates/djinn-suggest/              # suggestion prompt generation
 crates/djinn-tui/                  # ratatui terminal interface
 legacy/go/                         # original Go implementation
-docs/                              # planning and feature inventory
+docs/                              # planning and Rust feature checklist
 ```
 
 ## Rust rewrite direction
@@ -366,5 +370,5 @@ TUI is designed.
 - Avoid turning Djinn into a monolith by keeping each feature area modular even
   if the user sees one binary.
 
-See [`docs/autolearn-feature-inventory.md`](docs/autolearn-feature-inventory.md)
-for the detailed feature inventory that motivated the expansion plan.
+See [`docs/rust-checklist.md`](docs/rust-checklist.md) for the checklist of
+current Rust features, legacy Go parity, and Autolearn-derived candidates.
