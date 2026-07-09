@@ -1,0 +1,18 @@
+[package]
+name = "djinn-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "djinn"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+djinn-core = { path = "../djinn-core" }
+djinn-memory = { path = "../djinn-memory" }
+djinn-names = { path = "../djinn-names" }
+djinn-suggest = { path = "../djinn-suggest" }

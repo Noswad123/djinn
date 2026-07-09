@@ -6,7 +6,9 @@ some or all of those responsibilities.
 
 ## Current Djinn features
 
-Source reviewed: local Djinn repo at `~/projects/djinn`.
+Source reviewed: local Djinn repo at `~/projects/djinn` before the Rust
+workspace scaffold. The original Go implementation described here now lives
+under `legacy/go/`; the root project contains the new Rust scaffold.
 
 ### Core behavior
 
