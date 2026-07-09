@@ -14,5 +14,5 @@ anyhow.workspace = true
 clap.workspace = true
 djinn-core = { path = "../djinn-core" }
 djinn-memory = { path = "../djinn-memory" }
-djinn-names = { path = "../djinn-names" }
+djinn-tools = { path = "../djinn-tools" }
 djinn-suggest = { path = "../djinn-suggest" }

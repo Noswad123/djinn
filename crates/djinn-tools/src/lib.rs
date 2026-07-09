@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use walkdir::{DirEntry, WalkDir};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NameEntry {
+pub struct ToolEntry {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
@@ -37,7 +37,7 @@ pub fn default_extensions() -> HashSet<String> {
     ["zsh", "sh", "lua"].into_iter().map(String::from).collect()
 }
 
-pub fn scan(root: &Path, extensions: &HashSet<String>) -> Result<Vec<NameEntry>> {
+pub fn scan(root: &Path, extensions: &HashSet<String>) -> Result<Vec<ToolEntry>> {
     let mut entries = Vec::new();
 
     for entry in WalkDir::new(root)
@@ -64,7 +64,7 @@ pub fn scan(root: &Path, extensions: &HashSet<String>) -> Result<Vec<NameEntry>>
     Ok(entries)
 }
 
-fn parse_file(path: &Path) -> Result<Vec<NameEntry>> {
+fn parse_file(path: &Path) -> Result<Vec<ToolEntry>> {
     let content =
         fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let lines: Vec<&str> = content.lines().collect();
@@ -89,7 +89,7 @@ fn parse_file(path: &Path) -> Result<Vec<NameEntry>> {
             } else {
                 lines[start_idx..].join("\n")
             };
-            out.push(NameEntry {
+            out.push(ToolEntry {
                 name,
                 description: description.trim().to_string(),
                 path: path.to_path_buf(),

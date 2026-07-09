@@ -1,14 +1,14 @@
 use djinn_memory::MemoryRecord;
-use djinn_names::NameEntry;
+use djinn_tools::ToolEntry;
 
-pub fn build_prompt(memories: &[MemoryRecord], tools: &[NameEntry]) -> String {
+pub fn build_prompt(memories: &[MemoryRecord], tools: &[ToolEntry]) -> String {
     let memory_lines = if memories.is_empty() {
         "Memory is empty.".to_string()
     } else {
         memories
             .iter()
             .enumerate()
-            .map(|(idx, record)| format!("  {}. {}", idx + 1, record.text))
+            .map(|(idx, record)| format!("  {}. [{}] {}", idx + 1, record.id, record.text))
             .collect::<Vec<_>>()
             .join("\n")
     };

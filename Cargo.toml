@@ -3,7 +3,7 @@ members = [
   "crates/djinn-cli",
   "crates/djinn-core",
   "crates/djinn-memory",
-  "crates/djinn-names",
+  "crates/djinn-tools",
   "crates/djinn-suggest",
 ]
 resolver = "2"

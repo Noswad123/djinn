@@ -273,7 +273,7 @@ alias h='djinn --open'
 Cargo.toml                         # Rust workspace
 crates/djinn-cli/                  # clap command surface and binary
 crates/djinn-core/                 # shared paths, models, file helpers
-crates/djinn-names/                # dotfile/script discovery and index writing
+crates/djinn-tools/                # dotfile/script discovery and index writing
 crates/djinn-memory/               # basic JSONL memory store
 crates/djinn-suggest/              # suggestion prompt generation
 legacy/go/                         # original Go implementation
@@ -289,7 +289,7 @@ crates:
 crates/
   djinn-cli/        # clap command surface
   djinn-core/       # config, paths, shared models
-  djinn-names/      # dotfile/script discovery
+  djinn-tools/      # dotfile/script discovery
   djinn-memory/     # memory registry, retention, personas
   djinn-opencode/   # OpenCode watcher/integration
   djinn-skills/     # skill management

@@ -7,4 +7,4 @@ repository.workspace = true
 
 [dependencies]
 djinn-memory = { path = "../djinn-memory" }
-djinn-names = { path = "../djinn-names" }
+djinn-tools = { path = "../djinn-tools" }

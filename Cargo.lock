@@ -187,8 +187,8 @@ dependencies = [
  "clap",
  "djinn-core",
  "djinn-memory",
- "djinn-names",
  "djinn-suggest",
+ "djinn-tools",
 ]
 
 [[package]]
@@ -213,7 +213,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "djinn-names"
+name = "djinn-suggest"
+version = "0.1.0"
+dependencies = [
+ "djinn-memory",
+ "djinn-tools",
+]
+
+[[package]]
+name = "djinn-tools"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -221,14 +229,6 @@ dependencies = [
  "serde",
  "serde_json",
  "walkdir",
-]
-
-[[package]]
-name = "djinn-suggest"
-version = "0.1.0"
-dependencies = [
- "djinn-memory",
- "djinn-names",
 ]
 
 [[package]]

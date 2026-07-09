@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
 use djinn_memory::MemoryRecord;
-use djinn_names::NameEntry;
+use djinn_tools::ToolEntry;
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -291,7 +291,7 @@ fn run_add(args: AddArgs) -> Result<()> {
     match args.noun {
         AddNoun::Memory { text } => {
             let record = memory_store().add(&text)?;
-            println!("Memory added: {}", record.text);
+            println!("Memory added [{}]: {}", record.id, record.text);
             Ok(())
         }
         AddNoun::Skill { name } => planned(
@@ -303,10 +303,7 @@ fn run_add(args: AddArgs) -> Result<()> {
 
 fn run_rm(args: RmArgs) -> Result<()> {
     match args.noun {
-        RmNoun::Memory { keyword } => planned(
-            &format!("rm memory {keyword}"),
-            "will remove memories matching a keyword after confirmation",
-        ),
+        RmNoun::Memory { keyword } => rm_memory(&keyword),
         RmNoun::Skill { name } => planned(
             &format!("rm skill {name}"),
             "will archive or remove an agent skill",
@@ -338,7 +335,7 @@ fn run_index(args: IndexArgs) -> Result<()> {
             let index_path = args
                 .index
                 .unwrap_or_else(|| djinn_core::default_index_path(&root));
-            let (count, changed) = djinn_names::write_index(&root, &index_path)?;
+            let (count, changed) = djinn_tools::write_index(&root, &index_path)?;
             let status = if changed { "updated" } else { "unchanged" };
             eprintln!(
                 "djinn index tools: {status} {} ({count} entries)",
@@ -437,7 +434,7 @@ fn list_memories() -> Result<()> {
         println!("Memories are empty.");
     } else {
         for (idx, record) in records.iter().enumerate() {
-            println!("  {}. {}", idx + 1, record.text);
+            println!("  {}. [{}] {}", idx + 1, record.id, record.text);
         }
         println!("\nTotal: {} memories", records.len());
     }
@@ -457,10 +454,28 @@ fn clear_memories(no_backup: bool) -> Result<()> {
         return Ok(());
     }
     let backup = memory_store().clear_with_backup(!no_backup)?;
-    if let Some(path) = backup {
-        println!("Memories cleared. Backup written to {}", path.display());
+    if let Some(info) = backup {
+        println!(
+            "Memories cleared ({} records). Backup written to {} and metadata to {}",
+            info.record_count,
+            info.path.display(),
+            info.metadata_path.display()
+        );
     } else {
         println!("Memories cleared.");
+    }
+    Ok(())
+}
+
+fn rm_memory(keyword: &str) -> Result<()> {
+    let removed = memory_store().remove_matching(keyword)?;
+    if removed.is_empty() {
+        println!("No memories matched {keyword:?}.");
+    } else {
+        println!("Removed {} memories:", removed.len());
+        for record in removed {
+            println!("  - [{}] {}", record.id, record.text);
+        }
     }
     Ok(())
 }
@@ -508,10 +523,12 @@ fn search_memories(query: &str) -> Result<()> {
     let matches = memory_store()
         .list()?
         .into_iter()
-        .filter(|record| record.text.to_lowercase().contains(&query))
+        .filter(|record| {
+            record.id.to_lowercase().contains(&query) || record.text.to_lowercase().contains(&query)
+        })
         .collect::<Vec<_>>();
     for (idx, record) in matches.iter().enumerate() {
-        println!("  {}. {}", idx + 1, record.text);
+        println!("  {}. [{}] {}", idx + 1, record.id, record.text);
     }
     println!("\nTotal: {} matching memories", matches.len());
     Ok(())
@@ -524,7 +541,7 @@ fn share_ideas() -> Result<()> {
     Ok(())
 }
 
-fn format_tools_context(entries: &[NameEntry]) -> String {
+fn format_tools_context(entries: &[ToolEntry]) -> String {
     let mut out = String::from("# Local Tools\n\nThese local tools are available to the user:\n\n");
     if entries.is_empty() {
         out.push_str("No local tools discovered.\n");
@@ -550,7 +567,7 @@ fn format_memories_context(records: &[MemoryRecord]) -> String {
         return out;
     }
     for record in records {
-        out.push_str(&format!("- {}\n", record.text));
+        out.push_str(&format!("- `[{}]` {}\n", record.id, record.text));
     }
     out
 }
@@ -559,8 +576,8 @@ fn tools_root(root: Option<PathBuf>) -> PathBuf {
     root.unwrap_or_else(djinn_core::default_dotfiles_root)
 }
 
-fn scan_tools(root: &Path) -> Result<Vec<NameEntry>> {
-    djinn_names::scan(root, &djinn_names::default_extensions())
+fn scan_tools(root: &Path) -> Result<Vec<ToolEntry>> {
+    djinn_tools::scan(root, &djinn_tools::default_extensions())
 }
 
 fn memory_store() -> djinn_memory::MemoryStore {
