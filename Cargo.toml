@@ -2,9 +2,11 @@
 members = [
   "crates/djinn-cli",
   "crates/djinn-chats",
+  "crates/djinn-contexts",
   "crates/djinn-core",
   "crates/djinn-memory",
   "crates/djinn-opencode",
+  "crates/djinn-skills",
   "crates/djinn-tools",
   "crates/djinn-suggest",
   "crates/djinn-tui",

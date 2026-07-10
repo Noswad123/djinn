@@ -52,12 +52,25 @@ resume quickly tomorrow.
   - `djinn search chats <query>`
   - `djinn share chat <id>`
   - `djinn share chat <id> --context-only`
+  - `djinn share chats [ids...] [--source ...] [--query ...] [--limit ...]`
+  - `djinn share chats --mode summary|patterns|memories`
+- Added richer memory commands/flags:
+  - `djinn show memory <id>`
+  - `djinn add memory "..." --scope ... --kind ... --confidence ...`
+  - `djinn add memory "..." --evidence "..." --source-chat <chat-id>`
 - Added `crates/djinn-chats/` for the JSONL chat store.
 - Added `source` and `source_id` metadata to chats so OpenCode can be one source
   without hard-coding all chat behavior around OpenCode.
 - Changed `djinn share chat <id>` to emit a memory-extraction prompt by default.
   It asks an agent to return reviewed `djinn add memory "..."` commands and does
   not mutate memory automatically.
+- Added `djinn share chats` for grouped chat review. It defaults to the latest
+  10 matching chats in pattern-analysis mode and supports summary, patterns, and
+  memories prompts.
+- Extended memories with optional `scope`, `kind`, `confidence`, copied
+  `evidence`, and `sources` provenance. Source chat references are best-effort:
+  deleting chat history after a memory is created does not break memory listing,
+  sharing, searching, or showing.
 - Preserved raw context export via `djinn share chat <id> --context-only`.
 - Added `crates/djinn-opencode/` as the small OpenCode adapter.
 - Implemented:
@@ -66,12 +79,20 @@ resume quickly tomorrow.
   - `djinn watch opencode --title "..."`
   - `djinn watch opencode --unsafe-unsanitized`
   - `djinn watch opencode --opencode-bin <bin>`
+  - `djinn install opencode`
 - Watcher behavior today:
   - calls `opencode export <session-id> --sanitize` by default;
   - stores output in the generic chat store;
   - if no session id is provided, uses the first row from `opencode session list`;
   - upserts by `source=opencode` + `source_id=<session-id>` so repeated imports
     update rather than duplicate.
+- OpenCode plugin installer behavior today:
+  - writes `~/.config/opencode/plugins/djinn-watch.js`;
+  - patches `~/.config/opencode/opencode.json` with `./plugins/djinn-watch.js`;
+  - plugin listens to OpenCode session/message events and spawns
+    `djinn watch opencode <session-id>` with debounce;
+  - plugin can be disabled with `DJINN_OPENCODE_DISABLED=1` and debug logging
+    enabled with `DJINN_OPENCODE_DEBUG=1`.
 - Moved durable memory default from the previous platform data directory to
   `~/.config/djinn`.
 - Moved chat/cache default to `~/.cache/djinn`.
@@ -116,14 +137,29 @@ resume quickly tomorrow.
 - Restart OpenCode after config/plugin changes if a running session still has old
   config loaded.
 
-### Validation commands run today
+### Validation commands run across handoff sessions
 
 - `cargo fmt --all --check`
 - `cargo check --workspace`
+- `cargo test --workspace`
 - `make install`
 - `djinn add chat --help`
+- `cargo run -q -p djinn-cli -- add memory --help`
+- `cargo run -q -p djinn-cli -- show memory --help`
+- `cargo run -q -p djinn-cli -- promote chat --help`
+- `cargo run -q -p djinn-cli -- review chats --help`
+- `cargo run -q -p djinn-cli -- add candidate --help`
+- `cargo run -q -p djinn-cli -- accept candidate --help`
+- `cargo run -q -p djinn-cli -- list chats --help`
+- `cargo run -q -p djinn-cli -- prune chats --help`
 - `djinn watch opencode --help`
+- `cargo run -q -p djinn-cli -- install opencode --help`
+- `cargo run -q -p djinn-cli -- status opencode --help`
+- `cargo run -q -p djinn-cli -- uninstall opencode --help`
+- `cargo run -q -p djinn-cli -- install opencode --dry-run`
 - `djinn share chat --help`
+- `cargo run -q -p djinn-cli -- share chats --help`
+- `cargo run -q -p djinn-cli -- tui --help`
 - temp-cache smoke test for stdin chat import
 - temp-cache smoke test for memory-extraction prompt
 - temp-cache smoke test for real sanitized `opencode export` import
@@ -135,13 +171,16 @@ resume quickly tomorrow.
 
 - `djinn share chat <id>` now emits an extraction prompt, not raw context. Use
   `--context-only` for the old behavior.
+- `djinn share chats` emits a grouped review prompt, not automatic memory writes.
+  Use `--mode memories` to ask for reviewed `djinn add memory "..."` proposals.
 - Some migrated memories describe older state, for example memories saying chats
   and `watch opencode` were only stubs. Those should be pruned or rewritten.
 - Current chat records store full content directly inside `chats.jsonl`. This is
   acceptable for the first slice, but large exports may eventually need
   metadata-in-config plus body files under `~/.cache/djinn/chats/`.
-- `djinn watch opencode --interval` is a polling importer, not yet a true
-  OpenCode plugin/event hook.
+- `djinn watch opencode --interval` is still only a polling importer. The
+  optional OpenCode event hook exists via `djinn install opencode`, but running
+  OpenCode sessions must be restarted after install.
 - Do not add permanent Autolearn import commands to Djinn. The one-time merge is
   done; future work should be native Djinn behavior.
 
@@ -156,22 +195,96 @@ under `legacy/go/`; the root project contains the new Rust scaffold.
 - Verb-noun CLI surface under one `djinn` binary.
 - Tool commands: `list`, `scan`, `index`, `show`, `open`, `search`, and `share`.
 - Memory commands: `add`, `list`, `rm`, `clear`, `search`, and `share`.
+- Memory records support optional scope/kind/confidence/evidence/source metadata;
+  `djinn show memory <id>` displays provenance and marks deleted source chats as
+  missing instead of failing.
+- Memory and candidate records support optional `not_before` dates for durable
+  truths that should be remembered now but not drive actions/suggestions until a
+  future date. Accepted candidates preserve `not_before` on the resulting memory.
 - Chat commands: `add chat <file>`, `list chats`, `show chat <id>`,
-  `search chats <query>`, and `share chat <id>`.
+  `search chats <query>`, `share chat <id>`, and `share chats`.
+- Chat lifecycle commands: `rm chat <id>`, `clear chats`, and
+  `prune chats --older-than <duration>`.
+- Chat list/show support JSON output with `djinn list chats --json` and
+  `djinn show chat <id> --json`.
 - Chat import supports stdin with `djinn add chat -` plus generic `--source` and
   `--source-id` metadata for exported sessions.
 - `djinn watch opencode [session-id]` imports sanitized `opencode export` output
   into the generic chat store; `--interval <seconds>` polls repeatedly.
+- `djinn install opencode` installs the optional OpenCode plugin that imports
+  sessions automatically by calling the same sanitized watcher on session events.
+- `djinn status opencode` reports plugin/config/watcher-state health.
+- `djinn uninstall opencode` removes the plugin file and OpenCode config entry.
 - `djinn share chat <id>` emits a memory-extraction prompt that returns reviewed
   `djinn add memory "..."` commands instead of writing memories automatically.
 - `djinn share chat <id> --context-only` preserves the raw context export mode.
+- `djinn share chats` bundles multiple chats for summary, pattern, or memory
+  proposal prompts. It accepts explicit chat ids plus `--source`, `--query`,
+  `--limit`, `--all`, `--mode`, `--context-only`, and `--max-chars-per-chat`.
+- `djinn promote chat <id>` and `djinn promote chats ...` emit promotion prompts
+  that create pending memory candidates rather than writing memories directly.
+- Candidate lifecycle commands:
+  - `djinn add candidate "..." --scope ... --kind ... --confidence ...`
+  - `djinn list candidates`
+  - `djinn show candidate <id>`
+  - `djinn accept candidate <id>`
+  - `djinn reject candidate <id>`
+- Organic review command:
+  - `djinn review chats --source opencode --limit 20`
+  - `djinn review chats --source opencode --dry-run`
+  - `djinn review opencode` remains as a compatibility alias.
+  - installed OpenCode plugin can trigger this on idle/exit when
+    `DJINN_OPENCODE_AUTO_REVIEW=1` is set.
+- Skill lifecycle commands:
+  - `djinn list skills [--json]`
+  - `djinn show skill <name> [--json]`
+  - `djinn share skills [--include-content]`
+  - `djinn add skill <name> --description ...`
+  - `djinn rm skill <name>` for Djinn-managed skills only.
+- Skill discovery covers `~/.config/djinn/skills`, `DJINN_SKILL_ROOTS`,
+  `~/.config/opencode/skills`, `~/.agents/skills`, and repo-local
+  `.opencode/skills`.
+- Context commands:
+  - `djinn add ctx <name> --root ... --skill-root ... --memory-scope ...`
+  - `djinn list ctx [--json]`
+  - `djinn show ctx [name] [--json]`
+  - `djinn switch ctx <name>`
+- Active context roots are used for tool scanning when neither `--root` nor
+  `DJINN_TOOL_ROOTS` is provided. Active context skill roots are included in
+  skill discovery.
+- `djinn tui` opens a unified tabbed TUI with Tools, Chats, Candidates,
+  Memories, and Skills tabs. `Tab` moves forward and `Shift+Tab` moves backward
+  through that progression.
+- The TUI header shows the active context, for example `ctx: djinn` or
+  `ctx: none`.
+- Rust TUI styling uses a Catppuccin Mocha-inspired palette.
+- Active TUI tabs support `/` fuzzy filtering. `/` enters filter input and `/`
+  again clears it. Filtering matches tool names, chat titles/ids,
+  candidate id/status/text, memory id/text/metadata, and skill
+  name/source/description.
+- Home/End jump behavior was removed from the Rust TUI.
+- The Tools tab opens the selected tool with Enter after restoring the terminal,
+  using `$VISUAL`, `$EDITOR`, `nvim`, or `djinn tui --editor <cmd>`.
+- The Chats tab supports multi-select sharing: Space toggles chats, Enter opens
+  share options, then the selected summary/patterns/memories/context-only prompt
+  is printed after the TUI exits.
+- The Candidates tab previews candidate evidence/provenance and supports
+  accepting with `a` or rejecting with `r` after exiting raw terminal mode.
+- The Skills tab previews discovered `SKILL.md` workflows and opens the selected
+  skill with Enter after exiting raw terminal mode.
+- The Memories tab previews accepted memory text, metadata, evidence, and
+  provenance.
+- Placeholder Ideas/Ctx tabs remain out of the visible TUI. Future tab rationale,
+  entry criteria, and grouping ideas live in `docs/tui-future-tabs.md`.
 - Linux-style paths on every platform; Djinn avoids macOS `Library` defaults.
 - Durable memory records default to `~/.config/djinn/memories.jsonl`.
-- Chat/cache records default to `~/.cache/djinn/chats.jsonl`.
+- Chat/cache metadata defaults to `~/.cache/djinn/chats.jsonl`; chat bodies are
+  split into `~/.cache/djinn/chats/<id>.json` and loaded transparently.
 - Path overrides: `DJINN_CONFIG_DIR`, `XDG_CONFIG_HOME`, `DJINN_CACHE_DIR`, and
   `XDG_CACHE_HOME`.
-- `share ideas` prompt generation from memories and local tools.
-- First unified Ratatui slice for browsing tools.
+- `share ideas` prompt generation from memories, candidates, recent chats,
+  watcher state, and local tools.
+- Unified Ratatui dashboard for tools, chats, candidates, memories, and skills.
 
 ### Core behavior
 
@@ -529,52 +642,63 @@ djinn add memory "...updated fact..."
 
 ### 2. Add chat lifecycle commands
 
-- Add safe chat removal and cleanup:
+- Implemented:
   - `djinn rm chat <id>`
   - `djinn clear chats`
-  - maybe `djinn prune chats --older-than <duration>`
-- Keep clears interactive and backed up, mirroring memory safety.
-- Consider `djinn list chats --json` and `djinn show chat <id> --json` for
-  scripts/agents.
+  - `djinn prune chats --older-than <duration>`
+  - `djinn list chats --json`
+  - `djinn show chat <id> --json`
+- Clears and prunes are backed up by default; clears remain interactive and
+  refuse non-interactive stdin.
 
 ### 3. Split large chat bodies from metadata
 
-- Current implementation stores full chat content in `~/.cache/djinn/chats.jsonl`.
-- Better long-term layout:
+- Implemented long-term layout:
 
 ```text
 ~/.cache/djinn/chats.jsonl            # metadata/index
 ~/.cache/djinn/chats/<id>.json        # raw exported OpenCode JSON or text body
 ```
 
-- Keep `source`, `source_id`, title, timestamps, and content path in the index.
-- Make the migration automatic and backward-compatible for existing JSONL records.
+- `source`, `source_id`, title, timestamps, and `content_path` stay in the index.
+- Existing JSONL records with inline `content` are read transparently and split
+  on the next write.
 
 ### 4. Improve OpenCode watcher behavior
 
-- Current watcher is an export importer with optional polling.
-- Next improvements:
-  - store last-import timestamp/hash to avoid unnecessary rewrites;
-  - better title extraction from exported JSON;
-  - better latest-session selection if `opencode session list` output changes;
-  - optional watch state under `~/.config/djinn/watchers/opencode.json`;
-  - consider a future OpenCode plugin/event hook only after the CLI importer is
-    stable.
+- Current watcher is an export importer with optional polling, plus an optional
+  installed OpenCode event plugin that calls the watcher automatically.
+- Implemented improvements:
+  - stores last-import hash/timestamp under
+    `~/.config/djinn/watchers/opencode.json` to avoid unnecessary rewrites;
+  - extracts better titles from exported JSON/markdown when available;
+  - parses session ids more defensively from `opencode session list` output;
+  - `djinn status opencode` reports plugin/config/watcher-state health;
+  - `djinn uninstall opencode` removes plugin/config integration.
 - Preserve generic chat abstractions so OpenCode is one backend, not the whole
   model.
 
 ### 5. Add reviewed promotion workflow
 
-- `djinn share chat <id>` already emits the extraction prompt.
-- Possible next command:
-
-```bash
-djinn promote chat <id>
-```
-
-- For the first version, this should still print a prompt or proposed commands,
-  not call an LLM or write memories automatically.
-- Later, optional flow could accept reviewed memory text from stdin:
+- Implemented candidate-based promotion:
+  - `djinn promote chat <id>`
+  - `djinn promote chats ...`
+  - `djinn add candidate "..."`
+  - `djinn list candidates`
+  - `djinn show candidate <id>`
+  - `djinn accept candidate <id>`
+  - `djinn reject candidate <id>`
+- Implemented opt-in organic candidate review:
+  - `djinn review chats --source opencode --limit <n>` runs the promotion prompt
+    through OpenCode and asks it to add candidates.
+  - `djinn install opencode` plugin supports idle/exit background review when
+    `DJINN_OPENCODE_AUTO_REVIEW=1` is present in the OpenCode environment.
+  - Guard env vars prevent recursive plugin/reviewer loops.
+- Promotion still prints a prompt by default and does not write memories
+  automatically.
+- Accepting a candidate writes the durable memory with copied evidence and
+  best-effort source chat provenance.
+- Possible later flow could accept reviewed candidate text from stdin:
 
 ```bash
 djinn promote chat <id> --accept-file candidates.md
@@ -583,45 +707,53 @@ djinn promote chat <id> --accept-file candidates.md
 ### 6. Expand TUI beyond tools
 
 - Keep one unified TUI.
-- Add tabs/views in this order:
-  1. Memories
-  2. Chats
-  3. Ideas
-  4. Skills
-  5. Ctx
+- Added top-level tabs for Tools, Chats, Candidates, Memories, and Skills, in
+  that natural progression order.
+- Tools, Chats, Candidates, Memories, and Skills have real list/preview panes
+  today.
+- Ideas and Ctx are documented as possible future/scope-grouped tabs in
+  `docs/tui-future-tabs.md`, but are not visible until they support the right
+  workflow shape.
 - Useful TUI actions:
   - open selected tool;
   - copy/share selected memory or chat;
   - preview memory-extraction prompt for a selected chat;
+  - select multiple chats and choose summary/patterns/memories/context-only;
+  - accept/reject memory candidates;
+  - open selected skill;
   - search within current tab.
 
 ### 7. Add skill lifecycle management
 
-- Implement native Djinn skill commands after chats/memory feel stable:
+- Implemented native Djinn skill commands:
   - `djinn list skills`
   - `djinn show skill <name>`
-  - `djinn add skill <name>`
-  - `djinn rm skill <name>`
   - `djinn share skills`
-- Keep OpenCode-compatible skills discoverable but avoid hard-coding every skill
-  concept around OpenCode only.
+  - `djinn add skill <name> --description ...`
+  - `djinn rm skill <name>` for Djinn-managed skills only.
+- Discovery includes Djinn-managed, OpenCode, agent, custom, and repo-local skill
+  roots while avoiding hard-coding every skill concept around OpenCode only.
 
 ### 8. Add contexts/personas
 
-- Implement `ctx` as the short noun and `contexts` as an alias.
-- Desired commands:
+- Implemented `ctx` as the short noun and `contexts` as an alias.
+- Implemented commands:
+  - `djinn add ctx <name> --root ... --skill-root ... --memory-scope ...`
   - `djinn list ctx`
   - `djinn show ctx`
   - `djinn switch ctx <name>`
 - Keep `ctx` invariant; do not create `ctxs`.
-- This should eventually route memories/chats/tools by project or personal/work
-  context.
+- Current routing: active context tool roots affect default tool scans, and
+  active context skill roots affect skill discovery. Future routing can filter
+  memories/chats/candidates by project or personal/work context.
 
 ### 9. Improve `share ideas`
 
-- Include chats and watcher state in the ideas prompt, not just memories + tools.
-- Ask for:
+- Implemented richer pipeline prompt including accepted memories, candidates,
+  recent chat metadata, OpenCode watcher state, and local tools.
+- Prompt asks for:
   - stale memory cleanup;
+  - candidate acceptance/rejection/rewrite guidance;
   - new local wrappers/scripts;
   - skill candidates;
   - chat sessions worth promoting;

@@ -295,14 +295,28 @@ name = "djinn-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "djinn-chats",
+ "djinn-contexts",
  "djinn-core",
  "djinn-memory",
  "djinn-opencode",
+ "djinn-skills",
  "djinn-suggest",
  "djinn-tools",
  "djinn-tui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "djinn-contexts"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "djinn-core",
+ "serde",
  "serde_json",
 ]
 
@@ -332,12 +346,25 @@ name = "djinn-opencode"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
+]
+
+[[package]]
+name = "djinn-skills"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "djinn-core",
+ "serde",
+ "walkdir",
 ]
 
 [[package]]
 name = "djinn-suggest"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "djinn-chats",
  "djinn-memory",
  "djinn-tools",
 ]
@@ -359,6 +386,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
+ "djinn-chats",
+ "djinn-contexts",
+ "djinn-memory",
+ "djinn-skills",
  "djinn-tools",
  "ratatui",
 ]

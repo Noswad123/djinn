@@ -6,5 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+chrono.workspace = true
+djinn-chats = { path = "../djinn-chats" }
 djinn-memory = { path = "../djinn-memory" }
 djinn-tools = { path = "../djinn-tools" }

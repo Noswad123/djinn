@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::Local;
+use chrono::{Duration, Local, NaiveDate};
 use djinn_core::ensure_parent;
 use serde::{Deserialize, Serialize};
 
@@ -19,8 +19,32 @@ pub struct ChatRecord {
     pub source_id: String,
     #[serde(default)]
     pub source_path: String,
+    #[serde(default)]
+    pub content_path: String,
     #[serde(default = "today")]
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupMetadata {
+    pub created_at: String,
+    pub source_path: String,
+    pub backup_path: String,
+    pub bodies_backup_path: String,
+    pub record_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupInfo {
+    pub path: PathBuf,
+    pub metadata_path: PathBuf,
+    pub bodies_path: Option<PathBuf>,
+    pub record_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatBody {
+    content: String,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +76,7 @@ impl ChatStore {
             let mut record: ChatRecord =
                 serde_json::from_str(line).with_context(|| "parsing chat JSONL record")?;
             normalize_record(&mut record);
+            self.load_body(&mut record)?;
             records.push(record);
         }
         Ok(records)
@@ -97,6 +122,7 @@ impl ChatStore {
             source: clean_optional(source),
             source_id: clean_optional(source_id),
             source_path,
+            content_path: String::new(),
             created_at: today(),
         };
         records.push(record.clone());
@@ -141,6 +167,7 @@ impl ChatStore {
             source,
             source_id,
             source_path,
+            content_path: String::new(),
             created_at: today(),
         };
         records.push(record.clone());
@@ -148,15 +175,203 @@ impl ChatStore {
         Ok((record, false))
     }
 
+    pub fn remove_matching(&self, keyword: &str) -> Result<Vec<ChatRecord>> {
+        let keyword = keyword.to_lowercase();
+        let records = self.list()?;
+        let mut removed = Vec::new();
+        let mut kept = Vec::new();
+
+        for record in records {
+            if record.id.to_lowercase() == keyword
+                || record.title.to_lowercase().contains(&keyword)
+                || record.source_id.to_lowercase() == keyword
+            {
+                removed.push(record);
+            } else {
+                kept.push(record);
+            }
+        }
+
+        self.save_all(&kept)?;
+        self.delete_body_files(&removed);
+        Ok(removed)
+    }
+
+    pub fn clear_with_backup(&self, backup: bool) -> Result<Option<BackupInfo>> {
+        ensure_parent(&self.path)?;
+        let record_count = self.list()?.len();
+        let backup_info = if backup && self.path.exists() {
+            Some(self.backup(record_count)?)
+        } else {
+            None
+        };
+        self.save_all(&[])?;
+        let bodies_dir = self.bodies_dir();
+        if bodies_dir.exists() {
+            fs::remove_dir_all(&bodies_dir)
+                .with_context(|| format!("removing chat bodies {}", bodies_dir.display()))?;
+        }
+        Ok(backup_info)
+    }
+
+    pub fn prune_older_than_days(
+        &self,
+        days: i64,
+        backup: bool,
+    ) -> Result<(Vec<ChatRecord>, Option<BackupInfo>)> {
+        let cutoff = Local::now().date_naive() - Duration::days(days);
+        let records = self.list()?;
+        let backup_info = if backup && !records.is_empty() && self.path.exists() {
+            Some(self.backup(records.len())?)
+        } else {
+            None
+        };
+        let mut pruned = Vec::new();
+        let mut kept = Vec::new();
+        for record in records {
+            let created = NaiveDate::parse_from_str(&record.created_at, "%Y-%m-%d").ok();
+            if created.map(|date| date < cutoff).unwrap_or(false) {
+                pruned.push(record);
+            } else {
+                kept.push(record);
+            }
+        }
+        self.save_all(&kept)?;
+        self.delete_body_files(&pruned);
+        Ok((pruned, backup_info))
+    }
+
     fn save_all(&self, records: &[ChatRecord]) -> Result<()> {
         ensure_parent(&self.path)?;
         let mut rendered = String::new();
         for record in records {
-            rendered.push_str(&serde_json::to_string(record)?);
+            let mut index_record = record.clone();
+            self.save_body(&mut index_record)?;
+            rendered.push_str(&serde_json::to_string(&index_record)?);
             rendered.push('\n');
         }
         fs::write(&self.path, rendered).with_context(|| format!("writing {}", self.path.display()))
     }
+
+    fn save_body(&self, record: &mut ChatRecord) -> Result<()> {
+        if record.id.trim().is_empty() {
+            normalize_record(record);
+        }
+        let relative = PathBuf::from("chats").join(format!("{}.json", record.id));
+        let path = self.cache_path(&relative);
+        ensure_parent(&path)?;
+        let body = ChatBody {
+            content: record.content.clone(),
+        };
+        fs::write(&path, serde_json::to_string_pretty(&body)? + "\n")
+            .with_context(|| format!("writing chat body {}", path.display()))?;
+        record.content.clear();
+        record.content_path = relative.display().to_string();
+        Ok(())
+    }
+
+    fn load_body(&self, record: &mut ChatRecord) -> Result<()> {
+        if !record.content.is_empty() || record.content_path.trim().is_empty() {
+            return Ok(());
+        }
+        let path = self.cache_path(Path::new(&record.content_path));
+        if !path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("reading chat body {}", path.display()))?;
+        let body: ChatBody = serde_json::from_str(&raw)
+            .with_context(|| format!("parsing chat body {}", path.display()))?;
+        record.content = body.content;
+        Ok(())
+    }
+
+    fn backup(&self, record_count: usize) -> Result<BackupInfo> {
+        let stamp = Local::now().format("%Y%m%d-%H%M%S");
+        let backup_path = self
+            .path
+            .with_file_name(format!("chats.backup-{stamp}.jsonl"));
+        let metadata_path = backup_path.with_extension("json");
+        fs::copy(&self.path, &backup_path).with_context(|| {
+            format!(
+                "backing up {} to {}",
+                self.path.display(),
+                backup_path.display()
+            )
+        })?;
+        let bodies_backup_path = self.path.with_file_name(format!("chats.backup-{stamp}"));
+        let bodies_path = if self.bodies_dir().exists() {
+            copy_dir_all(&self.bodies_dir(), &bodies_backup_path)?;
+            Some(bodies_backup_path)
+        } else {
+            None
+        };
+        let metadata = BackupMetadata {
+            created_at: Local::now().to_rfc3339(),
+            source_path: self.path.display().to_string(),
+            backup_path: backup_path.display().to_string(),
+            bodies_backup_path: bodies_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            record_count,
+        };
+        fs::write(
+            &metadata_path,
+            serde_json::to_string_pretty(&metadata)? + "\n",
+        )
+        .with_context(|| format!("writing backup metadata {}", metadata_path.display()))?;
+        Ok(BackupInfo {
+            path: backup_path,
+            metadata_path,
+            bodies_path,
+            record_count,
+        })
+    }
+
+    fn delete_body_files(&self, records: &[ChatRecord]) {
+        for record in records {
+            if !record.content_path.trim().is_empty() {
+                let _ = fs::remove_file(self.cache_path(Path::new(&record.content_path)));
+            } else if !record.id.trim().is_empty() {
+                let _ = fs::remove_file(self.bodies_dir().join(format!("{}.json", record.id)));
+            }
+        }
+    }
+
+    fn bodies_dir(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("chats")
+    }
+
+    fn cache_path(&self, relative: &Path) -> PathBuf {
+        if relative.is_absolute() {
+            relative.to_path_buf()
+        } else {
+            self.path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(relative)
+        }
+    }
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).with_context(|| format!("creating {}", dst.display()))?;
+    for entry in fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let target = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)
+                .with_context(|| format!("copying {}", target.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn clean_optional(value: Option<&str>) -> String {
@@ -239,4 +454,57 @@ fn slugify(text: &str) -> String {
 
 fn today() -> String {
     Local::now().format("%Y-%m-%d").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store(name: &str) -> ChatStore {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-chats-test-{name}-{}",
+            Local::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        ChatStore::default_in(&dir)
+    }
+
+    #[test]
+    fn saves_chat_body_outside_index_and_loads_transparently() {
+        let store = temp_store("split");
+        let added = store
+            .add_content(
+                "Test Chat".to_string(),
+                "hello body".to_string(),
+                "manual".to_string(),
+                Some("manual"),
+                Some("one"),
+            )
+            .unwrap();
+        let raw = fs::read_to_string(store.path()).unwrap();
+        assert!(raw.contains("content_path"));
+        assert!(!raw.contains("hello body"));
+        let listed = store.list().unwrap();
+        assert_eq!(listed[0].id, added.id);
+        assert_eq!(listed[0].content, "hello body");
+    }
+
+    #[test]
+    fn remove_matching_deletes_chat_and_body() {
+        let store = temp_store("remove");
+        let added = store
+            .add_content(
+                "Remove Me".to_string(),
+                "delete body".to_string(),
+                "manual".to_string(),
+                Some("manual"),
+                Some("remove-source"),
+            )
+            .unwrap();
+        let body_path = store.bodies_dir().join(format!("{}.json", added.id));
+        assert!(body_path.exists());
+        let removed = store.remove_matching("remove-source").unwrap();
+        assert_eq!(removed.len(), 1);
+        assert!(store.list().unwrap().is_empty());
+        assert!(!body_path.exists());
+    }
 }

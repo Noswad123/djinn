@@ -8,5 +8,9 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 crossterm.workspace = true
+djinn-chats = { path = "../djinn-chats" }
+djinn-contexts = { path = "../djinn-contexts" }
+djinn-memory = { path = "../djinn-memory" }
+djinn-skills = { path = "../djinn-skills" }
 djinn-tools = { path = "../djinn-tools" }
 ratatui.workspace = true
