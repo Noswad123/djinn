@@ -197,6 +197,32 @@ impl ChatStore {
         Ok(removed)
     }
 
+    pub fn remove_ids(&self, ids: &[String]) -> Result<Vec<ChatRecord>> {
+        let targets = ids
+            .iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<HashSet<_>>();
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let records = self.list()?;
+        let mut removed = Vec::new();
+        let mut kept = Vec::new();
+        for record in records {
+            if targets.contains(&record.id) {
+                removed.push(record);
+            } else {
+                kept.push(record);
+            }
+        }
+
+        self.save_all(&kept)?;
+        self.delete_body_files(&removed);
+        Ok(removed)
+    }
+
     pub fn clear_with_backup(&self, backup: bool) -> Result<Option<BackupInfo>> {
         ensure_parent(&self.path)?;
         let record_count = self.list()?.len();
@@ -506,5 +532,39 @@ mod tests {
         assert_eq!(removed.len(), 1);
         assert!(store.list().unwrap().is_empty());
         assert!(!body_path.exists());
+    }
+
+    #[test]
+    fn remove_ids_deletes_exact_chats_and_bodies() {
+        let store = temp_store("remove-ids");
+        let first = store
+            .add_content(
+                "Remove Exact".to_string(),
+                "delete exact body".to_string(),
+                "manual".to_string(),
+                Some("manual"),
+                Some("remove-exact"),
+            )
+            .unwrap();
+        let second = store
+            .add_content(
+                "Keep Exact".to_string(),
+                "keep exact body".to_string(),
+                "manual".to_string(),
+                Some("manual"),
+                Some("keep-exact"),
+            )
+            .unwrap();
+        let first_body_path = store.bodies_dir().join(format!("{}.json", first.id));
+        let second_body_path = store.bodies_dir().join(format!("{}.json", second.id));
+
+        let removed = store.remove_ids(&[first.id.clone()]).unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].id, first.id);
+        let remaining = store.list().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, second.id);
+        assert!(!first_body_path.exists());
+        assert!(second_body_path.exists());
     }
 }

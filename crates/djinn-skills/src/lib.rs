@@ -48,6 +48,21 @@ impl SkillStore {
     }
 
     pub fn add(&self, name: &str, description: Option<&str>, force: bool) -> Result<SkillRecord> {
+        self.add_with_content(
+            name,
+            description.unwrap_or_default(),
+            skill_template(name, description.unwrap_or_default()),
+            force,
+        )
+    }
+
+    pub fn add_with_content(
+        &self,
+        name: &str,
+        description: &str,
+        content: String,
+        force: bool,
+    ) -> Result<SkillRecord> {
         let clean_name = clean_name(name)?;
         let dir = self.managed_root.join(slugify(&clean_name));
         let path = dir.join("SKILL.md");
@@ -59,11 +74,8 @@ impl SkillStore {
             );
         }
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        fs::write(
-            &path,
-            skill_template(&clean_name, description.unwrap_or_default()),
-        )
-        .with_context(|| format!("writing {}", path.display()))?;
+        let content = ensure_skill_header(&clean_name, description, &content);
+        fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
         parse_skill_file(&path, &self.managed_root, "djinn", true)
     }
 
@@ -285,6 +297,21 @@ fn skill_template(name: &str, description: &str) -> String {
     )
 }
 
+fn ensure_skill_header(name: &str, description: &str, content: &str) -> String {
+    let trimmed = content.trim();
+    if trimmed.starts_with("# Skill:") || trimmed.starts_with("# ") {
+        let mut out = trimmed.to_string();
+        out.push('\n');
+        return out;
+    }
+    let description = if description.trim().is_empty() {
+        "Ingested Djinn skill."
+    } else {
+        description.trim()
+    };
+    format!("# Skill: {name}\n\n{description}\n\n{trimmed}\n")
+}
+
 fn dedupe_roots(roots: Vec<SkillRoot>) -> Vec<SkillRoot> {
     let mut out = Vec::new();
     for root in roots {
@@ -332,6 +359,26 @@ mod tests {
         let removed = store.remove(&records, "test skill").unwrap();
         assert_eq!(removed.name, "Test Skill");
         assert!(!record.path.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_with_content_writes_ingested_skill_body() {
+        let dir = env::temp_dir().join(format!("djinn-skills-content-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = SkillStore::default_in(&dir);
+        let record = store
+            .add_with_content(
+                "Ingested Flow",
+                "Use this ingested flow.",
+                "## Workflow\n\n1. Do the thing.\n".to_string(),
+                false,
+            )
+            .unwrap();
+        let content = fs::read_to_string(&record.path).unwrap();
+        assert!(content.contains("# Skill: Ingested Flow"));
+        assert!(content.contains("Use this ingested flow."));
+        assert!(content.contains("1. Do the thing."));
         let _ = fs::remove_dir_all(&dir);
     }
 

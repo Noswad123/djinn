@@ -4,7 +4,7 @@ use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
+use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -12,7 +12,10 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
-use djinn_memory::{CandidateStore, MemoryCandidate, MemoryInput, MemoryRecord, MemorySource};
+use djinn_memory::{
+    ActionRecord, ActionStore, CandidateStore, IdeaRecord, IdeaStore, MemoryCandidate, MemoryInput,
+    MemoryRecord, MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
+};
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
     SkillStore,
@@ -41,9 +44,11 @@ enum Command {
     Accept(AcceptArgs),
     /// Reject a pending item.
     Reject(RejectArgs),
-    /// Promote raw context into durable-knowledge candidates.
+    /// Route reviewable memories into suggestions, skills, ideas, actions, or durable memories.
+    Ingest(IngestArgs),
+    /// Promote raw context into reviewable memories.
     Promote(PromoteArgs),
-    /// Run an external review to organically create memory candidates.
+    /// Run an external review to organically create reviewable memories.
     Review(ReviewArgs),
     /// Remove one item.
     Rm(RmArgs),
@@ -85,10 +90,14 @@ struct ListArgs {
 enum ListNoun {
     /// List discovered local aliases, functions, scripts, and wrappers.
     Tools(ToolsScope),
-    /// List durable distilled lessons and preferences.
+    /// List reviewable memories.
     Memories,
-    /// List pending/reviewed memory candidates.
-    Candidates,
+    /// List open suggestions.
+    Suggestions,
+    /// List saved ideas.
+    Ideas,
+    /// List open user actions.
+    Actions,
     /// List raw or summarized AI interactions.
     Chats(ListChatsArgs),
     /// List agent skills known to Djinn.
@@ -109,10 +118,14 @@ struct ShowArgs {
 enum ShowNoun {
     /// Show a chat/session by id.
     Chat(ShowChatArgs),
-    /// Show a durable memory by id or text fragment.
+    /// Show a reviewable memory by id or text fragment.
     Memory { id: String },
-    /// Show a memory candidate by id or text fragment.
-    Candidate { id: String },
+    /// Show a suggestion by id or text fragment.
+    Suggestion { id: String },
+    /// Show a saved idea by id or text fragment.
+    Idea { id: String },
+    /// Show a user action by id or text fragment.
+    Action { id: String },
     /// Show the active context.
     Ctx(ShowCtxArgs),
     /// Show a tool by name.
@@ -131,10 +144,14 @@ struct AddArgs {
 enum AddNoun {
     /// Add a raw or summarized AI interaction from a file.
     Chat(AddChatArgs),
-    /// Add a distilled memory.
+    /// Add a reviewable memory.
     Memory(AddMemoryArgs),
-    /// Add a pending memory candidate.
-    Candidate(AddMemoryArgs),
+    /// Add a suggestion.
+    Suggestion(AddSuggestionArgs),
+    /// Add a saved idea.
+    Idea(AddMemoryArgs),
+    /// Add a user action.
+    Action(AddMemoryArgs),
     /// Add or scaffold a skill.
     Skill(AddSkillArgs),
     /// Add or update a context.
@@ -149,8 +166,10 @@ struct AcceptArgs {
 
 #[derive(Debug, Subcommand)]
 enum AcceptNoun {
-    /// Accept a memory candidate and write it as a durable memory.
-    Candidate { id: String },
+    /// Review a memory and produce suggestions.
+    Memory(AcceptMemoryArgs),
+    /// Mark a suggestion as done and remove it from the suggestion list.
+    Suggestion { id: String },
 }
 
 #[derive(Debug, Args)]
@@ -161,8 +180,58 @@ struct RejectArgs {
 
 #[derive(Debug, Subcommand)]
 enum RejectNoun {
-    /// Reject a memory candidate.
-    Candidate { id: String },
+    /// Reject reviewable memories and remove them permanently.
+    Memory {
+        /// Memory ids or text fragments.
+        #[arg(required = true)]
+        ids: Vec<String>,
+    },
+    /// Reject suggestions and remove them permanently.
+    Suggestion {
+        /// Suggestion ids or text fragments.
+        #[arg(required = true)]
+        ids: Vec<String>,
+    },
+}
+
+#[derive(Debug, Args)]
+struct IngestArgs {
+    #[command(subcommand)]
+    noun: IngestNoun,
+}
+
+#[derive(Debug, Subcommand)]
+enum IngestNoun {
+    /// Route pending reviewable memories into the right durable collection.
+    Memories(IngestMemoriesArgs),
+    /// Route one pending reviewable memory into the right durable collection.
+    Memory(IngestMemoriesArgs),
+}
+
+#[derive(Debug, Args)]
+struct IngestMemoriesArgs {
+    /// Memory ids or text fragments to ingest.
+    #[arg(required = true)]
+    ids: Vec<String>,
+    /// Destination collection. `auto` uses memory kind text.
+    #[arg(long = "as", value_enum, default_value_t = IngestTarget::Auto)]
+    target: IngestTarget,
+    /// Keep memories after ingesting instead of consuming them.
+    #[arg(long)]
+    keep: bool,
+    /// Overwrite an existing Djinn-managed skill when ingesting as a skill.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum IngestTarget {
+    Auto,
+    Memory,
+    Suggestion,
+    Skill,
+    Idea,
+    Action,
 }
 
 #[derive(Debug, Args)]
@@ -179,10 +248,41 @@ struct ReviewArgs {
 
 #[derive(Debug, Subcommand)]
 enum ReviewSource {
-    /// Ask OpenCode to review recent Djinn chats and add memory candidates.
+    /// Ask OpenCode to review recent Djinn chats and add reviewable memories.
     Chats(ReviewChatsArgs),
+    /// Ask OpenCode to review one or more memories and create suggestions.
+    Memories(ReviewMemoriesArgs),
+    /// Ask OpenCode to review one memory and create suggestions.
+    Memory(ReviewMemoriesArgs),
     /// Compatibility alias for `djinn review chats --source opencode`.
     Opencode(ReviewOpencodeArgs),
+}
+
+#[derive(Debug, Args)]
+struct ReviewMemoriesArgs {
+    /// Optional memory ids or text fragments to review.
+    ids: Vec<String>,
+    /// Maximum memories to include unless --all is used.
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
+    /// Review all matching memories instead of applying --limit.
+    #[arg(long)]
+    all: bool,
+    /// Optional query filter over memory id, text, metadata, and evidence.
+    #[arg(long)]
+    query: Option<String>,
+    /// OpenCode agent to use for the review.
+    #[arg(long)]
+    agent: Option<String>,
+    /// OpenCode run title.
+    #[arg(long, default_value = "djinn memory curation review")]
+    title: String,
+    /// OpenCode binary to execute.
+    #[arg(long, default_value = "opencode")]
+    opencode_bin: String,
+    /// Print the prompt instead of running OpenCode.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -240,10 +340,14 @@ struct ReviewOpencodeArgs {
 
 #[derive(Debug, Subcommand)]
 enum PromoteNoun {
-    /// Emit a candidate-extraction prompt for one chat.
+    /// Emit a memory-extraction prompt for one chat.
     Chat(ShareChatArgs),
-    /// Emit a candidate-extraction prompt for multiple chats.
+    /// Emit a memory-extraction prompt for multiple chats.
     Chats(ShareChatsArgs),
+    /// Review one or more memories and create suggestions.
+    Memory(ReviewMemoriesArgs),
+    /// Review one or more memories and create suggestions.
+    Memories(ReviewMemoriesArgs),
 }
 
 #[derive(Debug, Args)]
@@ -332,6 +436,8 @@ enum ShareNoun {
     Tools(ToolsScope),
     /// Emit agent-ready context for memories.
     Memories,
+    /// Emit agent-ready context for open suggestions.
+    Suggestions,
     /// Emit an agent-ready improvement prompt from Djinn's current knowledge.
     Ideas,
     /// Emit agent-ready context for skills.
@@ -356,6 +462,8 @@ enum SearchNoun {
     Tools(SearchToolsArgs),
     /// Search memories.
     Memories { query: String },
+    /// Search suggestions.
+    Suggestions { query: String },
 }
 
 #[derive(Debug, Args)]
@@ -624,8 +732,8 @@ struct PruneChatsArgs {
 enum TuiView {
     Tools,
     Chats,
-    Candidates,
     Memories,
+    Suggestions,
     Skills,
 }
 
@@ -657,7 +765,7 @@ struct AddMemoryArgs {
     /// Confidence label, for example: low, medium, high.
     #[arg(long)]
     confidence: Option<String>,
-    /// Do not act on this memory/candidate before this date, for example: 2026-10-01.
+    /// Do not act on this memory before this date, for example: 2026-10-01.
     #[arg(long = "not-before")]
     not_before: Option<String>,
     /// Durable copied evidence explaining why this memory exists. Repeatable.
@@ -666,6 +774,45 @@ struct AddMemoryArgs {
     /// Chat id, source id, or title fragment to snapshot as optional provenance. Repeatable.
     #[arg(long = "source-chat")]
     source_chats: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct AddSuggestionArgs {
+    /// Suggested action or artifact to consider.
+    text: String,
+    /// Suggested target, for example: skill, action, idea, config, code, docs.
+    #[arg(long)]
+    target: Option<String>,
+    /// Why this suggestion is worth considering.
+    #[arg(long)]
+    rationale: Option<String>,
+    /// Optional draft content or implementation sketch.
+    #[arg(long)]
+    draft: Option<String>,
+    /// Copied evidence supporting this suggestion. Repeatable.
+    #[arg(long = "evidence")]
+    evidence: Vec<String>,
+    /// Memory id or text fragment to attach as evidence. Repeatable.
+    #[arg(long = "source-memory")]
+    source_memories: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct AcceptMemoryArgs {
+    /// Memory id or text fragment.
+    id: String,
+    /// OpenCode agent to use for the review.
+    #[arg(long)]
+    agent: Option<String>,
+    /// OpenCode run title.
+    #[arg(long, default_value = "djinn memory suggestion review")]
+    title: String,
+    /// OpenCode binary to execute.
+    #[arg(long, default_value = "opencode")]
+    opencode_bin: String,
+    /// Print the prompt instead of running OpenCode.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -775,7 +922,7 @@ const OPENCODE_PLUGIN: &str = r#"/**
  *   DJINN_OPENCODE_DISABLED=1          disable this plugin
  *   DJINN_OPENCODE_DEBUG=1             append debug logs under ~/.cache/djinn
  *   DJINN_OPENCODE_IMPORT_COOLDOWN_MS  debounce assistant-message imports
- *   DJINN_OPENCODE_AUTO_REVIEW=1       opt into background candidate reviews
+ *   DJINN_OPENCODE_AUTO_REVIEW=1       opt into background memory reviews
  *   DJINN_OPENCODE_REVIEW_COOLDOWN_MS  debounce background reviews
  *   DJINN_OPENCODE_REVIEW_LIMIT        recent OpenCode chats per review
  *   DJINN_OPENCODE_REVIEW_AGENT        optional OpenCode review agent
@@ -982,6 +1129,7 @@ fn main() -> Result<()> {
         Command::Add(args) => run_add(args),
         Command::Accept(args) => run_accept(args),
         Command::Reject(args) => run_reject(args),
+        Command::Ingest(args) => run_ingest(args),
         Command::Promote(args) => run_promote(args),
         Command::Review(args) => run_review(args),
         Command::Rm(args) => run_rm(args),
@@ -1005,7 +1153,9 @@ fn run_list(args: ListArgs) -> Result<()> {
     match args.noun {
         ListNoun::Tools(scope) => list_tools(scope),
         ListNoun::Memories => list_memories(),
-        ListNoun::Candidates => list_candidates(),
+        ListNoun::Suggestions => list_suggestions(),
+        ListNoun::Ideas => list_ideas(),
+        ListNoun::Actions => list_actions(),
         ListNoun::Chats(args) => list_chats(args),
         ListNoun::Skills(args) => list_skills(args),
         ListNoun::Contexts(args) | ListNoun::Ctx(args) => list_contexts(args),
@@ -1016,7 +1166,9 @@ fn run_show(args: ShowArgs) -> Result<()> {
     match args.noun {
         ShowNoun::Chat(args) => show_chat(args),
         ShowNoun::Memory { id } => show_memory(&id),
-        ShowNoun::Candidate { id } => show_candidate(&id),
+        ShowNoun::Suggestion { id } => show_suggestion(&id),
+        ShowNoun::Idea { id } => show_idea(&id),
+        ShowNoun::Action { id } => show_action(&id),
         ShowNoun::Ctx(args) => show_context(args),
         ShowNoun::Tool(args) => show_tool(args),
         ShowNoun::Skill(args) => show_skill(args),
@@ -1028,12 +1180,21 @@ fn run_add(args: AddArgs) -> Result<()> {
         AddNoun::Chat(args) => add_chat(args),
         AddNoun::Memory(args) => {
             let record = add_memory(args)?;
-            println!("Memory added [{}]: {}", record.id, record.text);
+            println!(
+                "Memory saved [{}]: {} (reinforced {})",
+                record.id, record.text, record.reinforcement_count
+            );
             Ok(())
         }
-        AddNoun::Candidate(args) => {
-            let record = add_candidate(args)?;
-            println!("Candidate added [{}]: {}", record.id, record.text);
+        AddNoun::Suggestion(args) => add_suggestion(args),
+        AddNoun::Idea(args) => {
+            let record = add_idea(args)?;
+            println!("Idea saved [{}]: {}", record.id, record.text);
+            Ok(())
+        }
+        AddNoun::Action(args) => {
+            let record = add_action(args)?;
+            println!("Action saved [{}]: {}", record.id, record.text);
             Ok(())
         }
         AddNoun::Skill(args) => add_skill(args),
@@ -1043,13 +1204,21 @@ fn run_add(args: AddArgs) -> Result<()> {
 
 fn run_accept(args: AcceptArgs) -> Result<()> {
     match args.noun {
-        AcceptNoun::Candidate { id } => accept_candidate(&id),
+        AcceptNoun::Memory(args) => accept_memory(args),
+        AcceptNoun::Suggestion { id } => complete_suggestions(&[id]),
     }
 }
 
 fn run_reject(args: RejectArgs) -> Result<()> {
     match args.noun {
-        RejectNoun::Candidate { id } => reject_candidate(&id),
+        RejectNoun::Memory { ids } => reject_memories(&ids),
+        RejectNoun::Suggestion { ids } => reject_suggestions(&ids),
+    }
+}
+
+fn run_ingest(args: IngestArgs) -> Result<()> {
+    match args.noun {
+        IngestNoun::Memories(args) | IngestNoun::Memory(args) => ingest_memories(args),
     }
 }
 
@@ -1057,12 +1226,14 @@ fn run_promote(args: PromoteArgs) -> Result<()> {
     match args.noun {
         PromoteNoun::Chat(args) => promote_chat(args),
         PromoteNoun::Chats(args) => promote_chats(args),
+        PromoteNoun::Memory(args) | PromoteNoun::Memories(args) => review_memories(args),
     }
 }
 
 fn run_review(args: ReviewArgs) -> Result<()> {
     match args.source {
         ReviewSource::Chats(args) => review_chats(args),
+        ReviewSource::Memory(args) | ReviewSource::Memories(args) => review_memories(args),
         ReviewSource::Opencode(args) => review_opencode(args),
     }
 }
@@ -1140,6 +1311,7 @@ fn run_share(args: ShareArgs) -> Result<()> {
             println!("{}", format_memories_context(&records));
             Ok(())
         }
+        ShareNoun::Suggestions => share_suggestions(),
         ShareNoun::Ideas => share_ideas(),
         ShareNoun::Skills(args) => share_skills(args),
         ShareNoun::Chat(args) => share_chat(args),
@@ -1152,6 +1324,7 @@ fn run_search(args: SearchArgs) -> Result<()> {
         SearchNoun::Chats { query } => search_chats(&query),
         SearchNoun::Tools(args) => search_tools(args),
         SearchNoun::Memories { query } => search_memories(&query),
+        SearchNoun::Suggestions { query } => search_suggestions(&query),
     }
 }
 
@@ -1195,18 +1368,27 @@ fn run_tui(args: TuiArgs) -> Result<()> {
     let roots = tool_roots(args.roots);
     let tools = scan_tools(&roots)?;
     let chats = chat_store().list()?;
-    let candidates = candidate_store().list()?;
-    let memories = memory_store().list()?;
+    let candidates = pending_memories(candidate_store().list()?);
+    let suggestions = suggestion_store().list()?;
     let skills = skill_records()?;
     let active_context = context_store().active()?;
-    let Some(action) = djinn_tui::run_dashboard(
+    let Some(action) = djinn_tui::run_dashboard_with_handler(
         tools,
         chats,
         candidates,
-        memories,
+        suggestions,
         skills,
         active_context,
         dashboard_tab(args.view),
+        |action| match action {
+            djinn_tui::TuiAction::RejectCandidates(ids) => reject_memories_silent(&ids).map(|_| ()),
+            djinn_tui::TuiAction::DeleteChats(ids) => delete_chats_silent(&ids).map(|_| ()),
+            djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| ()),
+            djinn_tui::TuiAction::OpenTool(_)
+            | djinn_tui::TuiAction::OpenSkill(_)
+            | djinn_tui::TuiAction::ShareChats(_)
+            | djinn_tui::TuiAction::AcceptCandidate(_) => Ok(()),
+        },
     )?
     else {
         return Ok(());
@@ -1224,8 +1406,16 @@ fn run_tui(args: TuiArgs) -> Result<()> {
             context_only: request.context_only,
             max_chars_per_chat: 4000,
         }),
-        djinn_tui::TuiAction::AcceptCandidate(id) => accept_candidate(&id),
-        djinn_tui::TuiAction::RejectCandidate(id) => reject_candidate(&id),
+        djinn_tui::TuiAction::AcceptCandidate(id) => accept_memory(AcceptMemoryArgs {
+            id,
+            agent: None,
+            title: "djinn memory suggestion review".to_string(),
+            opencode_bin: "opencode".to_string(),
+            dry_run: false,
+        }),
+        djinn_tui::TuiAction::RejectCandidates(ids) => reject_memories_silent(&ids).map(|_| ()),
+        djinn_tui::TuiAction::DeleteChats(ids) => delete_chats_silent(&ids).map(|_| ()),
+        djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| ()),
     }
 }
 
@@ -1233,8 +1423,8 @@ fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
     match view {
         TuiView::Tools => djinn_tui::DashboardTab::Tools,
         TuiView::Chats => djinn_tui::DashboardTab::Chats,
-        TuiView::Candidates => djinn_tui::DashboardTab::Candidates,
-        TuiView::Memories => djinn_tui::DashboardTab::Memories,
+        TuiView::Memories => djinn_tui::DashboardTab::Candidates,
+        TuiView::Suggestions => djinn_tui::DashboardTab::Memories,
         TuiView::Skills => djinn_tui::DashboardTab::Skills,
     }
 }
@@ -1271,7 +1461,7 @@ fn list_tools(scope: ToolsScope) -> Result<()> {
 }
 
 fn list_memories() -> Result<()> {
-    let records = memory_store().list()?;
+    let records = pending_memories(candidate_store().list()?);
     if records.is_empty() {
         println!("Memories are empty.");
     } else {
@@ -1281,7 +1471,7 @@ fn list_memories() -> Result<()> {
                 idx + 1,
                 record.id,
                 record.text,
-                format_memory_suffix(record)
+                format_candidate_suffix(record)
             );
         }
         println!("\nTotal: {} memories", records.len());
@@ -1289,22 +1479,59 @@ fn list_memories() -> Result<()> {
     Ok(())
 }
 
-fn list_candidates() -> Result<()> {
-    let records = candidate_store().list()?;
+fn list_ideas() -> Result<()> {
+    let records = idea_store().list()?;
     if records.is_empty() {
-        println!("Memory candidates are empty.");
+        println!("Ideas are empty.");
     } else {
         for (idx, record) in records.iter().enumerate() {
             println!(
-                "  {}. [{}] {} ({}){}",
+                "  {}. [{}] {}{}",
                 idx + 1,
                 record.id,
                 record.text,
-                record.status,
-                format_candidate_suffix(record)
+                format_idea_suffix(record)
             );
         }
-        println!("\nTotal: {} candidates", records.len());
+        println!("\nTotal: {} ideas", records.len());
+    }
+    Ok(())
+}
+
+fn list_actions() -> Result<()> {
+    let records = action_store().list()?;
+    if records.is_empty() {
+        println!("Actions are empty.");
+    } else {
+        for (idx, record) in records.iter().enumerate() {
+            println!(
+                "  {}. [{}] {}{}",
+                idx + 1,
+                record.id,
+                record.text,
+                format_action_suffix(record)
+            );
+        }
+        println!("\nTotal: {} actions", records.len());
+    }
+    Ok(())
+}
+
+fn list_suggestions() -> Result<()> {
+    let records = suggestion_store().list()?;
+    if records.is_empty() {
+        println!("Suggestions are empty.");
+    } else {
+        for (idx, record) in records.iter().enumerate() {
+            println!(
+                "  {}. [{}] {}{}",
+                idx + 1,
+                record.id,
+                record.text,
+                format_suggestion_suffix(record)
+            );
+        }
+        println!("\nTotal: {} suggestions", records.len());
     }
     Ok(())
 }
@@ -1549,12 +1776,48 @@ fn add_chat(args: AddChatArgs) -> Result<()> {
     Ok(())
 }
 
-fn add_memory(args: AddMemoryArgs) -> Result<MemoryRecord> {
-    memory_store().add_input(memory_input_from_args(args)?)
+fn add_memory(args: AddMemoryArgs) -> Result<MemoryCandidate> {
+    candidate_store().add_input(memory_input_from_args(args)?)
 }
 
-fn add_candidate(args: AddMemoryArgs) -> Result<MemoryCandidate> {
-    candidate_store().add_input(memory_input_from_args(args)?)
+fn add_idea(args: AddMemoryArgs) -> Result<IdeaRecord> {
+    idea_store().add_input(memory_input_from_args(args)?)
+}
+
+fn add_action(args: AddMemoryArgs) -> Result<ActionRecord> {
+    action_store().add_input(memory_input_from_args(args)?)
+}
+
+fn add_suggestion(args: AddSuggestionArgs) -> Result<()> {
+    let sources = if args.source_memories.is_empty() {
+        Vec::new()
+    } else {
+        let memories = candidate_store().list()?;
+        args.source_memories
+            .iter()
+            .map(|id| {
+                let memory = resolve_candidate(&memories, id)?;
+                Ok(MemorySource {
+                    source_type: "memory".to_string(),
+                    source: "djinn".to_string(),
+                    source_id: memory.id.clone(),
+                    chat_id: String::new(),
+                    title: memory.text.clone(),
+                    captured_at: memory.created_at.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    let record = suggestion_store().add_input(SuggestionInput {
+        text: args.text,
+        target: args.target,
+        rationale: args.rationale,
+        draft: args.draft,
+        evidence: args.evidence,
+        sources,
+    })?;
+    println!("Suggestion saved [{}]: {}", record.id, record.text);
+    Ok(())
 }
 
 fn memory_input_from_args(args: AddMemoryArgs) -> Result<MemoryInput> {
@@ -2078,14 +2341,104 @@ fn rm_chat(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn accept_candidate(id: &str) -> Result<()> {
-    let candidates = candidate_store().list()?;
-    let candidate = resolve_candidate(&candidates, id)?.clone();
-    if candidate.status == "accepted" {
-        println!("Candidate [{}] is already accepted.", candidate.id);
-        return Ok(());
+fn delete_chats_silent(ids: &[String]) -> Result<Vec<ChatRecord>> {
+    let chats = chat_store().list()?;
+    let resolved = resolve_chat_ids(&chats, ids)?;
+    chat_store().remove_ids(&resolved)
+}
+
+fn ingest_memories(args: IngestMemoriesArgs) -> Result<()> {
+    let candidates = pending_memories(candidate_store().list()?);
+    let resolved_ids = resolve_candidate_ids(&candidates, &args.ids)?;
+    let selected = resolved_ids
+        .iter()
+        .map(|id| resolve_candidate(&candidates, id).cloned())
+        .collect::<Result<Vec<_>>>()?;
+    let mut outputs = Vec::new();
+    for candidate in &selected {
+        let target = if args.target == IngestTarget::Auto {
+            infer_ingest_target(candidate)
+        } else {
+            args.target
+        };
+        outputs.push(ingest_candidate_as(candidate, target, args.force)?);
     }
-    let memory = memory_store().add_input(MemoryInput {
+    if !args.keep {
+        candidate_store().remove_ids(&resolved_ids)?;
+    }
+
+    println!("Ingested {} memories:", outputs.len());
+    for output in outputs {
+        println!("  - {output}");
+    }
+    Ok(())
+}
+
+fn ingest_candidate_as(
+    candidate: &MemoryCandidate,
+    target: IngestTarget,
+    force_skill: bool,
+) -> Result<String> {
+    let input = memory_input_from_candidate(candidate);
+    match target {
+        IngestTarget::Auto => unreachable!("auto target must be resolved before ingestion"),
+        IngestTarget::Memory => {
+            let record = memory_store().add_input(input)?;
+            Ok(format!("memory [{}]: {}", record.id, record.text))
+        }
+        IngestTarget::Suggestion => {
+            let suggestion = suggestion_store().add_input(SuggestionInput {
+                text: candidate.text.clone(),
+                target: non_empty_option(&candidate.kind),
+                rationale: Some("Created from a reviewable memory.".to_string()),
+                draft: None,
+                evidence: candidate.evidence.clone(),
+                sources: candidate.sources.clone(),
+            })?;
+            Ok(format!(
+                "suggestion [{}]: {}",
+                suggestion.id, suggestion.text
+            ))
+        }
+        IngestTarget::Skill => {
+            let name = skill_name_from_candidate(candidate);
+            let content = skill_content_from_candidate(candidate);
+            let skill =
+                skill_store().add_with_content(&name, &candidate.text, content, force_skill)?;
+            Ok(format!("skill [{}]: {}", skill.name, skill.path.display()))
+        }
+        IngestTarget::Idea => {
+            let idea = idea_store().add_input(input)?;
+            Ok(format!("idea [{}]: {}", idea.id, idea.text))
+        }
+        IngestTarget::Action => {
+            let action = action_store().add_input(input)?;
+            Ok(format!("action [{}]: {}", action.id, action.text))
+        }
+    }
+}
+
+fn infer_ingest_target(candidate: &MemoryCandidate) -> IngestTarget {
+    let haystack = format!("{} {}", candidate.kind, candidate.text).to_lowercase();
+    if haystack.contains("skill") {
+        IngestTarget::Skill
+    } else if haystack.contains("preference") || haystack.contains("instruction") {
+        IngestTarget::Suggestion
+    } else if haystack.contains("action") || haystack.contains("todo") || haystack.contains("task")
+    {
+        IngestTarget::Action
+    } else if haystack.contains("idea")
+        || haystack.contains("improvement")
+        || haystack.contains("consider")
+    {
+        IngestTarget::Idea
+    } else {
+        IngestTarget::Memory
+    }
+}
+
+fn memory_input_from_candidate(candidate: &MemoryCandidate) -> MemoryInput {
+    MemoryInput {
         text: candidate.text.clone(),
         scope: non_empty_option(&candidate.scope),
         kind: non_empty_option(&candidate.kind),
@@ -2093,21 +2446,109 @@ fn accept_candidate(id: &str) -> Result<()> {
         not_before: non_empty_option(&candidate.not_before),
         evidence: candidate.evidence.clone(),
         sources: candidate.sources.clone(),
-    })?;
-    candidate_store().update_status(&candidate.id, "accepted")?;
-    println!(
-        "Candidate [{}] accepted as memory [{}]: {}",
-        candidate.id, memory.id, memory.text
+    }
+}
+
+fn skill_name_from_candidate(candidate: &MemoryCandidate) -> String {
+    candidate
+        .id
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .take(6)
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn skill_content_from_candidate(candidate: &MemoryCandidate) -> String {
+    let name = skill_name_from_candidate(candidate);
+    let mut out = format!(
+        "# Skill: {name}\n\n{}\n\n## When to use\n\n- Use when this remembered workflow applies to the current task.\n\n## Workflow\n\n1. Apply the remembered guidance below.\n\n## Ingested guidance\n\n{}\n",
+        candidate.text,
+        candidate.text
     );
+    if !candidate.evidence.is_empty() {
+        out.push_str("\n## Evidence\n\n");
+        for evidence in &candidate.evidence {
+            out.push_str(&format!("- {evidence}\n"));
+        }
+    }
+    out
+}
+
+fn accept_memory(args: AcceptMemoryArgs) -> Result<()> {
+    review_memories(ReviewMemoriesArgs {
+        ids: vec![args.id],
+        limit: 1,
+        all: false,
+        query: None,
+        agent: args.agent,
+        title: args.title,
+        opencode_bin: args.opencode_bin,
+        dry_run: args.dry_run,
+    })
+}
+
+fn reject_memories(ids: &[String]) -> Result<()> {
+    let removed = reject_memories_silent(ids)?;
+    if removed.is_empty() {
+        println!("No memories were rejected.");
+    } else {
+        println!("Rejected and removed {} memories:", removed.len());
+        for candidate in removed {
+            println!("  - [{}] {}", candidate.id, candidate.text);
+        }
+    }
     Ok(())
 }
 
-fn reject_candidate(id: &str) -> Result<()> {
-    let candidates = candidate_store().list()?;
-    let candidate = resolve_candidate(&candidates, id)?.clone();
-    candidate_store().update_status(&candidate.id, "rejected")?;
-    println!("Candidate [{}] rejected: {}", candidate.id, candidate.text);
+fn reject_memories_silent(ids: &[String]) -> Result<Vec<MemoryCandidate>> {
+    let candidates = pending_memories(candidate_store().list()?);
+    let resolved = resolve_candidate_ids(&candidates, ids)?;
+    candidate_store().remove_ids(&resolved)
+}
+
+fn pending_memories(records: Vec<MemoryCandidate>) -> Vec<MemoryCandidate> {
+    records
+        .into_iter()
+        .filter(is_pending_memory)
+        .collect::<Vec<_>>()
+}
+
+fn is_pending_memory(record: &MemoryCandidate) -> bool {
+    record.status.trim().is_empty() || record.status.eq_ignore_ascii_case("pending")
+}
+
+fn complete_suggestions(ids: &[String]) -> Result<()> {
+    let removed = remove_suggestions(ids)?;
+    if removed.is_empty() {
+        println!("No suggestions were completed.");
+    } else {
+        println!("Completed and removed {} suggestions:", removed.len());
+        for suggestion in removed {
+            println!("  - [{}] {}", suggestion.id, suggestion.text);
+        }
+        println!("Starting an agent session for completed suggestions will be added later.");
+    }
     Ok(())
+}
+
+fn reject_suggestions(ids: &[String]) -> Result<()> {
+    let removed = remove_suggestions(ids)?;
+    if removed.is_empty() {
+        println!("No suggestions were rejected.");
+    } else {
+        println!("Rejected and removed {} suggestions:", removed.len());
+        for suggestion in removed {
+            println!("  - [{}] {}", suggestion.id, suggestion.text);
+        }
+    }
+    Ok(())
+}
+
+fn remove_suggestions(ids: &[String]) -> Result<Vec<SuggestionRecord>> {
+    let suggestions = suggestion_store().list()?;
+    let resolved = resolve_suggestion_ids(&suggestions, ids)?;
+    suggestion_store().remove_ids(&resolved)
 }
 
 fn non_empty_option(value: &str) -> Option<String> {
@@ -2195,14 +2636,13 @@ fn show_chat(args: ShowChatArgs) -> Result<()> {
 }
 
 fn show_memory(id: &str) -> Result<()> {
-    let memories = memory_store().list()?;
-    let record = resolve_memory(&memories, id)?;
+    let memories = pending_memories(candidate_store().list()?);
+    let record = resolve_candidate(&memories, id)?;
     let chats = chat_store().list().unwrap_or_default();
 
     println!("# {}\n", record.id);
     println!("{}\n", record.text);
     println!("Created: {}", record.created_at);
-    println!("Status: {}", record.status);
     if !record.scope.trim().is_empty() {
         println!("Scope: {}", record.scope);
     }
@@ -2215,6 +2655,7 @@ fn show_memory(id: &str) -> Result<()> {
     if !record.not_before.trim().is_empty() {
         println!("Not before: {}", record.not_before);
     }
+    println!("Reinforced: {}", record.reinforcement_count);
 
     if !record.evidence.is_empty() {
         println!("\n## Evidence\n");
@@ -2233,11 +2674,9 @@ fn show_memory(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn show_candidate(id: &str) -> Result<()> {
-    let candidates = candidate_store().list()?;
-    let record = resolve_candidate(&candidates, id)?;
-    let chats = chat_store().list().unwrap_or_default();
-
+fn show_idea(id: &str) -> Result<()> {
+    let ideas = idea_store().list()?;
+    let record = resolve_idea(&ideas, id)?;
     println!("# {}\n", record.id);
     println!("{}\n", record.text);
     println!("Created: {}", record.created_at);
@@ -2251,8 +2690,55 @@ fn show_candidate(id: &str) -> Result<()> {
     if !record.confidence.trim().is_empty() {
         println!("Confidence: {}", record.confidence);
     }
-    if !record.not_before.trim().is_empty() {
-        println!("Not before: {}", record.not_before);
+    if !record.evidence.is_empty() {
+        println!("\n## Evidence\n");
+        for (idx, evidence) in record.evidence.iter().enumerate() {
+            println!("{}. {}", idx + 1, evidence);
+        }
+    }
+    Ok(())
+}
+
+fn show_action(id: &str) -> Result<()> {
+    let actions = action_store().list()?;
+    let record = resolve_action(&actions, id)?;
+    println!("# {}\n", record.id);
+    println!("{}\n", record.text);
+    println!("Created: {}", record.created_at);
+    println!("Status: {}", record.status);
+    if !record.scope.trim().is_empty() {
+        println!("Scope: {}", record.scope);
+    }
+    if !record.kind.trim().is_empty() {
+        println!("Kind: {}", record.kind);
+    }
+    if !record.priority.trim().is_empty() {
+        println!("Priority: {}", record.priority);
+    }
+    if !record.evidence.is_empty() {
+        println!("\n## Evidence\n");
+        for (idx, evidence) in record.evidence.iter().enumerate() {
+            println!("{}. {}", idx + 1, evidence);
+        }
+    }
+    Ok(())
+}
+
+fn show_suggestion(id: &str) -> Result<()> {
+    let suggestions = suggestion_store().list()?;
+    let record = resolve_suggestion(&suggestions, id)?;
+    println!("# {}\n", record.id);
+    println!("{}\n", record.text);
+    println!("Created: {}", record.created_at);
+    println!("Status: {}", record.status);
+    if !record.target.trim().is_empty() {
+        println!("Target: {}", record.target);
+    }
+    if !record.rationale.trim().is_empty() {
+        println!("\n## Rationale\n\n{}", record.rationale);
+    }
+    if !record.draft.trim().is_empty() {
+        println!("\n## Draft\n\n{}", record.draft);
     }
     if !record.evidence.is_empty() {
         println!("\n## Evidence\n");
@@ -2263,7 +2749,12 @@ fn show_candidate(id: &str) -> Result<()> {
     if !record.sources.is_empty() {
         println!("\n## Sources\n");
         for source in &record.sources {
-            println!("- {}", format_memory_source(source, &chats));
+            let label = if !source.title.trim().is_empty() {
+                source.title.as_str()
+            } else {
+                source.source_id.as_str()
+            };
+            println!("- [{}] {}", source.source_type, label);
         }
     }
     Ok(())
@@ -2315,10 +2806,9 @@ fn search_tools(args: SearchToolsArgs) -> Result<()> {
 
 fn search_memories(query: &str) -> Result<()> {
     let query = query.to_lowercase();
-    let matches = memory_store()
-        .list()?
+    let matches = pending_memories(candidate_store().list()?)
         .into_iter()
-        .filter(|record| memory_matches(record, &query))
+        .filter(|record| candidate_matches(record, &query))
         .collect::<Vec<_>>();
     for (idx, record) in matches.iter().enumerate() {
         println!(
@@ -2326,10 +2816,80 @@ fn search_memories(query: &str) -> Result<()> {
             idx + 1,
             record.id,
             record.text,
-            format_memory_suffix(record)
+            format_candidate_suffix(record)
         );
     }
     println!("\nTotal: {} matching memories", matches.len());
+    Ok(())
+}
+
+fn select_memories_for_review(
+    records: &[MemoryCandidate],
+    args: &ReviewMemoriesArgs,
+) -> Result<Vec<MemoryCandidate>> {
+    if !args.ids.is_empty() {
+        let mut seen = HashSet::new();
+        let mut selected = Vec::new();
+        for id in &args.ids {
+            let record = resolve_candidate(records, id)?;
+            if seen.insert(record.id.clone()) {
+                selected.push(record.clone());
+            }
+        }
+        return Ok(selected);
+    }
+    let query = args
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(str::to_lowercase);
+    let matches = records
+        .iter()
+        .filter(|record| {
+            query
+                .as_deref()
+                .map(|query| candidate_matches(record, query))
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let selected = if args.all {
+        matches
+    } else {
+        let mut latest = matches
+            .into_iter()
+            .rev()
+            .take(args.limit)
+            .collect::<Vec<_>>();
+        latest.reverse();
+        latest
+    };
+
+    if selected.is_empty() {
+        bail!("no memories matched the review selection");
+    }
+    Ok(selected)
+}
+
+fn search_suggestions(query: &str) -> Result<()> {
+    let query = query.to_lowercase();
+    let matches = suggestion_store()
+        .list()?
+        .into_iter()
+        .filter(|record| suggestion_matches(record, &query))
+        .collect::<Vec<_>>();
+    for (idx, record) in matches.iter().enumerate() {
+        println!(
+            "  {}. [{}] {}{}",
+            idx + 1,
+            record.id,
+            record.text,
+            format_suggestion_suffix(record)
+        );
+    }
+    println!("\nTotal: {} matching suggestions", matches.len());
     Ok(())
 }
 
@@ -2355,10 +2915,14 @@ fn search_chats(query: &str) -> Result<()> {
 
 fn share_ideas() -> Result<()> {
     let memories = memory_store().list()?;
-    let candidates = candidate_store().list()?;
+    let candidates = pending_memories(candidate_store().list()?);
     let chats = chat_store().list()?;
     let tools = scan_tools(&tool_roots(Vec::new()))?;
-    let watcher_state = format_opencode_watcher_state_for_ideas();
+    let watcher_state = format_ideas_pipeline_context(
+        &idea_store().list()?,
+        &action_store().list()?,
+        &format_opencode_watcher_state_for_ideas(),
+    );
     println!(
         "{}",
         djinn_suggest::build_prompt_with_pipeline(
@@ -2370,6 +2934,53 @@ fn share_ideas() -> Result<()> {
         )
     );
     Ok(())
+}
+
+fn share_suggestions() -> Result<()> {
+    let records = suggestion_store().list()?;
+    println!("{}", format_suggestions_context(&records));
+    Ok(())
+}
+
+fn format_ideas_pipeline_context(
+    ideas: &[IdeaRecord],
+    actions: &[ActionRecord],
+    watcher_state: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str("## Saved ideas\n");
+    if ideas.is_empty() {
+        out.push_str("No saved ideas.\n");
+    } else {
+        for idea in ideas.iter().take(50) {
+            out.push_str(&format!(
+                "- [{}] {}{}\n",
+                idea.id,
+                idea.text,
+                format_idea_suffix(idea)
+            ));
+        }
+    }
+    out.push_str("\n## Open actions\n");
+    if actions.is_empty() {
+        out.push_str("No open actions.\n");
+    } else {
+        for action in actions
+            .iter()
+            .filter(|action| !action.status.eq_ignore_ascii_case("done"))
+            .take(50)
+        {
+            out.push_str(&format!(
+                "- [{}] {}{}\n",
+                action.id,
+                action.text,
+                format_action_suffix(action)
+            ));
+        }
+    }
+    out.push_str("\n## Watcher state\n");
+    out.push_str(watcher_state);
+    out
 }
 
 fn share_skills(args: ShareSkillsArgs) -> Result<()> {
@@ -2460,27 +3071,145 @@ fn review_chats(args: ReviewChatsArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut command = ProcessCommand::new(&args.opencode_bin);
-    command
-        .arg("run")
-        .arg(prompt)
-        .arg("--title")
-        .arg(&args.title);
-    if let Some(agent) = args
-        .agent
-        .as_deref()
+    run_opencode_review_prompt(
+        &args.opencode_bin,
+        &args.title,
+        args.agent.as_deref(),
+        &prompt,
+    )
+}
+
+fn review_memories(args: ReviewMemoriesArgs) -> Result<()> {
+    let memories = pending_memories(candidate_store().list()?);
+    let selected = select_memories_for_review(&memories, &args)?;
+    let suggestions = suggestion_store().list()?;
+    let prompt = format_memory_review_prompt(&selected, &suggestions, &args);
+
+    if args.dry_run {
+        println!("{prompt}");
+        return Ok(());
+    }
+
+    let output = spawn_background_opencode_review(
+        &args.opencode_bin,
+        &args.title,
+        args.agent.as_deref(),
+        &prompt,
+    )?;
+    println!("Memory review started in the background.");
+    println!("Output: {}", output.output_path.display());
+    println!("Prompt: {}", output.prompt_path.display());
+    println!("Djinn will send a notification when the review completes if osascript is available.");
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct BackgroundReviewOutput {
+    output_path: PathBuf,
+    prompt_path: PathBuf,
+}
+
+fn spawn_background_opencode_review(
+    opencode_bin: &str,
+    title: &str,
+    agent: Option<&str>,
+    prompt: &str,
+) -> Result<BackgroundReviewOutput> {
+    let reviews_dir = djinn_core::default_cache_dir().join("reviews");
+    fs::create_dir_all(&reviews_dir)
+        .with_context(|| format!("creating {}", reviews_dir.display()))?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let output_path = reviews_dir.join(format!("memory-review-{stamp}.md"));
+    let prompt_path = reviews_dir.join(format!("memory-review-{stamp}.prompt.md"));
+    fs::write(&prompt_path, prompt)
+        .with_context(|| format!("writing review prompt {}", prompt_path.display()))?;
+
+    let script = background_review_script(opencode_bin, title, agent, &prompt_path, &output_path);
+    ProcessCommand::new("sh")
+        .arg("-c")
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| "spawning background memory review")?;
+
+    Ok(BackgroundReviewOutput {
+        output_path,
+        prompt_path,
+    })
+}
+
+fn background_review_script(
+    opencode_bin: &str,
+    title: &str,
+    agent: Option<&str>,
+    prompt_path: &Path,
+    output_path: &Path,
+) -> String {
+    let agent = agent
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
+        .unwrap_or("");
+    format!(
+        r#"PROMPT_FILE={prompt_file}
+OUT_FILE={out_file}
+OPENCODE_BIN={opencode_bin}
+TITLE={title}
+AGENT={agent}
+export DJINN_REVIEWER=1
+export DJINN_OPENCODE_PLUGIN_CHILD=1
+{{
+  printf '# Djinn memory curation review\n\n'
+  printf 'Started: %s\n' "$(date)"
+  printf 'Prompt file: %s\n\n' "$PROMPT_FILE"
+  if [ -n "$AGENT" ]; then
+    "$OPENCODE_BIN" run "$(cat "$PROMPT_FILE")" --title "$TITLE" --agent "$AGENT"
+  else
+    "$OPENCODE_BIN" run "$(cat "$PROMPT_FILE")" --title "$TITLE"
+  fi
+  REVIEW_STATUS=$?
+  printf '\n---\nFinished: %s\nExit status: %s\n' "$(date)" "$REVIEW_STATUS"
+}} > "$OUT_FILE" 2>&1
+if command -v osascript >/dev/null 2>&1; then
+  if [ "$REVIEW_STATUS" -eq 0 ]; then
+    osascript -e 'display notification "Review output is ready under ~/.cache/djinn/reviews." with title "Djinn memory review complete"' >/dev/null 2>&1 || true
+  else
+    osascript -e 'display notification "Review failed; see output under ~/.cache/djinn/reviews." with title "Djinn memory review failed"' >/dev/null 2>&1 || true
+  fi
+fi
+exit "$REVIEW_STATUS"
+"#,
+        prompt_file = shell_quote(&prompt_path.display().to_string()),
+        out_file = shell_quote(&output_path.display().to_string()),
+        opencode_bin = shell_quote(opencode_bin),
+        title = shell_quote(title),
+        agent = shell_quote(agent),
+    )
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn run_opencode_review_prompt(
+    opencode_bin: &str,
+    title: &str,
+    agent: Option<&str>,
+    prompt: &str,
+) -> Result<()> {
+    let mut command = ProcessCommand::new(opencode_bin);
+    command.arg("run").arg(prompt).arg("--title").arg(title);
+    if let Some(agent) = agent.map(str::trim).filter(|value| !value.is_empty()) {
         command.arg("--agent").arg(agent);
     }
     command.env("DJINN_REVIEWER", "1");
     command.env("DJINN_OPENCODE_PLUGIN_CHILD", "1");
     let status = command
         .status()
-        .with_context(|| format!("running {} run", args.opencode_bin))?;
+        .with_context(|| format!("running {opencode_bin} run"))?;
     if !status.success() {
-        bail!("{} run exited with status {status}", args.opencode_bin);
+        bail!("{opencode_bin} run exited with status {status}");
     }
     Ok(())
 }
@@ -2621,6 +3350,123 @@ fn format_memories_context(records: &[MemoryRecord]) -> String {
     out
 }
 
+fn format_suggestions_context(records: &[SuggestionRecord]) -> String {
+    let mut out = String::from("# Djinn Suggestions\n\n");
+    out.push_str("Suggestions are review outcomes and todo-like next steps. They are removed when accepted/done or rejected.\n\n");
+    if records.is_empty() {
+        out.push_str("No open suggestions recorded.\n");
+        return out;
+    }
+    for record in records {
+        out.push_str(&format!("- `[{}]` {}\n", record.id, record.text));
+        let mut details = Vec::new();
+        if !record.target.trim().is_empty() {
+            details.push(format!("target: {}", record.target));
+        }
+        if !record.status.trim().is_empty() {
+            details.push(format!("status: {}", record.status));
+        }
+        if !record.sources.is_empty() {
+            details.push(format!("sources: {}", record.sources.len()));
+        }
+        if !details.is_empty() {
+            out.push_str(&format!("  Metadata: {}\n", details.join(", ")));
+        }
+        if !record.rationale.trim().is_empty() {
+            out.push_str(&format!("  Rationale: {}\n", record.rationale));
+        }
+    }
+    out
+}
+
+fn format_memory_review_prompt(
+    memories: &[MemoryCandidate],
+    suggestions: &[SuggestionRecord],
+    args: &ReviewMemoriesArgs,
+) -> String {
+    let mut out = String::from("# Djinn Memory Suggestion Review\n\n");
+    out.push_str(
+        "You are reviewing one or more Djinn memories. A memory is source evidence, not a target artifact. Do not copy memory text into a durable artifact. Instead, propose useful next steps as suggestions. You may create suggestions by running `djinn add suggestion ...` commands.\n\n",
+    );
+    out.push_str("## Review goals\n\n");
+    out.push_str("- Decide whether these memories imply a skill, action, idea, config change, code/docs change, or other next step.\n");
+    out.push_str("- Attach evidence from the reviewed memories.\n");
+    out.push_str("- Prefer one clear suggestion over duplicating the memory text.\n");
+    out.push_str("- If there is no useful next step, say so and do not create a suggestion.\n\n");
+
+    out.push_str("## Selection\n\n");
+    out.push_str(&format!("- Memories included: {}\n", memories.len()));
+    if let Some(query) = args
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+    {
+        out.push_str(&format!("- Query filter: `{query}`\n"));
+    }
+    if !args.all {
+        out.push_str(&format!(
+            "- Limit: latest {} matching memories\n",
+            args.limit
+        ));
+    }
+
+    out.push_str("\n## Existing suggestions\n\n```text\n");
+    if suggestions.is_empty() {
+        out.push_str("No open suggestions recorded.\n");
+    } else {
+        for suggestion in suggestions.iter().take(100) {
+            out.push_str(&format!(
+                "- [{}] {}{}\n",
+                suggestion.id,
+                suggestion.text,
+                format_suggestion_suffix(suggestion)
+            ));
+        }
+        if suggestions.len() > 100 {
+            out.push_str(&format!(
+                "... {} more suggestions omitted ...\n",
+                suggestions.len() - 100
+            ));
+        }
+    }
+    out.push_str("```\n\n## Memories to review\n\n");
+    for memory in memories {
+        out.push_str(&format!("### [{}] {}\n\n", memory.id, memory.text));
+        let mut details = Vec::new();
+        if !memory.scope.trim().is_empty() {
+            details.push(format!("scope: {}", memory.scope));
+        }
+        if !memory.kind.trim().is_empty() {
+            details.push(format!("kind: {}", memory.kind));
+        }
+        if !memory.confidence.trim().is_empty() {
+            details.push(format!("confidence: {}", memory.confidence));
+        }
+        if !memory.not_before.trim().is_empty() {
+            details.push(format!("not-before: {}", memory.not_before));
+        }
+        if !details.is_empty() {
+            out.push_str(&format!("Metadata: {}\n\n", details.join(", ")));
+        }
+        if !memory.evidence.is_empty() {
+            out.push_str("Evidence:\n");
+            for evidence in &memory.evidence {
+                out.push_str(&format!("- {}\n", evidence));
+            }
+            out.push('\n');
+        }
+        if !memory.sources.is_empty() {
+            out.push_str(&format!("Sources: {} pointer(s)\n\n", memory.sources.len()));
+        }
+    }
+
+    out.push_str(
+        "## Required output format\n\nIf useful, create one or more suggestions with commands like:\n\n```bash\ndjinn add suggestion \"Create a skill to ...\" --target skill --rationale \"Based on memories X and Y ...\" --evidence \"...\" --source-memory MEMORY_ID\n```\n\nTargets may include: skill, action, idea, config, code, docs, cleanup, or other. If no suggestion is warranted, say `No suggestion warranted.`\n",
+    );
+    out
+}
+
 fn format_chat_context(record: &ChatRecord) -> String {
     let mut out = format!(
         "# Djinn Chat\n\n- ID: `{}`\n- Title: {}\n- Created: {}\n",
@@ -2661,7 +3507,7 @@ fn format_chat_memory_extraction_prompt(record: &ChatRecord, memories: &[MemoryR
     }
 
     out.push_str(
-        "\n## Extraction Rules\n\nExtract candidate memories for:\n\n- user preferences and corrections\n- repeated workflows or tool choices\n- project-specific conventions\n- safety rules or gotchas\n- reusable debugging/implementation patterns\n\nDo not extract:\n\n- one-off task status\n- secrets, credentials, tokens, private URLs, or sensitive raw data\n- facts that are already captured in existing memories\n- noisy transcript details that will not help future agents\n\nReturn only a short reviewed list of shell commands the user can run manually. Include enough metadata and copied evidence that the memory remains understandable even if the source chat is deleted later. Use `--not-before YYYY-MM-DD` when a true memory should not drive actions until a future date. Prefer this form:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"User explicitly corrected the agent to ...\" --source-chat CHAT_ID\n```\n\nIf there are no durable lessons, say: `No durable memories recommended.`\n",
+        "\n## Extraction Guidelines\n\nExtract reviewable memories for:\n\n- user preferences and corrections\n- repeated workflows or tool choices\n- project-specific conventions\n- safety constraints or gotchas\n- reusable debugging/implementation patterns\n\nDo not extract:\n\n- one-off task status\n- secrets, credentials, tokens, private URLs, or sensitive raw data\n- facts that are already captured in existing memories\n- noisy transcript details that will not help future agents\n\nReturn only a short reviewed list of shell commands the user can run manually. Include enough metadata and copied evidence that the memory remains understandable even if the source chat is deleted later. Use `--not-before YYYY-MM-DD` when a true memory should not drive actions until a future date. Prefer this form:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"User explicitly corrected the agent to ...\" --source-chat CHAT_ID\n```\n\nIf there are no durable lessons, say: `No durable memories recommended.`\n",
     );
 
     out.push_str("\n## Existing Memories\n\n```text\n");
@@ -2691,15 +3537,14 @@ fn format_chat_candidate_prompt(record: &ChatRecord, memories: &[MemoryRecord]) 
     let mut out = format_chat_memory_extraction_prompt(record, memories);
     out = out.replace(
         "# Djinn Chat Memory Extraction",
-        "# Djinn Chat Promotion Candidate Extraction",
+        "# Djinn Chat Promotion Memory Extraction",
     );
-    out = out.replace("djinn add memory", "djinn add candidate");
     out.push_str(
-        "\n\n## Promotion Output\n\nReturn reviewed candidate commands instead of direct memory writes. Use this exact command shape so Djinn can track pending/accepted/rejected lifecycle. Use `--not-before YYYY-MM-DD` for memories that should be remembered now but not acted on until later:\n\n```bash\ndjinn add candidate \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"Copied durable evidence ...\" --source-chat ",
+        "\n\n## Promotion Output\n\nReturn reviewed `djinn add memory` commands. Use this exact command shape so Djinn can track review lifecycle. Use `--not-before YYYY-MM-DD` for memories that should be remembered now but not acted on until later:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"Copied durable evidence ...\" --source-chat ",
     );
     out.push_str(&record.id);
     out.push_str(
-        "\n```\n\nAfter review, the user can run `djinn list candidates`, `djinn show candidate <id>`, `djinn accept candidate <id>`, or `djinn reject candidate <id>`.\n",
+        "\n```\n\nAfter review, the user can run `djinn list memories`, `djinn show memory <id>`, `djinn accept memory <id>`, or `djinn reject memory <id>`.\n",
     );
     out
 }
@@ -2750,13 +3595,13 @@ fn format_chats_review_prompt(
             "Propose durable memories only when they are reusable in future work and supported by repeated patterns or explicit user instructions. Return reviewed shell commands the user can run manually; do not invent memories from weak one-off evidence.\n",
         ),
     }
-    out.push_str("\n## Output Rules\n\n");
+    out.push_str("\n## Output Guidelines\n\n");
     match args.mode {
         ShareChatsMode::Summary => out.push_str(
             "Return Markdown with sections: `Summary`, `Decisions`, `Open Follow-ups`, and `Potential Memories`. Do not write memories automatically.\n",
         ),
         ShareChatsMode::Patterns => out.push_str(
-            "Return Markdown with sections: `High-confidence Patterns`, `Possible One-offs`, `Workflow Opportunities`, and `Candidate Memories`. Do not write memories automatically.\n",
+            "Return Markdown with sections: `High-confidence Patterns`, `Possible One-offs`, `Workflow Opportunities`, and `Reviewable Memories`. Do not write memories automatically.\n",
         ),
         ShareChatsMode::Memories => out.push_str(
             "Return only a short reviewed list of commands. Include scope, kind, confidence, copied evidence, and source chat pointers when available. Use `--not-before YYYY-MM-DD` when a memory should not drive suggestions/actions until later. Use this form:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"Repeated evidence from the reviewed chats ...\" --source-chat CHAT_ID\n```\n\nIf there are no durable lessons, say: `No durable memories recommended.`\n",
@@ -2814,9 +3659,8 @@ fn format_chats_candidate_prompt(
 ) -> String {
     let mut out = format_chats_review_prompt(records, args, memories);
     out = out.replace("# Djinn Multi-Chat Review", "# Djinn Multi-Chat Promotion");
-    out = out.replace("djinn add memory", "djinn add candidate");
     out.push_str(
-        "\n\n## Promotion Output\n\nReturn reviewed `djinn add candidate` commands, not `djinn add memory` commands. Include scope, kind, confidence, copied evidence, and one or more `--source-chat` pointers when available. Use `--not-before YYYY-MM-DD` when a future activation date is appropriate. Example:\n\n```bash\ndjinn add candidate \"...\" --scope project --kind convention --confidence high --not-before 2026-10-01 --evidence \"Repeated across reviewed chats ...\" --source-chat CHAT_ID\n```\n\nThe user will accept or reject candidates with `djinn accept candidate <id>` / `djinn reject candidate <id>`.\n",
+        "\n\n## Promotion Output\n\nReturn reviewed `djinn add memory` commands. Include scope, kind, confidence, copied evidence, and one or more `--source-chat` pointers when available. Use `--not-before YYYY-MM-DD` when a future activation date is appropriate. Example:\n\n```bash\ndjinn add memory \"...\" --scope project --kind convention --confidence high --not-before 2026-10-01 --evidence \"Repeated across reviewed chats ...\" --source-chat CHAT_ID\n```\n\nThe user will accept or reject memories with `djinn accept memory <id>` / `djinn reject memory <id>`.\n",
     );
     out
 }
@@ -2916,7 +3760,7 @@ fn resolve_tool<'a>(entries: &'a [ToolEntry], name: &str) -> Result<&'a ToolEntr
     }
 }
 
-fn resolve_memory<'a>(records: &'a [MemoryRecord], id: &str) -> Result<&'a MemoryRecord> {
+fn resolve_candidate<'a>(records: &'a [MemoryCandidate], id: &str) -> Result<&'a MemoryCandidate> {
     if let Some(record) = records.iter().find(|record| record.id == id) {
         return Ok(record);
     }
@@ -2947,7 +3791,19 @@ fn resolve_memory<'a>(records: &'a [MemoryRecord], id: &str) -> Result<&'a Memor
     }
 }
 
-fn resolve_candidate<'a>(records: &'a [MemoryCandidate], id: &str) -> Result<&'a MemoryCandidate> {
+fn resolve_candidate_ids(records: &[MemoryCandidate], ids: &[String]) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut resolved = Vec::new();
+    for id in ids {
+        let record = resolve_candidate(records, id)?;
+        if seen.insert(record.id.clone()) {
+            resolved.push(record.id.clone());
+        }
+    }
+    Ok(resolved)
+}
+
+fn resolve_idea<'a>(records: &'a [IdeaRecord], id: &str) -> Result<&'a IdeaRecord> {
     if let Some(record) = records.iter().find(|record| record.id == id) {
         return Ok(record);
     }
@@ -2967,15 +3823,92 @@ fn resolve_candidate<'a>(records: &'a [MemoryCandidate], id: &str) -> Result<&'a
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [record] => Ok(record),
-        [] => bail!("no memory candidate named {id:?} found"),
+        [] => bail!("no idea named {id:?} found"),
         many => {
-            eprintln!("multiple memory candidates match {id:?}:");
+            eprintln!("multiple ideas match {id:?}:");
             for record in many {
-                eprintln!("  - [{}] {} ({})", record.id, record.text, record.status);
+                eprintln!("  - [{}] {}", record.id, record.text);
             }
-            bail!("memory candidate id is ambiguous")
+            bail!("idea id is ambiguous")
         }
     }
+}
+
+fn resolve_action<'a>(records: &'a [ActionRecord], id: &str) -> Result<&'a ActionRecord> {
+    if let Some(record) = records.iter().find(|record| record.id == id) {
+        return Ok(record);
+    }
+    if let Some(record) = records
+        .iter()
+        .find(|record| record.id.eq_ignore_ascii_case(id))
+    {
+        return Ok(record);
+    }
+    let needle = id.to_lowercase();
+    let matches = records
+        .iter()
+        .filter(|record| {
+            record.id.to_lowercase().contains(&needle)
+                || record.text.to_lowercase().contains(&needle)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [record] => Ok(record),
+        [] => bail!("no action named {id:?} found"),
+        many => {
+            eprintln!("multiple actions match {id:?}:");
+            for record in many {
+                eprintln!("  - [{}] {}", record.id, record.text);
+            }
+            bail!("action id is ambiguous")
+        }
+    }
+}
+
+fn resolve_suggestion<'a>(
+    records: &'a [SuggestionRecord],
+    id: &str,
+) -> Result<&'a SuggestionRecord> {
+    if let Some(record) = records.iter().find(|record| record.id == id) {
+        return Ok(record);
+    }
+    if let Some(record) = records
+        .iter()
+        .find(|record| record.id.eq_ignore_ascii_case(id))
+    {
+        return Ok(record);
+    }
+    let needle = id.to_lowercase();
+    let matches = records
+        .iter()
+        .filter(|record| {
+            record.id.to_lowercase().contains(&needle)
+                || record.text.to_lowercase().contains(&needle)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [record] => Ok(record),
+        [] => bail!("no suggestion named {id:?} found"),
+        many => {
+            eprintln!("multiple suggestions match {id:?}:");
+            for record in many {
+                eprintln!("  - [{}] {}", record.id, record.text);
+            }
+            bail!("suggestion id is ambiguous")
+        }
+    }
+}
+
+fn resolve_suggestion_ids(records: &[SuggestionRecord], ids: &[String]) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut resolved = Vec::new();
+    for id in ids {
+        let record = resolve_suggestion(records, id)?;
+        if seen.insert(record.id.clone()) {
+            resolved.push(record.id.clone());
+        }
+    }
+    Ok(resolved)
 }
 
 fn select_chats_for_share(
@@ -3089,6 +4022,18 @@ fn resolve_chat<'a>(records: &'a [ChatRecord], id: &str) -> Result<&'a ChatRecor
     }
 }
 
+fn resolve_chat_ids(records: &[ChatRecord], ids: &[String]) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut resolved = Vec::new();
+    for id in ids {
+        let record = resolve_chat(records, id)?;
+        if seen.insert(record.id.clone()) {
+            resolved.push(record.id.clone());
+        }
+    }
+    Ok(resolved)
+}
+
 fn chat_matches(record: &ChatRecord, query: &str) -> bool {
     record.id.to_lowercase().contains(query)
         || record.title.to_lowercase().contains(query)
@@ -3098,7 +4043,7 @@ fn chat_matches(record: &ChatRecord, query: &str) -> bool {
         || record.content.to_lowercase().contains(query)
 }
 
-fn memory_matches(record: &MemoryRecord, query: &str) -> bool {
+fn candidate_matches(record: &MemoryCandidate, query: &str) -> bool {
     record.id.to_lowercase().contains(query)
         || record.text.to_lowercase().contains(query)
         || record.scope.to_lowercase().contains(query)
@@ -3109,13 +4054,19 @@ fn memory_matches(record: &MemoryRecord, query: &str) -> bool {
             .evidence
             .iter()
             .any(|evidence| evidence.to_lowercase().contains(query))
-        || record.sources.iter().any(|source| {
-            source.source_type.to_lowercase().contains(query)
-                || source.source.to_lowercase().contains(query)
-                || source.source_id.to_lowercase().contains(query)
-                || source.chat_id.to_lowercase().contains(query)
-                || source.title.to_lowercase().contains(query)
-        })
+}
+
+fn suggestion_matches(record: &SuggestionRecord, query: &str) -> bool {
+    record.id.to_lowercase().contains(query)
+        || record.text.to_lowercase().contains(query)
+        || record.status.to_lowercase().contains(query)
+        || record.target.to_lowercase().contains(query)
+        || record.rationale.to_lowercase().contains(query)
+        || record.draft.to_lowercase().contains(query)
+        || record
+            .evidence
+            .iter()
+            .any(|evidence| evidence.to_lowercase().contains(query))
 }
 
 fn chat_snippet(record: &ChatRecord, query: &str) -> String {
@@ -3202,7 +4153,7 @@ fn memory_source_chat_exists(source: &MemorySource, chats: &[ChatRecord]) -> boo
     })
 }
 
-fn format_memory_suffix(record: &MemoryRecord) -> String {
+fn format_candidate_suffix(record: &MemoryCandidate) -> String {
     let mut parts = Vec::new();
     if !record.scope.trim().is_empty() {
         parts.push(record.scope.as_str());
@@ -3219,6 +4170,9 @@ fn format_memory_suffix(record: &MemoryRecord) -> String {
     if !record.sources.is_empty() {
         parts.push("sourced");
     }
+    if record.reinforcement_count > 1 {
+        parts.push("reinforced");
+    }
     if parts.is_empty() {
         String::new()
     } else {
@@ -3226,7 +4180,7 @@ fn format_memory_suffix(record: &MemoryRecord) -> String {
     }
 }
 
-fn format_candidate_suffix(record: &MemoryCandidate) -> String {
+fn format_idea_suffix(record: &IdeaRecord) -> String {
     let mut parts = Vec::new();
     if !record.scope.trim().is_empty() {
         parts.push(record.scope.as_str());
@@ -3237,8 +4191,44 @@ fn format_candidate_suffix(record: &MemoryCandidate) -> String {
     if !record.confidence.trim().is_empty() {
         parts.push(record.confidence.as_str());
     }
-    if !record.not_before.trim().is_empty() {
-        parts.push(record.not_before.as_str());
+    if !record.sources.is_empty() {
+        parts.push("sourced");
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
+    }
+}
+
+fn format_action_suffix(record: &ActionRecord) -> String {
+    let mut parts = Vec::new();
+    if !record.status.trim().is_empty() {
+        parts.push(record.status.as_str());
+    }
+    if !record.scope.trim().is_empty() {
+        parts.push(record.scope.as_str());
+    }
+    if !record.priority.trim().is_empty() {
+        parts.push(record.priority.as_str());
+    }
+    if !record.sources.is_empty() {
+        parts.push("sourced");
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
+    }
+}
+
+fn format_suggestion_suffix(record: &SuggestionRecord) -> String {
+    let mut parts = Vec::new();
+    if !record.status.trim().is_empty() {
+        parts.push(record.status.as_str());
+    }
+    if !record.target.trim().is_empty() {
+        parts.push(record.target.as_str());
     }
     if !record.sources.is_empty() {
         parts.push("sourced");
@@ -3346,6 +4336,18 @@ fn candidate_store() -> CandidateStore {
     CandidateStore::default_in(&djinn_core::default_data_dir())
 }
 
+fn idea_store() -> IdeaStore {
+    IdeaStore::default_in(&djinn_core::default_data_dir())
+}
+
+fn action_store() -> ActionStore {
+    ActionStore::default_in(&djinn_core::default_data_dir())
+}
+
+fn suggestion_store() -> SuggestionStore {
+    SuggestionStore::default_in(&djinn_core::default_data_dir())
+}
+
 fn skill_store() -> SkillStore {
     SkillStore::default_in(&djinn_core::default_data_dir())
 }
@@ -3402,6 +4404,22 @@ mod tests {
             mode: ShareChatsMode::Patterns,
             context_only: false,
             max_chars_per_chat: 4000,
+        }
+    }
+
+    fn test_candidate(kind: &str, text: &str) -> MemoryCandidate {
+        MemoryCandidate {
+            id: "candidate".to_string(),
+            text: text.to_string(),
+            created_at: "2026-07-09".to_string(),
+            status: "pending".to_string(),
+            scope: "project:djinn".to_string(),
+            kind: kind.to_string(),
+            confidence: "medium".to_string(),
+            not_before: String::new(),
+            evidence: Vec::new(),
+            sources: Vec::new(),
+            reinforcement_count: 1,
         }
     }
 
@@ -3489,6 +4507,103 @@ mod tests {
         assert!(prompt.contains("# Djinn Multi-Chat Review"));
         assert!(prompt.contains("djinn add memory"));
         assert!(prompt.contains("Prefer uv here"));
+    }
+
+    #[test]
+    fn infer_ingest_target_routes_candidate_kinds() {
+        assert_eq!(
+            infer_ingest_target(&test_candidate("instruction", "Use uv")),
+            IngestTarget::Suggestion
+        );
+        assert_eq!(
+            infer_ingest_target(&test_candidate("skill-proposal", "Reusable workflow")),
+            IngestTarget::Skill
+        );
+        assert_eq!(
+            infer_ingest_target(&test_candidate("idea", "Consider better search")),
+            IngestTarget::Idea
+        );
+        assert_eq!(
+            infer_ingest_target(&test_candidate("action", "TODO: review docs")),
+            IngestTarget::Action
+        );
+        assert_eq!(
+            infer_ingest_target(&test_candidate("preference", "Prefer concise output")),
+            IngestTarget::Suggestion
+        );
+    }
+
+    #[test]
+    fn pending_memories_excludes_accepted_items() {
+        let mut accepted = test_candidate("preference", "Already reviewed");
+        accepted.id = "accepted".to_string();
+        accepted.status = "accepted".to_string();
+        let mut pending = test_candidate("preference", "Needs review");
+        pending.id = "pending".to_string();
+
+        let records = pending_memories(vec![accepted, pending]);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "pending");
+    }
+
+    #[test]
+    fn format_memory_review_prompt_creates_suggestions_from_memories() {
+        let memories = vec![MemoryCandidate {
+            id: "djinn-session-note".to_string(),
+            text: "Djinn implementation session detail".to_string(),
+            created_at: "2026-07-09".to_string(),
+            status: "pending".to_string(),
+            scope: "project:djinn".to_string(),
+            kind: "implementation-note".to_string(),
+            confidence: "medium".to_string(),
+            not_before: String::new(),
+            evidence: vec!["Captured during a Djinn session.".to_string()],
+            sources: Vec::new(),
+            reinforcement_count: 1,
+        }];
+        let suggestions = vec![SuggestionRecord {
+            id: "suggestion".to_string(),
+            text: "Create a skill for recurring validation.".to_string(),
+            created_at: "2026-07-09".to_string(),
+            status: "open".to_string(),
+            target: "skill".to_string(),
+            rationale: "Repeated validation friction.".to_string(),
+            draft: String::new(),
+            evidence: Vec::new(),
+            sources: Vec::new(),
+        }];
+        let args = ReviewMemoriesArgs {
+            ids: Vec::new(),
+            limit: 100,
+            all: false,
+            query: Some("djinn".to_string()),
+            agent: None,
+            title: "review".to_string(),
+            opencode_bin: "opencode".to_string(),
+            dry_run: true,
+        };
+
+        let prompt = format_memory_review_prompt(&memories, &suggestions, &args);
+        assert!(prompt.contains("Memory Suggestion Review"));
+        assert!(prompt.contains("djinn add suggestion"));
+        assert!(prompt.contains("djinn-session-note"));
+        assert!(prompt.contains("Create a skill for recurring validation."));
+    }
+
+    #[test]
+    fn background_review_script_uses_prompt_file_and_notification() {
+        let script = background_review_script(
+            "opencode",
+            "memory review",
+            Some("reviewer"),
+            Path::new("/tmp/prompt's.md"),
+            Path::new("/tmp/out.md"),
+        );
+        assert!(script.contains("PROMPT_FILE='/tmp/prompt'\\''s.md'"));
+        assert!(script.contains("DJINN_REVIEWER=1"));
+        assert!(script.contains("osascript"));
+        assert!(script.contains("--agent \"$AGENT\""));
+        assert!(script.contains("> \"$OUT_FILE\" 2>&1"));
     }
 
     #[test]

@@ -60,7 +60,7 @@ pub fn build_prompt_with_pipeline(
     };
 
     let candidate_lines = if active_candidates.is_empty() {
-        "No memory candidates recorded.".to_string()
+        "No reviewable memories recorded.".to_string()
     } else {
         active_candidates
             .iter()
@@ -81,7 +81,7 @@ pub fn build_prompt_with_pipeline(
     };
 
     let deferred_candidate_lines = if deferred_candidates.is_empty() {
-        "No deferred candidates recorded.".to_string()
+        "No deferred reviewable memories recorded.".to_string()
     } else {
         deferred_candidates
             .iter()
@@ -142,19 +142,19 @@ Djinn is a local-first companion for OpenCode and other AI coding agents. It sur
 
 The intended loop is:
 
-chats → promote → candidates → accept/reject → memories → ideas → actions
+chats → promote/review → memories → suggestions → actions/skills
 
-Analyze the accepted memories, pending/reviewed candidates, recent chats, OpenCode watcher state, and discovered local tools below. Deferred memories/candidates with future `not_before` dates are included for awareness only; do not propose actions based on them until their date has arrived. Suggest:
+Analyze the legacy memories, reviewable memories, recent chats, OpenCode watcher state, and discovered local tools below. Deferred memories with future `not_before` dates are included for awareness only; do not propose actions based on them until their date has arrived. Suggest:
 
 1. Workflow patterns or preferences worth preserving.
 2. Stale, noisy, or overly narrow memories to rewrite or remove.
-3. Pending candidates that should be accepted, rejected, rewritten, or merged.
-4. Recent chats worth promoting into candidates.
+3. Reviewable memories that should be kept, rejected, rewritten, merged, or reviewed for suggestions.
+4. Recent chats worth promoting into memories.
 5. New aliases, scripts, wrappers, docs, or TUI actions to create.
 6. OpenCode skills or agent behaviors that should be added.
 7. The highest-impact next actions.
 
-Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Candidate Review`, `Chats to Promote`, `Tooling/Skill Ideas`, and `Prioritized Next Actions`.
+Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Memory Review`, `Chats to Promote`, `Tooling/Skill Ideas`, and `Prioritized Next Actions`.
 
 ## Memories
 
@@ -162,7 +162,7 @@ Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Can
 {memory_lines}
 ```
 
-## Memory candidates
+## Reviewable memories
 
 ```text
 {candidate_lines}
@@ -174,7 +174,7 @@ Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Can
 {deferred_memory_lines}
 ```
 
-## Deferred candidates
+## Deferred reviewable memories
 
 ```text
 {deferred_candidate_lines}
@@ -296,6 +296,7 @@ mod tests {
                 not_before: "2999-01-01".to_string(),
                 evidence: Vec::new(),
                 sources: Vec::new(),
+                reinforcement_count: 1,
             }],
             &[],
             &[],
@@ -303,7 +304,7 @@ mod tests {
         );
         assert!(prompt.contains("## Deferred memories"));
         assert!(prompt.contains("defer-contexts"));
-        assert!(prompt.contains("## Deferred candidates"));
+        assert!(prompt.contains("## Deferred reviewable memories"));
         assert!(prompt.contains("not_before=2999-01-01"));
         assert!(prompt.contains("do not propose actions based on them"));
     }

@@ -4,15 +4,17 @@ Djinn is a local-first companion for AI coding agents. It keeps five practical
 knowledge surfaces connected:
 
 ```text
-Tools → Chats → Candidates → Memories → Skills
+Tools → Chats → Memories → Suggestions → Skills
 ```
 
 - **Tools** are local commands, aliases, functions, and scripts discovered from
   tagged dotfiles or configured roots.
 - **Chats** are saved AI sessions or exported OpenCode conversations.
-- **Candidates** are proposed durable lessons extracted from chats.
-- **Memories** are accepted lessons, preferences, conventions, and product
-  decisions. Memories can carry evidence, provenance, and `not_before` dates.
+- **Memories** are reviewable lessons, preferences, conventions, and product
+  decisions captured with evidence, provenance, and optional `not_before` dates.
+- **Suggestions** are ephemeral review outcomes: possible skills, actions,
+  documentation changes, code changes, or other next steps. Accepting or
+  rejecting a suggestion removes it from the open list.
 - **Skills** are reusable `SKILL.md` workflows for agents.
 
 Contexts sit across those surfaces by setting default roots and scopes for the
@@ -23,8 +25,9 @@ work you are currently doing.
 Djinn uses Linux-style local paths on every platform:
 
 ```text
-~/.config/djinn/memories.jsonl             # accepted memories
-~/.config/djinn/memory-candidates.jsonl    # pending/accepted/rejected candidates
+~/.config/djinn/memory-candidates.jsonl    # reviewable memories (legacy filename)
+~/.config/djinn/suggestions.jsonl          # open suggestions
+~/.config/djinn/memories.jsonl             # legacy accepted-memory store
 ~/.config/djinn/contexts.json              # context registry and active context
 ~/.config/djinn/skills/                    # Djinn-managed skills
 ~/.config/djinn/watchers/opencode.json     # watcher state
@@ -98,35 +101,40 @@ djinn review chats --source opencode --limit 20
 `djinn review opencode` remains as a compatibility alias for OpenCode-only chat
 review.
 
-## Candidates and memories
+## Memories and suggestions
 
-Candidates let you review proposed memories before they become durable:
+Memories preserve source evidence. They do not become suggestions by themselves;
+reviewing them asks an agent to propose explicit next steps:
 
 ```bash
-djinn add candidate "Prefer uv in this repo" \
+djinn add memory "Prefer uv in this repo" \
   --scope project \
   --kind tool-preference \
   --confidence high \
   --evidence "User corrected pip to uv."
-djinn list candidates
-djinn show candidate prefer-uv
-djinn accept candidate prefer-uv
-djinn reject candidate stale-candidate
-```
-
-Memories support metadata and copied evidence:
-
-```bash
-djinn add memory "Prefer uv for Python tooling" \
-  --scope project \
-  --kind tool-preference \
-  --confidence high \
-  --evidence "User corrected pip to uv." \
-  --source-chat <chat-id>
 djinn list memories
 djinn show memory prefer-uv
-djinn share memories
+djinn review memory prefer-uv --dry-run
+djinn reject memory stale-memory
 ```
+
+Suggestions are todo-like review outcomes:
+
+```bash
+djinn add suggestion "Create a Python tooling preference skill." \
+  --target skill \
+  --rationale "The memory is reusable across projects." \
+  --evidence "User corrected pip to uv." \
+  --source-chat <chat-id>
+djinn list suggestions
+djinn show suggestion python-tooling-preference
+djinn share suggestions
+djinn accept suggestion python-tooling-preference
+djinn reject suggestion stale-suggestion
+```
+
+Accepting a suggestion means the follow-up is done or intentionally handled; it
+removes the suggestion from the list. Rejecting also removes it.
 
 Use `--not-before YYYY-MM-DD` when a memory is true and worth preserving, but
 should not drive suggestions or actions until later:
@@ -140,8 +148,8 @@ djinn add memory "Revisit context-heavy workflows after the workflow matures." \
   --evidence "User wants this remembered but not acted on yet."
 ```
 
-`djinn share ideas` separates future-dated memories/candidates into deferred
-sections and instructs the agent not to act on them before their date.
+`djinn share ideas` separates future-dated memories into deferred sections and
+instructs the agent not to act on them before their date.
 
 ## Skills
 
@@ -199,8 +207,8 @@ Run:
 djinn
 djinn tui
 djinn tui chats
-djinn tui candidates
 djinn tui memories
+djinn tui suggestions
 djinn tui skills
 djinn tui --editor nvim
 ```
@@ -208,7 +216,7 @@ djinn tui --editor nvim
 Current tab order:
 
 ```text
-Tools → Chats → Candidates → Memories → Skills
+Tools → Chats → Memories → Suggestions → Skills
 ```
 
 Keybindings:
@@ -219,13 +227,38 @@ Keybindings:
 - `PageUp`/`u`, `PageDown`/`d`: scroll preview.
 - Tools: `Enter` opens the selected tool.
 - Chats: `Space` selects, `a` toggles all, `Enter` opens share options.
-- Candidates: `a` accepts, `r` rejects.
+- Memories: `a` reviews the selected memory, `r` rejects/removes it.
+- Suggestions: `r` removes selected suggestions.
 - Skills: `Enter` opens the selected skill.
 - `q`/`Esc`: quit.
 
 ## Strategic prompt
 
-`djinn share ideas` is the planning layer. It reviews accepted memories,
-deferred memories, candidates, chats, OpenCode watcher state, and local tools,
-then asks for memory cleanup, candidate review, chats to promote, tooling/skill
-ideas, and prioritized next actions.
+`djinn share ideas` is the planning layer. It reviews memories, suggestions,
+chats, OpenCode watcher state, and local tools, then asks for cleanup,
+additional review, chats to promote, tooling/skill ideas, and prioritized next
+actions.
+
+For focused memory cleanup, use the review verb:
+
+```bash
+djinn review memories --dry-run
+djinn review memories --query djinn --dry-run
+djinn review memories --all
+```
+
+`djinn review memories` is advisory only. It asks OpenCode to inspect memories
+as evidence and propose next steps as suggestions. The prompt explicitly tells
+the agent not to mutate the memories directly; it should return exact
+`djinn add suggestion ...` commands for you to review and run manually.
+
+`--dry-run` prints the prompt to the terminal. Without `--dry-run`, Djinn starts
+the OpenCode review in the background and writes files under:
+
+```text
+~/.cache/djinn/reviews/memory-review-<timestamp>.md
+~/.cache/djinn/reviews/memory-review-<timestamp>.prompt.md
+```
+
+On macOS, Djinn sends a notification through `osascript` when the background
+review finishes.

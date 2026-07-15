@@ -7,14 +7,14 @@ Current visible tabs:
 
 - **Tools** — browse local wrappers, aliases, and scripts with previews.
 - **Chats** — select chats and emit grouped review/share prompts.
-- **Candidates** — review pending memory candidates and accept/reject them.
-- **Memories** — review durable accepted memories, evidence, and provenance.
+- **Memories** — review captured lessons, evidence, and provenance.
+- **Suggestions** — review todo-like follow-up items created from memory review.
 - **Skills** — browse reusable `SKILL.md` workflows and open them in an editor.
 
 The current order is intentionally a workflow progression:
 
 ```text
-Tools → Chats → Candidates → Memories → Skills
+Tools → Chats → Memories → Suggestions → Skills
 ```
 
 Future TUI work may group tabs by the scope the user is interested in, such as
@@ -26,13 +26,15 @@ actions are concrete enough to justify a permanent place in the TUI.
 ## Ideas
 
 Keep `djinn share ideas` as the primary interface for now. It already emits a
-pipeline-level prompt from memories, candidates, chats, watcher state, and tools.
+pipeline-level prompt from memories, suggestions, chats, watcher state, and
+tools.
 
 An **Ideas** tab may be useful later if Djinn stores or computes actionable
 insights locally, for example:
 
 - stale memories to prune or rewrite;
-- high-value pending candidates to accept/reject;
+- high-value memories to review;
+- open suggestions to accept/reject;
 - chats worth promoting;
 - tooling or skill opportunities found across recent sessions;
 - prioritized next actions with enough metadata to act on them.
@@ -55,16 +57,16 @@ A **Ctx** tab may be useful later if Djinn contexts become first-class working
 profiles, for example:
 
 - active project/persona selection;
-- scoped memories and candidates;
+- scoped memories and suggestions;
 - default tool roots;
 - OpenCode review/import defaults;
-- per-context prompts or safety rules.
+- per-context prompts or safety constraints.
 
 Entry criteria:
 
 - Djinn has persisted context records with inspectable settings.
 - The tab supports switching, editing, and validating contexts.
-- Context filtering applies to enough resources — tools, chats, candidates,
+- Context filtering applies to enough resources — tools, chats, suggestions,
   memories, and skills — that a TUI selector provides more value than
   `djinn switch ctx <name>`.
 

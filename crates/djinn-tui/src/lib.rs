@@ -11,7 +11,7 @@ use crossterm::terminal::{
 };
 use djinn_chats::ChatRecord;
 use djinn_contexts::ContextRecord;
-use djinn_memory::{MemoryCandidate, MemoryRecord};
+use djinn_memory::{MemoryCandidate, SuggestionRecord};
 use djinn_skills::SkillRecord;
 use djinn_tools::ToolEntry;
 use ratatui::backend::CrosstermBackend;
@@ -41,7 +41,7 @@ pub fn run_dashboard(
     tools: Vec<ToolEntry>,
     chats: Vec<ChatRecord>,
     candidates: Vec<MemoryCandidate>,
-    memories: Vec<MemoryRecord>,
+    suggestions: Vec<SuggestionRecord>,
     skills: Vec<SkillRecord>,
     active_context: Option<ContextRecord>,
     initial_tab: DashboardTab,
@@ -52,10 +52,40 @@ pub fn run_dashboard(
         tools,
         chats,
         candidates,
-        memories,
+        suggestions,
         skills,
         active_context,
         initial_tab,
+        None,
+    );
+    leave_terminal(&mut terminal)?;
+    result
+}
+
+pub fn run_dashboard_with_handler<F>(
+    tools: Vec<ToolEntry>,
+    chats: Vec<ChatRecord>,
+    candidates: Vec<MemoryCandidate>,
+    suggestions: Vec<SuggestionRecord>,
+    skills: Vec<SkillRecord>,
+    active_context: Option<ContextRecord>,
+    initial_tab: DashboardTab,
+    mut on_continue_action: F,
+) -> Result<Option<TuiAction>>
+where
+    F: FnMut(TuiAction) -> Result<()>,
+{
+    let mut terminal = enter_terminal()?;
+    let result = run_dashboard_loop(
+        &mut terminal,
+        tools,
+        chats,
+        candidates,
+        suggestions,
+        skills,
+        active_context,
+        initial_tab,
+        Some(&mut on_continue_action),
     );
     leave_terminal(&mut terminal)?;
     result
@@ -67,7 +97,9 @@ pub enum TuiAction {
     OpenSkill(SkillRecord),
     ShareChats(ChatShareRequest),
     AcceptCandidate(String),
-    RejectCandidate(String),
+    RejectCandidates(Vec<String>),
+    DeleteChats(Vec<String>),
+    DeleteSuggestions(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +133,7 @@ impl DashboardTab {
     }
 }
 
-const DASHBOARD_TABS: [&str; 5] = ["Tools", "Chats", "Candidates", "Memories", "Skills"];
+const DASHBOARD_TABS: [&str; 5] = ["Tools", "Chats", "Memories", "Suggestions", "Skills"];
 
 // Catppuccin Mocha palette.
 const CTP_BASE: Color = Color::Rgb(30, 30, 46);
@@ -271,16 +303,17 @@ fn run_dashboard_loop(
     tools: Vec<ToolEntry>,
     chats: Vec<ChatRecord>,
     candidates: Vec<MemoryCandidate>,
-    memories: Vec<MemoryRecord>,
+    suggestions: Vec<SuggestionRecord>,
     skills: Vec<SkillRecord>,
     active_context: Option<ContextRecord>,
     initial_tab: DashboardTab,
+    mut on_continue_action: Option<&mut dyn FnMut(TuiAction) -> Result<()>>,
 ) -> Result<Option<TuiAction>> {
     let mut app = DashboardApp::new(
         tools,
         chats,
         candidates,
-        memories,
+        suggestions,
         skills,
         active_context,
         initial_tab,
@@ -334,6 +367,7 @@ fn run_dashboard_loop(
                             app.toggle_all();
                         }
                     }
+                    KeyCode::Char('A') => app.toggle_all(),
                     KeyCode::Enter => match app.active_tab {
                         DashboardTab::Tools => {
                             if let Some(tool) = app.tools.selected_tool().cloned() {
@@ -350,11 +384,65 @@ fn run_dashboard_loop(
                     },
                     KeyCode::Char('r') => {
                         if app.active_tab == DashboardTab::Candidates {
-                            if let Some(id) = app.candidates.selected_candidate_id() {
-                                return Ok(Some(TuiAction::RejectCandidate(id)));
+                            let ids = app.candidates.selected_candidate_ids();
+                            if !ids.is_empty() {
+                                let action = TuiAction::RejectCandidates(ids);
+                                if handle_continue_action(
+                                    &mut app,
+                                    &mut on_continue_action,
+                                    action.clone(),
+                                )? {
+                                    continue;
+                                }
+                                return Ok(Some(action));
                             }
                         }
                     }
+                    KeyCode::Char('x') | KeyCode::Delete => match app.active_tab {
+                        DashboardTab::Chats => {
+                            let ids = app.chats.selected_chat_ids();
+                            if !ids.is_empty() {
+                                let action = TuiAction::DeleteChats(ids);
+                                if handle_continue_action(
+                                    &mut app,
+                                    &mut on_continue_action,
+                                    action.clone(),
+                                )? {
+                                    continue;
+                                }
+                                return Ok(Some(action));
+                            }
+                        }
+                        DashboardTab::Candidates => {
+                            let ids = app.candidates.selected_candidate_ids();
+                            if !ids.is_empty() {
+                                let action = TuiAction::RejectCandidates(ids);
+                                if handle_continue_action(
+                                    &mut app,
+                                    &mut on_continue_action,
+                                    action.clone(),
+                                )? {
+                                    continue;
+                                }
+                                return Ok(Some(action));
+                            }
+                        }
+                        DashboardTab::Memories => {
+                            let ids = app.suggestions.selected_suggestion_ids();
+                            if !ids.is_empty() {
+                                let action = TuiAction::DeleteSuggestions(ids);
+                                if handle_continue_action(
+                                    &mut app,
+                                    &mut on_continue_action,
+                                    action.clone(),
+                                )? {
+                                    continue;
+                                }
+                                return Ok(Some(action));
+                            }
+                        }
+                        DashboardTab::Tools | DashboardTab::Skills => {}
+                    },
                     _ => {}
                 }
             }
@@ -362,12 +450,25 @@ fn run_dashboard_loop(
     }
 }
 
+fn handle_continue_action(
+    app: &mut DashboardApp,
+    on_continue_action: &mut Option<&mut dyn FnMut(TuiAction) -> Result<()>>,
+    action: TuiAction,
+) -> Result<bool> {
+    let Some(handler) = on_continue_action.as_deref_mut() else {
+        return Ok(false);
+    };
+    handler(action.clone())?;
+    app.apply_completed_action(&action);
+    Ok(true)
+}
+
 struct DashboardApp {
     active_tab: DashboardTab,
     tools: ToolsApp,
     chats: ChatsApp,
     candidates: CandidatesApp,
-    memories: MemoriesApp,
+    suggestions: SuggestionsApp,
     skills: SkillsApp,
     active_context: Option<ContextRecord>,
 }
@@ -377,7 +478,7 @@ impl DashboardApp {
         tools: Vec<ToolEntry>,
         chats: Vec<ChatRecord>,
         candidates: Vec<MemoryCandidate>,
-        memories: Vec<MemoryRecord>,
+        suggestions: Vec<SuggestionRecord>,
         skills: Vec<SkillRecord>,
         active_context: Option<ContextRecord>,
         initial_tab: DashboardTab,
@@ -387,7 +488,7 @@ impl DashboardApp {
             tools: ToolsApp::new(tools),
             chats: ChatsApp::new(chats),
             candidates: CandidatesApp::new(candidates),
-            memories: MemoriesApp::new(memories),
+            suggestions: SuggestionsApp::new(suggestions),
             skills: SkillsApp::new(skills),
             active_context,
         }
@@ -408,7 +509,7 @@ impl DashboardApp {
             DashboardTab::Tools => self.tools.next(),
             DashboardTab::Chats => self.chats.next(),
             DashboardTab::Candidates => self.candidates.next(),
-            DashboardTab::Memories => self.memories.next(),
+            DashboardTab::Memories => self.suggestions.next(),
             DashboardTab::Skills => self.skills.next(),
         }
     }
@@ -418,7 +519,7 @@ impl DashboardApp {
             DashboardTab::Tools => self.tools.previous(),
             DashboardTab::Chats => self.chats.previous(),
             DashboardTab::Candidates => self.candidates.previous(),
-            DashboardTab::Memories => self.memories.previous(),
+            DashboardTab::Memories => self.suggestions.previous(),
             DashboardTab::Skills => self.skills.previous(),
         }
     }
@@ -428,7 +529,7 @@ impl DashboardApp {
             DashboardTab::Tools => self.tools.scroll_down(),
             DashboardTab::Chats => self.chats.scroll_down(),
             DashboardTab::Candidates => self.candidates.scroll_down(),
-            DashboardTab::Memories => self.memories.scroll_down(),
+            DashboardTab::Memories => self.suggestions.scroll_down(),
             DashboardTab::Skills => self.skills.scroll_down(),
         }
     }
@@ -438,7 +539,7 @@ impl DashboardApp {
             DashboardTab::Tools => self.tools.scroll_up(),
             DashboardTab::Chats => self.chats.scroll_up(),
             DashboardTab::Candidates => self.candidates.scroll_up(),
-            DashboardTab::Memories => self.memories.scroll_up(),
+            DashboardTab::Memories => self.suggestions.scroll_up(),
             DashboardTab::Skills => self.skills.scroll_up(),
         }
     }
@@ -448,7 +549,7 @@ impl DashboardApp {
             DashboardTab::Tools => self.tools.filter.editing,
             DashboardTab::Chats => self.chats.filter.editing,
             DashboardTab::Candidates => self.candidates.filter.editing,
-            DashboardTab::Memories => self.memories.filter.editing,
+            DashboardTab::Memories => self.suggestions.filter.editing,
             DashboardTab::Skills => self.skills.filter.editing,
         }
     }
@@ -458,7 +559,7 @@ impl DashboardApp {
             DashboardTab::Tools => self.tools.toggle_filter(),
             DashboardTab::Chats => self.chats.toggle_filter(),
             DashboardTab::Candidates => self.candidates.toggle_filter(),
-            DashboardTab::Memories => self.memories.toggle_filter(),
+            DashboardTab::Memories => self.suggestions.toggle_filter(),
             DashboardTab::Skills => self.skills.toggle_filter(),
         }
     }
@@ -468,7 +569,7 @@ impl DashboardApp {
             DashboardTab::Tools => self.tools.filter_push(ch),
             DashboardTab::Chats => self.chats.filter_push(ch),
             DashboardTab::Candidates => self.candidates.filter_push(ch),
-            DashboardTab::Memories => self.memories.filter_push(ch),
+            DashboardTab::Memories => self.suggestions.filter_push(ch),
             DashboardTab::Skills => self.skills.filter_push(ch),
         }
     }
@@ -478,7 +579,7 @@ impl DashboardApp {
             DashboardTab::Tools => self.tools.filter_backspace(),
             DashboardTab::Chats => self.chats.filter_backspace(),
             DashboardTab::Candidates => self.candidates.filter_backspace(),
-            DashboardTab::Memories => self.memories.filter_backspace(),
+            DashboardTab::Memories => self.suggestions.filter_backspace(),
             DashboardTab::Skills => self.skills.filter_backspace(),
         }
     }
@@ -488,20 +589,38 @@ impl DashboardApp {
             DashboardTab::Tools => self.tools.filter.editing = false,
             DashboardTab::Chats => self.chats.filter.editing = false,
             DashboardTab::Candidates => self.candidates.filter.editing = false,
-            DashboardTab::Memories => self.memories.filter.editing = false,
+            DashboardTab::Memories => self.suggestions.filter.editing = false,
             DashboardTab::Skills => self.skills.filter.editing = false,
         }
     }
 
     fn toggle_selected(&mut self) {
-        if self.active_tab == DashboardTab::Chats {
-            self.chats.toggle_selected();
+        match self.active_tab {
+            DashboardTab::Chats => self.chats.toggle_selected(),
+            DashboardTab::Candidates => self.candidates.toggle_selected(),
+            DashboardTab::Memories => self.suggestions.toggle_selected(),
+            DashboardTab::Tools | DashboardTab::Skills => {}
         }
     }
 
     fn toggle_all(&mut self) {
-        if self.active_tab == DashboardTab::Chats {
-            self.chats.toggle_all();
+        match self.active_tab {
+            DashboardTab::Chats => self.chats.toggle_all(),
+            DashboardTab::Candidates => self.candidates.toggle_all(),
+            DashboardTab::Memories => self.suggestions.toggle_all(),
+            DashboardTab::Tools | DashboardTab::Skills => {}
+        }
+    }
+
+    fn apply_completed_action(&mut self, action: &TuiAction) {
+        match action {
+            TuiAction::DeleteChats(ids) => self.chats.remove_ids(ids),
+            TuiAction::RejectCandidates(ids) => self.candidates.remove_ids(ids),
+            TuiAction::DeleteSuggestions(ids) => self.suggestions.remove_ids(ids),
+            TuiAction::OpenTool(_)
+            | TuiAction::OpenSkill(_)
+            | TuiAction::ShareChats(_)
+            | TuiAction::AcceptCandidate(_) => {}
         }
     }
 
@@ -533,15 +652,15 @@ impl DashboardApp {
             DashboardTab::Tools => self.tools.draw_body(frame, chunks[1]),
             DashboardTab::Chats => self.chats.draw_body(frame, chunks[1]),
             DashboardTab::Candidates => self.candidates.draw_body(frame, chunks[1]),
-            DashboardTab::Memories => self.memories.draw_body(frame, chunks[1]),
+            DashboardTab::Memories => self.suggestions.draw_body(frame, chunks[1]),
             DashboardTab::Skills => self.skills.draw_body(frame, chunks[1]),
         }
 
         let help = match self.active_tab {
             DashboardTab::Tools => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Enter open • PgUp/PgDn scroll preview • q quit",
-            DashboardTab::Chats => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a all • Enter share • PgUp/PgDn scroll • q quit",
-            DashboardTab::Candidates => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • a accept • r reject • PgUp/PgDn scroll • q quit",
-            DashboardTab::Memories => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • PgUp/PgDn scroll preview • q quit",
+            DashboardTab::Chats => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a all visible • Enter share • x/Delete remove • q quit",
+            DashboardTab::Candidates => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a review memory • A all visible • r/x reject+remove • q quit",
+            DashboardTab::Memories => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a all visible • x/Delete remove suggestion • q quit",
             DashboardTab::Skills => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Enter open • PgUp/PgDn scroll preview • q quit",
         };
         frame.render_widget(Clear, chunks[2]);
@@ -888,11 +1007,30 @@ impl ChatsApp {
     }
 
     fn toggle_all(&mut self) {
-        if self.checked.len() == self.chats.len() {
+        let visible = self.visible_indices();
+        let visible_ids = visible
+            .iter()
+            .map(|idx| self.chats[*idx].id.clone())
+            .collect::<Vec<_>>();
+        if visible_ids.is_empty() {
+            return;
+        }
+        if visible_ids.iter().all(|id| self.checked.contains(id)) {
             self.checked.clear();
         } else {
-            self.checked = self.chats.iter().map(|chat| chat.id.clone()).collect();
+            self.checked = visible_ids.into_iter().collect();
         }
+    }
+
+    fn remove_ids(&mut self, ids: &[String]) {
+        let removed = ids.iter().cloned().collect::<HashSet<_>>();
+        self.chats.retain(|chat| !removed.contains(&chat.id));
+        self.checked.retain(|id| !removed.contains(id));
+        if self.selected >= self.chats.len() {
+            self.selected = self.chats.len().saturating_sub(1);
+        }
+        self.mode = ChatUiMode::Selecting;
+        self.ensure_selection_visible();
     }
 
     fn open_options(&mut self) {
@@ -938,7 +1076,7 @@ impl ChatsApp {
         self.draw_body(frame, chunks[0]);
 
         let help = Paragraph::new(
-            "↑/k ↓/j move • Space select • a all • Enter share options • PgUp/u PgDn/d scroll • q/Esc quit",
+            "↑/k ↓/j move • Space select • a all visible • Enter share options • x/Delete remove • PgUp/u PgDn/d scroll • q/Esc quit",
         )
         .style(dim_style());
         frame.render_widget(Clear, chunks[1]);
@@ -998,7 +1136,7 @@ impl ChatsApp {
         }
         let title = format!(
             "Chats ({} selected, {})",
-            self.selected_chat_ids().len(),
+            self.checked.len(),
             self.filter.label()
         );
         let list = List::new(items)
@@ -1077,19 +1215,21 @@ impl ChatsApp {
     }
 }
 
-struct MemoriesApp {
-    memories: Vec<MemoryRecord>,
+struct SuggestionsApp {
+    suggestions: Vec<SuggestionRecord>,
     selected: usize,
     preview_scroll: u16,
+    checked: HashSet<String>,
     filter: FilterState,
 }
 
-impl MemoriesApp {
-    fn new(memories: Vec<MemoryRecord>) -> Self {
+impl SuggestionsApp {
+    fn new(suggestions: Vec<SuggestionRecord>) -> Self {
         Self {
-            memories,
+            suggestions,
             selected: 0,
             preview_scroll: 0,
+            checked: HashSet::new(),
             filter: FilterState::default(),
         }
     }
@@ -1122,27 +1262,41 @@ impl MemoriesApp {
         self.preview_scroll = self.preview_scroll.saturating_sub(8);
     }
 
-    fn selected_memory(&self) -> Option<&MemoryRecord> {
-        self.memories
+    fn selected_suggestion(&self) -> Option<&SuggestionRecord> {
+        self.suggestions
             .get(self.selected)
-            .filter(|memory| self.memory_matches(memory))
+            .filter(|suggestion| self.suggestion_matches(suggestion))
     }
 
-    fn visible_indices(&self) -> Vec<usize> {
-        self.memories
+    fn selected_suggestion_ids(&self) -> Vec<String> {
+        if self.checked.is_empty() {
+            return self
+                .selected_suggestion()
+                .map(|suggestion| vec![suggestion.id.clone()])
+                .unwrap_or_default();
+        }
+        self.suggestions
             .iter()
-            .enumerate()
-            .filter_map(|(idx, memory)| self.memory_matches(memory).then_some(idx))
+            .filter(|suggestion| self.checked.contains(&suggestion.id))
+            .map(|suggestion| suggestion.id.clone())
             .collect()
     }
 
-    fn memory_matches(&self, memory: &MemoryRecord) -> bool {
-        fuzzy_match(&self.filter.query, &memory.id)
-            || fuzzy_match(&self.filter.query, &memory.text)
-            || fuzzy_match(&self.filter.query, &memory.scope)
-            || fuzzy_match(&self.filter.query, &memory.kind)
-            || fuzzy_match(&self.filter.query, &memory.confidence)
-            || fuzzy_match(&self.filter.query, &memory.not_before)
+    fn visible_indices(&self) -> Vec<usize> {
+        self.suggestions
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, suggestion)| self.suggestion_matches(suggestion).then_some(idx))
+            .collect()
+    }
+
+    fn suggestion_matches(&self, suggestion: &SuggestionRecord) -> bool {
+        fuzzy_match(&self.filter.query, &suggestion.id)
+            || fuzzy_match(&self.filter.query, &suggestion.text)
+            || fuzzy_match(&self.filter.query, &suggestion.status)
+            || fuzzy_match(&self.filter.query, &suggestion.target)
+            || fuzzy_match(&self.filter.query, &suggestion.rationale)
+            || fuzzy_match(&self.filter.query, &suggestion.draft)
     }
 
     fn ensure_selection_visible(&mut self) {
@@ -1170,6 +1324,44 @@ impl MemoriesApp {
         self.ensure_selection_visible();
     }
 
+    fn toggle_selected(&mut self) {
+        if let Some(id) = self
+            .selected_suggestion()
+            .map(|suggestion| suggestion.id.clone())
+        {
+            if !self.checked.insert(id.clone()) {
+                self.checked.remove(&id);
+            }
+        }
+    }
+
+    fn toggle_all(&mut self) {
+        let visible_ids = self
+            .visible_indices()
+            .iter()
+            .map(|idx| self.suggestions[*idx].id.clone())
+            .collect::<Vec<_>>();
+        if visible_ids.is_empty() {
+            return;
+        }
+        if visible_ids.iter().all(|id| self.checked.contains(id)) {
+            self.checked.clear();
+        } else {
+            self.checked = visible_ids.into_iter().collect();
+        }
+    }
+
+    fn remove_ids(&mut self, ids: &[String]) {
+        let removed = ids.iter().cloned().collect::<HashSet<_>>();
+        self.suggestions
+            .retain(|suggestion| !removed.contains(&suggestion.id));
+        self.checked.retain(|id| !removed.contains(id));
+        if self.selected >= self.suggestions.len() {
+            self.selected = self.suggestions.len().saturating_sub(1);
+        }
+        self.ensure_selection_visible();
+    }
+
     fn draw_body(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         let body = Layout::default()
             .direction(Direction::Horizontal)
@@ -1177,18 +1369,36 @@ impl MemoriesApp {
             .split(area);
 
         let visible = self.visible_indices();
-        let items = if self.memories.is_empty() {
-            vec![ListItem::new("No memories recorded").style(dim_style())]
+        let items = if self.suggestions.is_empty() {
+            vec![ListItem::new("No suggestions recorded").style(dim_style())]
         } else if visible.is_empty() {
-            vec![ListItem::new("No memories match filter").style(dim_style())]
+            vec![ListItem::new("No suggestions match filter").style(dim_style())]
         } else {
             visible
                 .iter()
                 .map(|idx| {
-                    let memory = &self.memories[*idx];
+                    let suggestion = &self.suggestions[*idx];
+                    let checked = if self.checked.contains(&suggestion.id) {
+                        "[x]"
+                    } else {
+                        "[ ]"
+                    };
                     ListItem::new(vec![
-                        Line::from(Span::styled(memory.id.clone(), title_style())),
-                        Line::from(Span::styled(truncate_line(&memory.text, 96), dim_style())),
+                        Line::from(vec![
+                            Span::styled(
+                                format!("{checked} "),
+                                if checked == "[x]" {
+                                    Style::default().fg(CTP_GREEN).bg(CTP_BASE)
+                                } else {
+                                    dim_style()
+                                },
+                            ),
+                            Span::styled(suggestion.id.clone(), title_style()),
+                        ]),
+                        Line::from(Span::styled(
+                            truncate_line(&suggestion.text, 96),
+                            dim_style(),
+                        )),
                     ])
                 })
                 .collect::<Vec<_>>()
@@ -1198,7 +1408,11 @@ impl MemoriesApp {
         if !visible.is_empty() {
             state.select(selected_visible_position(self.selected, &visible));
         }
-        let title = format!("Memories ({})", self.filter.label());
+        let title = format!(
+            "Suggestions ({} selected, {})",
+            self.checked.len(),
+            self.filter.label()
+        );
         let list = List::new(items)
             .block(block(&title))
             .style(base_style())
@@ -1208,13 +1422,13 @@ impl MemoriesApp {
         frame.render_stateful_widget(list, body[0], &mut state);
 
         let preview = self
-            .selected_memory()
-            .map(memory_preview)
+            .selected_suggestion()
+            .map(suggestion_preview)
             .unwrap_or_else(|| "No preview available.".to_string());
         let preview_title = self
-            .selected_memory()
-            .map(|memory| compact_id(&memory.id))
-            .unwrap_or_else(|| "Memory".to_string());
+            .selected_suggestion()
+            .map(|suggestion| compact_id(&suggestion.id))
+            .unwrap_or_else(|| "Suggestion".to_string());
         let preview = Paragraph::new(preview)
             .block(block(&preview_title))
             .style(base_style())
@@ -1229,15 +1443,20 @@ struct CandidatesApp {
     candidates: Vec<MemoryCandidate>,
     selected: usize,
     preview_scroll: u16,
+    checked: HashSet<String>,
     filter: FilterState,
 }
 
 impl CandidatesApp {
     fn new(candidates: Vec<MemoryCandidate>) -> Self {
         Self {
-            candidates,
+            candidates: candidates
+                .into_iter()
+                .filter(is_pending_memory)
+                .collect::<Vec<_>>(),
             selected: 0,
             preview_scroll: 0,
+            checked: HashSet::new(),
             filter: FilterState::default(),
         }
     }
@@ -1281,6 +1500,20 @@ impl CandidatesApp {
             .map(|candidate| candidate.id.clone())
     }
 
+    fn selected_candidate_ids(&self) -> Vec<String> {
+        if self.checked.is_empty() {
+            return self
+                .selected_candidate()
+                .map(|candidate| vec![candidate.id.clone()])
+                .unwrap_or_default();
+        }
+        self.candidates
+            .iter()
+            .filter(|candidate| self.checked.contains(&candidate.id))
+            .map(|candidate| candidate.id.clone())
+            .collect()
+    }
+
     fn visible_indices(&self) -> Vec<usize> {
         self.candidates
             .iter()
@@ -1291,7 +1524,6 @@ impl CandidatesApp {
 
     fn candidate_matches(&self, candidate: &MemoryCandidate) -> bool {
         fuzzy_match(&self.filter.query, &candidate.id)
-            || fuzzy_match(&self.filter.query, &candidate.status)
             || fuzzy_match(&self.filter.query, &candidate.text)
             || fuzzy_match(&self.filter.query, &candidate.scope)
             || fuzzy_match(&self.filter.query, &candidate.kind)
@@ -1324,6 +1556,41 @@ impl CandidatesApp {
         self.ensure_selection_visible();
     }
 
+    fn toggle_selected(&mut self) {
+        if let Some(id) = self.selected_candidate_id() {
+            if !self.checked.insert(id.clone()) {
+                self.checked.remove(&id);
+            }
+        }
+    }
+
+    fn toggle_all(&mut self) {
+        let visible_ids = self
+            .visible_indices()
+            .iter()
+            .map(|idx| self.candidates[*idx].id.clone())
+            .collect::<Vec<_>>();
+        if visible_ids.is_empty() {
+            return;
+        }
+        if visible_ids.iter().all(|id| self.checked.contains(id)) {
+            self.checked.clear();
+        } else {
+            self.checked = visible_ids.into_iter().collect();
+        }
+    }
+
+    fn remove_ids(&mut self, ids: &[String]) {
+        let removed = ids.iter().cloned().collect::<HashSet<_>>();
+        self.candidates
+            .retain(|candidate| !removed.contains(&candidate.id));
+        self.checked.retain(|id| !removed.contains(id));
+        if self.selected >= self.candidates.len() {
+            self.selected = self.candidates.len().saturating_sub(1);
+        }
+        self.ensure_selection_visible();
+    }
+
     fn draw_body(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         let body = Layout::default()
             .direction(Direction::Horizontal)
@@ -1332,19 +1599,28 @@ impl CandidatesApp {
 
         let visible = self.visible_indices();
         let items = if self.candidates.is_empty() {
-            vec![ListItem::new("No memory candidates recorded").style(dim_style())]
+            vec![ListItem::new("No memories recorded").style(dim_style())]
         } else if visible.is_empty() {
-            vec![ListItem::new("No candidates match filter").style(dim_style())]
+            vec![ListItem::new("No memories match filter").style(dim_style())]
         } else {
             visible
                 .iter()
                 .map(|idx| {
                     let candidate = &self.candidates[*idx];
+                    let checked = if self.checked.contains(&candidate.id) {
+                        "[x]"
+                    } else {
+                        "[ ]"
+                    };
                     ListItem::new(vec![
                         Line::from(vec![
                             Span::styled(
-                                format!("[{}] ", candidate.status),
-                                candidate_status_style(&candidate.status),
+                                format!("{checked} "),
+                                if checked == "[x]" {
+                                    Style::default().fg(CTP_GREEN).bg(CTP_BASE)
+                                } else {
+                                    dim_style()
+                                },
                             ),
                             Span::styled(candidate.id.clone(), title_style()),
                         ]),
@@ -1361,12 +1637,11 @@ impl CandidatesApp {
         if !visible.is_empty() {
             state.select(selected_visible_position(self.selected, &visible));
         }
-        let pending = self
-            .candidates
-            .iter()
-            .filter(|candidate| candidate.status.eq_ignore_ascii_case("pending"))
-            .count();
-        let title = format!("Candidates ({pending} pending, {})", self.filter.label());
+        let title = format!(
+            "Memories ({} selected, {})",
+            self.checked.len(),
+            self.filter.label()
+        );
         let list = List::new(items)
             .block(block(&title))
             .style(base_style())
@@ -1382,7 +1657,7 @@ impl CandidatesApp {
         let preview_title = self
             .selected_candidate()
             .map(|candidate| compact_id(&candidate.id))
-            .unwrap_or_else(|| "Candidate".to_string());
+            .unwrap_or_else(|| "Memory".to_string());
         let preview = Paragraph::new(preview)
             .block(block(&preview_title))
             .style(base_style())
@@ -1579,6 +1854,10 @@ fn skill_source_style(skill: &SkillRecord) -> Style {
     }
 }
 
+fn is_pending_memory(candidate: &MemoryCandidate) -> bool {
+    candidate.status.trim().is_empty() || candidate.status.eq_ignore_ascii_case("pending")
+}
+
 fn skill_preview(skill: &SkillRecord) -> String {
     let mut out = format!(
         "Name: {}\nSource: {}\nManaged: {}\nPath: {}\nRoot: {}\n",
@@ -1599,34 +1878,33 @@ fn skill_preview(skill: &SkillRecord) -> String {
     sanitize_preview(&out)
 }
 
-fn memory_preview(memory: &MemoryRecord) -> String {
+fn suggestion_preview(suggestion: &SuggestionRecord) -> String {
     let mut out = format!(
         "ID: {}\nCreated: {}\nStatus: {}\n",
-        memory.id, memory.created_at, memory.status
+        suggestion.id, suggestion.created_at, suggestion.status
     );
-    if !memory.scope.trim().is_empty() {
-        out.push_str(&format!("Scope: {}\n", memory.scope));
+    if !suggestion.target.trim().is_empty() {
+        out.push_str(&format!("Target: {}\n", suggestion.target));
     }
-    if !memory.kind.trim().is_empty() {
-        out.push_str(&format!("Kind: {}\n", memory.kind));
+    out.push_str("\nSuggestion:\n");
+    out.push_str(&suggestion.text);
+    if !suggestion.rationale.trim().is_empty() {
+        out.push_str("\n\nRationale:\n");
+        out.push_str(&suggestion.rationale);
     }
-    if !memory.confidence.trim().is_empty() {
-        out.push_str(&format!("Confidence: {}\n", memory.confidence));
+    if !suggestion.draft.trim().is_empty() {
+        out.push_str("\n\nDraft:\n");
+        out.push_str(&suggestion.draft);
     }
-    if !memory.not_before.trim().is_empty() {
-        out.push_str(&format!("Not before: {}\n", memory.not_before));
-    }
-    out.push_str("\n");
-    out.push_str(&memory.text);
-    if !memory.evidence.is_empty() {
+    if !suggestion.evidence.is_empty() {
         out.push_str("\n\nEvidence:\n");
-        for evidence in &memory.evidence {
+        for evidence in &suggestion.evidence {
             out.push_str(&format!("- {}\n", evidence));
         }
     }
-    if !memory.sources.is_empty() {
+    if !suggestion.sources.is_empty() {
         out.push_str("\nSources:\n");
-        for source in &memory.sources {
+        for source in &suggestion.sources {
             let label = if !source.title.trim().is_empty() {
                 source.title.as_str()
             } else if !source.chat_id.trim().is_empty() {
@@ -1720,23 +1998,8 @@ fn truncate_title(value: &str, max_chars: usize) -> String {
     }
 }
 
-fn candidate_status_style(status: &str) -> Style {
-    match status.trim().to_lowercase().as_str() {
-        "pending" => Style::default()
-            .fg(CTP_GREEN)
-            .bg(CTP_BASE)
-            .add_modifier(Modifier::BOLD),
-        "accepted" => Style::default().fg(CTP_LAVENDER).bg(CTP_BASE),
-        "rejected" => Style::default().fg(CTP_PEACH).bg(CTP_BASE),
-        _ => dim_style(),
-    }
-}
-
 fn candidate_preview(candidate: &MemoryCandidate) -> String {
-    let mut out = format!(
-        "ID: {}\nCreated: {}\nStatus: {}\n",
-        candidate.id, candidate.created_at, candidate.status
-    );
+    let mut out = format!("ID: {}\nCreated: {}\n", candidate.id, candidate.created_at);
     if !candidate.scope.trim().is_empty() {
         out.push_str(&format!("Scope: {}\n", candidate.scope));
     }
@@ -1776,7 +2039,7 @@ fn candidate_preview(candidate: &MemoryCandidate) -> String {
             out.push('\n');
         }
     }
-    out.push_str("\nActions: press `a` to accept this candidate or `r` to reject it.\n");
+    out.push_str("\nActions: press `a` to review this memory, Space to select, `A` to select all visible, or `r`/`x`/Delete to reject and remove selected/current memories.\n");
     sanitize_preview(&out)
 }
 
@@ -1885,7 +2148,7 @@ mod tests {
     fn dashboard_tabs_follow_progression_order() {
         assert_eq!(
             DASHBOARD_TABS,
-            ["Tools", "Chats", "Candidates", "Memories", "Skills"]
+            ["Tools", "Chats", "Memories", "Suggestions", "Skills"]
         );
         assert_eq!(DashboardTab::Tools.index(), 0);
         assert_eq!(DashboardTab::Chats.index(), 1);
@@ -1915,13 +2178,72 @@ mod tests {
                 title: "Debugging session".to_string(),
                 captured_at: "2026-07-09".to_string(),
             }],
+            reinforcement_count: 1,
         };
         let preview = candidate_preview(&candidate);
-        assert!(preview.contains("Status: pending"));
+        assert!(!preview.contains("Status:"));
         assert!(preview.contains("Not before: 2026-10-01"));
         assert!(preview.contains("User corrected pip to uv."));
         assert!(preview.contains("Debugging session"));
-        assert!(preview.contains("press `a` to accept"));
+        assert!(preview.contains("review this memory"));
+    }
+
+    #[test]
+    fn memories_app_only_lists_pending_memories() {
+        let pending = MemoryCandidate {
+            id: "pending-memory".to_string(),
+            text: "Review this".to_string(),
+            created_at: "2026-07-15".to_string(),
+            status: "pending".to_string(),
+            scope: String::new(),
+            kind: String::new(),
+            confidence: String::new(),
+            not_before: String::new(),
+            evidence: Vec::new(),
+            sources: Vec::new(),
+            reinforcement_count: 1,
+        };
+        let accepted = MemoryCandidate {
+            id: "accepted-memory".to_string(),
+            text: "Already reviewed".to_string(),
+            status: "accepted".to_string(),
+            ..pending.clone()
+        };
+
+        let app = CandidatesApp::new(vec![pending, accepted]);
+        assert_eq!(app.candidates.len(), 1);
+        assert_eq!(app.candidates[0].id, "pending-memory");
+    }
+
+    #[test]
+    fn suggestion_preview_shows_follow_up_fields_not_memory_metadata() {
+        let suggestion = SuggestionRecord {
+            id: "create-postgres-audit-note".to_string(),
+            text: "Create a Postgres DDL audit cheatsheet.".to_string(),
+            created_at: "2026-07-15".to_string(),
+            status: "open".to_string(),
+            target: "docs".to_string(),
+            rationale: "The memory points to a reusable troubleshooting pattern.".to_string(),
+            draft: "Include pg_stat_all_tables caveats and audit trigger examples.".to_string(),
+            evidence: vec!["User clarified they wanted a Postgres query.".to_string()],
+            sources: vec![djinn_memory::MemorySource {
+                source_type: "memory".to_string(),
+                source: "djinn".to_string(),
+                source_id: "postgres-query-memory".to_string(),
+                chat_id: String::new(),
+                title: "Postgres query clarification".to_string(),
+                captured_at: "2026-07-15".to_string(),
+            }],
+        };
+
+        let preview = suggestion_preview(&suggestion);
+        assert!(preview.contains("Target: docs"));
+        assert!(preview.contains("Suggestion:\nCreate a Postgres DDL audit cheatsheet."));
+        assert!(preview.contains("Rationale:"));
+        assert!(preview.contains("Draft:"));
+        assert!(preview.contains("Postgres query clarification"));
+        assert!(!preview.contains("Kind: rule-proposal"));
+        assert!(!preview.contains("Confidence:"));
     }
 
     #[test]
