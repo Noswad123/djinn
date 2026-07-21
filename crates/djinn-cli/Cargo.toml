@@ -13,6 +13,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
+djinn-agent = { path = "../djinn-agent" }
 djinn-chats = { path = "../djinn-chats" }
 djinn-contexts = { path = "../djinn-contexts" }
 djinn-core = { path = "../djinn-core" }
@@ -24,3 +25,4 @@ djinn-suggest = { path = "../djinn-suggest" }
 djinn-tui = { path = "../djinn-tui" }
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true

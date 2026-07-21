@@ -10,11 +10,16 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use djinn_agent::{
+    AgentRuntime, ModelMessage, ModelRequest, ModelRole, OpenAiClient, ToolRegistry,
+};
 use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
-    ActionRecord, ActionStore, CandidateStore, IdeaRecord, IdeaStore, MemoryCandidate, MemoryInput,
-    MemoryRecord, MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
+    ActionRecord, ActionStore, AgentSessionEvent, AgentSessionEventKind, AgentSessionFilter,
+    AgentSessionId, AgentSessionMeta, AgentSessionStore, CandidateStore, IdeaRecord, IdeaStore,
+    JsonlAgentSessionStore, MemoryCandidate, MemoryInput, MemoryRecord, MemorySource,
+    SuggestionInput, SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -76,6 +81,8 @@ enum Command {
     Switch(SwitchArgs),
     /// Open an item in the user's editor.
     Open(OpenArgs),
+    /// Run or inspect Djinn-native agent sessions.
+    Agent(AgentArgs),
     /// Open the unified terminal dashboard.
     Tui(TuiArgs),
 }
@@ -541,6 +548,36 @@ enum OpenNoun {
     Tool(OpenToolArgs),
 }
 
+#[derive(Debug, Args)]
+struct AgentArgs {
+    #[command(subcommand)]
+    command: AgentCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentCommand {
+    /// Manage Djinn-native agent sessions.
+    Session(AgentSessionArgs),
+    /// Record a non-interactive prompt in an agent session.
+    Ask(AgentAskArgs),
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionArgs {
+    #[command(subcommand)]
+    command: AgentSessionCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentSessionCommand {
+    /// Create an empty agent session.
+    New(AgentSessionNewArgs),
+    /// List agent sessions.
+    List(AgentSessionListArgs),
+    /// Show one agent session.
+    Show(AgentSessionShowArgs),
+}
+
 #[derive(Debug, Args, Clone)]
 struct ToolsScope {
     /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
@@ -700,6 +737,80 @@ struct TuiArgs {
     /// Editor command for opening tools. Defaults to VISUAL, then EDITOR, then nvim.
     #[arg(long)]
     editor: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionNewArgs {
+    /// Human-friendly session title.
+    #[arg(long)]
+    title: Option<String>,
+    /// Workspace path for the session. Defaults to the current directory.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    /// Agent profile name.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// Session source label.
+    #[arg(long, default_value = "djinn-agent")]
+    source: String,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionListArgs {
+    /// Filter by exact workspace string.
+    #[arg(long)]
+    workspace: Option<String>,
+    /// Filter by exact agent profile.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Filter by exact source label.
+    #[arg(long)]
+    source: Option<String>,
+    /// Maximum sessions to list.
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionShowArgs {
+    /// Agent session id.
+    id: String,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentAskArgs {
+    /// Prompt to send to OpenAI.
+    prompt: String,
+    /// Human-friendly session title. Defaults to a trimmed prompt preview.
+    #[arg(long)]
+    title: Option<String>,
+    /// Workspace path for the session. Defaults to the current directory.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    /// Agent profile name.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// OpenAI model to use. Defaults to DJINN_OPENAI_MODEL or gpt-4o-mini.
+    #[arg(long)]
+    model: Option<String>,
+    /// OpenAI API key. Defaults to OPENAI_API_KEY.
+    #[arg(long = "api-key")]
+    api_key: Option<String>,
+    /// OpenAI-compatible base URL. Defaults to OPENAI_BASE_URL or https://api.openai.com/v1.
+    #[arg(long = "base-url")]
+    base_url: Option<String>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1145,6 +1256,7 @@ fn main() -> Result<()> {
         Command::Status(args) => run_status(args),
         Command::Switch(args) => run_switch(args),
         Command::Open(args) => run_open(args),
+        Command::Agent(args) => run_agent(args),
         Command::Tui(args) => run_tui(args),
     }
 }
@@ -1361,6 +1473,311 @@ fn run_switch(args: SwitchArgs) -> Result<()> {
 fn run_open(args: OpenArgs) -> Result<()> {
     match args.noun {
         OpenNoun::Tool(args) => open_tool(args),
+    }
+}
+
+fn run_agent(args: AgentArgs) -> Result<()> {
+    match args.command {
+        AgentCommand::Session(args) => run_agent_session(args),
+        AgentCommand::Ask(args) => agent_ask(args),
+    }
+}
+
+fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
+    match args.command {
+        AgentSessionCommand::New(args) => agent_session_new(args),
+        AgentSessionCommand::List(args) => agent_session_list(args),
+        AgentSessionCommand::Show(args) => agent_session_show(args),
+    }
+}
+
+fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
+    let meta = AgentSessionMeta {
+        title: args
+            .title
+            .unwrap_or_else(|| "Untitled agent session".to_string()),
+        workspace: resolve_agent_workspace(args.workspace)?,
+        profile: args.profile,
+        source: args.source,
+        ..AgentSessionMeta::default()
+    };
+    let store = agent_session_store();
+    let id = store.create_session(meta)?;
+    let session = store.load_session(&id)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&session)?);
+    } else {
+        println!("Agent session created [{}]: {}", id, session.meta.title);
+        println!("Workspace: {}", session.meta.workspace);
+        println!("Path: {}", store.session_file_path(&id).display());
+    }
+    Ok(())
+}
+
+fn agent_session_list(args: AgentSessionListArgs) -> Result<()> {
+    let sessions = agent_session_store().list_sessions(AgentSessionFilter {
+        workspace: args.workspace,
+        profile: args.profile,
+        source: args.source,
+        limit: args.limit,
+    })?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&sessions)?);
+    } else if sessions.is_empty() {
+        println!("Agent sessions are empty.");
+    } else {
+        for (idx, session) in sessions.iter().enumerate() {
+            println!(
+                "  {}. [{}] {} — {} events — {}",
+                idx + 1,
+                session.id,
+                if session.title.is_empty() {
+                    "Untitled agent session"
+                } else {
+                    &session.title
+                },
+                session.event_count,
+                session.workspace
+            );
+        }
+        println!("\nTotal: {} agent sessions", sessions.len());
+    }
+    Ok(())
+}
+
+fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
+    let id = AgentSessionId::new(args.id);
+    let session = agent_session_store().load_session(&id)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&session)?);
+        return Ok(());
+    }
+
+    println!(
+        "# {}",
+        if session.meta.title.is_empty() {
+            "Untitled agent session"
+        } else {
+            &session.meta.title
+        }
+    );
+    println!("ID: {}", session.id);
+    println!("Workspace: {}", session.meta.workspace);
+    println!("Profile: {}", session.meta.profile);
+    println!("Source: {}", session.meta.source);
+    println!("Created: {}", session.meta.created_at);
+    if session.events.is_empty() {
+        println!("\nNo events recorded.");
+    } else {
+        println!("\nEvents:");
+        for event in &session.events {
+            println!("- {} {}", event.created_at, format_agent_event(event));
+        }
+    }
+    Ok(())
+}
+
+fn agent_ask(args: AgentAskArgs) -> Result<()> {
+    let prompt = args.prompt;
+    let model = resolve_agent_model(args.model)?;
+    let title = args
+        .title
+        .unwrap_or_else(|| prompt_title(&prompt, "Agent prompt"));
+    let meta = AgentSessionMeta {
+        title,
+        workspace: resolve_agent_workspace(args.workspace)?,
+        profile: args.profile,
+        source: "djinn-agent".to_string(),
+        ..AgentSessionMeta::default()
+    };
+    let store = agent_session_store();
+    let id = store.create_session(meta)?;
+    store.append_event(
+        &id,
+        AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+            content: prompt.clone(),
+        }),
+    )?;
+    let response = complete_openai_prompt(
+        &store,
+        &id,
+        prompt,
+        model.clone(),
+        args.api_key,
+        args.base_url,
+    )?;
+    let session = store.load_session(&id)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "completed",
+                "provider": "openai",
+                "model": model,
+                "response": response,
+                "session": session,
+            }))?
+        );
+    } else {
+        println!("{}", response.message.content);
+        println!("\nAgent session [{}]: {}", id, session.meta.title);
+        println!("Path: {}", store.session_file_path(&id).display());
+    }
+    Ok(())
+}
+
+fn complete_openai_prompt(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    prompt: String,
+    model: String,
+    api_key: Option<String>,
+    base_url: Option<String>,
+) -> Result<djinn_agent::ModelResponse> {
+    let api_key = api_key
+        .or_else(|| env::var("OPENAI_API_KEY").ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!("OPENAI_API_KEY is required; pass --api-key or set OPENAI_API_KEY")
+        })?;
+    let base_url = base_url
+        .or_else(|| env::var("OPENAI_BASE_URL").ok())
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+    let client = OpenAiClient::with_base_url(api_key, base_url);
+    let runtime = AgentRuntime::new(client, store.clone(), ToolRegistry::new());
+    let tokio = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .with_context(|| "creating Tokio runtime for OpenAI request")?;
+    tokio.block_on(runtime.complete_once(
+        id,
+        ModelRequest {
+            model,
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: prompt,
+            }],
+            tools: Vec::new(),
+        },
+    ))
+}
+
+fn resolve_agent_model(explicit: Option<String>) -> Result<String> {
+    if let Some(model) = explicit
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+    {
+        return Ok(model);
+    }
+    if let Ok(model) = env::var("DJINN_OPENAI_MODEL") {
+        let model = model.trim().to_string();
+        if !model.is_empty() {
+            return Ok(model);
+        }
+    }
+    if let Some(model) = opencode_default_model()? {
+        return Ok(model);
+    }
+    Ok("gpt-4o-mini".to_string())
+}
+
+fn opencode_default_model() -> Result<Option<String>> {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    opencode_default_model_from_paths(&opencode_model_config_paths(&cwd))
+}
+
+fn opencode_model_config_paths(cwd: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    paths.push(cwd.join(".opencode.json"));
+    paths.push(default_opencode_config_path());
+    paths.push(
+        djinn_core::home_dir()
+            .join(".config")
+            .join("opencode")
+            .join(".opencode.json"),
+    );
+    if let Some(xdg_config) = env::var_os("XDG_CONFIG_HOME") {
+        paths.push(
+            PathBuf::from(xdg_config)
+                .join("opencode")
+                .join(".opencode.json"),
+        );
+    }
+    paths.push(djinn_core::home_dir().join(".opencode.json"));
+    paths
+}
+
+fn opencode_default_model_from_paths(paths: &[PathBuf]) -> Result<Option<String>> {
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("reading OpenCode config {}", path.display()))?;
+        if let Some(model) = opencode_default_model_from_content(&content)
+            .with_context(|| format!("parsing OpenCode config {}", path.display()))?
+        {
+            return Ok(Some(model));
+        }
+    }
+    Ok(None)
+}
+
+fn opencode_default_model_from_content(content: &str) -> Result<Option<String>> {
+    let value: Value = serde_json::from_str(content)?;
+    for pointer in [
+        "/agents/coder/model",
+        "/agents/default/model",
+        "/agent/model",
+        "/model",
+    ] {
+        if let Some(model) = value.pointer(pointer).and_then(Value::as_str) {
+            let model = model.trim();
+            if !model.is_empty() {
+                return Ok(Some(model.to_string()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn resolve_agent_workspace(path: Option<PathBuf>) -> Result<String> {
+    let path = path.unwrap_or(env::current_dir().with_context(|| "reading current directory")?);
+    Ok(path
+        .canonicalize()
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string())
+}
+
+fn prompt_title(prompt: &str, fallback: &str) -> String {
+    let title = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or(fallback);
+    title.chars().take(80).collect()
+}
+
+fn format_agent_event(event: &AgentSessionEvent) -> String {
+    match &event.kind {
+        AgentSessionEventKind::SessionCreated { .. } => "session created".to_string(),
+        AgentSessionEventKind::UserMessage { content } => {
+            format!("user: {}", prompt_title(content, "(empty)"))
+        }
+        AgentSessionEventKind::AssistantMessage { content } => {
+            format!("assistant: {}", prompt_title(content, "(empty)"))
+        }
+        AgentSessionEventKind::ToolCall { id, name, .. } => format!("tool call {id}: {name}"),
+        AgentSessionEventKind::ToolResult { id, success, .. } => {
+            format!(
+                "tool result {id}: {}",
+                if *success { "ok" } else { "failed" }
+            )
+        }
+        AgentSessionEventKind::Summary { content } => {
+            format!("summary: {}", prompt_title(content, "(empty)"))
+        }
+        AgentSessionEventKind::Checkpoint { label } => format!("checkpoint: {label}"),
     }
 }
 
@@ -4356,6 +4773,10 @@ fn context_store() -> ContextStore {
     ContextStore::default_in(&djinn_core::default_data_dir())
 }
 
+fn agent_session_store() -> JsonlAgentSessionStore {
+    JsonlAgentSessionStore::default_in(&djinn_core::default_data_dir())
+}
+
 fn skill_records() -> Result<Vec<SkillRecord>> {
     let store = skill_store();
     let mut roots = store.default_roots();
@@ -4462,6 +4883,39 @@ mod tests {
             patch_opencode_config_content(Some(&first), "./plugins/djinn-watch.js").unwrap();
         assert!(!changed);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn opencode_default_model_reads_coder_agent_model() {
+        let model = opencode_default_model_from_content(
+            r#"{
+              "agents": {
+                "coder": { "model": "gpt-4.1" },
+                "task": { "model": "gpt-4.1-mini" }
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(model.as_deref(), Some("gpt-4.1"));
+    }
+
+    #[test]
+    fn opencode_default_model_uses_first_existing_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-opencode-model-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("missing.json");
+        let first = dir.join("first.json");
+        let second = dir.join("second.json");
+        fs::write(&first, r#"{"agents":{"coder":{"model":"gpt-4.1"}}}"#).unwrap();
+        fs::write(&second, r#"{"agents":{"coder":{"model":"gpt-5"}}}"#).unwrap();
+
+        let model = opencode_default_model_from_paths(&[missing, first, second]).unwrap();
+        assert_eq!(model.as_deref(), Some("gpt-4.1"));
     }
 
     #[test]

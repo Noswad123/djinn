@@ -7,6 +7,12 @@ use chrono::Local;
 use djinn_core::ensure_parent;
 use serde::{Deserialize, Serialize};
 
+pub mod agent_sessions;
+pub use agent_sessions::{
+    AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionFilter, AgentSessionId,
+    AgentSessionMeta, AgentSessionStore, AgentSessionSummary, JsonlAgentSessionStore,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MemoryRecord {
     #[serde(default)]
