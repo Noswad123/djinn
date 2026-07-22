@@ -137,8 +137,6 @@ These are important but need more product/design detail before implementation.
 
 ### Mutation tools
 
-- Decide whether `apply_patch` should support rename/move sections or keep those
-  as explicit delete/add pairs.
 - Design rollback/file-history storage for untracked files and non-git workspaces
   now that patch summaries and image metadata are present in tool results.
 - Decide how an interactive permission prompt should preview and approve patch

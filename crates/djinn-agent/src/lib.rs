@@ -1302,13 +1302,13 @@ impl AgentTool for ApplyPatchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "apply_patch".to_string(),
-            description: "Apply a structured, reversible patch inside the workspace. Supports *** Add File, *** Update File, and *** Delete File sections in the same patch envelope used by Djinn/OpenCode-style patch tools. Mutations are allowed by default but blocked for sensitive/system paths and paths outside the workspace.".to_string(),
+            description: "Apply a structured, reversible patch inside the workspace. Supports *** Add File, *** Update File, *** Delete File, and *** Move to sections in the same patch envelope used by Djinn/OpenCode-style patch tools. Mutations are allowed by default but blocked for sensitive/system paths and paths outside the workspace.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "patch": {
                         "type": "string",
-                        "description": "Patch text beginning with *** Begin Patch and ending with *** End Patch. New file lines must start with '+'. Update hunks use @@ markers with context lines starting with space, removed lines with '-', and added lines with '+'."
+                        "description": "Patch text beginning with *** Begin Patch and ending with *** End Patch. New file lines must start with '+'. Update hunks use @@ markers with context lines starting with space, removed lines with '-', and added lines with '+'. Place *** Move to: <path> immediately after *** Update File: <path> to rename/move a file, optionally with hunks."
                     }
                 },
                 "required": ["patch"]
@@ -1330,30 +1330,11 @@ impl AgentTool for ApplyPatchTool {
         let mut summaries = Vec::new();
 
         for operation in operations {
-            let path = resolve_mutation_path(&workspace, operation.path())?;
-            let resource = path.display().to_string();
-            self.permissions.assert_allowed("apply_patch", &resource)?;
-            let relative_path = path
-                .strip_prefix(&workspace)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            let before = file_snapshot(&path)?;
-            let git_status_before = git_status_short(&workspace, &path);
-            let change = apply_patch_operation(operation, &path)?;
-            let after = file_snapshot(&path)?;
-            let git_status_after = git_status_short(&workspace, &path);
-            summaries.push(json!({
-                "operation": change.operation,
-                "path": path.display().to_string(),
-                "relative_path": relative_path,
-                "lines_added": change.lines_added,
-                "lines_removed": change.lines_removed,
-                "preimage": before,
-                "postimage": after,
-                "git_status_before": git_status_before,
-                "git_status_after": git_status_after,
-            }));
+            summaries.push(apply_patch_operation_summary(
+                operation,
+                &workspace,
+                &self.permissions,
+            )?);
         }
 
         Ok(ToolResult {
@@ -1500,19 +1481,22 @@ struct ApplyPatchInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PatchOperation {
-    Add { path: String, lines: Vec<String> },
-    Update { path: String, hunks: Vec<PatchHunk> },
-    Delete { path: String },
-}
-
-impl PatchOperation {
-    fn path(&self) -> &str {
-        match self {
-            PatchOperation::Add { path, .. }
-            | PatchOperation::Update { path, .. }
-            | PatchOperation::Delete { path } => path,
-        }
-    }
+    Add {
+        path: String,
+        lines: Vec<String>,
+    },
+    Update {
+        path: String,
+        hunks: Vec<PatchHunk>,
+    },
+    Move {
+        path: String,
+        new_path: String,
+        hunks: Vec<PatchHunk>,
+    },
+    Delete {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1636,6 +1620,13 @@ fn parse_patch_operations(patch: &str) -> Result<Vec<PatchOperation>> {
             continue;
         }
         if let Some(path) = line.strip_prefix("*** Update File: ") {
+            let mut move_to = None;
+            if let Some(next) = lines.peek().copied() {
+                if let Some(new_path) = next.strip_prefix("*** Move to: ") {
+                    move_to = Some(non_empty_patch_path(new_path)?);
+                    lines.next();
+                }
+            }
             let mut hunks = Vec::new();
             let mut current: Option<PatchHunk> = None;
             while let Some(next) = lines.peek().copied() {
@@ -1675,14 +1666,23 @@ fn parse_patch_operations(patch: &str) -> Result<Vec<PatchOperation>> {
                 }
                 hunks.push(hunk);
             }
-            if hunks.is_empty() {
+            if hunks.is_empty() && move_to.is_none() {
                 bail!("update patch for {path} contains no hunks");
             }
-            operations.push(PatchOperation::Update {
-                path: non_empty_patch_path(path)?,
-                hunks,
-            });
+            let path = non_empty_patch_path(path)?;
+            if let Some(new_path) = move_to {
+                operations.push(PatchOperation::Move {
+                    path,
+                    new_path,
+                    hunks,
+                });
+            } else {
+                operations.push(PatchOperation::Update { path, hunks });
+            }
             continue;
+        }
+        if line.starts_with("*** Move to: ") {
+            bail!("move patch line must appear immediately after *** Update File");
         }
         if let Some(path) = line.strip_prefix("*** Delete File: ") {
             operations.push(PatchOperation::Delete {
@@ -1704,11 +1704,101 @@ fn non_empty_patch_path(path: &str) -> Result<String> {
     Ok(path.to_string())
 }
 
+fn apply_patch_operation_summary(
+    operation: PatchOperation,
+    workspace: &Path,
+    permissions: &PermissionPolicy,
+) -> Result<Value> {
+    match operation {
+        PatchOperation::Move {
+            path,
+            new_path,
+            hunks,
+        } => {
+            let source = resolve_mutation_path(workspace, &path)?;
+            let destination = resolve_mutation_path(workspace, &new_path)?;
+            let source_resource = source.display().to_string();
+            let destination_resource = destination.display().to_string();
+            permissions.assert_allowed("apply_patch", &source_resource)?;
+            permissions.assert_allowed("apply_patch", &destination_resource)?;
+            let relative_path = source
+                .strip_prefix(workspace)
+                .unwrap_or(&source)
+                .to_string_lossy()
+                .to_string();
+            let relative_new_path = destination
+                .strip_prefix(workspace)
+                .unwrap_or(&destination)
+                .to_string_lossy()
+                .to_string();
+            let before = file_snapshot(&source)?;
+            let destination_before = file_snapshot(&destination)?;
+            let git_status_before = git_status_short(workspace, &source);
+            let new_path_git_status_before = git_status_short(workspace, &destination);
+            let change = apply_move_file(&source, &destination, hunks)?;
+            let after = file_snapshot(&source)?;
+            let destination_after = file_snapshot(&destination)?;
+            let git_status_after = git_status_short(workspace, &source);
+            let new_path_git_status_after = git_status_short(workspace, &destination);
+            Ok(json!({
+                "operation": change.operation,
+                "path": source.display().to_string(),
+                "relative_path": relative_path,
+                "new_path": destination.display().to_string(),
+                "relative_new_path": relative_new_path,
+                "lines_added": change.lines_added,
+                "lines_removed": change.lines_removed,
+                "preimage": before,
+                "postimage": after,
+                "new_path_preimage": destination_before,
+                "new_path_postimage": destination_after,
+                "git_status_before": git_status_before,
+                "git_status_after": git_status_after,
+                "new_path_git_status_before": new_path_git_status_before,
+                "new_path_git_status_after": new_path_git_status_after,
+            }))
+        }
+        other => {
+            let path = match &other {
+                PatchOperation::Add { path, .. }
+                | PatchOperation::Update { path, .. }
+                | PatchOperation::Delete { path } => path,
+                PatchOperation::Move { .. } => unreachable!("move handled above"),
+            };
+            let path = resolve_mutation_path(workspace, path)?;
+            let resource = path.display().to_string();
+            permissions.assert_allowed("apply_patch", &resource)?;
+            let relative_path = path
+                .strip_prefix(workspace)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            let before = file_snapshot(&path)?;
+            let git_status_before = git_status_short(workspace, &path);
+            let change = apply_patch_operation(other, &path)?;
+            let after = file_snapshot(&path)?;
+            let git_status_after = git_status_short(workspace, &path);
+            Ok(json!({
+                "operation": change.operation,
+                "path": path.display().to_string(),
+                "relative_path": relative_path,
+                "lines_added": change.lines_added,
+                "lines_removed": change.lines_removed,
+                "preimage": before,
+                "postimage": after,
+                "git_status_before": git_status_before,
+                "git_status_after": git_status_after,
+            }))
+        }
+    }
+}
+
 fn apply_patch_operation(operation: PatchOperation, path: &Path) -> Result<AppliedPatchChange> {
     match operation {
         PatchOperation::Add { lines, .. } => apply_add_file(path, lines),
         PatchOperation::Update { hunks, .. } => apply_update_file(path, hunks),
         PatchOperation::Delete { .. } => apply_delete_file(path),
+        PatchOperation::Move { .. } => unreachable!("move operations need source and destination"),
     }
 }
 
@@ -1738,6 +1828,65 @@ fn apply_update_file(path: &Path, hunks: Vec<PatchHunk>) -> Result<AppliedPatchC
     }
     let content = fs::read_to_string(path)
         .with_context(|| format!("reading update target {}", path.display()))?;
+    let (updated, added, removed) = apply_hunks_to_content(&content, &hunks, path)?;
+    fs::write(path, updated)
+        .with_context(|| format!("writing update target {}", path.display()))?;
+    Ok(AppliedPatchChange {
+        operation: "update",
+        lines_added: added,
+        lines_removed: removed,
+    })
+}
+
+fn apply_move_file(
+    source: &Path,
+    destination: &Path,
+    hunks: Vec<PatchHunk>,
+) -> Result<AppliedPatchChange> {
+    if !source.is_file() {
+        bail!("move source is not a file: {}", source.display());
+    }
+    if destination.exists() {
+        bail!("move destination already exists: {}", destination.display());
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating directory {}", parent.display()))?;
+    }
+    if hunks.is_empty() {
+        fs::rename(source, destination).with_context(|| {
+            format!(
+                "moving file {} to {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+        return Ok(AppliedPatchChange {
+            operation: "move",
+            lines_added: 0,
+            lines_removed: 0,
+        });
+    }
+
+    let content = fs::read_to_string(source)
+        .with_context(|| format!("reading move source {}", source.display()))?;
+    let (updated, added, removed) = apply_hunks_to_content(&content, &hunks, source)?;
+    fs::write(destination, updated)
+        .with_context(|| format!("writing move destination {}", destination.display()))?;
+    fs::remove_file(source)
+        .with_context(|| format!("removing move source {}", source.display()))?;
+    Ok(AppliedPatchChange {
+        operation: "move",
+        lines_added: added,
+        lines_removed: removed,
+    })
+}
+
+fn apply_hunks_to_content(
+    content: &str,
+    hunks: &[PatchHunk],
+    path: &Path,
+) -> Result<(String, usize, usize)> {
     let had_trailing_newline = content.ends_with('\n');
     let mut lines = content.lines().map(str::to_string).collect::<Vec<_>>();
     let mut cursor = 0usize;
@@ -1788,13 +1937,7 @@ fn apply_update_file(path: &Path, hunks: Vec<PatchHunk>) -> Result<AppliedPatchC
     if had_trailing_newline && !updated.is_empty() {
         updated.push('\n');
     }
-    fs::write(path, updated)
-        .with_context(|| format!("writing update target {}", path.display()))?;
-    Ok(AppliedPatchChange {
-        operation: "update",
-        lines_added: added,
-        lines_removed: removed,
-    })
+    Ok((updated, added, removed))
 }
 
 fn apply_delete_file(path: &Path) -> Result<AppliedPatchChange> {
@@ -2416,6 +2559,64 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("destructive-action guardrail"));
+    }
+
+    #[test]
+    fn apply_patch_tool_moves_files_with_optional_hunks() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-apply-patch-move-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/old.rs"),
+            "pub fn answer() -> i32 {\n    41\n}\n",
+        )
+        .unwrap();
+        let tool = ApplyPatchTool::new(&root);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"patch": "*** Begin Patch\n*** Update File: src/old.rs\n*** Move to: src/new.rs\n@@\n pub fn answer() -> i32 {\n-    41\n+    42\n }\n*** End Patch"})))
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["summary"][0]["operation"], "move");
+        assert_eq!(result.output["summary"][0]["relative_path"], "src/old.rs");
+        assert_eq!(
+            result.output["summary"][0]["relative_new_path"],
+            "src/new.rs"
+        );
+        assert_eq!(result.output["summary"][0]["lines_added"], 1);
+        assert_eq!(result.output["summary"][0]["lines_removed"], 1);
+        assert!(!root.join("src/old.rs").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("src/new.rs")).unwrap(),
+            "pub fn answer() -> i32 {\n    42\n}\n"
+        );
+    }
+
+    #[test]
+    fn apply_patch_tool_blocks_move_destination_outside_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-apply-patch-move-outside-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("old.txt"), "old\n").unwrap();
+        let tool = ApplyPatchTool::new(&root);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let error = runtime
+            .block_on(tool.invoke(json!({"patch": "*** Begin Patch\n*** Update File: old.txt\n*** Move to: ../new.txt\n*** End Patch"})))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("outside workspace"));
+        assert!(root.join("old.txt").exists());
     }
 
     #[test]

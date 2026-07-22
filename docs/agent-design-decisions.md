@@ -213,8 +213,8 @@ Implemented mutation tool:
   editing.
 - It accepts the structured patch envelope used by Djinn/OpenCode-style patch
   tools, beginning with `*** Begin Patch` and ending with `*** End Patch`.
-- It applies file-oriented add, update, and delete operations inside the current
-  workspace. Rename/move remains future work.
+- It applies file-oriented add, update, delete, and rename/move operations inside
+  the current workspace.
 - Prefer patches because they are inspectable, reviewable, and easier to record
   in sessions than unconstrained file writes.
 
@@ -265,8 +265,8 @@ The first non-interactive agent slice is implemented as:
 6. A default-on shell tool for local inspection/build/test commands, bounded by
    timeout and destructive-action guardrails.
 7. A default-on `apply_patch` tool for workspace-scoped file additions, updates,
-   and deletions, with sensitive/system path guardrails, git dirty-state
-   reporting, and preimage/postimage metadata in tool results.
+   deletions, and rename/move operations, with sensitive/system path guardrails,
+   git dirty-state reporting, and preimage/postimage metadata in tool results.
 8. CLI commands for session creation/list/show and one-shot prompting:
    `djinn agent session new`, `djinn agent session list`,
    `djinn agent session show`, and `djinn agent ask`.
