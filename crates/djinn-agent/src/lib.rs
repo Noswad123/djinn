@@ -1910,6 +1910,9 @@ fn preview_patch_operation(
                 "lines_removed": 0,
                 "preimage": file_snapshot(&path)?,
                 "git_status_before": git_status_short(workspace, &path),
+                "hunks": [{
+                    "lines": lines.iter().map(|content| json!({"kind": "add", "content": content})).collect::<Vec<_>>()
+                }],
             }))
         }
         PatchOperation::Update { path, hunks } => {
@@ -1938,6 +1941,7 @@ fn preview_patch_operation(
                 "lines_removed": count_file_lines(&path),
                 "preimage": file_snapshot(&path)?,
                 "git_status_before": git_status_short(workspace, &path),
+                "hunks": delete_preview_hunks(&path),
             }))
         }
     }
@@ -1993,6 +1997,17 @@ fn preview_hunks(hunks: &[PatchHunk]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+fn delete_preview_hunks(path: &Path) -> Vec<Value> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|content| {
+            vec![json!({
+                "lines": content.lines().map(|line| json!({"kind": "remove", "content": line})).collect::<Vec<_>>()
+            })]
+        })
+        .unwrap_or_default()
 }
 
 fn count_file_lines(path: &Path) -> Option<usize> {

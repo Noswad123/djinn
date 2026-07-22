@@ -879,26 +879,7 @@ struct TerminalPermissionGate;
 impl PermissionGate for TerminalPermissionGate {
     async fn approve(&self, request: PermissionRequest) -> Result<PermissionDecision> {
         eprintln!("\nPermission approval required: {}", request.description);
-        if let Some(preview) = request.metadata.get("preview").and_then(Value::as_array) {
-            for item in preview {
-                let operation = item["operation"].as_str().unwrap_or("operation");
-                let path = item["relative_path"]
-                    .as_str()
-                    .or_else(|| item["path"].as_str())
-                    .unwrap_or("<unknown>");
-                let added = item["lines_added"].as_u64().unwrap_or_default();
-                let removed = item["lines_removed"].as_u64().unwrap_or_default();
-                eprintln!("- {operation} {path} (+{added}/-{removed})");
-                if let Some(new_path) = item["relative_new_path"]
-                    .as_str()
-                    .or_else(|| item["new_path"].as_str())
-                {
-                    eprintln!("  -> {new_path}");
-                }
-            }
-        } else {
-            eprintln!("{}", serde_json::to_string_pretty(&request.metadata)?);
-        }
+        eprint!("{}", format_permission_preview(&request.metadata)?);
         eprint!("Approve this patch? [y/N] ");
         io::stderr().flush()?;
         let mut answer = String::new();
@@ -910,6 +891,47 @@ impl PermissionGate for TerminalPermissionGate {
             Ok(PermissionDecision::Deny)
         }
     }
+}
+
+fn format_permission_preview(metadata: &Value) -> Result<String> {
+    let Some(preview) = metadata.get("preview").and_then(Value::as_array) else {
+        return Ok(format!("{}\n", serde_json::to_string_pretty(metadata)?));
+    };
+    let mut output = String::new();
+    for item in preview {
+        let operation = item["operation"].as_str().unwrap_or("operation");
+        let path = item["relative_path"]
+            .as_str()
+            .or_else(|| item["path"].as_str())
+            .unwrap_or("<unknown>");
+        let added = item["lines_added"].as_u64().unwrap_or_default();
+        let removed = item["lines_removed"].as_u64().unwrap_or_default();
+        output.push_str(&format!("- {operation} {path} (+{added}/-{removed})\n"));
+        if let Some(new_path) = item["relative_new_path"]
+            .as_str()
+            .or_else(|| item["new_path"].as_str())
+        {
+            output.push_str(&format!("  -> {new_path}\n"));
+        }
+        if let Some(hunks) = item["hunks"].as_array() {
+            for (index, hunk) in hunks.iter().enumerate() {
+                output.push_str(&format!("  @@ hunk {}\n", index + 1));
+                if let Some(lines) = hunk["lines"].as_array() {
+                    for line in lines {
+                        let kind = line["kind"].as_str().unwrap_or("context");
+                        let content = line["content"].as_str().unwrap_or_default();
+                        let prefix = match kind {
+                            "add" => '+',
+                            "remove" => '-',
+                            _ => ' ',
+                        };
+                        output.push_str(&format!("  {prefix} {content}\n"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(output)
 }
 
 #[derive(Debug, Args)]
@@ -5754,6 +5776,37 @@ mod tests {
             sources: Vec::new(),
             reinforcement_count: 1,
         }
+    }
+
+    #[test]
+    fn format_permission_preview_renders_full_hunks() {
+        let rendered = format_permission_preview(&serde_json::json!({
+            "preview": [
+                {
+                    "operation": "update",
+                    "relative_path": "src/lib.rs",
+                    "lines_added": 1,
+                    "lines_removed": 1,
+                    "hunks": [
+                        {
+                            "lines": [
+                                {"kind": "context", "content": "fn answer() -> i32 {"},
+                                {"kind": "remove", "content": "    41"},
+                                {"kind": "add", "content": "    42"},
+                                {"kind": "context", "content": "}"}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert!(rendered.contains("- update src/lib.rs (+1/-1)"));
+        assert!(rendered.contains("  @@ hunk 1"));
+        assert!(rendered.contains("    fn answer() -> i32 {"));
+        assert!(rendered.contains("  -     41"));
+        assert!(rendered.contains("  +     42"));
     }
 
     #[test]

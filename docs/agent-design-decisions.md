@@ -262,7 +262,8 @@ Ask/preview direction:
   returns `allow`; `deny` preserves the non-mutating preview result.
 - Non-JSON `djinn agent ask` sessions wire a simple terminal approval gate when
   stdin/stderr are terminals, allowing humans to approve `ask`-gated patches in
-  the one-shot CLI path.
+  the one-shot CLI path. The terminal prompt renders the full structured patch
+  preview, including hunk context, removals, additions, and move destinations.
 
 Direct write/edit direction:
 
@@ -300,7 +301,7 @@ The first non-interactive agent slice is implemented as:
 10. Structured non-mutating `apply_patch` previews when permission rules require
     approval, ready for future interactive permission UX.
 11. Optional `PermissionGate` approval for `apply_patch`, including a terminal
-    prompt in non-JSON `djinn agent ask` sessions.
+    prompt in non-JSON `djinn agent ask` sessions with full hunk rendering.
 12. CLI commands for session creation/list/show and one-shot prompting:
     `djinn agent session new`, `djinn agent session list`,
     `djinn agent session show`, and `djinn agent ask`.

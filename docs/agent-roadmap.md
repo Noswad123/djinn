@@ -137,8 +137,9 @@ These are important but need more product/design detail before implementation.
 
 ### Mutation tools
 
-- Expand the terminal approval prompt into a richer TUI approval dialog that can
-  inspect full hunks before accepting or denying an `ask`-gated patch.
+- Build a TUI approval dialog on top of the existing structured approval preview
+  and terminal hunk renderer, with scrolling, file-level navigation, and explicit
+  approve/deny actions.
 
 ### TUI behavior
 
