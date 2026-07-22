@@ -130,16 +130,18 @@ These are important but need more product/design detail before implementation.
 - Default model resolution should prefer:
   1. explicit CLI `--model`;
   2. `DJINN_OPENAI_MODEL`;
-  3. OpenCode config, especially `agents.coder.model`;
+  3. OpenCode config, including newer `default_agent` + `agent.<name>.model`,
+     requested profile agent models, older `agents.coder.model`, and top-level
+     `model`;
   4. Djinn fallback `gpt-4o-mini`.
-- OpenAI API key resolution should prefer:
+- OpenAI auth resolution should prefer:
   1. explicit CLI `--api-key`;
   2. `OPENAI_API_KEY`;
   3. OpenCode config `providers.openai.apiKey`;
   4. OpenCode auth file `~/.local/share/opencode/auth.json` when `openai.type`
-     is `api`.
-- OpenCode OpenAI OAuth credentials are detected but blocked with a clear error
-  until Djinn implements OpenCode's OAuth/Codex transport.
+     is `api`;
+  5. OpenCode auth file `~/.local/share/opencode/auth.json` when `openai.type`
+     is `oauth`, using OpenCode's ChatGPT/Codex endpoint and refresh flow.
 - Then decide the order for:
   - Google Gemini;
   - Codex.

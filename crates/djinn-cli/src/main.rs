@@ -6,12 +6,14 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
+use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use djinn_agent::{
-    read_only_tools, AgentRuntime, ModelMessage, ModelRequest, ModelRole, OpenAiClient,
+    read_only_tools, AgentRuntime, ModelMessage, ModelRequest, ModelRole, OpenAiAuth, OpenAiClient,
+    OpenAiOAuth,
 };
 use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
@@ -1582,7 +1584,7 @@ fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
 
 fn agent_ask(args: AgentAskArgs) -> Result<()> {
     let prompt = args.prompt;
-    let model = resolve_agent_model(args.model)?;
+    let model = resolve_agent_model(args.model, &args.profile)?;
     let title = args
         .title
         .unwrap_or_else(|| prompt_title(&prompt, "Agent prompt"));
@@ -1639,11 +1641,16 @@ fn complete_openai_prompt(
     base_url: Option<String>,
     max_tool_rounds: usize,
 ) -> Result<djinn_agent::ModelResponse> {
-    let api_key = resolve_openai_api_key(api_key)?;
-    let base_url = base_url
-        .or_else(|| env::var("OPENAI_BASE_URL").ok())
-        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-    let client = OpenAiClient::with_base_url(api_key, base_url);
+    let auth = resolve_openai_auth(api_key)?;
+    let client = match auth {
+        OpenAiAuth::ApiKey(api_key) => {
+            let base_url = base_url
+                .or_else(|| env::var("OPENAI_BASE_URL").ok())
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+            OpenAiClient::with_base_url(api_key, base_url)
+        }
+        OpenAiAuth::OAuth(oauth) => OpenAiClient::with_oauth(oauth),
+    };
     let workspace = store.load_session(id)?.meta.workspace;
     let runtime = AgentRuntime::new(client, store.clone(), read_only_tools(workspace)?);
     let tokio = tokio::runtime::Builder::new_current_thread()
@@ -1666,27 +1673,54 @@ fn complete_openai_prompt(
     ))
 }
 
-fn resolve_openai_api_key(explicit: Option<String>) -> Result<String> {
+const OPENCODE_OPENAI_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const OPENCODE_OPENAI_OAUTH_ISSUER: &str = "https://auth.openai.com";
+const OPENCODE_OPENAI_CODEX_API_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenCodeOpenAiOAuthCredential {
+    access: String,
+    refresh: String,
+    expires: i64,
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OpenCodeOpenAiAuthCredential {
+    ApiKey(String),
+    OAuth(OpenCodeOpenAiOAuthCredential),
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeOpenAiTokenResponse {
+    #[serde(default)]
+    id_token: Option<String>,
+    access_token: String,
+    refresh_token: String,
+    expires_in: Option<i64>,
+}
+
+fn resolve_openai_auth(explicit: Option<String>) -> Result<OpenAiAuth> {
     if let Some(api_key) = explicit
         .map(|api_key| api_key.trim().to_string())
         .filter(|api_key| !api_key.is_empty())
     {
-        return Ok(api_key);
+        return Ok(OpenAiAuth::ApiKey(api_key));
     }
     if let Ok(api_key) = env::var("OPENAI_API_KEY") {
         let api_key = api_key.trim().to_string();
         if !api_key.is_empty() {
-            return Ok(api_key);
+            return Ok(OpenAiAuth::ApiKey(api_key));
         }
     }
     if let Some(api_key) = opencode_openai_api_key()? {
-        return Ok(api_key);
+        return Ok(OpenAiAuth::ApiKey(api_key));
     }
-    if let Some(api_key) = opencode_auth_openai_api_key()? {
-        return Ok(api_key);
+    if let Some(auth) = opencode_auth_openai_auth()? {
+        return Ok(auth);
     }
     Err(anyhow::anyhow!(
-        "OpenAI API key is required; pass --api-key, set OPENAI_API_KEY, configure providers.openai.apiKey in OpenCode config, or connect an OpenCode OpenAI API credential"
+        "OpenAI auth is required; pass --api-key, set OPENAI_API_KEY, configure providers.openai.apiKey in OpenCode config, or connect an OpenCode OpenAI API/OAuth credential"
     ))
 }
 
@@ -1721,12 +1755,12 @@ fn opencode_openai_api_key_from_content(content: &str) -> Result<Option<String>>
         .map(ToOwned::to_owned))
 }
 
-fn opencode_auth_openai_api_key() -> Result<Option<String>> {
+fn opencode_auth_openai_auth() -> Result<Option<OpenAiAuth>> {
     if let Ok(content) = env::var("OPENCODE_AUTH_CONTENT") {
-        if let Some(api_key) = opencode_auth_openai_api_key_from_content(&content)
+        if let Some(auth) = opencode_auth_openai_auth_from_content(&content)
             .with_context(|| "parsing OPENCODE_AUTH_CONTENT")?
         {
-            return Ok(Some(api_key));
+            return opencode_auth_credential_to_openai_auth(auth, None).map(Some);
         }
     }
 
@@ -1736,8 +1770,12 @@ fn opencode_auth_openai_api_key() -> Result<Option<String>> {
     }
     let content = fs::read_to_string(&path)
         .with_context(|| format!("reading OpenCode auth file {}", path.display()))?;
-    opencode_auth_openai_api_key_from_content(&content)
-        .with_context(|| format!("parsing OpenCode auth file {}", path.display()))
+    let Some(auth) = opencode_auth_openai_auth_from_content(&content)
+        .with_context(|| format!("parsing OpenCode auth file {}", path.display()))?
+    else {
+        return Ok(None);
+    };
+    opencode_auth_credential_to_openai_auth(auth, Some((&path, &content))).map(Some)
 }
 
 fn opencode_auth_path() -> PathBuf {
@@ -1748,7 +1786,17 @@ fn opencode_auth_path() -> PathBuf {
         .join("auth.json")
 }
 
+#[cfg(test)]
 fn opencode_auth_openai_api_key_from_content(content: &str) -> Result<Option<String>> {
+    Ok(match opencode_auth_openai_auth_from_content(content)? {
+        Some(OpenCodeOpenAiAuthCredential::ApiKey(api_key)) => Some(api_key),
+        Some(OpenCodeOpenAiAuthCredential::OAuth(_)) | None => None,
+    })
+}
+
+fn opencode_auth_openai_auth_from_content(
+    content: &str,
+) -> Result<Option<OpenCodeOpenAiAuthCredential>> {
     let value: Value = serde_json::from_str(content)?;
     let Some(openai) = value.pointer("/openai").and_then(Value::as_object) else {
         return Ok(None);
@@ -1759,18 +1807,200 @@ fn opencode_auth_openai_api_key_from_content(content: &str) -> Result<Option<Str
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|api_key| !api_key.is_empty())
-            .map(ToOwned::to_owned)),
-        Some("oauth") => Err(anyhow::anyhow!(
-            "OpenCode has an OpenAI OAuth credential, but Djinn only supports OpenAI API-key auth right now. Use --api-key, set OPENAI_API_KEY, or add providers.openai.apiKey until OAuth transport is implemented."
-        )),
+            .map(ToOwned::to_owned)
+            .map(OpenCodeOpenAiAuthCredential::ApiKey)),
+        Some("oauth") => {
+            let access = openai
+                .get("access")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let refresh = openai
+                .get("refresh")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if access.is_empty() && refresh.is_empty() {
+                bail!("OpenCode OpenAI OAuth credential is missing both access and refresh tokens");
+            }
+            let expires = openai
+                .get("expires")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            let account_id = openai
+                .get("accountId")
+                .or_else(|| openai.get("account_id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|account_id| !account_id.is_empty())
+                .map(ToOwned::to_owned);
+            Ok(Some(OpenCodeOpenAiAuthCredential::OAuth(
+                OpenCodeOpenAiOAuthCredential {
+                    access,
+                    refresh,
+                    expires,
+                    account_id,
+                },
+            )))
+        }
         Some(other) => Err(anyhow::anyhow!(
-            "unsupported OpenCode OpenAI auth type `{other}`; expected `api`"
+            "unsupported OpenCode OpenAI auth type `{other}`; expected `api` or `oauth`"
         )),
         None => Ok(None),
     }
 }
 
-fn resolve_agent_model(explicit: Option<String>) -> Result<String> {
+fn opencode_auth_credential_to_openai_auth(
+    auth: OpenCodeOpenAiAuthCredential,
+    source: Option<(&Path, &str)>,
+) -> Result<OpenAiAuth> {
+    match auth {
+        OpenCodeOpenAiAuthCredential::ApiKey(api_key) => Ok(OpenAiAuth::ApiKey(api_key)),
+        OpenCodeOpenAiAuthCredential::OAuth(oauth) => {
+            let oauth = if oauth_access_token_is_current(&oauth) {
+                oauth
+            } else {
+                let (path, content) = source.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "OpenCode OpenAI OAuth access token is expired and cannot be refreshed from OPENCODE_AUTH_CONTENT; use the auth file or pass --api-key"
+                    )
+                })?;
+                refresh_opencode_openai_oauth(path, content, &oauth)?
+            };
+            Ok(OpenAiAuth::OAuth(OpenAiOAuth {
+                access: oauth.access,
+                account_id: oauth.account_id,
+                codex_api_endpoint: OPENCODE_OPENAI_CODEX_API_ENDPOINT.to_string(),
+            }))
+        }
+    }
+}
+
+fn oauth_access_token_is_current(oauth: &OpenCodeOpenAiOAuthCredential) -> bool {
+    !oauth.access.is_empty() && oauth.expires > current_time_millis()
+}
+
+fn refresh_opencode_openai_oauth(
+    path: &Path,
+    content: &str,
+    current: &OpenCodeOpenAiOAuthCredential,
+) -> Result<OpenCodeOpenAiOAuthCredential> {
+    if current.refresh.is_empty() {
+        bail!("OpenCode OpenAI OAuth access token is expired and no refresh token is available");
+    }
+
+    let tokens = refresh_openai_oauth_token(&current.refresh)?;
+    let account_id = extract_account_id_from_tokens(&tokens).or_else(|| current.account_id.clone());
+    let refreshed = OpenCodeOpenAiOAuthCredential {
+        access: tokens.access_token,
+        refresh: tokens.refresh_token,
+        expires: current_time_millis() + tokens.expires_in.unwrap_or(3600) * 1000,
+        account_id,
+    };
+    write_refreshed_opencode_openai_oauth(path, content, &refreshed)?;
+    Ok(refreshed)
+}
+
+fn refresh_openai_oauth_token(refresh_token: &str) -> Result<OpenCodeOpenAiTokenResponse> {
+    let response = reqwest::blocking::Client::new()
+        .post(format!("{OPENCODE_OPENAI_OAUTH_ISSUER}/oauth/token"))
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", OPENCODE_OPENAI_OAUTH_CLIENT_ID),
+        ])
+        .send()
+        .with_context(|| "refreshing OpenCode OpenAI OAuth token")?;
+    let status = response.status();
+    let text = response
+        .text()
+        .with_context(|| "reading OpenCode OpenAI OAuth refresh response")?;
+    if !status.is_success() {
+        bail!("OpenCode OpenAI OAuth token refresh failed ({status}): {text}");
+    }
+    serde_json::from_str(&text)
+        .with_context(|| format!("parsing OpenCode OpenAI OAuth refresh response: {text}"))
+}
+
+fn write_refreshed_opencode_openai_oauth(
+    path: &Path,
+    content: &str,
+    refreshed: &OpenCodeOpenAiOAuthCredential,
+) -> Result<()> {
+    let mut value: Value = serde_json::from_str(content)?;
+    let Some(root) = value.as_object_mut() else {
+        bail!("OpenCode auth file root must be a JSON object");
+    };
+    let openai = root
+        .entry("openai".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(openai) = openai.as_object_mut() else {
+        bail!("OpenCode auth file openai entry must be a JSON object");
+    };
+    openai.insert("type".to_string(), Value::String("oauth".to_string()));
+    openai.insert(
+        "access".to_string(),
+        Value::String(refreshed.access.clone()),
+    );
+    openai.insert(
+        "refresh".to_string(),
+        Value::String(refreshed.refresh.clone()),
+    );
+    openai.insert(
+        "expires".to_string(),
+        Value::Number(serde_json::Number::from(refreshed.expires)),
+    );
+    if let Some(account_id) = &refreshed.account_id {
+        openai.insert("accountId".to_string(), Value::String(account_id.clone()));
+    }
+
+    let rendered = format!("{}\n", serde_json::to_string_pretty(&value)?);
+    fs::write(path, rendered)
+        .with_context(|| format!("writing OpenCode auth file {}", path.display()))
+}
+
+fn extract_account_id_from_tokens(tokens: &OpenCodeOpenAiTokenResponse) -> Option<String> {
+    tokens
+        .id_token
+        .as_deref()
+        .and_then(extract_account_id_from_jwt)
+        .or_else(|| extract_account_id_from_jwt(&tokens.access_token))
+}
+
+fn extract_account_id_from_jwt(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&decoded).ok()?;
+    claims
+        .get("chatgpt_account_id")
+        .or_else(|| {
+            claims
+                .get("https://api.openai.com/auth")
+                .and_then(|auth| auth.get("chatgpt_account_id"))
+        })
+        .or_else(|| claims.get("organizations")?.as_array()?.first()?.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|account_id| !account_id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn current_time_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+fn resolve_agent_model(explicit: Option<String>, profile: &str) -> Result<String> {
     if let Some(model) = explicit
         .map(|model| model.trim().to_string())
         .filter(|model| !model.is_empty())
@@ -1783,15 +2013,15 @@ fn resolve_agent_model(explicit: Option<String>) -> Result<String> {
             return Ok(model);
         }
     }
-    if let Some(model) = opencode_default_model()? {
+    if let Some(model) = opencode_default_model(profile)? {
         return Ok(model);
     }
     Ok("gpt-4o-mini".to_string())
 }
 
-fn opencode_default_model() -> Result<Option<String>> {
+fn opencode_default_model(profile: &str) -> Result<Option<String>> {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    opencode_default_model_from_paths(&opencode_model_config_paths(&cwd))
+    opencode_default_model_from_paths(&opencode_model_config_paths(&cwd), profile)
 }
 
 fn opencode_model_config_paths(cwd: &Path) -> Vec<PathBuf> {
@@ -1815,14 +2045,14 @@ fn opencode_model_config_paths(cwd: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn opencode_default_model_from_paths(paths: &[PathBuf]) -> Result<Option<String>> {
+fn opencode_default_model_from_paths(paths: &[PathBuf], profile: &str) -> Result<Option<String>> {
     for path in paths {
         if !path.exists() {
             continue;
         }
         let content = fs::read_to_string(path)
             .with_context(|| format!("reading OpenCode config {}", path.display()))?;
-        if let Some(model) = opencode_default_model_from_content(&content)
+        if let Some(model) = opencode_default_model_from_content(&content, profile)
             .with_context(|| format!("parsing OpenCode config {}", path.display()))?
         {
             return Ok(Some(model));
@@ -1831,22 +2061,62 @@ fn opencode_default_model_from_paths(paths: &[PathBuf]) -> Result<Option<String>
     Ok(None)
 }
 
-fn opencode_default_model_from_content(content: &str) -> Result<Option<String>> {
+fn opencode_default_model_from_content(content: &str, profile: &str) -> Result<Option<String>> {
     let value: Value = serde_json::from_str(content)?;
-    for pointer in [
-        "/agents/coder/model",
-        "/agents/default/model",
-        "/agent/model",
-        "/model",
-    ] {
-        if let Some(model) = value.pointer(pointer).and_then(Value::as_str) {
-            let model = model.trim();
-            if !model.is_empty() {
-                return Ok(Some(model.to_string()));
-            }
+
+    let profile = profile.trim();
+    if !profile.is_empty() && profile != "default" {
+        if let Some(model) = opencode_agent_model(&value, profile) {
+            return Ok(Some(model));
+        }
+    }
+
+    if let Some(default_agent) = value
+        .get("default_agent")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|agent| !agent.is_empty())
+    {
+        if let Some(model) = opencode_agent_model(&value, default_agent) {
+            return Ok(Some(model));
+        }
+    }
+
+    for agent in ["coder", "default"] {
+        if let Some(model) = opencode_agent_model(&value, agent) {
+            return Ok(Some(model));
+        }
+    }
+
+    for pointer in ["/agent/model", "/model"] {
+        if let Some(model) = json_string_pointer(&value, pointer) {
+            return Ok(Some(model));
         }
     }
     Ok(None)
+}
+
+fn opencode_agent_model(value: &Value, agent: &str) -> Option<String> {
+    ["agent", "agents"].into_iter().find_map(|container| {
+        value
+            .get(container)
+            .and_then(Value::as_object)
+            .and_then(|agents| agents.get(agent))
+            .and_then(|agent| agent.get("model"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn json_string_pointer(value: &Value, pointer: &str) -> Option<String> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn resolve_agent_workspace(path: Option<PathBuf>) -> Result<String> {
@@ -5003,9 +5273,56 @@ mod tests {
                 "task": { "model": "gpt-4.1-mini" }
               }
             }"#,
+            "default",
         )
         .unwrap();
         assert_eq!(model.as_deref(), Some("gpt-4.1"));
+    }
+
+    #[test]
+    fn opencode_default_model_reads_new_agent_map_default_agent() {
+        let model = opencode_default_model_from_content(
+            r##"{
+              "default_agent": "🧠",
+              "model": "openai/gpt-5.4-mini",
+              "agent": {
+                "🧠": { "model": "openai/gpt-5.5" },
+                "review": { "model": "openai/gpt-5.4" }
+              }
+            }"##,
+            "default",
+        )
+        .unwrap();
+        assert_eq!(model.as_deref(), Some("openai/gpt-5.5"));
+    }
+
+    #[test]
+    fn opencode_default_model_reads_requested_profile_agent() {
+        let model = opencode_default_model_from_content(
+            r##"{
+              "default_agent": "🧠",
+              "model": "openai/gpt-5.4-mini",
+              "agent": {
+                "🧠": { "model": "openai/gpt-5.5" },
+                "review": { "model": "openai/gpt-5.4" }
+              }
+            }"##,
+            "review",
+        )
+        .unwrap();
+        assert_eq!(model.as_deref(), Some("openai/gpt-5.4"));
+    }
+
+    #[test]
+    fn opencode_default_model_falls_back_to_top_level_model() {
+        let model = opencode_default_model_from_content(
+            r#"{
+              "model": "openai/gpt-5.4-mini"
+            }"#,
+            "default",
+        )
+        .unwrap();
+        assert_eq!(model.as_deref(), Some("openai/gpt-5.4-mini"));
     }
 
     #[test]
@@ -5023,7 +5340,8 @@ mod tests {
         fs::write(&first, r#"{"agents":{"coder":{"model":"gpt-4.1"}}}"#).unwrap();
         fs::write(&second, r#"{"agents":{"coder":{"model":"gpt-5"}}}"#).unwrap();
 
-        let model = opencode_default_model_from_paths(&[missing, first, second]).unwrap();
+        let model =
+            opencode_default_model_from_paths(&[missing, first, second], "default").unwrap();
         assert_eq!(model.as_deref(), Some("gpt-4.1"));
     }
 
@@ -5075,8 +5393,34 @@ mod tests {
     }
 
     #[test]
-    fn opencode_auth_openai_oauth_is_clear_unsupported_error() {
-        let error = opencode_auth_openai_api_key_from_content(
+    fn opencode_auth_openai_oauth_reads_access_refresh_and_account() {
+        let auth = opencode_auth_openai_auth_from_content(
+            r#"{
+              "openai": {
+                "type": "oauth",
+                "access": "access-token",
+                "refresh": "refresh-token",
+                "expires": 9999999999999,
+                "accountId": "account-123"
+              }
+            }"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            auth,
+            OpenCodeOpenAiAuthCredential::OAuth(OpenCodeOpenAiOAuthCredential {
+                access: "access-token".to_string(),
+                refresh: "refresh-token".to_string(),
+                expires: 9999999999999,
+                account_id: Some("account-123".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn opencode_auth_openai_api_key_helper_ignores_oauth() {
+        let api_key = opencode_auth_openai_api_key_from_content(
             r#"{
               "openai": {
                 "type": "oauth",
@@ -5086,10 +5430,63 @@ mod tests {
               }
             }"#,
         )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("OpenAI OAuth credential"));
-        assert!(error.contains("only supports OpenAI API-key auth"));
+        .unwrap();
+        assert_eq!(api_key, None);
+    }
+
+    #[test]
+    fn extract_account_id_from_jwt_reads_nested_openai_claim() {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct-1"}}"#);
+        let token = format!("header.{payload}.signature");
+        assert_eq!(
+            extract_account_id_from_jwt(&token).as_deref(),
+            Some("acct-1")
+        );
+    }
+
+    #[test]
+    fn write_refreshed_opencode_oauth_preserves_other_providers() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-opencode-oauth-write-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        let content = r#"{
+          "google": { "type": "api", "key": "google-key" },
+          "openai": { "type": "oauth", "access": "old", "refresh": "old", "expires": 1 }
+        }"#;
+        fs::write(&path, content).unwrap();
+
+        write_refreshed_opencode_openai_oauth(
+            &path,
+            content,
+            &OpenCodeOpenAiOAuthCredential {
+                access: "new-access".to_string(),
+                refresh: "new-refresh".to_string(),
+                expires: 42,
+                account_id: Some("acct-2".to_string()),
+            },
+        )
+        .unwrap();
+
+        let rendered = fs::read_to_string(&path).unwrap();
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            parsed["google"]["key"],
+            Value::String("google-key".to_string())
+        );
+        assert_eq!(
+            parsed["openai"]["access"],
+            Value::String("new-access".to_string())
+        );
+        assert_eq!(
+            parsed["openai"]["accountId"],
+            Value::String("acct-2".to_string())
+        );
     }
 
     #[test]

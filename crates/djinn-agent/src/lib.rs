@@ -74,9 +74,22 @@ pub trait ModelClient: Send + Sync {
 
 #[derive(Debug, Clone)]
 pub struct OpenAiClient {
-    api_key: String,
+    auth: OpenAiAuth,
     base_url: String,
     http: reqwest::Client,
+}
+
+#[derive(Debug, Clone)]
+pub enum OpenAiAuth {
+    ApiKey(String),
+    OAuth(OpenAiOAuth),
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenAiOAuth {
+    pub access: String,
+    pub account_id: Option<String>,
+    pub codex_api_endpoint: String,
 }
 
 impl OpenAiClient {
@@ -85,8 +98,16 @@ impl OpenAiClient {
     }
 
     pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self::with_auth(OpenAiAuth::ApiKey(api_key.into()), base_url)
+    }
+
+    pub fn with_oauth(oauth: OpenAiOAuth) -> Self {
+        Self::with_auth(OpenAiAuth::OAuth(oauth), "https://api.openai.com/v1")
+    }
+
+    pub fn with_auth(auth: OpenAiAuth, base_url: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            auth,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             http: reqwest::Client::new(),
         }
@@ -104,8 +125,21 @@ impl OpenAiClient {
 #[async_trait]
 impl ModelClient for OpenAiClient {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+        match &self.auth {
+            OpenAiAuth::ApiKey(api_key) => self.complete_chat_completions(request, api_key).await,
+            OpenAiAuth::OAuth(oauth) => self.complete_oauth_responses(request, oauth).await,
+        }
+    }
+}
+
+impl OpenAiClient {
+    async fn complete_chat_completions(
+        &self,
+        request: ModelRequest,
+        api_key: &str,
+    ) -> Result<ModelResponse> {
         let mut body = json!({
-            "model": request.model,
+            "model": normalize_openai_model(&request.model),
             "messages": request
                 .messages
                 .into_iter()
@@ -126,7 +160,7 @@ impl ModelClient for OpenAiClient {
         let response = self
             .http
             .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
+            .bearer_auth(api_key)
             .json(&body)
             .send()
             .await
@@ -164,6 +198,58 @@ impl ModelClient for OpenAiClient {
                 .map(model_tool_call)
                 .collect::<Result<Vec<_>>>()?,
         })
+    }
+
+    async fn complete_oauth_responses(
+        &self,
+        request: ModelRequest,
+        oauth: &OpenAiOAuth,
+    ) -> Result<ModelResponse> {
+        let mut body = json!({
+            "model": normalize_openai_model(&request.model),
+            "store": false,
+            "stream": true,
+            "input": request
+                .messages
+                .into_iter()
+                .flat_map(openai_responses_input)
+                .collect::<Vec<_>>(),
+        });
+
+        if !request.tools.is_empty() {
+            body["tools"] = Value::Array(
+                request
+                    .tools
+                    .into_iter()
+                    .map(openai_responses_tool)
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        let mut builder = self
+            .http
+            .post(&oauth.codex_api_endpoint)
+            .bearer_auth(&oauth.access)
+            .header("originator", "opencode")
+            .header(reqwest::header::USER_AGENT, oauth_user_agent())
+            .json(&body);
+        if let Some(account_id) = &oauth.account_id {
+            builder = builder.header("ChatGPT-Account-Id", account_id);
+        }
+
+        let response = builder
+            .send()
+            .await
+            .with_context(|| "sending OpenAI OAuth/Codex response request")?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .with_context(|| "reading OpenAI OAuth/Codex response body")?;
+        if !status.is_success() {
+            bail!("OpenAI OAuth/Codex request failed ({status}): {text}");
+        }
+        parse_openai_responses_response(&text)
     }
 }
 
@@ -239,6 +325,220 @@ fn openai_tool(tool: ToolSpec) -> Value {
             "parameters": tool.input_schema,
         }
     })
+}
+
+fn openai_responses_tool(tool: ToolSpec) -> Value {
+    json!({
+        "type": "function",
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.input_schema,
+    })
+}
+
+fn openai_responses_input(message: ModelMessage) -> Vec<Value> {
+    let mut out = Vec::new();
+    match message.role {
+        ModelRole::System => out.push(json!({
+            "role": "system",
+            "content": message.content,
+        })),
+        ModelRole::User => out.push(json!({
+            "role": "user",
+            "content": [{"type": "input_text", "text": message.content}],
+        })),
+        ModelRole::Assistant => {
+            if !message.content.is_empty() {
+                out.push(json!({
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": message.content}],
+                }));
+            }
+            for call in message.tool_calls {
+                out.push(json!({
+                    "type": "function_call",
+                    "call_id": call.id,
+                    "name": call.name,
+                    "arguments": call.input.to_string(),
+                }));
+            }
+        }
+        ModelRole::Tool => out.push(json!({
+            "type": "function_call_output",
+            "call_id": message.tool_call_id.unwrap_or_default(),
+            "output": message.content,
+        })),
+    }
+    out
+}
+
+fn parse_openai_responses_response(text: &str) -> Result<ModelResponse> {
+    if text
+        .lines()
+        .any(|line| line.trim_start().starts_with("data:"))
+    {
+        return parse_openai_responses_stream_response(text);
+    }
+
+    let value: Value = serde_json::from_str(text)
+        .with_context(|| format!("parsing OpenAI OAuth/Codex response: {text}"))?;
+    parse_openai_responses_value(&value)
+}
+
+fn parse_openai_responses_stream_response(text: &str) -> Result<ModelResponse> {
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+
+    for line in text.lines() {
+        let line = line.trim_start();
+        let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+            continue;
+        };
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let event: Value = serde_json::from_str(data)
+            .with_context(|| format!("parsing OpenAI OAuth/Codex stream event: {data}"))?;
+        match event.get("type").and_then(Value::as_str) {
+            Some("response.completed") => {
+                if let Some(response) = event.get("response") {
+                    let final_response = parse_openai_responses_value(response)?;
+                    if !final_response.message.content.is_empty()
+                        || !final_response.tool_calls.is_empty()
+                    {
+                        return Ok(final_response);
+                    }
+                }
+            }
+            Some("response.output_text.delta") => {
+                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                    content.push_str(delta);
+                }
+            }
+            Some("response.output_text.done") => {
+                if content.is_empty() {
+                    if let Some(text) = event.get("text").and_then(Value::as_str) {
+                        content.push_str(text);
+                    }
+                }
+            }
+            Some("response.output_item.done") => {
+                if let Some(item) = event.get("item") {
+                    if item.get("type").and_then(Value::as_str) != Some("message")
+                        || content.is_empty()
+                    {
+                        collect_openai_responses_output_item(item, &mut content, &mut tool_calls)?;
+                    }
+                }
+            }
+            Some("response.failed") | Some("error") => {
+                bail!("OpenAI OAuth/Codex stream failed: {event}");
+            }
+            _ => {}
+        }
+    }
+
+    Ok(ModelResponse {
+        message: ModelMessage {
+            role: ModelRole::Assistant,
+            content,
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        },
+        tool_calls,
+    })
+}
+
+fn parse_openai_responses_value(value: &Value) -> Result<ModelResponse> {
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+
+    for item in value
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        collect_openai_responses_output_item(item, &mut content, &mut tool_calls)?;
+    }
+
+    if content.is_empty() {
+        if let Some(text) = value.get("output_text").and_then(Value::as_str) {
+            content.push_str(text);
+        }
+    }
+
+    Ok(ModelResponse {
+        message: ModelMessage {
+            role: ModelRole::Assistant,
+            content,
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        },
+        tool_calls,
+    })
+}
+
+fn collect_openai_responses_output_item(
+    item: &Value,
+    content: &mut String,
+    tool_calls: &mut Vec<ModelToolCall>,
+) -> Result<()> {
+    match item.get("type").and_then(Value::as_str) {
+        Some("message") => {
+            for part in item
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if part.get("type").and_then(Value::as_str) == Some("output_text") {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        content.push_str(text);
+                    }
+                }
+            }
+        }
+        Some("function_call") => {
+            tool_calls.push(openai_responses_tool_call(item)?);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn openai_responses_tool_call(item: &Value) -> Result<ModelToolCall> {
+    let id = item
+        .get("call_id")
+        .or_else(|| item.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let arguments = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .unwrap_or("{}");
+    let input = serde_json::from_str(arguments)
+        .with_context(|| format!("parsing OpenAI OAuth/Codex tool arguments for {name}"))?;
+    Ok(ModelToolCall { id, name, input })
+}
+
+fn normalize_openai_model(model: &str) -> String {
+    model.strip_prefix("openai/").unwrap_or(model).to_string()
+}
+
+fn oauth_user_agent() -> String {
+    format!(
+        "djinn/{} ({}; {})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
 }
 
 fn model_tool_call(call: OpenAiToolCall) -> Result<ModelToolCall> {
@@ -617,5 +917,108 @@ where
             )?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_openai_model_strips_provider_prefix() {
+        assert_eq!(normalize_openai_model("openai/gpt-5.5"), "gpt-5.5");
+        assert_eq!(normalize_openai_model("gpt-4o-mini"), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn oauth_user_agent_identifies_djinn() {
+        assert!(oauth_user_agent().starts_with("djinn/"));
+    }
+
+    #[test]
+    fn parse_responses_response_reads_output_text_and_tool_calls() {
+        let response = parse_openai_responses_response(
+            r#"{
+              "output": [
+                {
+                  "type": "message",
+                  "content": [
+                    { "type": "output_text", "text": "hello" }
+                  ]
+                },
+                {
+                  "type": "function_call",
+                  "call_id": "call-1",
+                  "name": "list_dir",
+                  "arguments": "{\"path\":\".\"}"
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.message.content, "hello");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "call-1");
+        assert_eq!(response.tool_calls[0].name, "list_dir");
+        assert_eq!(response.tool_calls[0].input, json!({"path": "."}));
+    }
+
+    #[test]
+    fn parse_streaming_responses_response_prefers_completed_response() {
+        let response = parse_openai_responses_response(
+            r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"partial"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"final"}]}]}}
+
+data: [DONE]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.message.content, "final");
+        assert!(response.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn parse_streaming_responses_response_keeps_delta_when_completed_output_is_empty() {
+        let response = parse_openai_responses_response(
+            r#"data: {"type":"response.output_text.delta","delta":"P"}
+data: {"type":"response.output_text.delta","delta":"ONG"}
+data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"PONG"}]}}
+data: {"type":"response.completed","response":{"output":[]}}
+data: [DONE]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.message.content, "PONG");
+        assert!(response.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn responses_input_converts_tool_round_messages() {
+        let input = openai_responses_input(ModelMessage {
+            role: ModelRole::Assistant,
+            content: "".to_string(),
+            tool_call_id: None,
+            tool_calls: vec![ModelToolCall {
+                id: "call-1".to_string(),
+                name: "read_file".to_string(),
+                input: json!({"path": "README.md"}),
+            }],
+        });
+
+        assert_eq!(
+            input,
+            vec![json!({
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "read_file",
+                "arguments": "{\"path\":\"README.md\"}",
+            })]
+        );
     }
 }
