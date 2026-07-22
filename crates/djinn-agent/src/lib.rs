@@ -11,6 +11,7 @@ pub use djinn_memory::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -640,15 +641,178 @@ pub trait ContextProvider: Send + Sync {
     fn gather(&self, request: ContextRequest) -> Result<Vec<ContextItem>>;
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReadAccessPolicy {
+    #[serde(default)]
+    pub allow_roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub deny_roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub rules: Vec<ReadAccessRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReadAccessRule {
+    pub pattern: String,
+    pub effect: ReadAccessEffect,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadAccessEffect {
+    Allow,
+    Ask,
+    Deny,
+}
+
+impl ReadAccessPolicy {
+    pub fn workspace_only(workspace: impl Into<PathBuf>) -> Self {
+        Self {
+            allow_roots: vec![workspace.into()],
+            deny_roots: Vec::new(),
+            rules: Vec::new(),
+        }
+    }
+
+    pub fn lax(workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut allow_roots = vec![workspace];
+        if let Some(home) = &home {
+            push_unique_path(&mut allow_roots, home.clone());
+        }
+        let mut deny_roots = Vec::new();
+        if let Some(home) = home {
+            for path in [
+                ".ssh",
+                ".gnupg",
+                ".aws",
+                ".boto",
+                ".config/gcloud",
+                ".config/gh/hosts.yml",
+                ".local/share/opencode/auth.json",
+                ".config/opencode/auth.json",
+                ".bash_history",
+                ".zsh_history",
+                ".python_history",
+                ".psql_history",
+                ".sqlite_history",
+                ".netrc",
+                ".npmrc",
+                ".docker/config.json",
+                ".kube",
+            ] {
+                deny_roots.push(home.join(path));
+            }
+        }
+        Self {
+            allow_roots,
+            deny_roots,
+            rules: Vec::new(),
+        }
+    }
+
+    pub fn allows(&self, path: &Path) -> Result<()> {
+        let path = canonicalize_existing(path)?;
+        let path_text = path.to_string_lossy();
+        if let Some(rule) = self
+            .rules
+            .iter()
+            .filter(|rule| wildcard_match(&rule.pattern, &path_text))
+            .last()
+        {
+            return match rule.effect {
+                ReadAccessEffect::Allow => Ok(()),
+                ReadAccessEffect::Ask => bail!(
+                    "read access requires approval by policy: {}",
+                    path.display()
+                ),
+                ReadAccessEffect::Deny => {
+                    bail!("read access denied by policy: {}", path.display())
+                }
+            };
+        }
+        let deny_roots = canonicalize_existing_paths(&self.deny_roots);
+        if deny_roots.iter().any(|root| path.starts_with(root)) {
+            bail!("read access denied by policy: {}", path.display());
+        }
+        let allow_roots = canonicalize_existing_paths(&self.allow_roots);
+        if allow_roots.iter().any(|root| path.starts_with(root)) {
+            return Ok(());
+        }
+        bail!("path is outside allowed read roots: {}", path.display())
+    }
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let parts = pattern.split('*').collect::<Vec<_>>();
+    if parts.len() == 1 {
+        return pattern == value || value.ends_with(pattern);
+    }
+    let mut remaining = value;
+    if let Some(first) = parts.first().filter(|part| !part.is_empty()) {
+        let Some(stripped) = remaining.strip_prefix(first) else {
+            return false;
+        };
+        remaining = stripped;
+    }
+    for part in parts
+        .iter()
+        .skip(1)
+        .take(parts.len().saturating_sub(2))
+        .filter(|part| !part.is_empty())
+    {
+        let Some(index) = remaining.find(part) else {
+            return false;
+        };
+        remaining = &remaining[index + part.len()..];
+    }
+    if let Some(last) = parts.last().filter(|part| !part.is_empty()) {
+        return remaining.ends_with(last);
+    }
+    true
+}
+
+fn canonicalize_existing(path: &Path) -> Result<PathBuf> {
+    path.canonicalize()
+        .with_context(|| format!("resolving path {}", path.display()))
+}
+
+fn canonicalize_existing_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .collect()
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReadFileTool {
     workspace: PathBuf,
+    access: ReadAccessPolicy,
 }
 
 impl ReadFileTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
+        Self::with_access(
+            workspace.clone(),
+            ReadAccessPolicy::workspace_only(workspace),
+        )
+    }
+
+    pub fn with_access(workspace: impl Into<PathBuf>, access: ReadAccessPolicy) -> Self {
         Self {
             workspace: workspace.into(),
+            access,
         }
     }
 }
@@ -658,7 +822,7 @@ impl AgentTool for ReadFileTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read_file".to_string(),
-            description: "Read a UTF-8 text file inside the current workspace.".to_string(),
+            description: "Read a UTF-8 text file allowed by the configured read access policy. Relative paths resolve from the current workspace; absolute paths, ~, and $HOME are accepted when policy allows them.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -675,7 +839,7 @@ impl AgentTool for ReadFileTool {
     async fn invoke(&self, input: serde_json::Value) -> Result<ToolResult> {
         let input: PathInput =
             serde_json::from_value(input).with_context(|| "parsing read_file input")?;
-        let path = resolve_workspace_path(&self.workspace, &input.path)?;
+        let path = resolve_read_path(&self.workspace, &self.access, &input.path)?;
         let content = fs::read_to_string(&path)
             .with_context(|| format!("reading file {}", path.display()))?;
         Ok(ToolResult {
@@ -691,13 +855,145 @@ impl AgentTool for ReadFileTool {
 #[derive(Debug, Clone)]
 pub struct ListDirTool {
     workspace: PathBuf,
+    access: ReadAccessPolicy,
 }
 
 impl ListDirTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
+        Self::with_access(
+            workspace.clone(),
+            ReadAccessPolicy::workspace_only(workspace),
+        )
+    }
+
+    pub fn with_access(workspace: impl Into<PathBuf>, access: ReadAccessPolicy) -> Self {
         Self {
             workspace: workspace.into(),
+            access,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FindFilesTool {
+    workspace: PathBuf,
+    access: ReadAccessPolicy,
+}
+
+impl FindFilesTool {
+    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
+        Self::with_access(
+            workspace.clone(),
+            ReadAccessPolicy::workspace_only(workspace),
+        )
+    }
+
+    pub fn with_access(workspace: impl Into<PathBuf>, access: ReadAccessPolicy) -> Self {
+        Self {
+            workspace: workspace.into(),
+            access,
+        }
+    }
+}
+
+#[async_trait]
+impl AgentTool for FindFilesTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "find_files".to_string(),
+            description: "Find files by glob-like pattern within a directory allowed by the configured read access policy. Relative search paths resolve from the current workspace; ~, $HOME, and absolute paths are accepted when policy allows them.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob-like pattern to match, for example '*.rs', '**/*.md', or 'Cargo.*'. If the pattern has no slash, it matches file names; otherwise it matches paths relative to the search root."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to search. Defaults to the workspace root."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of matching entries to return. Defaults to 200."
+                    },
+                    "include_dirs": {
+                        "type": "boolean",
+                        "description": "Include matching directories in results. Defaults to false."
+                    }
+                },
+                "required": ["pattern"]
+            }),
+        }
+    }
+
+    async fn invoke(&self, input: serde_json::Value) -> Result<ToolResult> {
+        let input: FindFilesInput =
+            serde_json::from_value(input).with_context(|| "parsing find_files input")?;
+        let pattern = input.pattern.trim();
+        if pattern.is_empty() {
+            bail!("find_files pattern cannot be empty");
+        }
+        let root = resolve_read_path(
+            &self.workspace,
+            &self.access,
+            input.path.as_deref().unwrap_or("."),
+        )?;
+        if !root.is_dir() {
+            bail!("find_files path is not a directory: {}", root.display());
+        }
+        let limit = input.limit.unwrap_or(200).clamp(1, 1000);
+        let include_dirs = input.include_dirs.unwrap_or(false);
+        let mut matches = Vec::new();
+        let walker = WalkDir::new(&root).follow_links(false).into_iter();
+        for entry in walker
+            .filter_entry(|entry| self.access.allows(entry.path()).is_ok())
+            .filter_map(|entry| entry.ok())
+        {
+            let path = entry.path();
+            if path == root {
+                continue;
+            }
+            let file_type = entry.file_type();
+            if file_type.is_dir() && !include_dirs {
+                continue;
+            }
+            if !file_type.is_file() && !file_type.is_dir() {
+                continue;
+            }
+            let relative = path.strip_prefix(&root).unwrap_or(path);
+            if !glob_like_match(pattern, relative) {
+                continue;
+            }
+            matches.push(json!({
+                "name": path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default(),
+                "path": path.display().to_string(),
+                "relative_path": relative.to_string_lossy(),
+                "kind": if file_type.is_dir() { "dir" } else { "file" },
+            }));
+            if matches.len() >= limit {
+                break;
+            }
+        }
+
+        matches.sort_by(|left, right| {
+            left["relative_path"]
+                .as_str()
+                .unwrap_or_default()
+                .cmp(right["relative_path"].as_str().unwrap_or_default())
+        });
+
+        Ok(ToolResult {
+            output: json!({
+                "path": root.display().to_string(),
+                "pattern": pattern,
+                "limit": limit,
+                "matches": matches,
+            }),
+            success: true,
+        })
     }
 }
 
@@ -706,7 +1002,7 @@ impl AgentTool for ListDirTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "list_dir".to_string(),
-            description: "List files and directories inside the current workspace.".to_string(),
+            description: "List files and directories allowed by the configured read access policy. Relative paths resolve from the current workspace; use ~, $HOME, or an absolute path to list the home directory when policy allows it.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -722,12 +1018,19 @@ impl AgentTool for ListDirTool {
     async fn invoke(&self, input: serde_json::Value) -> Result<ToolResult> {
         let input: OptionalPathInput =
             serde_json::from_value(input).with_context(|| "parsing list_dir input")?;
-        let path = resolve_workspace_path(&self.workspace, input.path.as_deref().unwrap_or("."))?;
+        let path = resolve_read_path(
+            &self.workspace,
+            &self.access,
+            input.path.as_deref().unwrap_or("."),
+        )?;
         let mut entries = Vec::new();
         for entry in
             fs::read_dir(&path).with_context(|| format!("listing directory {}", path.display()))?
         {
             let entry = entry?;
+            if self.access.allows(&entry.path()).is_err() {
+                continue;
+            }
             let file_type = entry.file_type()?;
             entries.push(json!({
                 "name": entry.file_name().to_string_lossy(),
@@ -753,9 +1056,21 @@ impl AgentTool for ListDirTool {
 
 pub fn read_only_tools(workspace: impl Into<PathBuf>) -> Result<ToolRegistry> {
     let workspace = workspace.into();
+    read_only_tools_with_access(
+        workspace.clone(),
+        ReadAccessPolicy::workspace_only(workspace),
+    )
+}
+
+pub fn read_only_tools_with_access(
+    workspace: impl Into<PathBuf>,
+    access: ReadAccessPolicy,
+) -> Result<ToolRegistry> {
+    let workspace = workspace.into();
     let mut registry = ToolRegistry::new();
-    registry.register(ReadFileTool::new(workspace.clone()))?;
-    registry.register(ListDirTool::new(workspace))?;
+    registry.register(ReadFileTool::with_access(workspace.clone(), access.clone()))?;
+    registry.register(ListDirTool::with_access(workspace.clone(), access.clone()))?;
+    registry.register(FindFilesTool::with_access(workspace, access))?;
     Ok(registry)
 }
 
@@ -769,11 +1084,43 @@ struct OptionalPathInput {
     path: Option<String>,
 }
 
-fn resolve_workspace_path(workspace: &Path, input: &str) -> Result<PathBuf> {
+#[derive(Debug, Deserialize)]
+struct FindFilesInput {
+    pattern: String,
+    path: Option<String>,
+    limit: Option<usize>,
+    include_dirs: Option<bool>,
+}
+
+fn glob_like_match(pattern: &str, path: &Path) -> bool {
+    let pattern = normalize_match_path(pattern);
+    let path_text = normalize_match_path(&path.to_string_lossy());
+    if let Some(rest) = pattern.strip_prefix("**/") {
+        if glob_like_match(rest, path) {
+            return true;
+        }
+    }
+    if pattern.contains('/') {
+        wildcard_match(&pattern, &path_text)
+    } else {
+        let file_name = path
+            .file_name()
+            .map(|name| normalize_match_path(&name.to_string_lossy()))
+            .unwrap_or_default();
+        wildcard_match(&pattern, &file_name)
+    }
+}
+
+fn normalize_match_path(value: &str) -> String {
+    value.replace('\\', "/")
+}
+
+fn resolve_read_path(workspace: &Path, access: &ReadAccessPolicy, input: &str) -> Result<PathBuf> {
     let workspace = workspace
         .canonicalize()
         .with_context(|| format!("resolving workspace {}", workspace.display()))?;
-    let candidate = Path::new(input);
+    let expanded = expand_user_path(input);
+    let candidate = Path::new(&expanded);
     let path = if candidate.is_absolute() {
         candidate.to_path_buf()
     } else {
@@ -782,10 +1129,35 @@ fn resolve_workspace_path(workspace: &Path, input: &str) -> Result<PathBuf> {
     let path = path
         .canonicalize()
         .with_context(|| format!("resolving path {}", path.display()))?;
-    if !path.starts_with(&workspace) {
-        bail!("path escapes workspace: {}", path.display());
-    }
+    access.allows(&path)?;
     Ok(path)
+}
+
+fn expand_user_path(input: &str) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if input == "~" {
+        return home
+            .unwrap_or_else(|| PathBuf::from(input))
+            .to_string_lossy()
+            .to_string();
+    }
+    if let Some(rest) = input.strip_prefix("~/") {
+        if let Some(home) = home {
+            return home.join(rest).to_string_lossy().to_string();
+        }
+    }
+    if input == "$HOME" {
+        return home
+            .unwrap_or_else(|| PathBuf::from(input))
+            .to_string_lossy()
+            .to_string();
+    }
+    if let Some(rest) = input.strip_prefix("$HOME/") {
+        if let Some(home) = home {
+            return home.join(rest).to_string_lossy().to_string();
+        }
+    }
+    input.to_string()
 }
 
 pub struct AgentRuntime<M, S> {
@@ -933,6 +1305,127 @@ mod tests {
     #[test]
     fn oauth_user_agent_identifies_djinn() {
         assert!(oauth_user_agent().starts_with("djinn/"));
+    }
+
+    #[test]
+    fn read_access_policy_honors_last_matching_rule() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-read-policy-test-{}",
+            chrono_like_test_suffix()
+        ));
+        let secret = root.join("secret.txt");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&secret, "secret").unwrap();
+
+        let mut policy = ReadAccessPolicy::workspace_only(&root);
+        policy.rules.push(ReadAccessRule {
+            pattern: "*".to_string(),
+            effect: ReadAccessEffect::Deny,
+        });
+        policy.rules.push(ReadAccessRule {
+            pattern: secret.to_string_lossy().to_string(),
+            effect: ReadAccessEffect::Allow,
+        });
+
+        assert!(policy.allows(&secret).is_ok());
+        assert!(policy.allows(&root).is_err());
+    }
+
+    #[test]
+    fn expand_user_path_expands_home_aliases() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_user_path("~"), home);
+        assert!(expand_user_path("~/Desktop").ends_with("/Desktop"));
+        assert_eq!(expand_user_path("$HOME"), std::env::var("HOME").unwrap());
+    }
+
+    #[test]
+    fn read_only_tools_include_find_files() {
+        let registry = read_only_tools(std::env::temp_dir()).unwrap();
+        let names = registry
+            .specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["find_files", "list_dir", "read_file"]);
+    }
+
+    #[test]
+    fn find_files_matches_glob_like_patterns() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-find-files-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn main() {}").unwrap();
+        fs::write(root.join("src/readme.txt"), "notes").unwrap();
+        fs::write(root.join("docs/guide.md"), "# Guide").unwrap();
+
+        let tool = FindFilesTool::new(&root);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let result = runtime
+            .block_on(tool.invoke(json!({"pattern": "**/*.md", "path": "."})))
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(
+            result.output["matches"][0]["relative_path"],
+            Value::String("docs/guide.md".to_string())
+        );
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"pattern": "**/*.rs", "path": "src"})))
+            .unwrap();
+        assert_eq!(
+            result.output["matches"][0]["relative_path"],
+            Value::String("lib.rs".to_string())
+        );
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"pattern": "*.rs", "path": "."})))
+            .unwrap();
+        assert_eq!(
+            result.output["matches"][0]["relative_path"],
+            Value::String("src/lib.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn find_files_prunes_denied_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-find-files-deny-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(root.join("public")).unwrap();
+        fs::create_dir_all(root.join("secret")).unwrap();
+        fs::write(root.join("public/visible.txt"), "visible").unwrap();
+        fs::write(root.join("secret/hidden.txt"), "hidden").unwrap();
+
+        let mut access = ReadAccessPolicy::workspace_only(&root);
+        access.deny_roots.push(root.join("secret"));
+        let tool = FindFilesTool::with_access(&root, access);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let result = runtime
+            .block_on(tool.invoke(json!({"pattern": "*.txt", "path": "."})))
+            .unwrap();
+        let matches = result.output["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0]["relative_path"],
+            Value::String("public/visible.txt".to_string())
+        );
+    }
+
+    fn chrono_like_test_suffix() -> String {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_string()
     }
 
     #[test]

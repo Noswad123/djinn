@@ -46,44 +46,8 @@ from agent-loop bugs.
 
 ## Actionable
 
-These items are ready to implement once current docs are accepted.
-
-### Session storage
-
-- Convert the current file-backed session sketch to **JSONL semantics**.
-- Prefer one append-only session log per session:
-
-  ```text
-  ~/.config/djinn/agent-sessions/<session-id>.jsonl
-  ```
-
-- Store one event per line, such as:
-
-  ```json
-  {"type":"session_created","id":"agt_...","title":"...","workspace":"..."}
-  {"type":"user_message","content":"..."}
-  {"type":"assistant_message","content":"..."}
-  {"type":"tool_call","id":"call_...","name":"read","input":{}}
-  {"type":"tool_result","id":"call_...","success":true,"output":{}}
-  ```
-
-- Keep the `AgentSessionStore` trait narrow so SQLite can be added later if JSONL
-  stops being enough.
-
-### Non-interactive CLI slice
-
-- Add initial commands under `djinn agent ...`, likely:
-
-  ```bash
-  djinn agent session new --title "..."
-  djinn agent session list
-  djinn agent session show <id>
-  djinn agent ask "..."
-  ```
-
-- Make these commands work without a TUI.
-- Use the commands to validate runtime/session/provider boundaries before adding
-  Ratatui interaction.
+These items are ready to implement next. Completed baseline behavior belongs in
+[`agent-design-decisions.md`](./agent-design-decisions.md), not this roadmap.
 
 ### Runtime seams
 
@@ -98,10 +62,7 @@ These items are ready to implement once current docs are accepted.
 
 ### Read-only first tools
 
-- Start with low-risk tools before mutation tools:
-  - read file;
-  - list directory;
-  - glob/find;
+- Expand low-risk tools before mutation tools:
   - grep/search;
   - maybe shell with approval.
 - Defer write/edit/patch until the permission and file-safety model is explicit.
@@ -126,29 +87,12 @@ These are important but need more product/design detail before implementation.
 
 ### Provider order and scope
 
-- Implement OpenAI first.
-- Default model resolution should prefer:
-  1. explicit CLI `--model`;
-  2. `DJINN_OPENAI_MODEL`;
-  3. OpenCode config, including newer `default_agent` + `agent.<name>.model`,
-     requested profile agent models, older `agents.coder.model`, and top-level
-     `model`;
-  4. Djinn fallback `gpt-4o-mini`.
-- OpenAI auth resolution should prefer:
-  1. explicit CLI `--api-key`;
-  2. `OPENAI_API_KEY`;
-  3. OpenCode config `providers.openai.apiKey`;
-  4. OpenCode auth file `~/.local/share/opencode/auth.json` when `openai.type`
-     is `api`;
-  5. OpenCode auth file `~/.local/share/opencode/auth.json` when `openai.type`
-     is `oauth`, using OpenCode's ChatGPT/Codex endpoint and refresh flow.
-- Then decide the order for:
+- Decide the next provider implementation order:
   - Google Gemini;
+  - GitHub Copilot;
   - Codex.
 - Decide whether Codex is its own adapter or an OpenAI-compatible profile with
   different auth/default behavior.
-- Decide whether the first provider slice needs streaming or can start with a
-  simpler non-streaming completion call.
 
 ### OpenCode compatibility matrix
 

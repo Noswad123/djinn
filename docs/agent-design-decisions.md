@@ -114,25 +114,33 @@ Implications:
   model capabilities behind adapter boundaries.
 - Avoid broad provider support until these three are reliable.
 
-Open questions:
+Implemented compatibility decisions:
 
 - OpenAI is the first provider implementation target.
-- When no model is specified directly, Djinn should derive the default from
-  OpenCode config if one exists. Newer OpenCode `agent` maps should be honored
-  through `default_agent` and the requested Djinn profile name, with older
+- When no model is specified directly, Djinn derives the default from OpenCode
+  config when possible. Newer OpenCode `agent` maps are honored through
+  `default_agent` and the requested Djinn profile name, with older
   `agents.coder.model`/`agents.default.model` retained as compatibility
   fallbacks.
-- When no OpenAI API key is specified directly, Djinn should reuse OpenCode config
+- When no OpenAI API key is specified directly, Djinn reuses OpenCode config
   `providers.openai.apiKey` if present.
-- Djinn should also read newer OpenCode auth state from
+- Djinn reads newer OpenCode auth state from
   `~/.local/share/opencode/auth.json` for OpenAI API-key credentials and
   OpenAI OAuth credentials. OAuth mode uses OpenCode's ChatGPT/Codex endpoint
   (`https://chatgpt.com/backend-api/codex/responses`), bearer token header,
-  optional `ChatGPT-Account-Id`, and token refresh flow.
+  optional `ChatGPT-Account-Id`, token refresh flow, and streaming Responses
+  parsing because the Codex endpoint requires streaming.
+- Djinn interprets OpenCode agent permission settings for local tool enforcement
+  where they map cleanly. Read tools use a lax default for personal assistant
+  workflows, then apply OpenCode `permission`/`permissions` read rules from the
+  selected/default agent locally in Djinn's tool layer.
+
+Open questions:
+
 - Whether Codex is treated as a distinct provider or as an OpenAI-compatible
   profile with different auth/defaults.
-- Whether the first version needs streaming or can begin with non-streaming
-  completion.
+- Which provider should follow OpenAI: Google Gemini, GitHub Copilot, or a
+  distinct Codex profile.
 
 ### D6. OpenCode configuration compatibility: interpret, do not clone
 
@@ -177,16 +185,22 @@ Open questions:
 - Which tool set sub-agents get by default.
 - How sub-agent sessions are represented in `djinn-memory`.
 
-## Current first-slice direction
+## Implemented first-slice baseline
 
-Based on these decisions, the likely first implementation slice is:
+The first non-interactive agent slice is implemented as:
 
-1. File-backed session/event persistence in `djinn-memory`.
-2. Provider-neutral `djinn-agent` traits and runtime loop.
-3. One provider adapter from the chosen initial provider list.
-4. Minimal built-in tools.
-5. CLI commands for session creation/list/show and one-shot prompting.
-6. Ratatui chat UI after the runtime is usable from CLI.
+1. JSONL session/event persistence in `djinn-memory`, with one append-only log per
+   session under `~/.config/djinn/agent-sessions/<session-id>.jsonl`.
+2. Provider-neutral `djinn-agent` traits for model clients, tools, permission
+   gates, context providers, and the runtime loop.
+3. OpenAI as the first provider adapter, including OpenAI API-key mode and
+   OpenCode-compatible OpenAI OAuth/Codex mode.
+4. Minimal read-only tools for reading files, listing directories, and finding
+   files by glob-like patterns, governed by Djinn's local read access policy.
+5. CLI commands for session creation/list/show and one-shot prompting:
+   `djinn agent session new`, `djinn agent session list`,
+   `djinn agent session show`, and `djinn agent ask`.
+6. Ratatui chat UI remains a follow-on layer after the non-interactive runtime.
 
 Not in the first slice unless explicitly reopened:
 

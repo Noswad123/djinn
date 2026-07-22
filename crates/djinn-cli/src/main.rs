@@ -12,8 +12,8 @@ use anyhow::{bail, Context, Result};
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use djinn_agent::{
-    read_only_tools, AgentRuntime, ModelMessage, ModelRequest, ModelRole, OpenAiAuth, OpenAiClient,
-    OpenAiOAuth,
+    read_only_tools_with_access, AgentRuntime, ModelMessage, ModelRequest, ModelRole, OpenAiAuth,
+    OpenAiClient, OpenAiOAuth, ReadAccessEffect, ReadAccessPolicy, ReadAccessRule,
 };
 use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
@@ -1584,14 +1584,15 @@ fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
 
 fn agent_ask(args: AgentAskArgs) -> Result<()> {
     let prompt = args.prompt;
-    let model = resolve_agent_model(args.model, &args.profile)?;
+    let profile = args.profile;
+    let model = resolve_agent_model(args.model, &profile)?;
     let title = args
         .title
         .unwrap_or_else(|| prompt_title(&prompt, "Agent prompt"));
     let meta = AgentSessionMeta {
         title,
         workspace: resolve_agent_workspace(args.workspace)?,
-        profile: args.profile,
+        profile: profile.clone(),
         source: "djinn-agent".to_string(),
         ..AgentSessionMeta::default()
     };
@@ -1611,6 +1612,7 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
         args.api_key,
         args.base_url,
         args.max_tool_rounds,
+        &profile,
     )?;
     let session = store.load_session(&id)?;
     if args.json {
@@ -1640,6 +1642,7 @@ fn complete_openai_prompt(
     api_key: Option<String>,
     base_url: Option<String>,
     max_tool_rounds: usize,
+    profile: &str,
 ) -> Result<djinn_agent::ModelResponse> {
     let auth = resolve_openai_auth(api_key)?;
     let client = match auth {
@@ -1652,7 +1655,12 @@ fn complete_openai_prompt(
         OpenAiAuth::OAuth(oauth) => OpenAiClient::with_oauth(oauth),
     };
     let workspace = store.load_session(id)?.meta.workspace;
-    let runtime = AgentRuntime::new(client, store.clone(), read_only_tools(workspace)?);
+    let read_access = resolve_agent_read_access_policy(profile, Path::new(&workspace))?;
+    let runtime = AgentRuntime::new(
+        client,
+        store.clone(),
+        read_only_tools_with_access(workspace.clone(), read_access)?,
+    );
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1661,12 +1669,22 @@ fn complete_openai_prompt(
         id,
         ModelRequest {
             model,
-            messages: vec![ModelMessage {
-                role: ModelRole::User,
-                content: prompt,
-                tool_call_id: None,
-                tool_calls: Vec::new(),
-            }],
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::System,
+                    content: format!(
+                        "You are running in workspace `{workspace}`. Read-only filesystem tools may also access other paths such as the user's home directory when the configured access policy allows it. Use absolute paths, `~`, or `$HOME` for non-workspace locations."
+                    ),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: prompt,
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                },
+            ],
             tools: Vec::new(),
         },
         max_tool_rounds,
@@ -2117,6 +2135,191 @@ fn json_string_pointer(value: &Value, pointer: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn resolve_agent_read_access_policy(profile: &str, workspace: &Path) -> Result<ReadAccessPolicy> {
+    let mut policy = ReadAccessPolicy::lax(workspace);
+    if let Some(rules) = opencode_read_access_rules(profile, workspace)? {
+        policy.rules.extend(rules);
+    }
+    Ok(policy)
+}
+
+fn opencode_read_access_rules(
+    profile: &str,
+    workspace: &Path,
+) -> Result<Option<Vec<ReadAccessRule>>> {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for path in opencode_model_config_paths(&cwd) {
+        if !path.exists() {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("reading OpenCode config {}", path.display()))?;
+        let rules = opencode_read_access_rules_from_content(&content, profile, workspace)
+            .with_context(|| format!("parsing OpenCode config {}", path.display()))?;
+        if !rules.is_empty() {
+            return Ok(Some(rules));
+        }
+    }
+    Ok(None)
+}
+
+fn opencode_read_access_rules_from_content(
+    content: &str,
+    profile: &str,
+    workspace: &Path,
+) -> Result<Vec<ReadAccessRule>> {
+    let value: Value = serde_json::from_str(content)?;
+    let mut rules = Vec::new();
+
+    collect_opencode_permission_rules(&value, workspace, &mut rules);
+    if let Some(agent) = opencode_selected_agent_config(&value, profile) {
+        collect_opencode_permission_rules(agent, workspace, &mut rules);
+    }
+
+    Ok(rules)
+}
+
+fn opencode_selected_agent_config<'a>(value: &'a Value, profile: &str) -> Option<&'a Value> {
+    let profile = profile.trim();
+    if !profile.is_empty() && profile != "default" {
+        if let Some(agent) = opencode_agent_config(value, profile) {
+            return Some(agent);
+        }
+    }
+    if let Some(default_agent) = value
+        .get("default_agent")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|agent| !agent.is_empty())
+    {
+        if let Some(agent) = opencode_agent_config(value, default_agent) {
+            return Some(agent);
+        }
+    }
+    opencode_agent_config(value, "coder").or_else(|| opencode_agent_config(value, "default"))
+}
+
+fn opencode_agent_config<'a>(value: &'a Value, agent: &str) -> Option<&'a Value> {
+    ["agent", "agents"].into_iter().find_map(|container| {
+        value
+            .get(container)
+            .and_then(Value::as_object)
+            .and_then(|agents| agents.get(agent))
+    })
+}
+
+fn collect_opencode_permission_rules(
+    value: &Value,
+    workspace: &Path,
+    out: &mut Vec<ReadAccessRule>,
+) {
+    if let Some(permission) = value.get("permission") {
+        collect_opencode_v1_permission_rules(permission, workspace, out);
+    }
+    if let Some(permissions) = value.get("permissions") {
+        collect_opencode_v2_permission_rules(permissions, workspace, out);
+    }
+}
+
+fn collect_opencode_v1_permission_rules(
+    permission: &Value,
+    workspace: &Path,
+    out: &mut Vec<ReadAccessRule>,
+) {
+    let Some(permission) = permission.as_object() else {
+        return;
+    };
+    for key in ["*", "read"] {
+        let Some(value) = permission.get(key) else {
+            continue;
+        };
+        if let Some(effect) = value.as_str().and_then(opencode_read_access_effect) {
+            out.push(ReadAccessRule {
+                pattern: "*".to_string(),
+                effect,
+            });
+            continue;
+        }
+        let Some(patterns) = value.as_object() else {
+            continue;
+        };
+        for (pattern, action) in patterns {
+            if let Some(effect) = action.as_str().and_then(opencode_read_access_effect) {
+                out.push(ReadAccessRule {
+                    pattern: opencode_permission_pattern(pattern, workspace),
+                    effect,
+                });
+            }
+        }
+    }
+}
+
+fn collect_opencode_v2_permission_rules(
+    permissions: &Value,
+    workspace: &Path,
+    out: &mut Vec<ReadAccessRule>,
+) {
+    let Some(permissions) = permissions.as_array() else {
+        return;
+    };
+    for rule in permissions {
+        let action = rule
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if action != "read" && action != "*" && action != "external_directory" {
+            continue;
+        }
+        let Some(effect) = rule
+            .get("effect")
+            .or_else(|| rule.get("action"))
+            .and_then(Value::as_str)
+            .and_then(opencode_read_access_effect)
+        else {
+            continue;
+        };
+        let pattern = rule.get("resource").and_then(Value::as_str).unwrap_or("*");
+        out.push(ReadAccessRule {
+            pattern: opencode_permission_pattern(pattern, workspace),
+            effect,
+        });
+    }
+}
+
+fn opencode_read_access_effect(effect: &str) -> Option<ReadAccessEffect> {
+    match effect.trim() {
+        "allow" => Some(ReadAccessEffect::Allow),
+        "ask" => Some(ReadAccessEffect::Ask),
+        "deny" => Some(ReadAccessEffect::Deny),
+        _ => None,
+    }
+}
+
+fn opencode_permission_pattern(pattern: &str, workspace: &Path) -> String {
+    let pattern = pattern.trim();
+    if pattern == "*" || pattern.is_empty() {
+        return "*".to_string();
+    }
+    let home = djinn_core::home_dir();
+    let expanded = if pattern == "~" {
+        home.to_string_lossy().to_string()
+    } else if let Some(rest) = pattern.strip_prefix("~/") {
+        home.join(rest).to_string_lossy().to_string()
+    } else if pattern == "$HOME" {
+        home.to_string_lossy().to_string()
+    } else if let Some(rest) = pattern.strip_prefix("$HOME/") {
+        home.join(rest).to_string_lossy().to_string()
+    } else {
+        pattern.to_string()
+    };
+
+    if expanded.starts_with('/') || !expanded.contains('/') {
+        expanded
+    } else {
+        workspace.join(expanded).to_string_lossy().to_string()
+    }
 }
 
 fn resolve_agent_workspace(path: Option<PathBuf>) -> Result<String> {
@@ -5323,6 +5526,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(model.as_deref(), Some("openai/gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn opencode_read_access_rules_reads_new_agent_permissions() {
+        let workspace = PathBuf::from("/tmp/djinn-workspace");
+        let rules = opencode_read_access_rules_from_content(
+            r#"{
+              "default_agent": "architect",
+              "permissions": [
+                { "action": "read", "resource": "*.env", "effect": "ask" }
+              ],
+              "agent": {
+                "architect": {
+                  "permissions": [
+                    { "action": "read", "resource": "~/public/*", "effect": "allow" },
+                    { "action": "read", "resource": "~/.ssh/*", "effect": "deny" }
+                  ]
+                }
+              }
+            }"#,
+            "default",
+            &workspace,
+        )
+        .unwrap();
+
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0].pattern, "*.env");
+        assert_eq!(rules[0].effect, ReadAccessEffect::Ask);
+        assert!(rules[1].pattern.ends_with("/public/*"));
+        assert_eq!(rules[1].effect, ReadAccessEffect::Allow);
+        assert!(rules[2].pattern.ends_with("/.ssh/*"));
+        assert_eq!(rules[2].effect, ReadAccessEffect::Deny);
+    }
+
+    #[test]
+    fn opencode_read_access_rules_reads_old_permission_object_for_profile() {
+        let workspace = PathBuf::from("/tmp/djinn-workspace");
+        let rules = opencode_read_access_rules_from_content(
+            r#"{
+              "agents": {
+                "coder": {
+                  "permission": {
+                    "read": {
+                      "docs/*": "allow",
+                      "secrets/*": "deny"
+                    }
+                  }
+                }
+              }
+            }"#,
+            "coder",
+            &workspace,
+        )
+        .unwrap();
+
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].pattern, "/tmp/djinn-workspace/docs/*");
+        assert_eq!(rules[0].effect, ReadAccessEffect::Allow);
+        assert_eq!(rules[1].pattern, "/tmp/djinn-workspace/secrets/*");
+        assert_eq!(rules[1].effect, ReadAccessEffect::Deny);
     }
 
     #[test]
