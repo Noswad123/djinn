@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -1212,6 +1215,69 @@ impl AgentTool for SearchFilesTool {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ShellTool {
+    workspace: PathBuf,
+    permissions: PermissionPolicy,
+}
+
+impl ShellTool {
+    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        Self::with_permissions(workspace, PermissionPolicy::allow_by_default())
+    }
+
+    pub fn with_permissions(workspace: impl Into<PathBuf>, permissions: PermissionPolicy) -> Self {
+        Self {
+            workspace: workspace.into(),
+            permissions,
+        }
+    }
+}
+
+#[async_trait]
+impl AgentTool for ShellTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "shell".to_string(),
+            description: "Execute one shell command on the local machine. Commands are allowed by default, but Djinn blocks clearly destructive commands and applies configured agent/OpenCode shell permission rules. Use for inspections, builds, tests, and other local commands.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "Shell command string to execute." },
+                    "workdir": { "type": "string", "description": "Working directory. Defaults to the current workspace. Relative paths resolve from the workspace; ~, $HOME, and absolute paths are accepted." },
+                    "timeout_ms": { "type": "integer", "description": "Timeout in milliseconds. Defaults to 120000 and is capped at 600000." }
+                },
+                "required": ["command"]
+            }),
+        }
+    }
+
+    async fn invoke(&self, input: serde_json::Value) -> Result<ToolResult> {
+        let input: ShellInput =
+            serde_json::from_value(input).with_context(|| "parsing shell input")?;
+        let command = input.command.trim();
+        if command.is_empty() {
+            bail!("shell command cannot be empty");
+        }
+        self.permissions.assert_allowed("shell", command)?;
+        let workdir = resolve_shell_workdir(&self.workspace, input.workdir.as_deref())?;
+        let timeout = Duration::from_millis(input.timeout_ms.unwrap_or(120_000).clamp(1, 600_000));
+        let output = run_shell_command(command, &workdir, timeout)?;
+        Ok(ToolResult {
+            success: output.exit_code == Some(0) && !output.timed_out,
+            output: json!({
+                "command": command,
+                "workdir": workdir.display().to_string(),
+                "stdout": output.stdout,
+                "stderr": output.stderr,
+                "exit_code": output.exit_code,
+                "timed_out": output.timed_out,
+                "duration_ms": output.duration_ms,
+            }),
+        })
+    }
+}
+
 #[async_trait]
 impl AgentTool for ListDirTool {
     fn spec(&self) -> ToolSpec {
@@ -1281,6 +1347,14 @@ pub fn read_only_tools_with_access(
     workspace: impl Into<PathBuf>,
     access: ReadAccessPolicy,
 ) -> Result<ToolRegistry> {
+    tools_with_policies(workspace, access, PermissionPolicy::allow_by_default())
+}
+
+pub fn tools_with_policies(
+    workspace: impl Into<PathBuf>,
+    access: ReadAccessPolicy,
+    permissions: PermissionPolicy,
+) -> Result<ToolRegistry> {
     let workspace = workspace.into();
     let mut registry = ToolRegistry::new();
     registry.register(ReadFileTool::with_access(workspace.clone(), access.clone()))?;
@@ -1289,7 +1363,8 @@ pub fn read_only_tools_with_access(
         workspace.clone(),
         access.clone(),
     ))?;
-    registry.register(SearchFilesTool::with_access(workspace, access))?;
+    registry.register(SearchFilesTool::with_access(workspace.clone(), access))?;
+    registry.register(ShellTool::with_permissions(workspace, permissions))?;
     Ok(registry)
 }
 
@@ -1317,6 +1392,84 @@ struct SearchFilesInput {
     path: Option<String>,
     include: Option<String>,
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShellInput {
+    command: String,
+    workdir: Option<String>,
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug)]
+struct ShellOutput {
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+    timed_out: bool,
+    duration_ms: u128,
+}
+
+fn resolve_shell_workdir(workspace: &Path, input: Option<&str>) -> Result<PathBuf> {
+    let workspace = workspace
+        .canonicalize()
+        .with_context(|| format!("resolving workspace {}", workspace.display()))?;
+    let expanded = expand_user_path(input.unwrap_or("."));
+    let candidate = Path::new(&expanded);
+    let path = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        workspace.join(candidate)
+    };
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("resolving shell workdir {}", path.display()))?;
+    if !path.is_dir() {
+        bail!("shell workdir is not a directory: {}", path.display());
+    }
+    Ok(path)
+}
+
+fn run_shell_command(command: &str, workdir: &Path, timeout: Duration) -> Result<ShellOutput> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let start = Instant::now();
+    let mut child = ProcessCommand::new(shell)
+        .arg("-lc")
+        .arg(command)
+        .current_dir(workdir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawning shell command {command:?}"))?;
+
+    let mut timed_out = false;
+    loop {
+        if child
+            .try_wait()
+            .with_context(|| format!("waiting for shell command {command:?}"))?
+            .is_some()
+        {
+            break;
+        }
+        if start.elapsed() >= timeout {
+            timed_out = true;
+            let _ = child.kill();
+            break;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("collecting shell command output {command:?}"))?;
+    Ok(ShellOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code(),
+        timed_out,
+        duration_ms: start.elapsed().as_millis(),
+    })
 }
 
 fn searchable_files(root: &Path, access: &ReadAccessPolicy, include: Option<&str>) -> Vec<PathBuf> {
@@ -1671,7 +1824,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_tools_include_find_files() {
+    fn read_only_tools_include_default_shell() {
         let registry = read_only_tools(std::env::temp_dir()).unwrap();
         let names = registry
             .specs()
@@ -1680,8 +1833,51 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            vec!["find_files", "list_dir", "read_file", "search_files"]
+            vec![
+                "find_files",
+                "list_dir",
+                "read_file",
+                "search_files",
+                "shell"
+            ]
         );
+    }
+
+    #[test]
+    fn shell_tool_runs_allowed_command() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-shell-tool-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let tool = ShellTool::new(&root);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let result = runtime
+            .block_on(tool.invoke(json!({"command": "printf hello", "timeout_ms": 1000})))
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["stdout"], Value::String("hello".to_string()));
+        assert_eq!(result.output["exit_code"], Value::Number(0.into()));
+    }
+
+    #[test]
+    fn shell_tool_blocks_destructive_command() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-shell-tool-block-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let tool = ShellTool::new(&root);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(tool.invoke(json!({"command": "git reset --hard HEAD"})))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("destructive-action guardrail"));
     }
 
     #[test]

@@ -60,10 +60,8 @@ These items are ready to implement next. Completed baseline behavior belongs in
 - Keep `djinn-memory` focused on durable session/event storage.
 - Keep `djinn-cli` responsible for command parsing and human-facing output.
 
-### Read-only first tools
+### Mutation tools
 
-- Expand low-risk tools before mutation tools:
-  - maybe shell with approval.
 - Defer write/edit/patch until the permission and file-safety model is explicit.
 
 ## Need refinement

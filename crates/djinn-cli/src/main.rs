@@ -12,8 +12,9 @@ use anyhow::{bail, Context, Result};
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use djinn_agent::{
-    read_only_tools_with_access, AgentRuntime, ModelMessage, ModelRequest, ModelRole, OpenAiAuth,
-    OpenAiClient, OpenAiOAuth, ReadAccessEffect, ReadAccessPolicy, ReadAccessRule,
+    tools_with_policies, AgentRuntime, ModelMessage, ModelRequest, ModelRole, OpenAiAuth,
+    OpenAiClient, OpenAiOAuth, PermissionEffect, PermissionPolicy, PermissionRule,
+    ReadAccessEffect, ReadAccessPolicy, ReadAccessRule,
 };
 use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
@@ -1656,10 +1657,11 @@ fn complete_openai_prompt(
     };
     let workspace = store.load_session(id)?.meta.workspace;
     let read_access = resolve_agent_read_access_policy(profile, Path::new(&workspace))?;
+    let permissions = resolve_agent_permission_policy(profile, Path::new(&workspace))?;
     let runtime = AgentRuntime::new(
         client,
         store.clone(),
-        read_only_tools_with_access(workspace.clone(), read_access)?,
+        tools_with_policies(workspace.clone(), read_access, permissions)?,
     );
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2145,6 +2147,50 @@ fn resolve_agent_read_access_policy(profile: &str, workspace: &Path) -> Result<R
     Ok(policy)
 }
 
+fn resolve_agent_permission_policy(profile: &str, workspace: &Path) -> Result<PermissionPolicy> {
+    let mut policy = PermissionPolicy::allow_by_default();
+    if let Some(rules) = opencode_permission_policy_rules(profile, workspace)? {
+        policy.rules.extend(rules);
+    }
+    Ok(policy)
+}
+
+fn opencode_permission_policy_rules(
+    profile: &str,
+    workspace: &Path,
+) -> Result<Option<Vec<PermissionRule>>> {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for path in opencode_model_config_paths(&cwd) {
+        if !path.exists() {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("reading OpenCode config {}", path.display()))?;
+        let rules = opencode_permission_policy_rules_from_content(&content, profile, workspace)
+            .with_context(|| format!("parsing OpenCode config {}", path.display()))?;
+        if !rules.is_empty() {
+            return Ok(Some(rules));
+        }
+    }
+    Ok(None)
+}
+
+fn opencode_permission_policy_rules_from_content(
+    content: &str,
+    profile: &str,
+    workspace: &Path,
+) -> Result<Vec<PermissionRule>> {
+    let value: Value = serde_json::from_str(content)?;
+    let mut rules = Vec::new();
+
+    collect_opencode_general_permission_rules(&value, workspace, &mut rules);
+    if let Some(agent) = opencode_selected_agent_config(&value, profile) {
+        collect_opencode_general_permission_rules(agent, workspace, &mut rules);
+    }
+
+    Ok(rules)
+}
+
 fn opencode_read_access_rules(
     profile: &str,
     workspace: &Path,
@@ -2223,6 +2269,82 @@ fn collect_opencode_permission_rules(
     }
 }
 
+fn collect_opencode_general_permission_rules(
+    value: &Value,
+    workspace: &Path,
+    out: &mut Vec<PermissionRule>,
+) {
+    if let Some(permission) = value.get("permission") {
+        collect_opencode_v1_general_permission_rules(permission, workspace, out);
+    }
+    if let Some(permissions) = value.get("permissions") {
+        collect_opencode_v2_general_permission_rules(permissions, workspace, out);
+    }
+}
+
+fn collect_opencode_v1_general_permission_rules(
+    permission: &Value,
+    workspace: &Path,
+    out: &mut Vec<PermissionRule>,
+) {
+    let Some(permission) = permission.as_object() else {
+        return;
+    };
+    for (action, value) in permission {
+        let action = opencode_permission_action(action);
+        if let Some(effect) = value.as_str().and_then(opencode_permission_effect) {
+            out.push(PermissionRule {
+                action,
+                resource: "*".to_string(),
+                effect,
+            });
+            continue;
+        }
+        let Some(patterns) = value.as_object() else {
+            continue;
+        };
+        for (pattern, effect) in patterns {
+            if let Some(effect) = effect.as_str().and_then(opencode_permission_effect) {
+                out.push(PermissionRule {
+                    action: action.clone(),
+                    resource: opencode_permission_pattern(pattern, workspace),
+                    effect,
+                });
+            }
+        }
+    }
+}
+
+fn collect_opencode_v2_general_permission_rules(
+    permissions: &Value,
+    workspace: &Path,
+    out: &mut Vec<PermissionRule>,
+) {
+    let Some(permissions) = permissions.as_array() else {
+        return;
+    };
+    for rule in permissions {
+        let action = rule
+            .get("action")
+            .and_then(Value::as_str)
+            .map(opencode_permission_action)
+            .unwrap_or_else(|| "*".to_string());
+        let Some(effect) = rule
+            .get("effect")
+            .and_then(Value::as_str)
+            .and_then(opencode_permission_effect)
+        else {
+            continue;
+        };
+        let resource = rule.get("resource").and_then(Value::as_str).unwrap_or("*");
+        out.push(PermissionRule {
+            action,
+            resource: opencode_permission_pattern(resource, workspace),
+            effect,
+        });
+    }
+}
+
 fn collect_opencode_v1_permission_rules(
     permission: &Value,
     workspace: &Path,
@@ -2293,6 +2415,23 @@ fn opencode_read_access_effect(effect: &str) -> Option<ReadAccessEffect> {
         "allow" => Some(ReadAccessEffect::Allow),
         "ask" => Some(ReadAccessEffect::Ask),
         "deny" => Some(ReadAccessEffect::Deny),
+        _ => None,
+    }
+}
+
+fn opencode_permission_action(action: &str) -> String {
+    match action.trim() {
+        "bash" => "shell".to_string(),
+        other if other.is_empty() => "*".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn opencode_permission_effect(effect: &str) -> Option<PermissionEffect> {
+    match effect.trim() {
+        "allow" => Some(PermissionEffect::Allow),
+        "ask" => Some(PermissionEffect::Ask),
+        "deny" => Some(PermissionEffect::Deny),
         _ => None,
     }
 }
@@ -5586,6 +5725,67 @@ mod tests {
         assert_eq!(rules[0].effect, ReadAccessEffect::Allow);
         assert_eq!(rules[1].pattern, "/tmp/djinn-workspace/secrets/*");
         assert_eq!(rules[1].effect, ReadAccessEffect::Deny);
+    }
+
+    #[test]
+    fn opencode_permission_policy_rules_map_bash_to_shell() {
+        let workspace = PathBuf::from("/tmp/djinn-workspace");
+        let rules = opencode_permission_policy_rules_from_content(
+            r#"{
+              "default_agent": "architect",
+              "agent": {
+                "architect": {
+                  "permissions": [
+                    { "action": "bash", "resource": "git reset*", "effect": "deny" },
+                    { "action": "shell", "resource": "cargo test*", "effect": "allow" }
+                  ]
+                }
+              }
+            }"#,
+            "default",
+            &workspace,
+        )
+        .unwrap();
+
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].action, "shell");
+        assert_eq!(rules[0].resource, "git reset*");
+        assert_eq!(rules[0].effect, PermissionEffect::Deny);
+        assert_eq!(rules[1].action, "shell");
+        assert_eq!(rules[1].resource, "cargo test*");
+        assert_eq!(rules[1].effect, PermissionEffect::Allow);
+    }
+
+    #[test]
+    fn opencode_permission_policy_rules_read_old_permission_object() {
+        let workspace = PathBuf::from("/tmp/djinn-workspace");
+        let rules = opencode_permission_policy_rules_from_content(
+            r#"{
+              "agents": {
+                "coder": {
+                  "permission": {
+                    "shell": {
+                      "npm publish*": "deny"
+                    },
+                    "edit": "allow"
+                  }
+                }
+              }
+            }"#,
+            "coder",
+            &workspace,
+        )
+        .unwrap();
+
+        assert_eq!(rules.len(), 2);
+        assert!(rules.iter().any(|rule| {
+            rule.action == "shell"
+                && rule.resource == "npm publish*"
+                && rule.effect == PermissionEffect::Deny
+        }));
+        assert!(rules.iter().any(|rule| {
+            rule.action == "edit" && rule.resource == "*" && rule.effect == PermissionEffect::Allow
+        }));
     }
 
     #[test]
