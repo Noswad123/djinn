@@ -188,6 +188,65 @@ Open questions:
 - Which tool set sub-agents get by default.
 - How sub-agent sessions are represented in `djinn-memory`.
 
+### D8. Mutation safety: patch-first, reversible, and locally enforced
+
+**Status:** Decided
+
+Djinn should support file mutation, but the first mutation surface should be
+**patch-based** rather than arbitrary direct writes. Mutation tools should keep
+the same allow-by-default philosophy as shell/read tools, while retaining hard
+guardrails for destructive or high-blast-radius operations.
+
+Default posture:
+
+- Normal project file edits are allowed by default.
+- OpenCode/Djinn agent permission settings can add `deny` or `ask` rules for
+  edit/write/apply-patch actions.
+- Built-in destructive-action guardrails always block sensitive/system path
+  mutations unless a future explicit dangerous override is introduced.
+- Non-interactive `ask` remains a clear failure until interactive permission UX
+  exists.
+
+Implemented mutation tool:
+
+- `apply_patch` is the first mutation tool, before `write_file` or general
+  editing.
+- It accepts the structured patch envelope used by Djinn/OpenCode-style patch
+  tools, beginning with `*** Begin Patch` and ending with `*** End Patch`.
+- It applies file-oriented add, update, and delete operations inside the current
+  workspace. Rename/move remains future work.
+- Prefer patches because they are inspectable, reviewable, and easier to record
+  in sessions than unconstrained file writes.
+
+Safety checks for patch application:
+
+- Resolve every touched path before applying changes.
+- Reject mutation of system paths and sensitive credential paths through the
+  existing destructive-path guardrail.
+- Reject paths outside the configured workspace. A future explicit settings model
+  can reopen outside-workspace mutation if needed.
+- Check current git dirty state before patch application and report it in the
+  tool result. Dirty state should not block by default, but it should be visible
+  because it affects rollback and attribution.
+- For each touched file, capture preimage and postimage metadata in the tool
+  result: path, existence, size, and a stable content hash.
+- Record patch summaries through normal tool-result session events, including
+  files added, updated, deleted, line counts, image metadata, and git status.
+
+Rollback direction:
+
+- The first implementation may rely on git diff plus session events for review.
+- A later implementation should add a small file-history/rollback store for
+  untracked files and non-git workspaces.
+- Rollback should be explicit; Djinn should not silently revert user files.
+
+Direct write/edit direction:
+
+- `write_file` can come after `apply_patch`, primarily for creating new files or
+  replacing generated/whole-file outputs.
+- Direct edit helpers can come later, but should compile down to patch
+  application internally so mutation accounting stays consistent.
+
 ## Implemented first-slice baseline
 
 The first non-interactive agent slice is implemented as:
@@ -205,10 +264,13 @@ The first non-interactive agent slice is implemented as:
    destructive shell commands and sensitive/system path mutations.
 6. A default-on shell tool for local inspection/build/test commands, bounded by
    timeout and destructive-action guardrails.
-7. CLI commands for session creation/list/show and one-shot prompting:
+7. A default-on `apply_patch` tool for workspace-scoped file additions, updates,
+   and deletions, with sensitive/system path guardrails, git dirty-state
+   reporting, and preimage/postimage metadata in tool results.
+8. CLI commands for session creation/list/show and one-shot prompting:
    `djinn agent session new`, `djinn agent session list`,
    `djinn agent session show`, and `djinn agent ask`.
-8. Ratatui chat UI remains a follow-on layer after the non-interactive runtime.
+9. Ratatui chat UI remains a follow-on layer after the non-interactive runtime.
 
 Not in the first slice unless explicitly reopened:
 

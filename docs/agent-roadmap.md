@@ -62,7 +62,10 @@ These items are ready to implement next. Completed baseline behavior belongs in
 
 ### Mutation tools
 
-- Defer write/edit/patch until the permission and file-safety model is explicit.
+- Build on the implemented `apply_patch` surface rather than adding independent
+  mutation paths.
+- Keep future direct write/edit helpers compiled down to patch application so
+  session accounting, guardrails, and rollback metadata stay consistent.
 
 ## Need refinement
 
@@ -122,7 +125,6 @@ These are important but need more product/design detail before implementation.
 ### Permission and safety policy
 
 - Decide when to prompt:
-  - shell;
   - write/edit/patch;
   - network fetch;
   - external tools;
@@ -132,12 +134,15 @@ These are important but need more product/design detail before implementation.
   - allow for session;
   - allow by workspace;
   - persistent allow/deny policy.
-- Decide file-editing safety:
-  - patch-only edits;
-  - diff preview;
-  - last-read checks;
-  - git dirty-state warnings;
-  - file history/rollback.
+
+### Mutation tools
+
+- Decide whether `apply_patch` should support rename/move sections or keep those
+  as explicit delete/add pairs.
+- Design rollback/file-history storage for untracked files and non-git workspaces
+  now that patch summaries and image metadata are present in tool results.
+- Decide how an interactive permission prompt should preview and approve patch
+  hunks when a rule evaluates to `ask`.
 
 ### TUI behavior
 
@@ -175,13 +180,6 @@ Blocked until the compatibility matrix is written.
 
 Djinn should not chase OpenCode behavior feature-by-feature until the desired
 compatibility level is explicit.
-
-### Mutation tools
-
-Blocked until permission and file-safety decisions are made.
-
-Read-only tools can proceed first. Write/edit/patch should wait for approval,
-preview, and rollback expectations.
 
 ### Full TUI implementation
 
