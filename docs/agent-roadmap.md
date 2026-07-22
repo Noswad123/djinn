@@ -137,10 +137,8 @@ These are important but need more product/design detail before implementation.
 
 ### Mutation tools
 
-- Design rollback/file-history storage for untracked files and non-git workspaces
-  now that patch summaries and image metadata are present in tool results.
-- Decide how an interactive permission prompt should preview and approve patch
-  hunks when a rule evaluates to `ask`.
+- Expand the terminal approval prompt into a richer TUI approval dialog that can
+  inspect full hunks before accepting or denying an `ask`-gated patch.
 
 ### TUI behavior
 

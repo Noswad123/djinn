@@ -230,15 +230,39 @@ Safety checks for patch application:
   because it affects rollback and attribution.
 - For each touched file, capture preimage and postimage metadata in the tool
   result: path, existence, size, and a stable content hash.
+- In CLI-backed agent sessions, record preimage snapshots in a JSONL file-history
+  store under the Djinn data directory. Existing file bytes are stored as blobs;
+  nonexistent preimages are recorded as tombstones so add-file operations can be
+  reversed later.
 - Record patch summaries through normal tool-result session events, including
   files added, updated, deleted, line counts, image metadata, and git status.
 
 Rollback direction:
 
-- The first implementation may rely on git diff plus session events for review.
-- A later implementation should add a small file-history/rollback store for
-  untracked files and non-git workspaces.
+- The first implementation records enough file-history preimages to restore
+  untracked files and non-git workspaces without relying on git.
+- `djinn agent file-history restore <entry-id>` is the explicit restore surface.
+  It restores the recorded preimage, requires `--force` before overwriting or
+  removing an existing target, and can remove a move destination with
+  `--remove-new-path`. `--dry-run` validates the stored preimage and reports the
+  exact restore/remove effect without mutating files or requiring `--force`.
 - Rollback should be explicit; Djinn should not silently revert user files.
+
+Ask/preview direction:
+
+- When an `apply_patch` permission rule evaluates to `ask`, non-interactive tool
+  execution returns `success: false` with `approval_required: true` and a
+  structured patch preview instead of mutating files or emitting only a bare
+  error.
+- The preview includes touched paths, line counts, preimage metadata, git status,
+  and structured hunk lines. This is the approval payload for a future
+  interactive TUI/CLI permission prompt.
+- `ApplyPatchTool` can now receive a `PermissionGate`. When present, the tool
+  submits that preview for approval and applies the patch only when the gate
+  returns `allow`; `deny` preserves the non-mutating preview result.
+- Non-JSON `djinn agent ask` sessions wire a simple terminal approval gate when
+  stdin/stderr are terminals, allowing humans to approve `ask`-gated patches in
+  the one-shot CLI path.
 
 Direct write/edit direction:
 
@@ -267,10 +291,20 @@ The first non-interactive agent slice is implemented as:
 7. A default-on `apply_patch` tool for workspace-scoped file additions, updates,
    deletions, and rename/move operations, with sensitive/system path guardrails,
    git dirty-state reporting, and preimage/postimage metadata in tool results.
-8. CLI commands for session creation/list/show and one-shot prompting:
-   `djinn agent session new`, `djinn agent session list`,
-   `djinn agent session show`, and `djinn agent ask`.
-9. Ratatui chat UI remains a follow-on layer after the non-interactive runtime.
+8. JSONL file-history storage in `djinn-memory` for `apply_patch` preimages,
+   with metadata in `file-history/index.jsonl` and content blobs under
+   `file-history/blobs/` in the Djinn data directory.
+9. CLI commands for listing and restoring patch preimages:
+   `djinn agent file-history list` and
+   `djinn agent file-history restore <entry-id>`.
+10. Structured non-mutating `apply_patch` previews when permission rules require
+    approval, ready for future interactive permission UX.
+11. Optional `PermissionGate` approval for `apply_patch`, including a terminal
+    prompt in non-JSON `djinn agent ask` sessions.
+12. CLI commands for session creation/list/show and one-shot prompting:
+    `djinn agent session new`, `djinn agent session list`,
+    `djinn agent session show`, and `djinn agent ask`.
+13. Ratatui chat UI remains a follow-on layer after the non-interactive runtime.
 
 Not in the first slice unless explicitly reopened:
 

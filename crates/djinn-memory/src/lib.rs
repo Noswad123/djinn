@@ -8,9 +8,14 @@ use djinn_core::ensure_parent;
 use serde::{Deserialize, Serialize};
 
 pub mod agent_sessions;
+pub mod file_history;
 pub use agent_sessions::{
     AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionFilter, AgentSessionId,
     AgentSessionMeta, AgentSessionStore, AgentSessionSummary, JsonlAgentSessionStore,
+};
+pub use file_history::{
+    FileHistoryEntry, FileHistoryEntryId, FileHistoryFilter, FileHistoryInput,
+    FileHistoryRestoreOptions, FileHistoryRestoreReport, FileHistoryStore, JsonlFileHistoryStore,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

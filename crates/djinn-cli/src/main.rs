@@ -5,23 +5,27 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use djinn_agent::{
-    tools_with_policies, AgentRuntime, ModelMessage, ModelRequest, ModelRole, OpenAiAuth,
-    OpenAiClient, OpenAiOAuth, PermissionEffect, PermissionPolicy, PermissionRule,
-    ReadAccessEffect, ReadAccessPolicy, ReadAccessRule,
+    tools_with_policies_file_history_and_gate, AgentRuntime, ModelMessage, ModelRequest, ModelRole,
+    OpenAiAuth, OpenAiClient, OpenAiOAuth, PermissionDecision, PermissionEffect, PermissionGate,
+    PermissionPolicy, PermissionRequest, PermissionRule, ReadAccessEffect, ReadAccessPolicy,
+    ReadAccessRule,
 };
 use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
     ActionRecord, ActionStore, AgentSessionEvent, AgentSessionEventKind, AgentSessionFilter,
-    AgentSessionId, AgentSessionMeta, AgentSessionStore, CandidateStore, IdeaRecord, IdeaStore,
-    JsonlAgentSessionStore, MemoryCandidate, MemoryInput, MemoryRecord, MemorySource,
+    AgentSessionId, AgentSessionMeta, AgentSessionStore, CandidateStore, FileHistoryEntryId,
+    FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
+    JsonlFileHistoryStore, MemoryCandidate, MemoryInput, MemoryRecord, MemorySource,
     SuggestionInput, SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
@@ -561,6 +565,8 @@ struct AgentArgs {
 enum AgentCommand {
     /// Manage Djinn-native agent sessions.
     Session(AgentSessionArgs),
+    /// Inspect or restore apply_patch file-history entries.
+    FileHistory(AgentFileHistoryArgs),
     /// Record a non-interactive prompt in an agent session.
     Ask(AgentAskArgs),
 }
@@ -571,6 +577,12 @@ struct AgentSessionArgs {
     command: AgentSessionCommand,
 }
 
+#[derive(Debug, Args)]
+struct AgentFileHistoryArgs {
+    #[command(subcommand)]
+    command: AgentFileHistoryCommand,
+}
+
 #[derive(Debug, Subcommand)]
 enum AgentSessionCommand {
     /// Create an empty agent session.
@@ -579,6 +591,14 @@ enum AgentSessionCommand {
     List(AgentSessionListArgs),
     /// Show one agent session.
     Show(AgentSessionShowArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentFileHistoryCommand {
+    /// List apply_patch file-history entries.
+    List(AgentFileHistoryListArgs),
+    /// Restore one apply_patch preimage entry.
+    Restore(AgentFileHistoryRestoreArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -790,6 +810,40 @@ struct AgentSessionShowArgs {
 }
 
 #[derive(Debug, Args)]
+struct AgentFileHistoryListArgs {
+    /// Filter by exact patch id.
+    #[arg(long = "patch-id")]
+    patch_id: Option<String>,
+    /// Filter by exact workspace string.
+    #[arg(long)]
+    workspace: Option<String>,
+    /// Maximum entries to list.
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentFileHistoryRestoreArgs {
+    /// File-history entry id to restore.
+    id: String,
+    /// Overwrite an existing preimage target, or remove an existing tombstone target.
+    #[arg(long)]
+    force: bool,
+    /// For move entries, also remove the recorded new_path file if it exists.
+    #[arg(long = "remove-new-path")]
+    remove_new_path: bool,
+    /// Validate and show what would happen without changing files.
+    #[arg(long = "dry-run")]
+    dry_run: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
 struct AgentAskArgs {
     /// Prompt to send to OpenAI.
     prompt: String,
@@ -817,6 +871,45 @@ struct AgentAskArgs {
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
+}
+
+struct TerminalPermissionGate;
+
+#[async_trait]
+impl PermissionGate for TerminalPermissionGate {
+    async fn approve(&self, request: PermissionRequest) -> Result<PermissionDecision> {
+        eprintln!("\nPermission approval required: {}", request.description);
+        if let Some(preview) = request.metadata.get("preview").and_then(Value::as_array) {
+            for item in preview {
+                let operation = item["operation"].as_str().unwrap_or("operation");
+                let path = item["relative_path"]
+                    .as_str()
+                    .or_else(|| item["path"].as_str())
+                    .unwrap_or("<unknown>");
+                let added = item["lines_added"].as_u64().unwrap_or_default();
+                let removed = item["lines_removed"].as_u64().unwrap_or_default();
+                eprintln!("- {operation} {path} (+{added}/-{removed})");
+                if let Some(new_path) = item["relative_new_path"]
+                    .as_str()
+                    .or_else(|| item["new_path"].as_str())
+                {
+                    eprintln!("  -> {new_path}");
+                }
+            }
+        } else {
+            eprintln!("{}", serde_json::to_string_pretty(&request.metadata)?);
+        }
+        eprint!("Approve this patch? [y/N] ");
+        io::stderr().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        let answer = answer.trim().to_ascii_lowercase();
+        if answer == "y" || answer == "yes" {
+            Ok(PermissionDecision::Allow)
+        } else {
+            Ok(PermissionDecision::Deny)
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -1485,6 +1578,7 @@ fn run_open(args: OpenArgs) -> Result<()> {
 fn run_agent(args: AgentArgs) -> Result<()> {
     match args.command {
         AgentCommand::Session(args) => run_agent_session(args),
+        AgentCommand::FileHistory(args) => run_agent_file_history(args),
         AgentCommand::Ask(args) => agent_ask(args),
     }
 }
@@ -1494,6 +1588,13 @@ fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
         AgentSessionCommand::New(args) => agent_session_new(args),
         AgentSessionCommand::List(args) => agent_session_list(args),
         AgentSessionCommand::Show(args) => agent_session_show(args),
+    }
+}
+
+fn run_agent_file_history(args: AgentFileHistoryArgs) -> Result<()> {
+    match args.command {
+        AgentFileHistoryCommand::List(args) => agent_file_history_list(args),
+        AgentFileHistoryCommand::Restore(args) => agent_file_history_restore(args),
     }
 }
 
@@ -1583,6 +1684,75 @@ fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
     Ok(())
 }
 
+fn agent_file_history_list(args: AgentFileHistoryListArgs) -> Result<()> {
+    let entries = file_history_store().list_entries(FileHistoryFilter {
+        patch_id: args.patch_id,
+        workspace: args.workspace,
+        limit: args.limit,
+    })?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+    } else if entries.is_empty() {
+        println!("File history is empty.");
+    } else {
+        for (idx, entry) in entries.iter().enumerate() {
+            let target = entry
+                .new_path
+                .as_ref()
+                .map(|new_path| format!("{} -> {new_path}", entry.path))
+                .unwrap_or_else(|| entry.path.clone());
+            println!(
+                "  {}. [{}] {} {} — patch {} — {}",
+                idx + 1,
+                entry.id,
+                entry.operation,
+                target,
+                entry.patch_id,
+                entry.created_at
+            );
+        }
+        println!("\nTotal: {} file-history entries", entries.len());
+    }
+    Ok(())
+}
+
+fn agent_file_history_restore(args: AgentFileHistoryRestoreArgs) -> Result<()> {
+    let id = FileHistoryEntryId::new(args.id);
+    let report = file_history_store().restore_entry(
+        &id,
+        FileHistoryRestoreOptions {
+            force: args.force,
+            remove_new_path: args.remove_new_path,
+            dry_run: args.dry_run,
+        },
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        let prefix = if report.dry_run {
+            "File history preview"
+        } else {
+            "File history restored"
+        };
+        println!(
+            "{prefix} [{}]: {} {}",
+            report.entry.id, report.action, report.restored_path
+        );
+        if report.force_required && report.dry_run && !args.force {
+            println!("Force would be required for a real restore.");
+        }
+        if let Some(path) = report.removed_new_path {
+            let verb = if report.dry_run {
+                "Would remove"
+            } else {
+                "Removed"
+            };
+            println!("{verb} move destination: {path}");
+        }
+    }
+    Ok(())
+}
+
 fn agent_ask(args: AgentAskArgs) -> Result<()> {
     let prompt = args.prompt;
     let profile = args.profile;
@@ -1614,6 +1784,7 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
         args.base_url,
         args.max_tool_rounds,
         &profile,
+        !args.json,
     )?;
     let session = store.load_session(&id)?;
     if args.json {
@@ -1644,6 +1815,7 @@ fn complete_openai_prompt(
     base_url: Option<String>,
     max_tool_rounds: usize,
     profile: &str,
+    interactive_permissions: bool,
 ) -> Result<djinn_agent::ModelResponse> {
     let auth = resolve_openai_auth(api_key)?;
     let client = match auth {
@@ -1658,10 +1830,25 @@ fn complete_openai_prompt(
     let workspace = store.load_session(id)?.meta.workspace;
     let read_access = resolve_agent_read_access_policy(profile, Path::new(&workspace))?;
     let permissions = resolve_agent_permission_policy(profile, Path::new(&workspace))?;
+    let file_history = Arc::new(JsonlFileHistoryStore::default_in(
+        &djinn_core::default_data_dir(),
+    ));
+    let permission_gate: Option<Arc<dyn PermissionGate>> =
+        if interactive_permissions && io::stdin().is_terminal() && io::stderr().is_terminal() {
+            Some(Arc::new(TerminalPermissionGate))
+        } else {
+            None
+        };
     let runtime = AgentRuntime::new(
         client,
         store.clone(),
-        tools_with_policies(workspace.clone(), read_access, permissions)?,
+        tools_with_policies_file_history_and_gate(
+            workspace.clone(),
+            read_access,
+            permissions,
+            Some(file_history),
+            permission_gate,
+        )?,
     );
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -5496,6 +5683,10 @@ fn context_store() -> ContextStore {
 
 fn agent_session_store() -> JsonlAgentSessionStore {
     JsonlAgentSessionStore::default_in(&djinn_core::default_data_dir())
+}
+
+fn file_history_store() -> JsonlFileHistoryStore {
+    JsonlFileHistoryStore::default_in(&djinn_core::default_data_dir())
 }
 
 fn skill_records() -> Result<Vec<SkillRecord>> {

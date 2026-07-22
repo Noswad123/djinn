@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 pub use djinn_memory::{
     AgentSessionEvent, AgentSessionEventKind, AgentSessionFilter, AgentSessionId, AgentSessionMeta,
-    AgentSessionStore, AgentSessionSummary,
+    AgentSessionStore, AgentSessionSummary, FileHistoryInput, FileHistoryStore,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -1221,10 +1221,12 @@ pub struct ShellTool {
     permissions: PermissionPolicy,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ApplyPatchTool {
     workspace: PathBuf,
     permissions: PermissionPolicy,
+    history: Option<Arc<dyn FileHistoryStore>>,
+    permission_gate: Option<Arc<dyn PermissionGate>>,
 }
 
 impl ShellTool {
@@ -1249,7 +1251,19 @@ impl ApplyPatchTool {
         Self {
             workspace: workspace.into(),
             permissions,
+            history: None,
+            permission_gate: None,
         }
+    }
+
+    pub fn with_file_history(mut self, history: Arc<dyn FileHistoryStore>) -> Self {
+        self.history = Some(history);
+        self
+    }
+
+    pub fn with_permission_gate(mut self, gate: Arc<dyn PermissionGate>) -> Self {
+        self.permission_gate = Some(gate);
+        self
     }
 }
 
@@ -1327,6 +1341,50 @@ impl AgentTool for ApplyPatchTool {
             .workspace
             .canonicalize()
             .with_context(|| format!("resolving workspace {}", self.workspace.display()))?;
+        let patch_id = fresh_patch_id();
+        let mut approval_granted = false;
+        if patch_requires_approval(&operations, &workspace, &self.permissions)? {
+            let previews = operations
+                .iter()
+                .map(|operation| preview_patch_operation(operation, &workspace, &self.permissions))
+                .collect::<Result<Vec<_>>>()?;
+            let approval_payload = json!({
+                "patch_id": patch_id,
+                "workspace": workspace.display().to_string(),
+                "approval_required": true,
+                "reason": "permission requires approval",
+                "preview": previews,
+            });
+            if let Some(gate) = self.permission_gate.as_ref() {
+                let decision = gate
+                    .approve(PermissionRequest {
+                        action: "apply_patch".to_string(),
+                        description: "Approve apply_patch mutation".to_string(),
+                        metadata: approval_payload.clone(),
+                    })
+                    .await?;
+                if decision == PermissionDecision::Allow {
+                    approval_granted = true;
+                } else {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: json!({
+                            "patch_id": patch_id,
+                            "workspace": workspace.display().to_string(),
+                            "approval_required": true,
+                            "approval_denied": true,
+                            "reason": "permission approval denied",
+                            "preview": approval_payload["preview"].clone(),
+                        }),
+                    });
+                }
+            } else {
+                return Ok(ToolResult {
+                    success: false,
+                    output: approval_payload,
+                });
+            }
+        }
         let mut summaries = Vec::new();
 
         for operation in operations {
@@ -1334,12 +1392,16 @@ impl AgentTool for ApplyPatchTool {
                 operation,
                 &workspace,
                 &self.permissions,
+                self.history.as_deref(),
+                &patch_id,
+                approval_granted,
             )?);
         }
 
         Ok(ToolResult {
             success: true,
             output: json!({
+                "patch_id": patch_id,
                 "workspace": workspace.display().to_string(),
                 "summary": summaries,
             }),
@@ -1424,6 +1486,25 @@ pub fn tools_with_policies(
     access: ReadAccessPolicy,
     permissions: PermissionPolicy,
 ) -> Result<ToolRegistry> {
+    tools_with_policies_and_file_history(workspace, access, permissions, None)
+}
+
+pub fn tools_with_policies_and_file_history(
+    workspace: impl Into<PathBuf>,
+    access: ReadAccessPolicy,
+    permissions: PermissionPolicy,
+    history: Option<Arc<dyn FileHistoryStore>>,
+) -> Result<ToolRegistry> {
+    tools_with_policies_file_history_and_gate(workspace, access, permissions, history, None)
+}
+
+pub fn tools_with_policies_file_history_and_gate(
+    workspace: impl Into<PathBuf>,
+    access: ReadAccessPolicy,
+    permissions: PermissionPolicy,
+    history: Option<Arc<dyn FileHistoryStore>>,
+    permission_gate: Option<Arc<dyn PermissionGate>>,
+) -> Result<ToolRegistry> {
     let workspace = workspace.into();
     let mut registry = ToolRegistry::new();
     registry.register(ReadFileTool::with_access(workspace.clone(), access.clone()))?;
@@ -1433,10 +1514,14 @@ pub fn tools_with_policies(
         access.clone(),
     ))?;
     registry.register(SearchFilesTool::with_access(workspace.clone(), access))?;
-    registry.register(ApplyPatchTool::with_permissions(
-        workspace.clone(),
-        permissions.clone(),
-    ))?;
+    let mut apply_patch = ApplyPatchTool::with_permissions(workspace.clone(), permissions.clone());
+    if let Some(history) = history {
+        apply_patch = apply_patch.with_file_history(history);
+    }
+    if let Some(gate) = permission_gate {
+        apply_patch = apply_patch.with_permission_gate(gate);
+    }
+    registry.register(apply_patch)?;
     registry.register(ShellTool::with_permissions(workspace, permissions))?;
     Ok(registry)
 }
@@ -1704,10 +1789,243 @@ fn non_empty_patch_path(path: &str) -> Result<String> {
     Ok(path.to_string())
 }
 
+fn fresh_patch_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("patch_{nanos}")
+}
+
+fn record_file_history(
+    history: Option<&dyn FileHistoryStore>,
+    patch_id: &str,
+    workspace: &Path,
+    operation: &str,
+    path: &Path,
+    new_path: Option<&Path>,
+) -> Result<Value> {
+    let Some(history) = history else {
+        return Ok(Value::Null);
+    };
+    let content = if path.exists() {
+        if !path.is_file() {
+            bail!("file-history target is not a file: {}", path.display());
+        }
+        Some(
+            fs::read(path)
+                .with_context(|| format!("reading file-history preimage {}", path.display()))?,
+        )
+    } else {
+        None
+    };
+    let entry = history.record_preimage(FileHistoryInput {
+        patch_id: patch_id.to_string(),
+        workspace: workspace.display().to_string(),
+        operation: operation.to_string(),
+        path: path.display().to_string(),
+        new_path: new_path.map(|path| path.display().to_string()),
+        content,
+    })?;
+    serde_json::to_value(entry).with_context(|| "serializing file-history entry")
+}
+
+fn patch_requires_approval(
+    operations: &[PatchOperation],
+    workspace: &Path,
+    permissions: &PermissionPolicy,
+) -> Result<bool> {
+    let mut requires_approval = false;
+    for operation in operations {
+        for resource in operation_resources(operation, workspace)? {
+            match permissions.evaluate("apply_patch", &resource) {
+                PermissionEffect::Allow => {}
+                PermissionEffect::Ask => requires_approval = true,
+                PermissionEffect::Deny => permissions.assert_allowed("apply_patch", &resource)?,
+            }
+        }
+    }
+    Ok(requires_approval)
+}
+
+fn operation_resources(operation: &PatchOperation, workspace: &Path) -> Result<Vec<String>> {
+    match operation {
+        PatchOperation::Move { path, new_path, .. } => Ok(vec![
+            resolve_mutation_path(workspace, path)?
+                .display()
+                .to_string(),
+            resolve_mutation_path(workspace, new_path)?
+                .display()
+                .to_string(),
+        ]),
+        PatchOperation::Add { path, .. }
+        | PatchOperation::Update { path, .. }
+        | PatchOperation::Delete { path } => Ok(vec![resolve_mutation_path(workspace, path)?
+            .display()
+            .to_string()]),
+    }
+}
+
+fn preview_patch_operation(
+    operation: &PatchOperation,
+    workspace: &Path,
+    permissions: &PermissionPolicy,
+) -> Result<Value> {
+    match operation {
+        PatchOperation::Move {
+            path,
+            new_path,
+            hunks,
+        } => {
+            let source = resolve_mutation_path(workspace, path)?;
+            let destination = resolve_mutation_path(workspace, new_path)?;
+            let (lines_added, lines_removed) = hunk_line_counts(hunks);
+            Ok(json!({
+                "operation": "move",
+                "path": source.display().to_string(),
+                "relative_path": relative_to_workspace(workspace, &source),
+                "new_path": destination.display().to_string(),
+                "relative_new_path": relative_to_workspace(workspace, &destination),
+                "permission": combined_permission_effect([
+                    permissions.evaluate("apply_patch", &source.display().to_string()),
+                    permissions.evaluate("apply_patch", &destination.display().to_string()),
+                ]),
+                "lines_added": lines_added,
+                "lines_removed": lines_removed,
+                "preimage": file_snapshot(&source)?,
+                "new_path_preimage": file_snapshot(&destination)?,
+                "git_status_before": git_status_short(workspace, &source),
+                "new_path_git_status_before": git_status_short(workspace, &destination),
+                "hunks": preview_hunks(hunks),
+            }))
+        }
+        PatchOperation::Add { path, lines } => {
+            let path = resolve_mutation_path(workspace, path)?;
+            Ok(json!({
+                "operation": "add",
+                "path": path.display().to_string(),
+                "relative_path": relative_to_workspace(workspace, &path),
+                "permission": permissions.evaluate("apply_patch", &path.display().to_string()),
+                "lines_added": lines.len(),
+                "lines_removed": 0,
+                "preimage": file_snapshot(&path)?,
+                "git_status_before": git_status_short(workspace, &path),
+            }))
+        }
+        PatchOperation::Update { path, hunks } => {
+            let path = resolve_mutation_path(workspace, path)?;
+            let (lines_added, lines_removed) = hunk_line_counts(hunks);
+            Ok(json!({
+                "operation": "update",
+                "path": path.display().to_string(),
+                "relative_path": relative_to_workspace(workspace, &path),
+                "permission": permissions.evaluate("apply_patch", &path.display().to_string()),
+                "lines_added": lines_added,
+                "lines_removed": lines_removed,
+                "preimage": file_snapshot(&path)?,
+                "git_status_before": git_status_short(workspace, &path),
+                "hunks": preview_hunks(hunks),
+            }))
+        }
+        PatchOperation::Delete { path } => {
+            let path = resolve_mutation_path(workspace, path)?;
+            Ok(json!({
+                "operation": "delete",
+                "path": path.display().to_string(),
+                "relative_path": relative_to_workspace(workspace, &path),
+                "permission": permissions.evaluate("apply_patch", &path.display().to_string()),
+                "lines_added": 0,
+                "lines_removed": count_file_lines(&path),
+                "preimage": file_snapshot(&path)?,
+                "git_status_before": git_status_short(workspace, &path),
+            }))
+        }
+    }
+}
+
+fn relative_to_workspace(workspace: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string()
+}
+
+fn combined_permission_effect<const N: usize>(effects: [PermissionEffect; N]) -> PermissionEffect {
+    if effects
+        .iter()
+        .any(|effect| *effect == PermissionEffect::Deny)
+    {
+        PermissionEffect::Deny
+    } else if effects
+        .iter()
+        .any(|effect| *effect == PermissionEffect::Ask)
+    {
+        PermissionEffect::Ask
+    } else {
+        PermissionEffect::Allow
+    }
+}
+
+fn hunk_line_counts(hunks: &[PatchHunk]) -> (usize, usize) {
+    let added = hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .filter(|line| matches!(line, PatchHunkLine::Add(_)))
+        .count();
+    let removed = hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .filter(|line| matches!(line, PatchHunkLine::Remove(_)))
+        .count();
+    (added, removed)
+}
+
+fn preview_hunks(hunks: &[PatchHunk]) -> Vec<Value> {
+    hunks
+        .iter()
+        .map(|hunk| {
+            json!({
+                "lines": hunk.lines.iter().map(|line| match line {
+                    PatchHunkLine::Context(content) => json!({"kind": "context", "content": content}),
+                    PatchHunkLine::Remove(content) => json!({"kind": "remove", "content": content}),
+                    PatchHunkLine::Add(content) => json!({"kind": "add", "content": content}),
+                }).collect::<Vec<_>>()
+            })
+        })
+        .collect()
+}
+
+fn count_file_lines(path: &Path) -> Option<usize> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|content| content.lines().count())
+}
+
+fn assert_patch_permission(
+    permissions: &PermissionPolicy,
+    resource: &str,
+    approval_granted: bool,
+) -> Result<()> {
+    if let Some(reason) = destructive_denial("apply_patch", resource) {
+        bail!("permission denied by destructive-action guardrail: {reason}");
+    }
+    match permissions.evaluate("apply_patch", resource) {
+        PermissionEffect::Allow => Ok(()),
+        PermissionEffect::Ask if approval_granted => Ok(()),
+        PermissionEffect::Ask => {
+            bail!("permission requires approval in non-interactive mode: apply_patch {resource}")
+        }
+        PermissionEffect::Deny => bail!("permission denied by policy: apply_patch {resource}"),
+    }
+}
+
 fn apply_patch_operation_summary(
     operation: PatchOperation,
     workspace: &Path,
     permissions: &PermissionPolicy,
+    history: Option<&dyn FileHistoryStore>,
+    patch_id: &str,
+    approval_granted: bool,
 ) -> Result<Value> {
     match operation {
         PatchOperation::Move {
@@ -1719,8 +2037,8 @@ fn apply_patch_operation_summary(
             let destination = resolve_mutation_path(workspace, &new_path)?;
             let source_resource = source.display().to_string();
             let destination_resource = destination.display().to_string();
-            permissions.assert_allowed("apply_patch", &source_resource)?;
-            permissions.assert_allowed("apply_patch", &destination_resource)?;
+            assert_patch_permission(permissions, &source_resource, approval_granted)?;
+            assert_patch_permission(permissions, &destination_resource, approval_granted)?;
             let relative_path = source
                 .strip_prefix(workspace)
                 .unwrap_or(&source)
@@ -1735,6 +2053,14 @@ fn apply_patch_operation_summary(
             let destination_before = file_snapshot(&destination)?;
             let git_status_before = git_status_short(workspace, &source);
             let new_path_git_status_before = git_status_short(workspace, &destination);
+            let history_entry = record_file_history(
+                history,
+                patch_id,
+                workspace,
+                "move",
+                &source,
+                Some(&destination),
+            )?;
             let change = apply_move_file(&source, &destination, hunks)?;
             let after = file_snapshot(&source)?;
             let destination_after = file_snapshot(&destination)?;
@@ -1750,6 +2076,7 @@ fn apply_patch_operation_summary(
                 "lines_removed": change.lines_removed,
                 "preimage": before,
                 "postimage": after,
+                "history_entry": history_entry,
                 "new_path_preimage": destination_before,
                 "new_path_postimage": destination_after,
                 "git_status_before": git_status_before,
@@ -1767,7 +2094,7 @@ fn apply_patch_operation_summary(
             };
             let path = resolve_mutation_path(workspace, path)?;
             let resource = path.display().to_string();
-            permissions.assert_allowed("apply_patch", &resource)?;
+            assert_patch_permission(permissions, &resource, approval_granted)?;
             let relative_path = path
                 .strip_prefix(workspace)
                 .unwrap_or(&path)
@@ -1775,6 +2102,14 @@ fn apply_patch_operation_summary(
                 .to_string();
             let before = file_snapshot(&path)?;
             let git_status_before = git_status_short(workspace, &path);
+            let operation_name = match &other {
+                PatchOperation::Add { .. } => "add",
+                PatchOperation::Update { .. } => "update",
+                PatchOperation::Delete { .. } => "delete",
+                PatchOperation::Move { .. } => unreachable!("move handled above"),
+            };
+            let history_entry =
+                record_file_history(history, patch_id, workspace, operation_name, &path, None)?;
             let change = apply_patch_operation(other, &path)?;
             let after = file_snapshot(&path)?;
             let git_status_after = git_status_short(workspace, &path);
@@ -1786,6 +2121,7 @@ fn apply_patch_operation_summary(
                 "lines_removed": change.lines_removed,
                 "preimage": before,
                 "postimage": after,
+                "history_entry": history_entry,
                 "git_status_before": git_status_before,
                 "git_status_after": git_status_after,
             }))
@@ -2316,6 +2652,15 @@ where
 mod tests {
     use super::*;
 
+    struct StaticPermissionGate(PermissionDecision);
+
+    #[async_trait]
+    impl PermissionGate for StaticPermissionGate {
+        async fn approve(&self, _request: PermissionRequest) -> Result<PermissionDecision> {
+            Ok(self.0)
+        }
+    }
+
     #[test]
     fn normalize_openai_model_strips_provider_prefix() {
         assert_eq!(normalize_openai_model("openai/gpt-5.5"), "gpt-5.5");
@@ -2617,6 +2962,153 @@ mod tests {
             .to_string();
         assert!(error.contains("outside workspace"));
         assert!(root.join("old.txt").exists());
+    }
+
+    #[test]
+    fn apply_patch_tool_records_file_history_preimages() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-apply-patch-history-test-{}",
+            chrono_like_test_suffix()
+        ));
+        let history_root = std::env::temp_dir().join(format!(
+            "djinn-file-history-agent-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("update.txt"), "before\n").unwrap();
+        fs::write(root.join("delete.txt"), "delete me\n").unwrap();
+        fs::write(root.join("move.txt"), "move me\n").unwrap();
+        let history = Arc::new(djinn_memory::JsonlFileHistoryStore::new(
+            history_root.clone(),
+        ));
+        let tool = ApplyPatchTool::new(&root).with_file_history(history);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"patch": "*** Begin Patch\n*** Add File: add.txt\n+new\n*** Update File: update.txt\n@@\n-before\n+after\n*** Delete File: delete.txt\n*** Update File: move.txt\n*** Move to: moved.txt\n*** End Patch"})))
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.output["patch_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("patch_"));
+        let summary = result.output["summary"].as_array().unwrap();
+        assert_eq!(summary.len(), 4);
+        assert_eq!(summary[0]["operation"], "add");
+        assert_eq!(summary[0]["history_entry"]["existed"], false);
+        assert_eq!(summary[1]["operation"], "update");
+        assert_eq!(summary[1]["history_entry"]["existed"], true);
+        assert_eq!(summary[2]["operation"], "delete");
+        assert_eq!(summary[2]["history_entry"]["existed"], true);
+        assert_eq!(summary[3]["operation"], "move");
+        assert_eq!(summary[3]["history_entry"]["existed"], true);
+
+        let update_blob = summary[1]["history_entry"]["content_path"]
+            .as_str()
+            .unwrap();
+        assert_eq!(fs::read_to_string(update_blob).unwrap(), "before\n");
+        let index = fs::read_to_string(history_root.join("index.jsonl")).unwrap();
+        assert_eq!(index.lines().count(), 4);
+    }
+
+    #[test]
+    fn apply_patch_tool_returns_preview_when_permission_requires_approval() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-apply-patch-ask-preview-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("ask.txt"), "before\n").unwrap();
+        let mut policy = PermissionPolicy::allow_by_default();
+        policy.rules.push(PermissionRule {
+            action: "apply_patch".to_string(),
+            resource: "*ask.txt".to_string(),
+            effect: PermissionEffect::Ask,
+        });
+        let tool = ApplyPatchTool::with_permissions(&root, policy);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"patch": "*** Begin Patch\n*** Update File: ask.txt\n@@\n-before\n+after\n*** End Patch"})))
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.output["approval_required"], true);
+        assert_eq!(result.output["preview"][0]["operation"], "update");
+        assert_eq!(result.output["preview"][0]["permission"], "ask");
+        assert_eq!(result.output["preview"][0]["relative_path"], "ask.txt");
+        assert_eq!(result.output["preview"][0]["lines_added"], 1);
+        assert_eq!(result.output["preview"][0]["lines_removed"], 1);
+        assert_eq!(
+            fs::read_to_string(root.join("ask.txt")).unwrap(),
+            "before\n"
+        );
+    }
+
+    #[test]
+    fn apply_patch_tool_applies_after_permission_gate_approval() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-apply-patch-gate-allow-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("ask.txt"), "before\n").unwrap();
+        let mut policy = PermissionPolicy::allow_by_default();
+        policy.rules.push(PermissionRule {
+            action: "apply_patch".to_string(),
+            resource: "*ask.txt".to_string(),
+            effect: PermissionEffect::Ask,
+        });
+        let tool = ApplyPatchTool::with_permissions(&root, policy)
+            .with_permission_gate(Arc::new(StaticPermissionGate(PermissionDecision::Allow)));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"patch": "*** Begin Patch\n*** Update File: ask.txt\n@@\n-before\n+after\n*** End Patch"})))
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["summary"][0]["operation"], "update");
+        assert_eq!(fs::read_to_string(root.join("ask.txt")).unwrap(), "after\n");
+    }
+
+    #[test]
+    fn apply_patch_tool_does_not_apply_after_permission_gate_denial() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-apply-patch-gate-deny-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("ask.txt"), "before\n").unwrap();
+        let mut policy = PermissionPolicy::allow_by_default();
+        policy.rules.push(PermissionRule {
+            action: "apply_patch".to_string(),
+            resource: "*ask.txt".to_string(),
+            effect: PermissionEffect::Ask,
+        });
+        let tool = ApplyPatchTool::with_permissions(&root, policy)
+            .with_permission_gate(Arc::new(StaticPermissionGate(PermissionDecision::Deny)));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"patch": "*** Begin Patch\n*** Update File: ask.txt\n@@\n-before\n+after\n*** End Patch"})))
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.output["approval_denied"], true);
+        assert_eq!(
+            fs::read_to_string(root.join("ask.txt")).unwrap(),
+            "before\n"
+        );
     }
 
     #[test]
