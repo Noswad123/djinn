@@ -130,10 +130,10 @@ Implemented compatibility decisions:
   (`https://chatgpt.com/backend-api/codex/responses`), bearer token header,
   optional `ChatGPT-Account-Id`, token refresh flow, and streaming Responses
   parsing because the Codex endpoint requires streaming.
-- Djinn interprets OpenCode agent permission settings for local tool enforcement
-  where they map cleanly. Read tools use a lax default for personal assistant
-  workflows, then apply OpenCode `permission`/`permissions` read rules from the
-  selected/default agent locally in Djinn's tool layer.
+- Djinn permissions are allow-by-default for local assistant workflows. Built-in
+  guardrails block clearly destructive shell commands and sensitive/system path
+  mutations; OpenCode `permission`/`permissions` rules from the selected/default
+  agent provide additional deny/ask/allow policy in Djinn's local tool layer.
 
 Open questions:
 
@@ -195,12 +195,15 @@ The first non-interactive agent slice is implemented as:
    gates, context providers, and the runtime loop.
 3. OpenAI as the first provider adapter, including OpenAI API-key mode and
    OpenCode-compatible OpenAI OAuth/Codex mode.
-4. Minimal read-only tools for reading files, listing directories, and finding
-   files by glob-like patterns, governed by Djinn's local read access policy.
-5. CLI commands for session creation/list/show and one-shot prompting:
+4. Minimal read-only tools for reading files, listing directories, finding files
+   by glob-like patterns, and searching UTF-8 text files by regular expression,
+   governed by Djinn's local read access policy.
+5. Allow-by-default permission policy primitives, including hard guardrails for
+   destructive shell commands and sensitive/system path mutations.
+6. CLI commands for session creation/list/show and one-shot prompting:
    `djinn agent session new`, `djinn agent session list`,
    `djinn agent session show`, and `djinn agent ask`.
-6. Ratatui chat UI remains a follow-on layer after the non-interactive runtime.
+7. Ratatui chat UI remains a follow-on layer after the non-interactive runtime.
 
 Not in the first slice unless explicitly reopened:
 

@@ -63,7 +63,6 @@ These items are ready to implement next. Completed baseline behavior belongs in
 ### Read-only first tools
 
 - Expand low-risk tools before mutation tools:
-  - grep/search;
   - maybe shell with approval.
 - Defer write/edit/patch until the permission and file-safety model is explicit.
 

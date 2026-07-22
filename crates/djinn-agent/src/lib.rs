@@ -9,6 +9,7 @@ pub use djinn_memory::{
     AgentSessionEvent, AgentSessionEventKind, AgentSessionFilter, AgentSessionId, AgentSessionMeta,
     AgentSessionStore, AgentSessionSummary,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use walkdir::WalkDir;
@@ -642,6 +643,129 @@ pub trait ContextProvider: Send + Sync {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionPolicy {
+    #[serde(default)]
+    pub rules: Vec<PermissionRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionRule {
+    pub action: String,
+    pub resource: String,
+    pub effect: PermissionEffect,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionEffect {
+    Allow,
+    Ask,
+    Deny,
+}
+
+impl PermissionPolicy {
+    pub fn allow_by_default() -> Self {
+        Self { rules: Vec::new() }
+    }
+
+    pub fn evaluate(&self, action: &str, resource: &str) -> PermissionEffect {
+        if destructive_denial(action, resource).is_some() {
+            return PermissionEffect::Deny;
+        }
+        self.rules
+            .iter()
+            .filter(|rule| {
+                wildcard_match(&rule.action, action) && wildcard_match(&rule.resource, resource)
+            })
+            .last()
+            .map(|rule| rule.effect)
+            .unwrap_or(PermissionEffect::Allow)
+    }
+
+    pub fn assert_allowed(&self, action: &str, resource: &str) -> Result<()> {
+        if let Some(reason) = destructive_denial(action, resource) {
+            bail!("permission denied by destructive-action guardrail: {reason}");
+        }
+        match self.evaluate(action, resource) {
+            PermissionEffect::Allow => Ok(()),
+            PermissionEffect::Ask => {
+                bail!("permission requires approval in non-interactive mode: {action} {resource}")
+            }
+            PermissionEffect::Deny => bail!("permission denied by policy: {action} {resource}"),
+        }
+    }
+}
+
+fn destructive_denial(action: &str, resource: &str) -> Option<String> {
+    let action = action.trim();
+    let resource = resource.trim();
+    match action {
+        "shell" | "bash" => destructive_shell_denial(resource),
+        "write" | "edit" | "apply_patch" => destructive_path_denial(resource),
+        _ => None,
+    }
+}
+
+fn destructive_shell_denial(command: &str) -> Option<String> {
+    let normalized = command.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = normalized.to_ascii_lowercase();
+    let destructive_patterns = [
+        ("rm -rf /", "recursive removal of root"),
+        ("rm -rf ~", "recursive removal of home"),
+        ("rm -rf $home", "recursive removal of home"),
+        ("rm -rf .", "recursive removal of current directory"),
+        ("git reset --hard", "destructive git reset"),
+        ("git clean -fd", "destructive git clean"),
+        ("git clean -df", "destructive git clean"),
+        ("git push --force", "force push"),
+        ("git push -f", "force push"),
+        ("chmod -r", "recursive chmod"),
+        ("chown -r", "recursive chown"),
+        ("docker system prune", "docker system prune"),
+        ("npm publish", "package publication"),
+        ("cargo publish", "package publication"),
+    ];
+    destructive_patterns
+        .iter()
+        .find(|(pattern, _)| lower.contains(pattern))
+        .map(|(_, reason)| (*reason).to_string())
+}
+
+fn destructive_path_denial(resource: &str) -> Option<String> {
+    let expanded = expand_user_path(resource);
+    let path = Path::new(&expanded);
+    let text = path.to_string_lossy();
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let sensitive_home_paths = [
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".boto",
+        ".netrc",
+        ".npmrc",
+        ".docker/config.json",
+        ".kube",
+        ".local/share/opencode/auth.json",
+        ".config/opencode/auth.json",
+    ];
+    if ["/", "/bin", "/sbin", "/usr", "/etc", "/System", "/Library"]
+        .iter()
+        .any(|root| text == *root || text.starts_with(&format!("{root}/")))
+    {
+        return Some(format!("system path mutation: {text}"));
+    }
+    for sensitive in sensitive_home_paths {
+        let sensitive = home.join(sensitive);
+        if !sensitive.as_os_str().is_empty() && path.starts_with(&sensitive) {
+            return Some(format!("sensitive credential path mutation: {text}"));
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReadAccessPolicy {
     #[serde(default)]
     pub allow_roots: Vec<PathBuf>,
@@ -666,6 +790,14 @@ pub enum ReadAccessEffect {
 }
 
 impl ReadAccessPolicy {
+    pub fn allow_by_default() -> Self {
+        Self {
+            allow_roots: Vec::new(),
+            deny_roots: Vec::new(),
+            rules: Vec::new(),
+        }
+    }
+
     pub fn workspace_only(workspace: impl Into<PathBuf>) -> Self {
         Self {
             allow_roots: vec![workspace.into()],
@@ -675,41 +807,8 @@ impl ReadAccessPolicy {
     }
 
     pub fn lax(workspace: impl Into<PathBuf>) -> Self {
-        let workspace = workspace.into();
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let mut allow_roots = vec![workspace];
-        if let Some(home) = &home {
-            push_unique_path(&mut allow_roots, home.clone());
-        }
-        let mut deny_roots = Vec::new();
-        if let Some(home) = home {
-            for path in [
-                ".ssh",
-                ".gnupg",
-                ".aws",
-                ".boto",
-                ".config/gcloud",
-                ".config/gh/hosts.yml",
-                ".local/share/opencode/auth.json",
-                ".config/opencode/auth.json",
-                ".bash_history",
-                ".zsh_history",
-                ".python_history",
-                ".psql_history",
-                ".sqlite_history",
-                ".netrc",
-                ".npmrc",
-                ".docker/config.json",
-                ".kube",
-            ] {
-                deny_roots.push(home.join(path));
-            }
-        }
-        Self {
-            allow_roots,
-            deny_roots,
-            rules: Vec::new(),
-        }
+        let _ = workspace.into();
+        Self::allow_by_default()
     }
 
     pub fn allows(&self, path: &Path) -> Result<()> {
@@ -737,6 +836,9 @@ impl ReadAccessPolicy {
             bail!("read access denied by policy: {}", path.display());
         }
         let allow_roots = canonicalize_existing_paths(&self.allow_roots);
+        if allow_roots.is_empty() {
+            return Ok(());
+        }
         if allow_roots.iter().any(|root| path.starts_with(root)) {
             return Ok(());
         }
@@ -786,12 +888,6 @@ fn canonicalize_existing_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
         .iter()
         .filter_map(|path| path.canonicalize().ok())
         .collect()
-}
-
-fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if !paths.iter().any(|existing| existing == &path) {
-        paths.push(path);
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -997,6 +1093,125 @@ impl AgentTool for FindFilesTool {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SearchFilesTool {
+    workspace: PathBuf,
+    access: ReadAccessPolicy,
+}
+
+impl SearchFilesTool {
+    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
+        Self::with_access(
+            workspace.clone(),
+            ReadAccessPolicy::workspace_only(workspace),
+        )
+    }
+
+    pub fn with_access(workspace: impl Into<PathBuf>, access: ReadAccessPolicy) -> Self {
+        Self {
+            workspace: workspace.into(),
+            access,
+        }
+    }
+}
+
+#[async_trait]
+impl AgentTool for SearchFilesTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "search_files".to_string(),
+            description: "Search UTF-8 text files by regular expression within paths allowed by the configured read access policy. Relative paths resolve from the current workspace; ~, $HOME, and absolute paths are accepted when policy allows them.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regular expression to search for."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "File or directory to search. Defaults to the workspace root."
+                    },
+                    "include": {
+                        "type": "string",
+                        "description": "Optional glob-like file filter such as '*.rs' or '**/*.md'."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of matching lines to return. Defaults to 200."
+                    }
+                },
+                "required": ["pattern"]
+            }),
+        }
+    }
+
+    async fn invoke(&self, input: serde_json::Value) -> Result<ToolResult> {
+        let input: SearchFilesInput =
+            serde_json::from_value(input).with_context(|| "parsing search_files input")?;
+        let pattern = input.pattern.trim();
+        if pattern.is_empty() {
+            bail!("search_files pattern cannot be empty");
+        }
+        let regex = Regex::new(pattern).with_context(|| format!("compiling regex {pattern:?}"))?;
+        let root = resolve_read_path(
+            &self.workspace,
+            &self.access,
+            input.path.as_deref().unwrap_or("."),
+        )?;
+        let limit = input.limit.unwrap_or(200).clamp(1, 1000);
+        let include = input
+            .include
+            .as_deref()
+            .map(str::trim)
+            .filter(|include| !include.is_empty());
+        let mut matches = Vec::new();
+
+        for file in searchable_files(&root, &self.access, include) {
+            let content = match fs::read_to_string(&file) {
+                Ok(content) => content,
+                Err(_) => continue,
+            };
+            let relative = file.strip_prefix(&root).unwrap_or(&file);
+            for (index, line) in content.lines().enumerate() {
+                if !regex.is_match(line) {
+                    continue;
+                }
+                matches.push(json!({
+                    "path": file.display().to_string(),
+                    "relative_path": relative.to_string_lossy(),
+                    "line_number": index + 1,
+                    "line": line,
+                }));
+                if matches.len() >= limit {
+                    return Ok(ToolResult {
+                        output: json!({
+                            "path": root.display().to_string(),
+                            "pattern": pattern,
+                            "include": include,
+                            "limit": limit,
+                            "matches": matches,
+                        }),
+                        success: true,
+                    });
+                }
+            }
+        }
+
+        Ok(ToolResult {
+            output: json!({
+                "path": root.display().to_string(),
+                "pattern": pattern,
+                "include": include,
+                "limit": limit,
+                "matches": matches,
+            }),
+            success: true,
+        })
+    }
+}
+
 #[async_trait]
 impl AgentTool for ListDirTool {
     fn spec(&self) -> ToolSpec {
@@ -1070,7 +1285,11 @@ pub fn read_only_tools_with_access(
     let mut registry = ToolRegistry::new();
     registry.register(ReadFileTool::with_access(workspace.clone(), access.clone()))?;
     registry.register(ListDirTool::with_access(workspace.clone(), access.clone()))?;
-    registry.register(FindFilesTool::with_access(workspace, access))?;
+    registry.register(FindFilesTool::with_access(
+        workspace.clone(),
+        access.clone(),
+    ))?;
+    registry.register(SearchFilesTool::with_access(workspace, access))?;
     Ok(registry)
 }
 
@@ -1090,6 +1309,51 @@ struct FindFilesInput {
     path: Option<String>,
     limit: Option<usize>,
     include_dirs: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchFilesInput {
+    pattern: String,
+    path: Option<String>,
+    include: Option<String>,
+    limit: Option<usize>,
+}
+
+fn searchable_files(root: &Path, access: &ReadAccessPolicy, include: Option<&str>) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if root.is_file() {
+        if include
+            .map(|pattern| {
+                glob_like_match(pattern, root.file_name().map(Path::new).unwrap_or(root))
+            })
+            .unwrap_or(true)
+        {
+            files.push(root.to_path_buf());
+        }
+        return files;
+    }
+    if !root.is_dir() {
+        return files;
+    }
+    let walker = WalkDir::new(root).follow_links(false).into_iter();
+    for entry in walker
+        .filter_entry(|entry| access.allows(entry.path()).is_ok())
+        .filter_map(|entry| entry.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let relative = path.strip_prefix(root).unwrap_or(path);
+        if include
+            .map(|pattern| glob_like_match(pattern, relative))
+            .unwrap_or(true)
+        {
+            files.push(path.to_path_buf());
+        }
+    }
+    files.sort();
+    files
 }
 
 fn glob_like_match(pattern: &str, path: &Path) -> bool {
@@ -1308,6 +1572,56 @@ mod tests {
     }
 
     #[test]
+    fn permission_policy_allows_by_default_and_applies_last_matching_rule() {
+        let mut policy = PermissionPolicy::allow_by_default();
+        assert_eq!(
+            policy.evaluate("read", "/tmp/anything"),
+            PermissionEffect::Allow
+        );
+        policy.rules.push(PermissionRule {
+            action: "read".to_string(),
+            resource: "*secret*".to_string(),
+            effect: PermissionEffect::Deny,
+        });
+        policy.rules.push(PermissionRule {
+            action: "read".to_string(),
+            resource: "/tmp/public-secret.txt".to_string(),
+            effect: PermissionEffect::Allow,
+        });
+
+        assert_eq!(
+            policy.evaluate("read", "/tmp/other-secret.txt"),
+            PermissionEffect::Deny
+        );
+        assert_eq!(
+            policy.evaluate("read", "/tmp/public-secret.txt"),
+            PermissionEffect::Allow
+        );
+    }
+
+    #[test]
+    fn permission_policy_blocks_destructive_shell_even_without_rules() {
+        let policy = PermissionPolicy::allow_by_default();
+        assert!(policy.assert_allowed("shell", "git status").is_ok());
+        let error = policy
+            .assert_allowed("shell", "git reset --hard HEAD")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("destructive-action guardrail"));
+    }
+
+    #[test]
+    fn permission_policy_blocks_sensitive_write_paths() {
+        let policy = PermissionPolicy::allow_by_default();
+        let home = std::env::var("HOME").unwrap();
+        let error = policy
+            .assert_allowed("write", &format!("{home}/.ssh/config"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("destructive-action guardrail"));
+    }
+
+    #[test]
     fn read_access_policy_honors_last_matching_rule() {
         let root = std::env::temp_dir().join(format!(
             "djinn-read-policy-test-{}",
@@ -1332,6 +1646,23 @@ mod tests {
     }
 
     #[test]
+    fn read_access_policy_lax_allows_outside_workspace_by_default() {
+        let workspace = std::env::temp_dir().join(format!(
+            "djinn-read-policy-workspace-test-{}",
+            chrono_like_test_suffix()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "djinn-read-policy-outside-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(&outside, "outside").unwrap();
+
+        let policy = ReadAccessPolicy::lax(&workspace);
+        assert!(policy.allows(&outside).is_ok());
+    }
+
+    #[test]
     fn expand_user_path_expands_home_aliases() {
         let home = std::env::var("HOME").unwrap();
         assert_eq!(expand_user_path("~"), home);
@@ -1347,7 +1678,10 @@ mod tests {
             .into_iter()
             .map(|spec| spec.name)
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["find_files", "list_dir", "read_file"]);
+        assert_eq!(
+            names,
+            vec!["find_files", "list_dir", "read_file", "search_files"]
+        );
     }
 
     #[test]
@@ -1417,6 +1751,67 @@ mod tests {
         assert_eq!(
             matches[0]["relative_path"],
             Value::String("public/visible.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn search_files_finds_regex_matches_with_include_filter() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-search-files-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn search_target() {}\n").unwrap();
+        fs::write(root.join("docs/lib.md"), "search_target in docs\n").unwrap();
+
+        let tool = SearchFilesTool::new(&root);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let result = runtime
+            .block_on(tool.invoke(json!({
+                "pattern": "search_target",
+                "path": ".",
+                "include": "**/*.rs"
+            })))
+            .unwrap();
+
+        let matches = result.output["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0]["relative_path"],
+            Value::String("src/lib.rs".to_string())
+        );
+        assert_eq!(matches[0]["line_number"], Value::Number(1.into()));
+    }
+
+    #[test]
+    fn search_files_respects_limit_and_denied_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-search-files-deny-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(root.join("public")).unwrap();
+        fs::create_dir_all(root.join("secret")).unwrap();
+        fs::write(root.join("public/a.txt"), "needle one\nneedle two\n").unwrap();
+        fs::write(root.join("secret/b.txt"), "needle secret\n").unwrap();
+
+        let mut access = ReadAccessPolicy::workspace_only(&root);
+        access.deny_roots.push(root.join("secret"));
+        let tool = SearchFilesTool::with_access(&root, access);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let result = runtime
+            .block_on(tool.invoke(json!({"pattern": "needle", "path": ".", "limit": 1})))
+            .unwrap();
+
+        let matches = result.output["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0]["relative_path"],
+            Value::String("public/a.txt".to_string())
         );
     }
 
