@@ -878,6 +878,12 @@ struct TerminalPermissionGate;
 #[async_trait]
 impl PermissionGate for TerminalPermissionGate {
     async fn approve(&self, request: PermissionRequest) -> Result<PermissionDecision> {
+        if io::stdin().is_terminal() && io::stdout().is_terminal() {
+            return match djinn_tui::run_approval_dialog(request.metadata.clone())? {
+                djinn_tui::ApprovalDecision::Approve => Ok(PermissionDecision::Allow),
+                djinn_tui::ApprovalDecision::Deny => Ok(PermissionDecision::Deny),
+            };
+        }
         eprintln!("\nPermission approval required: {}", request.description);
         eprint!("{}", format_permission_preview(&request.metadata)?);
         eprint!("Approve this patch? [y/N] ");
@@ -1855,12 +1861,14 @@ fn complete_openai_prompt(
     let file_history = Arc::new(JsonlFileHistoryStore::default_in(
         &djinn_core::default_data_dir(),
     ));
-    let permission_gate: Option<Arc<dyn PermissionGate>> =
-        if interactive_permissions && io::stdin().is_terminal() && io::stderr().is_terminal() {
-            Some(Arc::new(TerminalPermissionGate))
-        } else {
-            None
-        };
+    let permission_gate: Option<Arc<dyn PermissionGate>> = if interactive_permissions
+        && io::stdin().is_terminal()
+        && (io::stdout().is_terminal() || io::stderr().is_terminal())
+    {
+        Some(Arc::new(TerminalPermissionGate))
+    } else {
+        None
+    };
     let runtime = AgentRuntime::new(
         client,
         store.clone(),

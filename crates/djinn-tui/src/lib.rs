@@ -20,6 +20,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use ratatui::Terminal;
+use serde_json::Value;
 
 type TuiTerminal = Terminal<CrosstermBackend<Stdout>>;
 
@@ -91,6 +92,13 @@ where
     result
 }
 
+pub fn run_approval_dialog(metadata: Value) -> Result<ApprovalDecision> {
+    let mut terminal = enter_terminal()?;
+    let result = run_approval_dialog_loop(&mut terminal, metadata);
+    leave_terminal(&mut terminal)?;
+    result
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiAction {
     OpenTool(ToolEntry),
@@ -100,6 +108,12 @@ pub enum TuiAction {
     RejectCandidates(Vec<String>),
     DeleteChats(Vec<String>),
     DeleteSuggestions(Vec<String>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    Approve,
+    Deny,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +188,303 @@ fn selected_style() -> Style {
         .fg(CTP_PEACH)
         .bg(CTP_BASE)
         .add_modifier(Modifier::BOLD)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalPreviewState {
+    files: Vec<ApprovalPreviewFile>,
+    selected_file: usize,
+    scroll: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalPreviewFile {
+    pub operation: String,
+    pub path: String,
+    pub new_path: Option<String>,
+    pub lines_added: u64,
+    pub lines_removed: u64,
+    pub hunks: Vec<ApprovalPreviewHunk>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalPreviewHunk {
+    pub lines: Vec<ApprovalPreviewLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalPreviewLine {
+    pub kind: ApprovalPreviewLineKind,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalPreviewLineKind {
+    Context,
+    Add,
+    Remove,
+}
+
+impl ApprovalPreviewState {
+    pub fn from_metadata(metadata: &Value) -> Self {
+        let files = metadata
+            .get("preview")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().map(ApprovalPreviewFile::from_value).collect())
+            .unwrap_or_default();
+        Self {
+            files,
+            selected_file: 0,
+            scroll: 0,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    pub fn files(&self) -> &[ApprovalPreviewFile] {
+        &self.files
+    }
+
+    pub fn selected_file_index(&self) -> usize {
+        self.selected_file
+    }
+
+    pub fn scroll(&self) -> u16 {
+        self.scroll
+    }
+
+    pub fn selected_file(&self) -> Option<&ApprovalPreviewFile> {
+        self.files.get(self.selected_file)
+    }
+
+    pub fn next_file(&mut self) {
+        if !self.files.is_empty() {
+            self.selected_file = (self.selected_file + 1) % self.files.len();
+            self.scroll = 0;
+        }
+    }
+
+    pub fn previous_file(&mut self) {
+        if !self.files.is_empty() {
+            self.selected_file = if self.selected_file == 0 {
+                self.files.len() - 1
+            } else {
+                self.selected_file - 1
+            };
+            self.scroll = 0;
+        }
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.scroll = self.scroll.saturating_add(1);
+    }
+
+    pub fn scroll_up(&mut self) {
+        self.scroll = self.scroll.saturating_sub(1);
+    }
+
+    pub fn file_labels(&self) -> Vec<String> {
+        self.files.iter().map(ApprovalPreviewFile::label).collect()
+    }
+
+    pub fn selected_lines(&self) -> Vec<Line<'static>> {
+        self.selected_file()
+            .map(approval_preview_file_lines)
+            .unwrap_or_else(|| vec![Line::from(Span::styled("No patch preview.", dim_style()))])
+    }
+}
+
+struct ApprovalDialogApp {
+    preview: ApprovalPreviewState,
+}
+
+impl ApprovalDialogApp {
+    fn new(metadata: Value) -> Self {
+        Self {
+            preview: ApprovalPreviewState::from_metadata(&metadata),
+        }
+    }
+
+    fn next_file(&mut self) {
+        self.preview.next_file();
+    }
+
+    fn previous_file(&mut self) {
+        self.preview.previous_file();
+    }
+
+    fn scroll_down(&mut self) {
+        self.preview.scroll_down();
+    }
+
+    fn scroll_up(&mut self) {
+        self.preview.scroll_up();
+    }
+
+    fn draw(&self, frame: &mut ratatui::Frame<'_>) {
+        let area = frame.area();
+        frame.render_widget(Clear, area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(2)])
+            .split(area);
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
+            .split(chunks[0]);
+
+        let items = self
+            .preview
+            .file_labels()
+            .into_iter()
+            .map(ListItem::new)
+            .collect::<Vec<_>>();
+        let mut state = ListState::default();
+        if !self.preview.is_empty() {
+            state.select(Some(self.preview.selected_file_index()));
+        }
+        let list = List::new(items)
+            .block(block("Approval files"))
+            .style(base_style())
+            .highlight_style(highlight_style())
+            .highlight_symbol("› ");
+        frame.render_widget(Clear, body[0]);
+        frame.render_stateful_widget(list, body[0], &mut state);
+
+        let preview = Paragraph::new(self.preview.selected_lines())
+            .block(block("Patch preview"))
+            .style(base_style())
+            .scroll((self.preview.scroll(), 0))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(Clear, body[1]);
+        frame.render_widget(preview, body[1]);
+
+        let help = "a/Enter approve  d/q/Esc deny  j/k file  J/K or PgDn/PgUp scroll";
+        frame.render_widget(Paragraph::new(help).style(dim_style()), chunks[1]);
+    }
+}
+
+fn run_approval_dialog_loop(
+    terminal: &mut TuiTerminal,
+    metadata: Value,
+) -> Result<ApprovalDecision> {
+    let mut app = ApprovalDialogApp::new(metadata);
+    loop {
+        terminal.draw(|frame| app.draw(frame))?;
+        if event::poll(Duration::from_millis(150))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('a') | KeyCode::Enter => return Ok(ApprovalDecision::Approve),
+                    KeyCode::Char('q') | KeyCode::Char('d') | KeyCode::Esc => {
+                        return Ok(ApprovalDecision::Deny)
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => app.next_file(),
+                    KeyCode::Char('k') | KeyCode::Up => app.previous_file(),
+                    KeyCode::Char('J') | KeyCode::PageDown => app.scroll_down(),
+                    KeyCode::Char('K') | KeyCode::PageUp => app.scroll_up(),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+impl ApprovalPreviewFile {
+    fn from_value(value: &Value) -> Self {
+        Self {
+            operation: value["operation"]
+                .as_str()
+                .unwrap_or("operation")
+                .to_string(),
+            path: value["relative_path"]
+                .as_str()
+                .or_else(|| value["path"].as_str())
+                .unwrap_or("<unknown>")
+                .to_string(),
+            new_path: value["relative_new_path"]
+                .as_str()
+                .or_else(|| value["new_path"].as_str())
+                .map(str::to_string),
+            lines_added: value["lines_added"].as_u64().unwrap_or_default(),
+            lines_removed: value["lines_removed"].as_u64().unwrap_or_default(),
+            hunks: value["hunks"]
+                .as_array()
+                .map(|hunks| hunks.iter().map(ApprovalPreviewHunk::from_value).collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match &self.new_path {
+            Some(new_path) => format!("{} {} -> {}", self.operation, self.path, new_path),
+            None => format!("{} {}", self.operation, self.path),
+        }
+    }
+}
+
+impl ApprovalPreviewHunk {
+    fn from_value(value: &Value) -> Self {
+        Self {
+            lines: value["lines"]
+                .as_array()
+                .map(|lines| lines.iter().map(ApprovalPreviewLine::from_value).collect())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+impl ApprovalPreviewLine {
+    fn from_value(value: &Value) -> Self {
+        Self {
+            kind: match value["kind"].as_str().unwrap_or("context") {
+                "add" => ApprovalPreviewLineKind::Add,
+                "remove" => ApprovalPreviewLineKind::Remove,
+                _ => ApprovalPreviewLineKind::Context,
+            },
+            content: value["content"].as_str().unwrap_or_default().to_string(),
+        }
+    }
+}
+
+pub fn approval_preview_file_lines(file: &ApprovalPreviewFile) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled(file.operation.clone(), selected_style()),
+        Span::raw(" "),
+        Span::styled(file.path.clone(), title_style()),
+        Span::raw(format!(" (+{}/-{})", file.lines_added, file.lines_removed)),
+    ])];
+    if let Some(new_path) = &file.new_path {
+        lines.push(Line::from(Span::styled(
+            format!("→ {new_path}"),
+            dim_style(),
+        )));
+    }
+    if file.hunks.is_empty() {
+        lines.push(Line::from(Span::styled("No hunks.", dim_style())));
+        return lines;
+    }
+    for (index, hunk) in file.hunks.iter().enumerate() {
+        lines.push(Line::from(Span::styled(
+            format!("@@ hunk {}", index + 1),
+            dim_style(),
+        )));
+        for line in &hunk.lines {
+            let (prefix, style) = match line.kind {
+                ApprovalPreviewLineKind::Context => (' ', base_style()),
+                ApprovalPreviewLineKind::Add => ('+', Style::default().fg(CTP_GREEN).bg(CTP_BASE)),
+                ApprovalPreviewLineKind::Remove => {
+                    ('-', Style::default().fg(CTP_PEACH).bg(CTP_BASE))
+                }
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{prefix} {}", line.content),
+                style,
+            )));
+        }
+    }
+    lines
 }
 
 fn block<'a>(title: &'a str) -> Block<'a> {
@@ -2142,6 +2453,114 @@ mod tests {
         assert!(fuzzy_match("ocd", "OpenCode Debug Session"));
         assert!(fuzzy_match("tl", "tool-list"));
         assert!(!fuzzy_match("xyz", "tool-list"));
+    }
+
+    #[test]
+    fn approval_preview_state_parses_and_navigates_files() {
+        let mut state = ApprovalPreviewState::from_metadata(&serde_json::json!({
+            "preview": [
+                {
+                    "operation": "update",
+                    "relative_path": "src/lib.rs",
+                    "lines_added": 1,
+                    "lines_removed": 1,
+                    "hunks": [
+                        {
+                            "lines": [
+                                {"kind": "context", "content": "fn answer() -> i32 {"},
+                                {"kind": "remove", "content": "    41"},
+                                {"kind": "add", "content": "    42"},
+                                {"kind": "context", "content": "}"}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "operation": "move",
+                    "relative_path": "old.txt",
+                    "relative_new_path": "new.txt",
+                    "lines_added": 0,
+                    "lines_removed": 0,
+                    "hunks": []
+                }
+            ]
+        }));
+
+        assert!(!state.is_empty());
+        assert_eq!(
+            state.file_labels(),
+            vec!["update src/lib.rs", "move old.txt -> new.txt"]
+        );
+        assert_eq!(state.selected_file().unwrap().path, "src/lib.rs");
+        state.next_file();
+        assert_eq!(state.selected_file_index(), 1);
+        assert_eq!(
+            state.selected_file().unwrap().new_path.as_deref(),
+            Some("new.txt")
+        );
+        state.previous_file();
+        assert_eq!(state.selected_file_index(), 0);
+    }
+
+    #[test]
+    fn approval_preview_file_lines_render_hunk_prefixes() {
+        let state = ApprovalPreviewState::from_metadata(&serde_json::json!({
+            "preview": [
+                {
+                    "operation": "update",
+                    "relative_path": "src/lib.rs",
+                    "lines_added": 1,
+                    "lines_removed": 1,
+                    "hunks": [
+                        {
+                            "lines": [
+                                {"kind": "context", "content": "fn answer() -> i32 {"},
+                                {"kind": "remove", "content": "    41"},
+                                {"kind": "add", "content": "    42"},
+                                {"kind": "context", "content": "}"}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }));
+        let rendered = state
+            .selected_lines()
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(rendered
+            .iter()
+            .any(|line| line.contains("update src/lib.rs (+1/-1)")));
+        assert!(rendered.iter().any(|line| line == "@@ hunk 1"));
+        assert!(rendered.iter().any(|line| line == "  fn answer() -> i32 {"));
+        assert!(rendered.iter().any(|line| line == "-     41"));
+        assert!(rendered.iter().any(|line| line == "+     42"));
+    }
+
+    #[test]
+    fn approval_dialog_app_navigates_files_and_scrolls() {
+        let mut app = ApprovalDialogApp::new(serde_json::json!({
+            "preview": [
+                {"operation": "update", "relative_path": "a.txt", "lines_added": 1, "lines_removed": 0, "hunks": []},
+                {"operation": "delete", "relative_path": "b.txt", "lines_added": 0, "lines_removed": 1, "hunks": []}
+            ]
+        }));
+
+        assert_eq!(app.preview.selected_file().unwrap().path, "a.txt");
+        app.next_file();
+        assert_eq!(app.preview.selected_file().unwrap().path, "b.txt");
+        app.scroll_down();
+        assert_eq!(app.preview.scroll(), 1);
+        app.previous_file();
+        assert_eq!(app.preview.selected_file().unwrap().path, "a.txt");
+        assert_eq!(app.preview.scroll(), 0);
     }
 
     #[test]

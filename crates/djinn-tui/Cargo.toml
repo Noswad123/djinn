@@ -14,3 +14,4 @@ djinn-memory = { path = "../djinn-memory" }
 djinn-skills = { path = "../djinn-skills" }
 djinn-tools = { path = "../djinn-tools" }
 ratatui.workspace = true
+serde_json.workspace = true

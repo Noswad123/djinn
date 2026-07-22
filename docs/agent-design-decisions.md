@@ -264,6 +264,12 @@ Ask/preview direction:
   stdin/stderr are terminals, allowing humans to approve `ask`-gated patches in
   the one-shot CLI path. The terminal prompt renders the full structured patch
   preview, including hunk context, removals, additions, and move destinations.
+- `djinn-tui` now has reusable approval-preview state and hunk rendering helpers
+  that parse the same structured preview payload, track selected files, and
+  render file-level hunk lines for a future Ratatui approval dialog.
+- A first Ratatui approval dialog is available for terminal-backed permission
+  gates. It supports file navigation, preview scrolling, and explicit
+  approve/deny actions over the structured patch preview payload.
 
 Direct write/edit direction:
 
@@ -302,10 +308,13 @@ The first non-interactive agent slice is implemented as:
     approval, ready for future interactive permission UX.
 11. Optional `PermissionGate` approval for `apply_patch`, including a terminal
     prompt in non-JSON `djinn agent ask` sessions with full hunk rendering.
-12. CLI commands for session creation/list/show and one-shot prompting:
+12. Reusable `djinn-tui` approval-preview state/rendering helpers for a future
+    scrollable Ratatui permission dialog.
+13. A Ratatui approval dialog used by terminal-backed `PermissionGate` flows.
+14. CLI commands for session creation/list/show and one-shot prompting:
     `djinn agent session new`, `djinn agent session list`,
     `djinn agent session show`, and `djinn agent ask`.
-13. Ratatui chat UI remains a follow-on layer after the non-interactive runtime.
+15. Ratatui chat UI remains a follow-on layer after the non-interactive runtime.
 
 Not in the first slice unless explicitly reopened:
 

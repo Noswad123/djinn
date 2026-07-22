@@ -137,14 +137,15 @@ These are important but need more product/design detail before implementation.
 
 ### Mutation tools
 
-- Build a TUI approval dialog on top of the existing structured approval preview
-  and terminal hunk renderer, with scrolling, file-level navigation, and explicit
-  approve/deny actions.
+- Expand the Ratatui approval dialog with richer ergonomics: per-file approve
+  decisions, search/filter within hunks, and persisted approval scopes.
 
 ### TUI behavior
 
-- Define the first Ratatui screen:
-  - chat-only;
+- Build a real chat interface before changing the no-args default. Do not treat
+  the existing saved Chats dashboard tab as that chat interface.
+- Once the real chat interface exists, route `djinn` with no arguments to it.
+- Design the chat interface around:
   - chat + logs;
   - chat + session picker;
   - command palette.

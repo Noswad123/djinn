@@ -487,6 +487,7 @@ dependencies = [
  "djinn-skills",
  "djinn-tools",
  "ratatui",
+ "serde_json",
 ]
 
 [[package]]
