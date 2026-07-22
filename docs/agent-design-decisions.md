@@ -119,6 +119,12 @@ Open questions:
 - OpenAI is the first provider implementation target.
 - When no model is specified directly, Djinn should derive the default from
   OpenCode config if one exists, especially `agents.coder.model`.
+- When no OpenAI API key is specified directly, Djinn should reuse OpenCode config
+  `providers.openai.apiKey` if present.
+- Djinn should also read newer OpenCode auth state from
+  `~/.local/share/opencode/auth.json` for OpenAI API-key credentials. OpenAI
+  OAuth credentials should be detected and reported as unsupported until Djinn
+  implements the OpenCode OAuth/Codex transport.
 - Whether Codex is treated as a distinct provider or as an OpenAI-compatible
   profile with different auth/defaults.
 - Whether the first version needs streaming or can begin with non-streaming

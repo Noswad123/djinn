@@ -25,6 +25,10 @@ pub enum ModelRole {
 pub struct ModelMessage {
     pub role: ModelRole,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ModelToolCall>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -149,6 +153,8 @@ impl ModelClient for OpenAiClient {
             message: ModelMessage {
                 role: ModelRole::Assistant,
                 content: choice.message.content.unwrap_or_default(),
+                tool_call_id: None,
+                tool_calls: Vec::new(),
             },
             tool_calls: choice
                 .message
@@ -191,7 +197,7 @@ struct OpenAiToolFunction {
 }
 
 fn openai_message(message: ModelMessage) -> Value {
-    json!({
+    let mut value = json!({
         "role": match message.role {
             ModelRole::System => "system",
             ModelRole::User => "user",
@@ -199,7 +205,29 @@ fn openai_message(message: ModelMessage) -> Value {
             ModelRole::Tool => "tool",
         },
         "content": message.content,
-    })
+    });
+    if let Some(tool_call_id) = message.tool_call_id {
+        value["tool_call_id"] = Value::String(tool_call_id);
+    }
+    if !message.tool_calls.is_empty() {
+        value["tool_calls"] = Value::Array(
+            message
+                .tool_calls
+                .into_iter()
+                .map(|call| {
+                    json!({
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": call.input.to_string(),
+                        }
+                    })
+                })
+                .collect(),
+        );
+    }
+    value
 }
 
 fn openai_tool(tool: ToolSpec) -> Value {
@@ -490,6 +518,88 @@ where
     ) -> Result<ModelResponse> {
         request.tools = self.tool_specs();
         let response = self.model.complete(request).await?;
+        self.persist_model_response(session, &response)?;
+        Ok(response)
+    }
+
+    pub async fn complete_with_tools(
+        &self,
+        session: &AgentSessionId,
+        request: ModelRequest,
+        max_tool_rounds: usize,
+    ) -> Result<ModelResponse> {
+        let model = request.model;
+        let mut messages = request.messages;
+        let tools = self.tool_specs();
+
+        for round in 0..=max_tool_rounds {
+            let response = self
+                .model
+                .complete(ModelRequest {
+                    model: model.clone(),
+                    messages: messages.clone(),
+                    tools: tools.clone(),
+                })
+                .await?;
+            self.persist_model_response(session, &response)?;
+
+            if response.tool_calls.is_empty() {
+                return Ok(response);
+            }
+            if round == max_tool_rounds {
+                bail!("model requested tool calls after max tool rounds ({max_tool_rounds})");
+            }
+
+            messages.push(ModelMessage {
+                role: ModelRole::Assistant,
+                content: response.message.content.clone(),
+                tool_call_id: None,
+                tool_calls: response.tool_calls.clone(),
+            });
+
+            for call in response.tool_calls {
+                let result = self.invoke_tool_call(&call).await;
+                self.sessions.append_event(
+                    session,
+                    AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
+                        id: call.id.clone(),
+                        output: result.output.clone(),
+                        success: result.success,
+                    }),
+                )?;
+                messages.push(ModelMessage {
+                    role: ModelRole::Tool,
+                    content: result.output.to_string(),
+                    tool_call_id: Some(call.id),
+                    tool_calls: Vec::new(),
+                });
+            }
+        }
+
+        unreachable!("tool loop exits by returning or bailing")
+    }
+
+    async fn invoke_tool_call(&self, call: &ModelToolCall) -> ToolResult {
+        let Some(tool) = self.tools.get(&call.name) else {
+            return ToolResult {
+                output: json!({"error": format!("unknown tool: {}", call.name)}),
+                success: false,
+            };
+        };
+        match tool.invoke(call.input.clone()).await {
+            Ok(result) => result,
+            Err(error) => ToolResult {
+                output: json!({"error": error.to_string()}),
+                success: false,
+            },
+        }
+    }
+
+    fn persist_model_response(
+        &self,
+        session: &AgentSessionId,
+        response: &ModelResponse,
+    ) -> Result<()> {
         self.sessions.append_event(
             session,
             AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
@@ -506,6 +616,6 @@ where
                 }),
             )?;
         }
-        Ok(response)
+        Ok(())
     }
 }
