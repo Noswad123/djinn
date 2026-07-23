@@ -150,14 +150,18 @@ These are important but need more product/design detail before implementation.
 - Add the next interactive pieces:
   - live runtime event streaming;
   - richer in-place "running tool" progress during a model turn;
-  - session creation/resume through a secondary picker/dialog;
+  - secondary session picker/dialog on top of `djinn agent chat --resume <id>`;
   - polish external prompt editing via Ctrl+E and `$VISUAL`/`$EDITOR`/`nvim`;
   - richer transcript wrapping and scroll affordances. Do not auto-scroll by
     default; keep an explicit jump-to-latest control instead.
 - Keep transcript/composer text areas copy-friendly: avoid left/right borders and
   prefer top/bottom separators for text-heavy chat regions.
 - `djinn` with no arguments now routes to the real Agent chat surface when a
-  terminal is attached. Keep it pointed there, not at saved Chats.
+  terminal is attached. Keep it pointed there, not at saved Chats. Tab from chat
+  should continue to jump to Tools; Shift+Tab from chat should jump to Skills;
+  Tab from the last dashboard tab and Shift+Tab from Tools should return to Agent
+  chat/resume the active agent session. Keep the tab row visible at the top of
+  Agent chat and avoid alternate-screen flicker during tab transitions.
 - Keep designing the full interface around chat + logs, a session picker, and a
   command palette.
 - Decide which OpenCode-inspired dialogs are first:

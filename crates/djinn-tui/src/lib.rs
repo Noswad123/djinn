@@ -29,6 +29,76 @@ use serde_json::Value;
 
 type TuiTerminal = Terminal<CrosstermBackend<Stdout>>;
 
+pub struct TuiSession {
+    terminal: TuiTerminal,
+    active: bool,
+}
+
+impl TuiSession {
+    pub fn enter() -> Result<Self> {
+        Ok(Self {
+            terminal: enter_terminal()?,
+            active: true,
+        })
+    }
+
+    pub fn run_agent_chat_with_handler<F>(
+        &mut self,
+        messages: Vec<AgentChatMessage>,
+        status: AgentChatStatus,
+        mut on_prompt: F,
+    ) -> Result<AgentChatExit>
+    where
+        F: FnMut(String) -> Result<Vec<AgentChatMessage>>,
+    {
+        run_agent_chat_session_loop(&mut self.terminal, messages, status, &mut on_prompt)
+    }
+
+    pub fn run_dashboard_with_handler<F>(
+        &mut self,
+        tools: Vec<ToolEntry>,
+        chats: Vec<ChatRecord>,
+        candidates: Vec<MemoryCandidate>,
+        suggestions: Vec<SuggestionRecord>,
+        skills: Vec<SkillRecord>,
+        active_context: Option<ContextRecord>,
+        initial_tab: DashboardTab,
+        mut on_continue_action: F,
+    ) -> Result<Option<TuiAction>>
+    where
+        F: FnMut(TuiAction) -> Result<()>,
+    {
+        run_dashboard_loop(
+            &mut self.terminal,
+            tools,
+            chats,
+            candidates,
+            suggestions,
+            skills,
+            active_context,
+            initial_tab,
+            Some(&mut on_continue_action),
+        )
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        if self.active {
+            leave_terminal(&mut self.terminal)?;
+            self.active = false;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for TuiSession {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = leave_terminal(&mut self.terminal);
+            self.active = false;
+        }
+    }
+}
+
 pub fn run_tools(tools: Vec<ToolEntry>) -> Result<()> {
     let mut terminal = enter_terminal()?;
     let result = run_tools_loop(&mut terminal, tools);
@@ -57,7 +127,7 @@ pub fn run_agent_chat_with_handler<F>(
     messages: Vec<AgentChatMessage>,
     status: AgentChatStatus,
     mut on_prompt: F,
-) -> Result<()>
+) -> Result<AgentChatExit>
 where
     F: FnMut(String) -> Result<Vec<AgentChatMessage>>,
 {
@@ -130,6 +200,7 @@ pub fn run_approval_dialog(metadata: Value) -> Result<ApprovalDecision> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiAction {
+    OpenAgentChat,
     OpenTool(ToolEntry),
     OpenSkill(SkillRecord),
     ShareChats(ChatShareRequest),
@@ -169,6 +240,12 @@ pub enum AgentChatRole {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentChatExit {
+    Quit,
+    Dashboard { initial_tab: DashboardTab },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashboardTab {
     Tools,
     Chats,
@@ -199,7 +276,23 @@ impl DashboardTab {
     }
 }
 
+fn dashboard_tab_returns_to_agent(tab: DashboardTab) -> bool {
+    tab == DashboardTab::Skills
+}
+
+fn dashboard_back_tab_returns_to_agent(tab: DashboardTab) -> bool {
+    tab == DashboardTab::Tools
+}
+
 const DASHBOARD_TABS: [&str; 5] = ["Tools", "Chats", "Memories", "Suggestions", "Skills"];
+const APP_TABS: [&str; 6] = [
+    "Agent",
+    "Tools",
+    "Chats",
+    "Memories",
+    "Suggestions",
+    "Skills",
+];
 
 // Catppuccin Mocha palette.
 const CTP_BASE: Color = Color::Rgb(30, 30, 46);
@@ -661,7 +754,7 @@ fn run_agent_chat_session_loop<F>(
     messages: Vec<AgentChatMessage>,
     status: AgentChatStatus,
     on_prompt: &mut F,
-) -> Result<()>
+) -> Result<AgentChatExit>
 where
     F: FnMut(String) -> Result<Vec<AgentChatMessage>>,
 {
@@ -671,8 +764,13 @@ where
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
+                    _ if agent_chat_dashboard_target(key.code).is_some() => {
+                        return Ok(AgentChatExit::Dashboard {
+                            initial_tab: agent_chat_dashboard_target(key.code).unwrap(),
+                        });
+                    }
                     _ if agent_chat_quit_key(key.code, key.modifiers, app.input.is_empty()) => {
-                        return Ok(());
+                        return Ok(AgentChatExit::Quit);
                     }
                     _ if agent_chat_newline_key(key.code, key.modifiers) => {
                         app.insert_newline();
@@ -821,23 +919,22 @@ impl AgentChatComposerApp {
             ])
             .split(frame.area());
 
-        let header = Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled("Djinn Agent", title_style()),
-                Span::styled("  interactive chat", dim_style()),
-            ]),
-            Line::from(Span::styled(
-                format!(
-                    "session {} • profile {} • model {}",
-                    self.status.session_id, self.status.profile, self.status.model
-                ),
-                dim_style(),
-            )),
-        ])
-        .block(agent_chat_block("Agent"))
-        .style(base_style());
+        let header_title = format!(
+            "session {} • profile {} • model {}",
+            self.status.session_id, self.status.profile, self.status.model
+        );
+        let tabs = Tabs::new(
+            APP_TABS
+                .iter()
+                .map(|tab| Line::from(Span::styled(*tab, dim_style())))
+                .collect::<Vec<_>>(),
+        )
+        .block(block(&header_title))
+        .select(0)
+        .style(dim_style())
+        .highlight_style(selected_style());
         frame.render_widget(Clear, chunks[0]);
-        frame.render_widget(header, chunks[0]);
+        frame.render_widget(tabs, chunks[0]);
 
         let transcript_layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -875,7 +972,7 @@ impl AgentChatComposerApp {
         frame.set_cursor_position(self.cursor_position(chunks[2]));
 
         let footer = format!(
-            "Enter send • Shift+Enter newline • Ctrl+E edit in nvim • Esc empty/Ctrl-C quit • cwd {}",
+            "Enter send • Shift+Enter newline • Ctrl+E edit • Tab dashboard • Esc empty/Ctrl-C quit • cwd {}",
             self.status.workspace
         );
         frame.render_widget(Clear, chunks[3]);
@@ -925,6 +1022,14 @@ fn agent_chat_newline_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
 
 fn agent_chat_editor_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('e'))
+}
+
+fn agent_chat_dashboard_target(code: KeyCode) -> Option<DashboardTab> {
+    match code {
+        KeyCode::Tab => Some(DashboardTab::Tools),
+        KeyCode::BackTab => Some(DashboardTab::Skills),
+        _ => None,
+    }
 }
 
 fn agent_chat_quit_key(code: KeyCode, modifiers: KeyModifiers, input_empty: bool) -> bool {
@@ -1185,7 +1290,13 @@ fn run_dashboard_loop(
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
                     KeyCode::Char('/') => app.toggle_filter(),
+                    KeyCode::Tab if dashboard_tab_returns_to_agent(app.active_tab) => {
+                        return Ok(Some(TuiAction::OpenAgentChat));
+                    }
                     KeyCode::Tab => app.next_tab(),
+                    KeyCode::BackTab if dashboard_back_tab_returns_to_agent(app.active_tab) => {
+                        return Ok(Some(TuiAction::OpenAgentChat));
+                    }
                     KeyCode::BackTab => app.previous_tab(),
                     KeyCode::Char('j') | KeyCode::Down => app.next_item(),
                     KeyCode::Char('k') | KeyCode::Up => app.previous_item(),
@@ -1452,6 +1563,7 @@ impl DashboardApp {
             TuiAction::RejectCandidates(ids) => self.candidates.remove_ids(ids),
             TuiAction::DeleteSuggestions(ids) => self.suggestions.remove_ids(ids),
             TuiAction::OpenTool(_)
+            | TuiAction::OpenAgentChat
             | TuiAction::OpenSkill(_)
             | TuiAction::ShareChats(_)
             | TuiAction::AcceptCandidate(_) => {}
@@ -1470,13 +1582,13 @@ impl DashboardApp {
 
         let header_title = self.header_title();
         let tabs = Tabs::new(
-            DASHBOARD_TABS
+            APP_TABS
                 .iter()
                 .map(|tab| Line::from(Span::styled(*tab, dim_style())))
                 .collect::<Vec<_>>(),
         )
         .block(block(&header_title))
-        .select(self.active_tab.index())
+        .select(self.active_tab.index() + 1)
         .style(dim_style())
         .highlight_style(selected_style());
         frame.render_widget(Clear, chunks[0]);
@@ -1491,11 +1603,11 @@ impl DashboardApp {
         }
 
         let help = match self.active_tab {
-            DashboardTab::Tools => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Enter open • PgUp/PgDn scroll preview • q quit",
+            DashboardTab::Tools => "Tab tabs • Shift+Tab agent • / filter/clear • ↑/↓ move • Enter open • PgUp/PgDn scroll preview • q quit",
             DashboardTab::Chats => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a all visible • Enter share • x/Delete remove • q quit",
             DashboardTab::Candidates => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a review memory • A all visible • r/x reject+remove • q quit",
             DashboardTab::Memories => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a all visible • x/Delete remove suggestion • q quit",
-            DashboardTab::Skills => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Enter open • PgUp/PgDn scroll preview • q quit",
+            DashboardTab::Skills => "Tab agent • Shift+Tab tabs • / filter/clear • ↑/↓ move • Enter open • PgUp/PgDn scroll preview • q quit",
         };
         frame.render_widget(Clear, chunks[2]);
         frame.render_widget(Paragraph::new(help).style(dim_style()), chunks[2]);
@@ -3119,6 +3231,19 @@ mod tests {
     }
 
     #[test]
+    fn agent_chat_dashboard_target_uses_tab_direction() {
+        assert_eq!(
+            agent_chat_dashboard_target(KeyCode::Tab),
+            Some(DashboardTab::Tools)
+        );
+        assert_eq!(
+            agent_chat_dashboard_target(KeyCode::BackTab),
+            Some(DashboardTab::Skills)
+        );
+        assert_eq!(agent_chat_dashboard_target(KeyCode::Char('t')), None);
+    }
+
+    #[test]
     fn normalize_editor_text_removes_one_final_editor_newline() {
         assert_eq!(normalize_editor_text("hello\n"), "hello");
         assert_eq!(normalize_editor_text("hello\r\n"), "hello");
@@ -3352,6 +3477,21 @@ mod tests {
         assert_eq!(DashboardTab::Memories.index(), 3);
         assert_eq!(DashboardTab::Skills.index(), 4);
         assert_eq!(DashboardTab::from_index(5), DashboardTab::Tools);
+        assert!(dashboard_tab_returns_to_agent(DashboardTab::Skills));
+        assert!(!dashboard_tab_returns_to_agent(DashboardTab::Tools));
+        assert!(dashboard_back_tab_returns_to_agent(DashboardTab::Tools));
+        assert!(!dashboard_back_tab_returns_to_agent(DashboardTab::Skills));
+        assert_eq!(
+            APP_TABS,
+            [
+                "Agent",
+                "Tools",
+                "Chats",
+                "Memories",
+                "Suggestions",
+                "Skills"
+            ]
+        );
     }
 
     #[test]

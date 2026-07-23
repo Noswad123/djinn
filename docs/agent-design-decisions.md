@@ -341,8 +341,18 @@ The first non-interactive agent slice is implemented as:
 21. Agent chat composer uses Ctrl+E to suspend the TUI and open the current prompt
     in `$VISUAL`, `$EDITOR`, or `nvim`. This is the preferred path for advanced
     prompt editing instead of adding many inline composer editing controls.
-22. `djinn` with no arguments now routes to that interactive Agent chat surface
+22. `djinn agent chat --resume <session-id>` resumes an existing JSONL agent
+    session using that session's stored workspace/profile metadata. This keeps
+    resume as part of the Agent runtime surface rather than the saved Chats
+    browser.
+23. `djinn` with no arguments now routes to that interactive Agent chat surface
     when stdin/stdout are terminals. It must not route to the saved Chats tab.
+24. Agent chat keeps the same top tab row as the dashboard, with Agent selected
+    instead of showing a plain `Djinn Agent` title header. Pressing Tab from
+    Agent chat enters Tools; Shift+Tab from Agent chat enters Skills. Pressing
+    Tab from Skills or Shift+Tab from Tools returns to Agent chat and resumes the
+    current agent session. Chat/dashboard transitions keep one terminal session
+    alive to avoid alternate-screen flicker.
 
 Not in the first slice unless explicitly reopened:
 

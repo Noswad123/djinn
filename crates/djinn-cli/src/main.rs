@@ -751,7 +751,7 @@ struct OpenToolArgs {
     editor: Option<String>,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 struct TuiArgs {
     /// TUI view to open. Defaults to tools.
     #[arg(value_enum, default_value_t = TuiView::Tools)]
@@ -875,8 +875,11 @@ struct AgentAskArgs {
     json: bool,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone)]
 struct AgentChatArgs {
+    /// Resume an existing agent session id instead of creating a new session.
+    #[arg(long)]
+    resume: Option<String>,
     /// Human-friendly session title.
     #[arg(long)]
     title: Option<String>,
@@ -1378,7 +1381,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let Some(command) = cli.command else {
         if io::stdin().is_terminal() && io::stdout().is_terminal() {
-            return agent_chat(AgentChatArgs {
+            return run_interactive_app(AgentChatArgs {
+                resume: None,
                 title: None,
                 workspace: None,
                 profile: "default".to_string(),
@@ -1415,7 +1419,13 @@ fn main() -> Result<()> {
         Command::Switch(args) => run_switch(args),
         Command::Open(args) => run_open(args),
         Command::Agent(args) => run_agent(args),
-        Command::Tui(args) => run_tui(args),
+        Command::Tui(args) => {
+            if run_tui(args)? {
+                run_interactive_app(default_agent_chat_args())
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -1639,7 +1649,7 @@ fn run_agent(args: AgentArgs) -> Result<()> {
         AgentCommand::Session(args) => run_agent_session(args),
         AgentCommand::FileHistory(args) => run_agent_file_history(args),
         AgentCommand::Ask(args) => agent_ask(args),
-        AgentCommand::Chat(args) => agent_chat(args),
+        AgentCommand::Chat(args) => run_interactive_app(args),
     }
 }
 
@@ -1866,25 +1876,76 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
     Ok(())
 }
 
-fn agent_chat(args: AgentChatArgs) -> Result<()> {
-    let profile = args.profile;
-    let model = resolve_agent_model(args.model, &profile)?;
-    let workspace = resolve_agent_workspace(args.workspace)?;
-    let meta = AgentSessionMeta {
-        title: args.title.unwrap_or_else(|| "Agent chat".to_string()),
-        workspace: workspace.clone(),
-        profile: profile.clone(),
-        source: "djinn-agent".to_string(),
-        ..AgentSessionMeta::default()
-    };
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgentChatOutcome {
+    Quit {
+        session_id: String,
+        title: String,
+        path: PathBuf,
+    },
+    Dashboard {
+        resume: String,
+        initial_tab: djinn_tui::DashboardTab,
+    },
+}
+
+fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
+    let mut tui = djinn_tui::TuiSession::enter()?;
+    loop {
+        match agent_chat(&mut tui, args.clone())? {
+            AgentChatOutcome::Quit {
+                session_id,
+                title,
+                path,
+            } => {
+                tui.finish()?;
+                println!("Agent session [{session_id}]: {title}");
+                println!("Path: {}", path.display());
+                return Ok(());
+            }
+            AgentChatOutcome::Dashboard {
+                resume,
+                initial_tab,
+            } => {
+                args = AgentChatArgs {
+                    resume: Some(resume),
+                    title: None,
+                    workspace: None,
+                    ..args
+                };
+                match run_tui_in_session(&mut tui, &default_tui_args(), initial_tab)? {
+                    TuiRunOutcome::OpenAgentChat => {}
+                    TuiRunOutcome::Exit => return Ok(()),
+                    TuiRunOutcome::Action(action) => {
+                        tui.finish()?;
+                        handle_tui_action(action, None)?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<AgentChatOutcome> {
     let store = agent_session_store();
-    let id = store.create_session(meta)?;
+    let chat_session = prepare_agent_chat_session(
+        &store,
+        args.resume.as_deref(),
+        args.title,
+        args.workspace,
+        &args.profile,
+    )?;
+    let id = chat_session.id;
+    let workspace = chat_session.workspace;
+    let profile = chat_session.profile;
+    let model = resolve_agent_model(args.model, &profile)?;
     let session = store.load_session(&id)?;
     let api_key = args.api_key;
     let base_url = args.base_url;
     let max_tool_rounds = args.max_tool_rounds;
 
-    djinn_tui::run_agent_chat_with_handler(
+    let exit = tui.run_agent_chat_with_handler(
         agent_chat_messages(&session),
         djinn_tui::AgentChatStatus {
             session_id: id.to_string(),
@@ -1917,10 +1978,69 @@ fn agent_chat(args: AgentChatArgs) -> Result<()> {
         },
     )?;
 
+    if let djinn_tui::AgentChatExit::Dashboard { initial_tab } = exit {
+        return Ok(AgentChatOutcome::Dashboard {
+            resume: id.to_string(),
+            initial_tab,
+        });
+    }
+
     let session = store.load_session(&id)?;
-    println!("Agent session [{}]: {}", id, session.meta.title);
-    println!("Path: {}", store.session_file_path(&id).display());
-    Ok(())
+    Ok(AgentChatOutcome::Quit {
+        session_id: id.to_string(),
+        title: session.meta.title,
+        path: store.session_file_path(&id),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedAgentChatSession {
+    id: AgentSessionId,
+    workspace: String,
+    profile: String,
+}
+
+fn prepare_agent_chat_session(
+    store: &JsonlAgentSessionStore,
+    resume: Option<&str>,
+    title: Option<String>,
+    workspace: Option<PathBuf>,
+    profile: &str,
+) -> Result<PreparedAgentChatSession> {
+    if let Some(resume) = resume.map(str::trim).filter(|value| !value.is_empty()) {
+        let id = AgentSessionId::new(resume.to_string());
+        let session = store.load_session(&id)?;
+        let workspace = if session.meta.workspace.trim().is_empty() {
+            resolve_agent_workspace(None)?
+        } else {
+            session.meta.workspace
+        };
+        let profile = if session.meta.profile.trim().is_empty() {
+            "default".to_string()
+        } else {
+            session.meta.profile
+        };
+        return Ok(PreparedAgentChatSession {
+            id,
+            workspace,
+            profile,
+        });
+    }
+
+    let workspace = resolve_agent_workspace(workspace)?;
+    let meta = AgentSessionMeta {
+        title: title.unwrap_or_else(|| "Agent chat".to_string()),
+        workspace: workspace.clone(),
+        profile: profile.to_string(),
+        source: "djinn-agent".to_string(),
+        ..AgentSessionMeta::default()
+    };
+    let id = store.create_session(meta)?;
+    Ok(PreparedAgentChatSession {
+        id,
+        workspace,
+        profile: profile.to_string(),
+    })
 }
 
 fn complete_openai_prompt(
@@ -3143,38 +3263,72 @@ fn summarize_agent_tool_output(output: &Value, fallback: &str) -> String {
     }
 }
 
-fn run_tui(args: TuiArgs) -> Result<()> {
-    let roots = tool_roots(args.roots);
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TuiRunOutcome {
+    OpenAgentChat,
+    Exit,
+    Action(djinn_tui::TuiAction),
+}
+
+fn run_tui(args: TuiArgs) -> Result<bool> {
+    let initial_tab = dashboard_tab(args.view);
+    let mut tui = djinn_tui::TuiSession::enter()?;
+    let outcome = run_tui_in_session(&mut tui, &args, initial_tab)?;
+    tui.finish()?;
+    match outcome {
+        TuiRunOutcome::OpenAgentChat => Ok(true),
+        TuiRunOutcome::Exit => Ok(false),
+        TuiRunOutcome::Action(action) => handle_tui_action(action, args.editor),
+    }
+}
+
+fn run_tui_in_session(
+    tui: &mut djinn_tui::TuiSession,
+    args: &TuiArgs,
+    initial_tab: djinn_tui::DashboardTab,
+) -> Result<TuiRunOutcome> {
+    let roots = tool_roots(args.roots.clone());
     let tools = scan_tools(&roots)?;
     let chats = chat_store().list()?;
     let candidates = pending_memories(candidate_store().list()?);
     let suggestions = suggestion_store().list()?;
     let skills = skill_records()?;
     let active_context = context_store().active()?;
-    let Some(action) = djinn_tui::run_dashboard_with_handler(
+    let Some(action) = tui.run_dashboard_with_handler(
         tools,
         chats,
         candidates,
         suggestions,
         skills,
         active_context,
-        dashboard_tab(args.view),
+        initial_tab,
         |action| match action {
             djinn_tui::TuiAction::RejectCandidates(ids) => reject_memories_silent(&ids).map(|_| ()),
             djinn_tui::TuiAction::DeleteChats(ids) => delete_chats_silent(&ids).map(|_| ()),
             djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| ()),
-            djinn_tui::TuiAction::OpenTool(_)
+            djinn_tui::TuiAction::OpenAgentChat
+            | djinn_tui::TuiAction::OpenTool(_)
             | djinn_tui::TuiAction::OpenSkill(_)
             | djinn_tui::TuiAction::ShareChats(_)
             | djinn_tui::TuiAction::AcceptCandidate(_) => Ok(()),
         },
     )?
     else {
-        return Ok(());
+        return Ok(TuiRunOutcome::Exit);
     };
+
+    if action == djinn_tui::TuiAction::OpenAgentChat {
+        return Ok(TuiRunOutcome::OpenAgentChat);
+    }
+
+    Ok(TuiRunOutcome::Action(action))
+}
+
+fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Result<bool> {
     match action {
-        djinn_tui::TuiAction::OpenTool(entry) => open_tool_entry(&entry, args.editor),
-        djinn_tui::TuiAction::OpenSkill(entry) => open_skill_entry(&entry, args.editor),
+        djinn_tui::TuiAction::OpenAgentChat => Ok(true),
+        djinn_tui::TuiAction::OpenTool(entry) => open_tool_entry(&entry, editor).map(|_| false),
+        djinn_tui::TuiAction::OpenSkill(entry) => open_skill_entry(&entry, editor).map(|_| false),
         djinn_tui::TuiAction::ShareChats(request) => share_chats(ShareChatsArgs {
             ids: request.chat_ids,
             source: None,
@@ -3184,17 +3338,19 @@ fn run_tui(args: TuiArgs) -> Result<()> {
             mode: share_chats_mode_from_tui(request.mode),
             context_only: request.context_only,
             max_chars_per_chat: 4000,
-        }),
+        })
+        .map(|_| false),
         djinn_tui::TuiAction::AcceptCandidate(id) => accept_memory(AcceptMemoryArgs {
             id,
             agent: None,
             title: "djinn memory suggestion review".to_string(),
             opencode_bin: "opencode".to_string(),
             dry_run: false,
-        }),
-        djinn_tui::TuiAction::RejectCandidates(ids) => reject_memories_silent(&ids).map(|_| ()),
-        djinn_tui::TuiAction::DeleteChats(ids) => delete_chats_silent(&ids).map(|_| ()),
-        djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| ()),
+        })
+        .map(|_| false),
+        djinn_tui::TuiAction::RejectCandidates(ids) => reject_memories_silent(&ids).map(|_| false),
+        djinn_tui::TuiAction::DeleteChats(ids) => delete_chats_silent(&ids).map(|_| false),
+        djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| false),
     }
 }
 
@@ -3205,6 +3361,27 @@ fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
         TuiView::Memories => djinn_tui::DashboardTab::Candidates,
         TuiView::Suggestions => djinn_tui::DashboardTab::Memories,
         TuiView::Skills => djinn_tui::DashboardTab::Skills,
+    }
+}
+
+fn default_tui_args() -> TuiArgs {
+    TuiArgs {
+        view: TuiView::Tools,
+        roots: Vec::new(),
+        editor: None,
+    }
+}
+
+fn default_agent_chat_args() -> AgentChatArgs {
+    AgentChatArgs {
+        resume: None,
+        title: None,
+        workspace: None,
+        profile: "default".to_string(),
+        model: None,
+        api_key: None,
+        base_url: None,
+        max_tool_rounds: 5,
     }
 }
 
@@ -6194,6 +6371,17 @@ mod tests {
         }
     }
 
+    fn temp_agent_store(name: &str) -> JsonlAgentSessionStore {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-cli-agent-chat-{name}-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        JsonlAgentSessionStore::default_in(&dir)
+    }
+
     fn test_candidate(kind: &str, text: &str) -> MemoryCandidate {
         MemoryCandidate {
             id: "candidate".to_string(),
@@ -6337,6 +6525,64 @@ mod tests {
         assert_eq!(messages[1].content, "hello");
         assert_eq!(messages[2].role, ModelRole::Assistant);
         assert_eq!(messages[2].content, "hi");
+    }
+
+    #[test]
+    fn prepare_agent_chat_session_creates_new_session() {
+        let store = temp_agent_store("create");
+        let workspace = std::env::temp_dir().join(format!(
+            "djinn-cli-agent-chat-workspace-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&workspace).unwrap();
+
+        let prepared = prepare_agent_chat_session(
+            &store,
+            None,
+            Some("Pairing session".to_string()),
+            Some(workspace.clone()),
+            "review",
+        )
+        .unwrap();
+        let loaded = store.load_session(&prepared.id).unwrap();
+        let canonical_workspace = workspace.canonicalize().unwrap();
+
+        assert_eq!(prepared.profile, "review");
+        assert_eq!(loaded.meta.title, "Pairing session");
+        assert_eq!(loaded.meta.profile, "review");
+        assert_eq!(
+            loaded.meta.workspace,
+            canonical_workspace.display().to_string()
+        );
+    }
+
+    #[test]
+    fn prepare_agent_chat_session_resumes_existing_metadata() {
+        let store = temp_agent_store("resume");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Existing chat".to_string(),
+                workspace: "/tmp/existing-workspace".to_string(),
+                profile: "architect".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        let prepared = prepare_agent_chat_session(
+            &store,
+            Some(id.as_str()),
+            Some("Ignored title".to_string()),
+            Some(PathBuf::from("/tmp/ignored-workspace")),
+            "ignored-profile",
+        )
+        .unwrap();
+
+        assert_eq!(prepared.id, id);
+        assert_eq!(prepared.workspace, "/tmp/existing-workspace");
+        assert_eq!(prepared.profile, "architect");
     }
 
     #[test]
