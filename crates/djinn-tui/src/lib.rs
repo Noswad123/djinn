@@ -1,9 +1,11 @@
 use std::collections::HashSet;
+use std::env;
 use std::fs;
 use std::io::{self, Stdout};
+use std::process::Command as ProcessCommand;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use crossterm::event::{
     self, Event, KeyCode, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
@@ -627,6 +629,11 @@ fn run_agent_chat_prompt_loop(
                     _ if agent_chat_newline_key(key.code, key.modifiers) => {
                         app.insert_newline();
                     }
+                    _ if agent_chat_editor_key(key.code, key.modifiers) => {
+                        if let Err(error) = edit_agent_chat_input(terminal, &mut app) {
+                            app.status.notice = format!("Editor failed: {error:#}");
+                        }
+                    }
                     KeyCode::Enter => {
                         if let Some(prompt) = app.submit_prompt() {
                             return Ok(Some(prompt));
@@ -669,6 +676,11 @@ where
                     }
                     _ if agent_chat_newline_key(key.code, key.modifiers) => {
                         app.insert_newline();
+                    }
+                    _ if agent_chat_editor_key(key.code, key.modifiers) => {
+                        if let Err(error) = edit_agent_chat_input(terminal, &mut app) {
+                            app.status.notice = format!("Editor failed: {error:#}");
+                        }
                     }
                     KeyCode::Enter => {
                         let Some(prompt) = app.submit_prompt() else {
@@ -863,7 +875,7 @@ impl AgentChatComposerApp {
         frame.set_cursor_position(self.cursor_position(chunks[2]));
 
         let footer = format!(
-            "Enter send • Shift+Enter newline • Esc empty/Ctrl-C quit • End jumps to ↓ latest • cwd {}",
+            "Enter send • Shift+Enter newline • Ctrl+E edit in nvim • Esc empty/Ctrl-C quit • cwd {}",
             self.status.workspace
         );
         frame.render_widget(Clear, chunks[3]);
@@ -911,9 +923,72 @@ fn agent_chat_newline_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::SHIFT) && matches!(code, KeyCode::Enter)
 }
 
+fn agent_chat_editor_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('e'))
+}
+
 fn agent_chat_quit_key(code: KeyCode, modifiers: KeyModifiers, input_empty: bool) -> bool {
     (modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c')))
         || (input_empty && matches!(code, KeyCode::Esc))
+}
+
+fn edit_agent_chat_input(terminal: &mut TuiTerminal, app: &mut AgentChatComposerApp) -> Result<()> {
+    let edited = edit_text_in_external_editor(terminal, &app.input)?;
+    app.input = normalize_editor_text(&edited);
+    app.status.notice = "Composer updated from editor.".to_string();
+    Ok(())
+}
+
+fn edit_text_in_external_editor(terminal: &mut TuiTerminal, current: &str) -> Result<String> {
+    let path = env::temp_dir().join(format!(
+        "djinn-agent-composer-{}-{}.md",
+        std::process::id(),
+        timestamp_nanos()
+    ));
+    fs::write(&path, current).with_context(|| format!("writing {}", path.display()))?;
+
+    suspend_terminal(terminal)?;
+    let editor_result = run_editor_for_path(&path);
+    let resume_result = resume_terminal(terminal);
+    let read_result =
+        fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()));
+    let _ = fs::remove_file(&path);
+
+    resume_result?;
+    editor_result?;
+    read_result
+}
+
+fn run_editor_for_path(path: &std::path::Path) -> Result<()> {
+    let editor = env::var("VISUAL")
+        .or_else(|_| env::var("EDITOR"))
+        .unwrap_or_else(|_| "nvim".to_string());
+    let mut parts = editor.split_whitespace();
+    let command = parts.next().unwrap_or("nvim");
+    let status = ProcessCommand::new(command)
+        .args(parts)
+        .arg(path)
+        .status()
+        .with_context(|| format!("running editor `{editor}`"))?;
+    if !status.success() {
+        bail!("editor exited with status {status}");
+    }
+    Ok(())
+}
+
+fn normalize_editor_text(value: &str) -> String {
+    value
+        .strip_suffix("\r\n")
+        .or_else(|| value.strip_suffix('\n'))
+        .unwrap_or(value)
+        .to_string()
+}
+
+fn timestamp_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
 }
 
 fn transcript_scrollbar_lines(scroll: u16, max_scroll: u16, height: u16) -> Vec<Line<'static>> {
@@ -984,16 +1059,7 @@ pub enum ChatShareMode {
 fn enter_terminal() -> Result<TuiTerminal> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
-        )
-    )?;
+    execute!(stdout, EnterAlternateScreen, push_keyboard_enhancement())?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -1001,6 +1067,10 @@ fn enter_terminal() -> Result<TuiTerminal> {
 }
 
 fn leave_terminal(terminal: &mut TuiTerminal) -> Result<()> {
+    suspend_terminal(terminal)
+}
+
+fn suspend_terminal(terminal: &mut TuiTerminal) -> Result<()> {
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -1009,6 +1079,26 @@ fn leave_terminal(terminal: &mut TuiTerminal) -> Result<()> {
     )?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+fn resume_terminal(terminal: &mut TuiTerminal) -> Result<()> {
+    enable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        push_keyboard_enhancement()
+    )?;
+    terminal.clear()?;
+    Ok(())
+}
+
+fn push_keyboard_enhancement() -> PushKeyboardEnhancementFlags {
+    PushKeyboardEnhancementFlags(
+        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+            | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+    )
 }
 
 fn run_tools_loop(terminal: &mut TuiTerminal, tools: Vec<ToolEntry>) -> Result<()> {
@@ -3010,6 +3100,30 @@ mod tests {
             KeyModifiers::CONTROL
         ));
         assert!(!agent_chat_newline_key(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn agent_chat_editor_key_uses_ctrl_e() {
+        assert!(agent_chat_editor_key(
+            KeyCode::Char('e'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(!agent_chat_editor_key(
+            KeyCode::Char('e'),
+            KeyModifiers::NONE
+        ));
+        assert!(!agent_chat_editor_key(
+            KeyCode::Char('j'),
+            KeyModifiers::CONTROL
+        ));
+    }
+
+    #[test]
+    fn normalize_editor_text_removes_one_final_editor_newline() {
+        assert_eq!(normalize_editor_text("hello\n"), "hello");
+        assert_eq!(normalize_editor_text("hello\r\n"), "hello");
+        assert_eq!(normalize_editor_text("hello\n\n"), "hello\n");
+        assert_eq!(normalize_editor_text("hello"), "hello");
     }
 
     #[test]

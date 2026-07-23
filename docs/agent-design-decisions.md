@@ -338,7 +338,10 @@ The first non-interactive agent slice is implemented as:
     use Ctrl+J as a newline fallback. The focused composer should show a visible
     terminal cursor, and typing `q` into an empty composer must insert text rather
     than quit the chat.
-21. `djinn` with no arguments now routes to that interactive Agent chat surface
+21. Agent chat composer uses Ctrl+E to suspend the TUI and open the current prompt
+    in `$VISUAL`, `$EDITOR`, or `nvim`. This is the preferred path for advanced
+    prompt editing instead of adding many inline composer editing controls.
+22. `djinn` with no arguments now routes to that interactive Agent chat surface
     when stdin/stdout are terminals. It must not route to the saved Chats tab.
 
 Not in the first slice unless explicitly reopened:
