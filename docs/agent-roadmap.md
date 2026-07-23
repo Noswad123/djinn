@@ -151,7 +151,8 @@ These are important but need more product/design detail before implementation.
   - live runtime event streaming;
   - richer in-place "running tool" progress during a model turn;
   - session creation/resume through a secondary picker/dialog;
-  - multiline composer editing;
+  - richer multiline composer editing beyond the current Enter-send and
+    Shift+Enter-newline behavior;
   - richer transcript wrapping and scroll affordances. Do not auto-scroll by
     default; keep an explicit jump-to-latest control instead.
 - Keep transcript/composer text areas copy-friendly: avoid left/right borders and

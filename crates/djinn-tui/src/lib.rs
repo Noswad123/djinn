@@ -4,7 +4,10 @@ use std::io::{self, Stdout};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -15,7 +18,7 @@ use djinn_memory::{MemoryCandidate, SuggestionRecord};
 use djinn_skills::SkillRecord;
 use djinn_tools::ToolEntry;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
@@ -618,21 +621,21 @@ fn run_agent_chat_prompt_loop(
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    _ if agent_chat_quit_key(key.code, key.modifiers, app.input.is_empty()) => {
                         return Ok(None);
                     }
-                    KeyCode::Esc if app.input.is_empty() => return Ok(None),
-                    KeyCode::Char('q') if app.input.is_empty() => return Ok(None),
+                    _ if agent_chat_newline_key(key.code, key.modifiers) => {
+                        app.insert_newline();
+                    }
                     KeyCode::Enter => {
-                        let prompt = app.input.trim().to_string();
-                        if !prompt.is_empty() {
+                        if let Some(prompt) = app.submit_prompt() {
                             return Ok(Some(prompt));
                         }
                     }
                     KeyCode::Backspace => {
-                        app.input.pop();
+                        app.backspace();
                     }
-                    KeyCode::Char(ch) => app.input.push(ch),
+                    KeyCode::Char(ch) => app.push_char(ch),
                     KeyCode::End => app.jump_to_end(terminal.size()?.height),
                     KeyCode::Home => app.jump_to_top(),
                     KeyCode::PageDown => app.scroll_down(),
@@ -661,17 +664,16 @@ where
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    _ if agent_chat_quit_key(key.code, key.modifiers, app.input.is_empty()) => {
                         return Ok(());
                     }
-                    KeyCode::Esc if app.input.is_empty() => return Ok(()),
-                    KeyCode::Char('q') if app.input.is_empty() => return Ok(()),
+                    _ if agent_chat_newline_key(key.code, key.modifiers) => {
+                        app.insert_newline();
+                    }
                     KeyCode::Enter => {
-                        let prompt = app.input.trim().to_string();
-                        if prompt.is_empty() {
+                        let Some(prompt) = app.submit_prompt() else {
                             continue;
-                        }
-                        app.input.clear();
+                        };
                         app.messages.push(AgentChatMessage {
                             role: AgentChatRole::User,
                             content: prompt.clone(),
@@ -694,9 +696,9 @@ where
                         }
                     }
                     KeyCode::Backspace => {
-                        app.input.pop();
+                        app.backspace();
                     }
-                    KeyCode::Char(ch) => app.input.push(ch),
+                    KeyCode::Char(ch) => app.push_char(ch),
                     KeyCode::End => app.jump_to_end(terminal.size()?.height),
                     KeyCode::Home => app.jump_to_top(),
                     KeyCode::PageDown => app.scroll_down(),
@@ -731,6 +733,27 @@ impl AgentChatComposerApp {
         self.transcript_scroll = self.transcript_scroll.saturating_add(8);
     }
 
+    fn push_char(&mut self, ch: char) {
+        self.input.push(ch);
+    }
+
+    fn insert_newline(&mut self) {
+        self.input.push('\n');
+    }
+
+    fn backspace(&mut self) {
+        self.input.pop();
+    }
+
+    fn submit_prompt(&mut self) -> Option<String> {
+        let prompt = self.input.trim().to_string();
+        if prompt.is_empty() {
+            return None;
+        }
+        self.input.clear();
+        Some(prompt)
+    }
+
     fn scroll_up(&mut self) {
         self.transcript_scroll = self.transcript_scroll.saturating_sub(8);
     }
@@ -744,7 +767,7 @@ impl AgentChatComposerApp {
     }
 
     fn max_transcript_scroll_for_terminal(&self, terminal_height: u16) -> u16 {
-        let reserved = 3 + 5 + 1;
+        let reserved = 3 + 7 + 1;
         let transcript_area_height = terminal_height.saturating_sub(reserved).max(4);
         self.max_transcript_scroll(transcript_area_height)
     }
@@ -761,13 +784,27 @@ impl AgentChatComposerApp {
         self.transcript_scroll >= self.max_transcript_scroll(transcript_area_height)
     }
 
+    fn cursor_position(&self, composer_area: Rect) -> Position {
+        let inner_height = composer_area.height.saturating_sub(2).max(1);
+        let lines = self.input.split('\n').collect::<Vec<_>>();
+        let cursor_line = lines.len().saturating_sub(1) as u16;
+        let cursor_col = lines
+            .last()
+            .map(|line| line.chars().count())
+            .unwrap_or_default() as u16;
+        Position::new(
+            composer_area.x + cursor_col.min(composer_area.width.saturating_sub(1)),
+            composer_area.y + 1 + cursor_line.min(inner_height.saturating_sub(1)),
+        )
+    }
+
     fn draw(&mut self, frame: &mut ratatui::Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
                 Constraint::Min(4),
-                Constraint::Length(5),
+                Constraint::Length(7),
                 Constraint::Length(1),
             ])
             .split(frame.area());
@@ -816,27 +853,34 @@ impl AgentChatComposerApp {
         frame.render_widget(Clear, transcript_layout[1]);
         frame.render_widget(scrollbar, transcript_layout[1]);
 
-        let input = if self.input.is_empty() {
-            vec![Line::from(Span::styled(
-                "Type a prompt and press Enter…",
-                dim_style(),
-            ))]
-        } else {
-            vec![Line::from(self.input.clone())]
-        };
+        let input = self.composer_lines();
         let composer = Paragraph::new(input)
             .block(agent_chat_block("Composer"))
             .style(base_style())
             .wrap(Wrap { trim: false });
         frame.render_widget(Clear, chunks[2]);
         frame.render_widget(composer, chunks[2]);
+        frame.set_cursor_position(self.cursor_position(chunks[2]));
 
         let footer = format!(
-            "Enter send • Esc/q quit empty • End jumps to ↓ latest • Home top • PgUp/PgDn scroll • cwd {}",
+            "Enter send • Shift+Enter newline • Esc empty/Ctrl-C quit • End jumps to ↓ latest • cwd {}",
             self.status.workspace
         );
         frame.render_widget(Clear, chunks[3]);
         frame.render_widget(Paragraph::new(footer).style(dim_style()), chunks[3]);
+    }
+
+    fn composer_lines(&self) -> Vec<Line<'static>> {
+        if self.input.is_empty() {
+            return vec![Line::from(Span::styled(
+                "Type a prompt and press Enter…",
+                dim_style(),
+            ))];
+        }
+        self.input
+            .split('\n')
+            .map(|line| Line::from(line.to_string()))
+            .collect()
     }
 }
 
@@ -861,6 +905,15 @@ fn agent_chat_transcript_lines(messages: &[AgentChatMessage], notice: &str) -> V
         lines.push(Line::from(Span::styled(notice.to_string(), dim_style())));
     }
     lines
+}
+
+fn agent_chat_newline_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::SHIFT) && matches!(code, KeyCode::Enter)
+}
+
+fn agent_chat_quit_key(code: KeyCode, modifiers: KeyModifiers, input_empty: bool) -> bool {
+    (modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c')))
+        || (input_empty && matches!(code, KeyCode::Esc))
 }
 
 fn transcript_scrollbar_lines(scroll: u16, max_scroll: u16, height: u16) -> Vec<Line<'static>> {
@@ -931,7 +984,16 @@ pub enum ChatShareMode {
 fn enter_terminal() -> Result<TuiTerminal> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+        )
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -940,7 +1002,11 @@ fn enter_terminal() -> Result<TuiTerminal> {
 
 fn leave_terminal(terminal: &mut TuiTerminal) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        PopKeyboardEnhancementFlags,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -2892,6 +2958,103 @@ mod tests {
         assert_eq!(app.transcript_scroll, 8);
         app.scroll_up();
         assert_eq!(app.transcript_scroll, 0);
+    }
+
+    #[test]
+    fn agent_chat_composer_uses_shift_enter_newline_and_enter_submit_model() {
+        let mut app = AgentChatComposerApp::new(
+            Vec::new(),
+            AgentChatStatus {
+                session_id: "agt_test".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                model: "openai/gpt-5.5".to_string(),
+                notice: String::new(),
+            },
+        );
+
+        app.push_char('h');
+        app.push_char('i');
+        app.insert_newline();
+        app.push_char('t');
+        app.push_char('h');
+        app.push_char('e');
+        app.push_char('r');
+        app.push_char('e');
+
+        assert_eq!(app.input, "hi\nthere");
+        let rendered = app
+            .composer_lines()
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rendered, vec!["hi", "there"]);
+        assert_eq!(app.submit_prompt().as_deref(), Some("hi\nthere"));
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn agent_chat_newline_key_uses_shift_enter_without_ctrl_j_fallback() {
+        assert!(agent_chat_newline_key(KeyCode::Enter, KeyModifiers::SHIFT));
+        assert!(!agent_chat_newline_key(
+            KeyCode::Enter,
+            KeyModifiers::CONTROL
+        ));
+        assert!(!agent_chat_newline_key(
+            KeyCode::Char('j'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(!agent_chat_newline_key(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn agent_chat_quit_key_does_not_treat_q_as_quit() {
+        assert!(agent_chat_quit_key(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            false
+        ));
+        assert!(agent_chat_quit_key(KeyCode::Esc, KeyModifiers::NONE, true));
+        assert!(!agent_chat_quit_key(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            false
+        ));
+        assert!(!agent_chat_quit_key(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+            true
+        ));
+        assert!(!agent_chat_quit_key(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+            false
+        ));
+    }
+
+    #[test]
+    fn agent_chat_composer_cursor_tracks_multiline_input() {
+        let mut app = AgentChatComposerApp::new(
+            Vec::new(),
+            AgentChatStatus {
+                session_id: "agt_test".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                model: "openai/gpt-5.5".to_string(),
+                notice: String::new(),
+            },
+        );
+        app.input = "hello\nworld".to_string();
+
+        assert_eq!(
+            app.cursor_position(Rect::new(10, 20, 40, 7)),
+            Position::new(15, 22)
+        );
     }
 
     #[test]

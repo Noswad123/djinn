@@ -332,7 +332,13 @@ The first non-interactive agent slice is implemented as:
 19. Agent chat transcript/composer boxes avoid left and right borders because
     side borders interfere with copy/paste. Use top/bottom separators instead for
     text-heavy chat regions.
-20. `djinn` with no arguments now routes to that interactive Agent chat surface
+20. Agent chat composer uses Enter to send and Shift+Enter to insert multiline
+    prompts. Djinn enables crossterm keyboard enhancement flags so terminals that
+    support enhanced key reporting can distinguish Shift+Enter from Enter. Do not
+    use Ctrl+J as a newline fallback. The focused composer should show a visible
+    terminal cursor, and typing `q` into an empty composer must insert text rather
+    than quit the chat.
+21. `djinn` with no arguments now routes to that interactive Agent chat surface
     when stdin/stdout are terminals. It must not route to the saved Chats tab.
 
 Not in the first slice unless explicitly reopened:
