@@ -22,11 +22,11 @@ use djinn_agent::{
 use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
-    ActionRecord, ActionStore, AgentSessionEvent, AgentSessionEventKind, AgentSessionFilter,
-    AgentSessionId, AgentSessionMeta, AgentSessionStore, CandidateStore, FileHistoryEntryId,
-    FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
-    JsonlFileHistoryStore, MemoryCandidate, MemoryInput, MemoryRecord, MemorySource,
-    SuggestionInput, SuggestionRecord, SuggestionStore,
+    ActionRecord, ActionStore, AgentSession, AgentSessionEvent, AgentSessionEventKind,
+    AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionStore, CandidateStore,
+    FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore,
+    JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryCandidate, MemoryInput, MemoryRecord,
+    MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -569,6 +569,8 @@ enum AgentCommand {
     FileHistory(AgentFileHistoryArgs),
     /// Record a non-interactive prompt in an agent session.
     Ask(AgentAskArgs),
+    /// Open an interactive terminal chat with the Djinn agent runtime.
+    Chat(AgentChatArgs),
 }
 
 #[derive(Debug, Args)]
@@ -871,6 +873,31 @@ struct AgentAskArgs {
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentChatArgs {
+    /// Human-friendly session title.
+    #[arg(long)]
+    title: Option<String>,
+    /// Workspace path for the session. Defaults to the current directory.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    /// Agent profile name.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// OpenAI model to use. Defaults to OpenCode config, DJINN_OPENAI_MODEL, or gpt-4o-mini.
+    #[arg(long)]
+    model: Option<String>,
+    /// OpenAI API key. Defaults to OpenCode config/auth or OPENAI_API_KEY.
+    #[arg(long = "api-key")]
+    api_key: Option<String>,
+    /// OpenAI-compatible base URL. Defaults to OPENAI_BASE_URL or https://api.openai.com/v1.
+    #[arg(long = "base-url")]
+    base_url: Option<String>,
+    /// Maximum model/tool-call rounds before stopping.
+    #[arg(long = "max-tool-rounds", default_value_t = 5)]
+    max_tool_rounds: usize,
 }
 
 struct TerminalPermissionGate;
@@ -1351,10 +1378,14 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let Some(command) = cli.command else {
         if io::stdin().is_terminal() && io::stdout().is_terminal() {
-            return run_tui(TuiArgs {
-                view: TuiView::Tools,
-                roots: Vec::new(),
-                editor: None,
+            return agent_chat(AgentChatArgs {
+                title: None,
+                workspace: None,
+                profile: "default".to_string(),
+                model: None,
+                api_key: None,
+                base_url: None,
+                max_tool_rounds: 5,
             });
         }
         Cli::command().print_help()?;
@@ -1608,6 +1639,7 @@ fn run_agent(args: AgentArgs) -> Result<()> {
         AgentCommand::Session(args) => run_agent_session(args),
         AgentCommand::FileHistory(args) => run_agent_file_history(args),
         AgentCommand::Ask(args) => agent_ask(args),
+        AgentCommand::Chat(args) => agent_chat(args),
     }
 }
 
@@ -1834,10 +1866,100 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
     Ok(())
 }
 
+fn agent_chat(args: AgentChatArgs) -> Result<()> {
+    let profile = args.profile;
+    let model = resolve_agent_model(args.model, &profile)?;
+    let workspace = resolve_agent_workspace(args.workspace)?;
+    let meta = AgentSessionMeta {
+        title: args.title.unwrap_or_else(|| "Agent chat".to_string()),
+        workspace: workspace.clone(),
+        profile: profile.clone(),
+        source: "djinn-agent".to_string(),
+        ..AgentSessionMeta::default()
+    };
+    let store = agent_session_store();
+    let id = store.create_session(meta)?;
+    let session = store.load_session(&id)?;
+    let api_key = args.api_key;
+    let base_url = args.base_url;
+    let max_tool_rounds = args.max_tool_rounds;
+
+    djinn_tui::run_agent_chat_with_handler(
+        agent_chat_messages(&session),
+        djinn_tui::AgentChatStatus {
+            session_id: id.to_string(),
+            workspace: workspace.clone(),
+            profile: profile.clone(),
+            model: model.clone(),
+            notice: "History is secondary here; type a prompt to run the agent.".to_string(),
+        },
+        |prompt| {
+            store.append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: prompt.clone(),
+                }),
+            )?;
+            let session = store.load_session(&id)?;
+            complete_openai_messages(
+                &store,
+                &id,
+                agent_model_messages(&session, &workspace),
+                model.clone(),
+                api_key.clone(),
+                base_url.clone(),
+                max_tool_rounds,
+                &profile,
+                true,
+            )?;
+            let session = store.load_session(&id)?;
+            Ok(agent_chat_messages(&session))
+        },
+    )?;
+
+    let session = store.load_session(&id)?;
+    println!("Agent session [{}]: {}", id, session.meta.title);
+    println!("Path: {}", store.session_file_path(&id).display());
+    Ok(())
+}
+
 fn complete_openai_prompt(
     store: &JsonlAgentSessionStore,
     id: &AgentSessionId,
     prompt: String,
+    model: String,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    max_tool_rounds: usize,
+    profile: &str,
+    interactive_permissions: bool,
+) -> Result<djinn_agent::ModelResponse> {
+    let workspace = store.load_session(id)?.meta.workspace;
+    complete_openai_messages(
+        store,
+        id,
+        vec![
+            agent_system_message(&workspace),
+            ModelMessage {
+                role: ModelRole::User,
+                content: prompt,
+                tool_call_id: None,
+                tool_calls: Vec::new(),
+            },
+        ],
+        model,
+        api_key,
+        base_url,
+        max_tool_rounds,
+        profile,
+        interactive_permissions,
+    )
+}
+
+fn complete_openai_messages(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    messages: Vec<ModelMessage>,
     model: String,
     api_key: Option<String>,
     base_url: Option<String>,
@@ -1888,22 +2010,7 @@ fn complete_openai_prompt(
         id,
         ModelRequest {
             model,
-            messages: vec![
-                ModelMessage {
-                    role: ModelRole::System,
-                    content: format!(
-                        "You are running in workspace `{workspace}`. Read-only filesystem tools may also access other paths such as the user's home directory when the configured access policy allows it. Use absolute paths, `~`, or `$HOME` for non-workspace locations."
-                    ),
-                    tool_call_id: None,
-                    tool_calls: Vec::new(),
-                },
-                ModelMessage {
-                    role: ModelRole::User,
-                    content: prompt,
-                    tool_call_id: None,
-                    tool_calls: Vec::new(),
-                },
-            ],
+            messages,
             tools: Vec::new(),
         },
         max_tool_rounds,
@@ -2716,6 +2823,323 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
             format!("summary: {}", prompt_title(content, "(empty)"))
         }
         AgentSessionEventKind::Checkpoint { label } => format!("checkpoint: {label}"),
+    }
+}
+
+fn agent_system_message(workspace: &str) -> ModelMessage {
+    ModelMessage {
+        role: ModelRole::System,
+        content: format!(
+            "You are running in workspace `{workspace}`. Read-only filesystem tools may also access other paths such as the user's home directory when the configured access policy allows it. Use absolute paths, `~`, or `$HOME` for non-workspace locations."
+        ),
+        tool_call_id: None,
+        tool_calls: Vec::new(),
+    }
+}
+
+fn agent_model_messages(session: &AgentSession, workspace: &str) -> Vec<ModelMessage> {
+    let mut messages = vec![agent_system_message(workspace)];
+    for event in &session.events {
+        match &event.kind {
+            AgentSessionEventKind::UserMessage { content } => messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: content.clone(),
+                tool_call_id: None,
+                tool_calls: Vec::new(),
+            }),
+            AgentSessionEventKind::AssistantMessage { content } if !content.trim().is_empty() => {
+                messages.push(ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: content.clone(),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                });
+            }
+            AgentSessionEventKind::Summary { content } if !content.trim().is_empty() => {
+                messages.push(ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: format!("Previous session summary: {content}"),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                });
+            }
+            _ => {}
+        }
+    }
+    messages
+}
+
+fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessage> {
+    let mut calls = HashMap::new();
+    let mut messages = Vec::new();
+    for event in &session.events {
+        match &event.kind {
+            AgentSessionEventKind::UserMessage { content } => {
+                messages.push(djinn_tui::AgentChatMessage {
+                    role: djinn_tui::AgentChatRole::User,
+                    content: content.clone(),
+                });
+            }
+            AgentSessionEventKind::AssistantMessage { content } if !content.trim().is_empty() => {
+                messages.push(djinn_tui::AgentChatMessage {
+                    role: djinn_tui::AgentChatRole::Assistant,
+                    content: content.clone(),
+                });
+            }
+            AgentSessionEventKind::ToolCall { id, name, input } => {
+                let call = AgentToolCallSummary {
+                    name: name.clone(),
+                    invocation: summarize_agent_tool_input(name, input),
+                };
+                calls.insert(id.clone(), call.clone());
+                messages.push(djinn_tui::AgentChatMessage {
+                    role: djinn_tui::AgentChatRole::Tool,
+                    content: format!("{}: {}", call.name, call.invocation),
+                });
+            }
+            AgentSessionEventKind::ToolResult {
+                id,
+                success,
+                output,
+            } => {
+                let call = calls.get(id);
+                messages.push(djinn_tui::AgentChatMessage {
+                    role: djinn_tui::AgentChatRole::Tool,
+                    content: summarize_agent_tool_result(id, call, output, *success),
+                });
+            }
+            AgentSessionEventKind::Summary { content } => {
+                messages.push(djinn_tui::AgentChatMessage {
+                    role: djinn_tui::AgentChatRole::Notice,
+                    content: format!("summary: {content}"),
+                })
+            }
+            AgentSessionEventKind::Checkpoint { label } => {
+                messages.push(djinn_tui::AgentChatMessage {
+                    role: djinn_tui::AgentChatRole::Notice,
+                    content: format!("checkpoint: {label}"),
+                })
+            }
+            AgentSessionEventKind::SessionCreated { .. }
+            | AgentSessionEventKind::AssistantMessage { .. } => {}
+        }
+    }
+    messages
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentToolCallSummary {
+    name: String,
+    invocation: String,
+}
+
+fn summarize_agent_tool_input(name: &str, input: &Value) -> String {
+    match name {
+        "shell" => input
+            .get("command")
+            .and_then(Value::as_str)
+            .map(|command| format!("`{command}`{}", optional_workdir(input)))
+            .unwrap_or_else(|| compact_json_value(input)),
+        "read_file" | "list_dir" => input
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|path| path.to_string())
+            .unwrap_or_else(|| compact_json_value(input)),
+        "find_files" => {
+            let pattern = input.get("pattern").and_then(Value::as_str).unwrap_or("*");
+            let path = input.get("path").and_then(Value::as_str).unwrap_or(".");
+            format!("{pattern} in {path}")
+        }
+        "search_files" => {
+            let pattern = input.get("pattern").and_then(Value::as_str).unwrap_or("");
+            let path = input.get("path").and_then(Value::as_str).unwrap_or(".");
+            format!("/{pattern}/ in {path}")
+        }
+        "apply_patch" => "workspace patch".to_string(),
+        _ => compact_json_value(input),
+    }
+}
+
+fn summarize_agent_tool_result(
+    id: &str,
+    call: Option<&AgentToolCallSummary>,
+    output: &Value,
+    success: bool,
+) -> String {
+    let tool = call
+        .map(|call| call.name.as_str())
+        .or_else(|| output.get("tool").and_then(Value::as_str))
+        .unwrap_or("tool");
+    let status = if success { "ok" } else { "failed" };
+    match tool {
+        "shell" => summarize_shell_result(status, call, output),
+        "read_file" => summarize_read_file_result(status, output),
+        "list_dir" | "find_files" | "search_files" => {
+            summarize_matches_result(tool, status, output)
+        }
+        "apply_patch" => summarize_patch_result(status, output),
+        _ => format!(
+            "{tool} result: {status}\n{}",
+            summarize_agent_tool_output(output, id)
+        ),
+    }
+}
+
+fn optional_workdir(input: &Value) -> String {
+    input
+        .get("workdir")
+        .and_then(Value::as_str)
+        .filter(|workdir| !workdir.trim().is_empty())
+        .map(|workdir| format!(" in {workdir}"))
+        .unwrap_or_default()
+}
+
+fn summarize_shell_result(
+    status: &str,
+    call: Option<&AgentToolCallSummary>,
+    output: &Value,
+) -> String {
+    let mut lines = vec![format!("shell result: {status}")];
+    if let Some(call) = call {
+        lines.push(format!("command: {}", call.invocation));
+    } else if let Some(command) = output.get("command").and_then(Value::as_str) {
+        lines.push(format!("command: `{command}`"));
+    }
+    let mut meta = Vec::new();
+    if let Some(exit_code) = output.get("exit_code").and_then(Value::as_i64) {
+        meta.push(format!("exit {exit_code}"));
+    }
+    if output
+        .get("timed_out")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        meta.push("timed out".to_string());
+    }
+    if let Some(duration_ms) = output.get("duration_ms").and_then(Value::as_u64) {
+        meta.push(format!("{duration_ms}ms"));
+    }
+    if !meta.is_empty() {
+        lines.push(meta.join(" • "));
+    }
+    push_output_block(
+        &mut lines,
+        "stdout",
+        output.get("stdout").and_then(Value::as_str),
+    );
+    push_output_block(
+        &mut lines,
+        "stderr",
+        output.get("stderr").and_then(Value::as_str),
+    );
+    if lines.len() == 1 {
+        lines.push(summarize_agent_tool_output(output, "shell"));
+    }
+    lines.join("\n")
+}
+
+fn summarize_read_file_result(status: &str, output: &Value) -> String {
+    let path = output
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown path");
+    let content = output.get("content").and_then(Value::as_str).unwrap_or("");
+    format!(
+        "read_file result: {status}\npath: {path}\n{} bytes, {} lines",
+        content.len(),
+        content.lines().count()
+    )
+}
+
+fn summarize_matches_result(tool: &str, status: &str, output: &Value) -> String {
+    let path = output.get("path").and_then(Value::as_str).unwrap_or(".");
+    let matches = output
+        .get("matches")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut lines = vec![format!("{tool} result: {status}"), format!("path: {path}")];
+    lines.push(format!("{} matches", matches.len()));
+    for item in matches.iter().take(5) {
+        let label = item
+            .get("relative_path")
+            .or_else(|| item.get("path"))
+            .and_then(Value::as_str)
+            .unwrap_or("match");
+        lines.push(format!("- {label}"));
+    }
+    if matches.len() > 5 {
+        lines.push(format!("… {} more", matches.len() - 5));
+    }
+    lines.join("\n")
+}
+
+fn summarize_patch_result(status: &str, output: &Value) -> String {
+    let mut lines = vec![format!("apply_patch result: {status}")];
+    if let Some(patch_id) = output.get("patch_id").and_then(Value::as_str) {
+        lines.push(format!("patch: {patch_id}"));
+    }
+    if let Some(files) = output.get("files").and_then(Value::as_array) {
+        lines.push(format!("{} files touched", files.len()));
+    }
+    if lines.len() == 1 {
+        lines.push(summarize_agent_tool_output(output, "apply_patch"));
+    }
+    lines.join("\n")
+}
+
+fn push_output_block(lines: &mut Vec<String>, label: &str, value: Option<&str>) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    lines.push(format!("{label}:"));
+    for line in value.lines().take(8) {
+        lines.push(line.to_string());
+    }
+    let line_count = value.lines().count();
+    if line_count > 8 {
+        lines.push(format!("… {} more lines", line_count - 8));
+    }
+}
+
+fn compact_json_value(value: &Value) -> String {
+    truncate_agent_line(&value.to_string(), 160)
+}
+
+fn truncate_agent_line(value: &str, max_chars: usize) -> String {
+    let line = value.lines().next().unwrap_or(value).trim();
+    let mut chars = line.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+fn summarize_agent_tool_output(output: &Value, fallback: &str) -> String {
+    if let Some(error) = output.get("error").and_then(Value::as_str) {
+        return prompt_title(error, "error");
+    }
+    if let Some(stdout) = output.get("stdout").and_then(Value::as_str) {
+        let title = prompt_title(stdout, "no stdout");
+        if !title.is_empty() && title != "no stdout" {
+            return title;
+        }
+    }
+    if let Some(path) = output.get("path").and_then(Value::as_str) {
+        return path.to_string();
+    }
+    if let Some(matches) = output.get("matches").and_then(Value::as_array) {
+        return format!("{} matches", matches.len());
+    }
+    match output {
+        Value::Object(map) => format!("{} fields", map.len()),
+        Value::Array(values) => format!("{} items", values.len()),
+        Value::String(value) => prompt_title(value, fallback),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::Null => "null".to_string(),
     }
 }
 
@@ -5815,6 +6239,104 @@ mod tests {
         assert!(rendered.contains("    fn answer() -> i32 {"));
         assert!(rendered.contains("  -     41"));
         assert!(rendered.contains("  +     42"));
+    }
+
+    #[test]
+    fn agent_chat_messages_summarize_tools_without_raw_json_dump() {
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_test"),
+            meta: AgentSessionMeta::default(),
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "run tests".to_string(),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ToolCall {
+                    id: "call-1".to_string(),
+                    name: "shell".to_string(),
+                    input: serde_json::json!({"command": "cargo test"}),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
+                    id: "call-1".to_string(),
+                    output: serde_json::json!({"stdout": "tests passed\n", "exit_code": 0}),
+                    success: true,
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "All tests passed.".to_string(),
+                }),
+            ],
+        };
+
+        let messages = agent_chat_messages(&session);
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, djinn_tui::AgentChatRole::User);
+        assert_eq!(messages[1].content, "shell: `cargo test`");
+        assert!(messages[2].content.contains("shell result: ok"));
+        assert!(messages[2].content.contains("command: `cargo test`"));
+        assert!(messages[2].content.contains("stdout:\ntests passed"));
+        assert!(!messages[2].content.contains("exit_code"));
+        assert_eq!(messages[3].content, "All tests passed.");
+    }
+
+    #[test]
+    fn agent_chat_messages_identify_search_tool_and_result_context() {
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_test"),
+            meta: AgentSessionMeta::default(),
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::ToolCall {
+                    id: "call-2".to_string(),
+                    name: "search_files".to_string(),
+                    input: serde_json::json!({"pattern": "needle", "path": "src"}),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
+                    id: "call-2".to_string(),
+                    output: serde_json::json!({
+                        "path": "/tmp/project/src",
+                        "matches": [
+                            {"relative_path": "lib.rs"},
+                            {"relative_path": "main.rs"}
+                        ]
+                    }),
+                    success: true,
+                }),
+            ],
+        };
+
+        let messages = agent_chat_messages(&session);
+        assert_eq!(messages[0].content, "search_files: /needle/ in src");
+        assert!(messages[1].content.contains("search_files result: ok"));
+        assert!(messages[1].content.contains("path: /tmp/project/src"));
+        assert!(messages[1].content.contains("2 matches"));
+        assert!(messages[1].content.contains("- lib.rs"));
+    }
+
+    #[test]
+    fn agent_model_messages_keep_conversation_turns() {
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_test"),
+            meta: AgentSessionMeta::default(),
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "hello".to_string(),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "hi".to_string(),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
+                    id: "call-1".to_string(),
+                    output: serde_json::json!({"stdout": "ignored"}),
+                    success: true,
+                }),
+            ],
+        };
+
+        let messages = agent_model_messages(&session, "/tmp/project");
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, ModelRole::System);
+        assert_eq!(messages[1].role, ModelRole::User);
+        assert_eq!(messages[1].content, "hello");
+        assert_eq!(messages[2].role, ModelRole::Assistant);
+        assert_eq!(messages[2].content, "hi");
     }
 
     #[test]

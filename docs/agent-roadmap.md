@@ -142,13 +142,24 @@ These are important but need more product/design detail before implementation.
 
 ### TUI behavior
 
-- Build a real chat interface before changing the no-args default. Do not treat
-  the existing saved Chats dashboard tab as that chat interface.
-- Once the real chat interface exists, route `djinn` with no arguments to it.
-- Design the chat interface around:
-  - chat + logs;
-  - chat + session picker;
-  - command palette.
+- Do not add an Agent pane that only browses JSONL agent sessions or raw event
+  payloads; that overlaps with the saved Chats pane.
+- Build on the first real Agent UI (`djinn agent chat` and no-args `djinn`),
+  which has a prompt composer, readable transcript, named/correlated tool
+  summaries, status metadata, JSONL persistence, and turn-by-turn runtime calls.
+- Add the next interactive pieces:
+  - live runtime event streaming;
+  - richer in-place "running tool" progress during a model turn;
+  - session creation/resume through a secondary picker/dialog;
+  - multiline composer editing;
+  - richer transcript wrapping and scroll affordances. Do not auto-scroll by
+    default; keep an explicit jump-to-latest control instead.
+- Keep transcript/composer text areas copy-friendly: avoid left/right borders and
+  prefer top/bottom separators for text-heavy chat regions.
+- `djinn` with no arguments now routes to the real Agent chat surface when a
+  terminal is attached. Keep it pointed there, not at saved Chats.
+- Keep designing the full interface around chat + logs, a session picker, and a
+  command palette.
 - Decide which OpenCode-inspired dialogs are first:
   - session picker;
   - model picker;
@@ -179,12 +190,13 @@ Blocked until the compatibility matrix is written.
 Djinn should not chase OpenCode behavior feature-by-feature until the desired
 compatibility level is explicit.
 
-### Full TUI implementation
+### Polished interactive chat implementation
 
-Blocked until the non-interactive runtime path works.
+Blocked until the first chat surface is hardened with runtime event streaming,
+session resume, better composer editing, and detailed per-tool status updates.
 
-Ratatui work can start with prototypes, but the main interface should be built on
-top of working session, provider, tool, and event abstractions.
+A session/transcript browser alone is not sufficient and should not replace the
+interactive chat surface.
 
 ### SQLite migration
 

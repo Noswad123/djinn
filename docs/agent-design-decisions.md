@@ -314,7 +314,26 @@ The first non-interactive agent slice is implemented as:
 14. CLI commands for session creation/list/show and one-shot prompting:
     `djinn agent session new`, `djinn agent session list`,
     `djinn agent session show`, and `djinn agent ask`.
-15. Ratatui chat UI remains a follow-on layer after the non-interactive runtime.
+15. A dashboard pane that only browses JSONL agent sessions overlaps with the
+    saved Chats pane and should not be treated as the Agent UI. The Agent UI must
+    be an interactive chat/composer/runtime surface, with history/session picking
+    as secondary behavior.
+16. `djinn agent chat` opens the first real Agent TUI surface: a Ratatui chat
+    composer with readable transcript rendering, tool-call entries that identify
+    the tool name and invocation details, correlated tool-result summaries that
+    avoid raw JSON/call-id-first output, workspace/profile/model status, JSONL
+    session persistence, and multi-turn calls through the existing agent runtime.
+17. The Agent chat TUI stays in the alternate screen across prompt submission and
+    runtime turns. It updates the transcript/status in-place while a turn runs
+    instead of dropping to stdout with an out-of-band "thinking" message.
+18. Agent chat should not auto-scroll by default. It exposes an explicit bottom
+    arrow/jump-to-latest affordance (`End`) so the user can move instantly to the
+    newest transcript content without losing their current scroll position.
+19. Agent chat transcript/composer boxes avoid left and right borders because
+    side borders interfere with copy/paste. Use top/bottom separators instead for
+    text-heavy chat regions.
+20. `djinn` with no arguments now routes to that interactive Agent chat surface
+    when stdin/stdout are terminals. It must not route to the saved Chats tab.
 
 Not in the first slice unless explicitly reopened:
 

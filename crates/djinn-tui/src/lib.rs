@@ -4,7 +4,7 @@ use std::io::{self, Stdout};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -34,6 +34,30 @@ pub fn run_tools(tools: Vec<ToolEntry>) -> Result<()> {
 pub fn run_chats(chats: Vec<ChatRecord>) -> Result<Option<ChatShareRequest>> {
     let mut terminal = enter_terminal()?;
     let result = run_chats_loop(&mut terminal, chats);
+    leave_terminal(&mut terminal)?;
+    result
+}
+
+pub fn run_agent_chat(
+    messages: Vec<AgentChatMessage>,
+    status: AgentChatStatus,
+) -> Result<Option<String>> {
+    let mut terminal = enter_terminal()?;
+    let result = run_agent_chat_prompt_loop(&mut terminal, messages, status);
+    leave_terminal(&mut terminal)?;
+    result
+}
+
+pub fn run_agent_chat_with_handler<F>(
+    messages: Vec<AgentChatMessage>,
+    status: AgentChatStatus,
+    mut on_prompt: F,
+) -> Result<()>
+where
+    F: FnMut(String) -> Result<Vec<AgentChatMessage>>,
+{
+    let mut terminal = enter_terminal()?;
+    let result = run_agent_chat_session_loop(&mut terminal, messages, status, &mut on_prompt);
     leave_terminal(&mut terminal)?;
     result
 }
@@ -114,6 +138,29 @@ pub enum TuiAction {
 pub enum ApprovalDecision {
     Approve,
     Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentChatStatus {
+    pub session_id: String,
+    pub workspace: String,
+    pub profile: String,
+    pub model: String,
+    pub notice: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentChatMessage {
+    pub role: AgentChatRole,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentChatRole {
+    User,
+    Assistant,
+    Tool,
+    Notice,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -496,6 +543,19 @@ fn block<'a>(title: &'a str) -> Block<'a> {
         .style(Style::default().fg(CTP_TEXT).bg(CTP_MANTLE))
 }
 
+fn agent_chat_block<'a>(title: &'a str) -> Block<'a> {
+    Block::default()
+        .borders(agent_chat_borders())
+        .title(title)
+        .title_style(title_style())
+        .border_style(Style::default().fg(CTP_SURFACE0).bg(CTP_MANTLE))
+        .style(Style::default().fg(CTP_TEXT).bg(CTP_MANTLE))
+}
+
+fn agent_chat_borders() -> Borders {
+    Borders::TOP | Borders::BOTTOM
+}
+
 #[derive(Debug, Clone, Default)]
 struct FilterState {
     query: String,
@@ -545,6 +605,313 @@ fn fuzzy_match(query: &str, candidate: &str) -> bool {
 
 fn selected_visible_position(selected: usize, visible: &[usize]) -> Option<usize> {
     visible.iter().position(|idx| *idx == selected)
+}
+
+fn run_agent_chat_prompt_loop(
+    terminal: &mut TuiTerminal,
+    messages: Vec<AgentChatMessage>,
+    status: AgentChatStatus,
+) -> Result<Option<String>> {
+    let mut app = AgentChatComposerApp::new(messages, status);
+    loop {
+        terminal.draw(|frame| app.draw(frame))?;
+        if event::poll(Duration::from_millis(150))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(None);
+                    }
+                    KeyCode::Esc if app.input.is_empty() => return Ok(None),
+                    KeyCode::Char('q') if app.input.is_empty() => return Ok(None),
+                    KeyCode::Enter => {
+                        let prompt = app.input.trim().to_string();
+                        if !prompt.is_empty() {
+                            return Ok(Some(prompt));
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        app.input.pop();
+                    }
+                    KeyCode::Char(ch) => app.input.push(ch),
+                    KeyCode::End => app.jump_to_end(terminal.size()?.height),
+                    KeyCode::Home => app.jump_to_top(),
+                    KeyCode::PageDown => app.scroll_down(),
+                    KeyCode::PageUp => app.scroll_up(),
+                    KeyCode::Down => app.scroll_down(),
+                    KeyCode::Up => app.scroll_up(),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn run_agent_chat_session_loop<F>(
+    terminal: &mut TuiTerminal,
+    messages: Vec<AgentChatMessage>,
+    status: AgentChatStatus,
+    on_prompt: &mut F,
+) -> Result<()>
+where
+    F: FnMut(String) -> Result<Vec<AgentChatMessage>>,
+{
+    let mut app = AgentChatComposerApp::new(messages, status);
+    loop {
+        terminal.draw(|frame| app.draw(frame))?;
+        if event::poll(Duration::from_millis(150))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(());
+                    }
+                    KeyCode::Esc if app.input.is_empty() => return Ok(()),
+                    KeyCode::Char('q') if app.input.is_empty() => return Ok(()),
+                    KeyCode::Enter => {
+                        let prompt = app.input.trim().to_string();
+                        if prompt.is_empty() {
+                            continue;
+                        }
+                        app.input.clear();
+                        app.messages.push(AgentChatMessage {
+                            role: AgentChatRole::User,
+                            content: prompt.clone(),
+                        });
+                        app.status.notice = "Djinn is thinking…".to_string();
+                        terminal.draw(|frame| app.draw(frame))?;
+
+                        match on_prompt(prompt) {
+                            Ok(messages) => {
+                                app.messages = messages;
+                                app.status.notice = "Ready.".to_string();
+                            }
+                            Err(error) => {
+                                app.messages.push(AgentChatMessage {
+                                    role: AgentChatRole::Notice,
+                                    content: format!("Agent turn failed: {error:#}"),
+                                });
+                                app.status.notice = "Agent turn failed.".to_string();
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        app.input.pop();
+                    }
+                    KeyCode::Char(ch) => app.input.push(ch),
+                    KeyCode::End => app.jump_to_end(terminal.size()?.height),
+                    KeyCode::Home => app.jump_to_top(),
+                    KeyCode::PageDown => app.scroll_down(),
+                    KeyCode::PageUp => app.scroll_up(),
+                    KeyCode::Down => app.scroll_down(),
+                    KeyCode::Up => app.scroll_up(),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+struct AgentChatComposerApp {
+    messages: Vec<AgentChatMessage>,
+    status: AgentChatStatus,
+    input: String,
+    transcript_scroll: u16,
+}
+
+impl AgentChatComposerApp {
+    fn new(messages: Vec<AgentChatMessage>, status: AgentChatStatus) -> Self {
+        Self {
+            messages,
+            status,
+            input: String::new(),
+            transcript_scroll: 0,
+        }
+    }
+
+    fn scroll_down(&mut self) {
+        self.transcript_scroll = self.transcript_scroll.saturating_add(8);
+    }
+
+    fn scroll_up(&mut self) {
+        self.transcript_scroll = self.transcript_scroll.saturating_sub(8);
+    }
+
+    fn jump_to_top(&mut self) {
+        self.transcript_scroll = 0;
+    }
+
+    fn jump_to_end(&mut self, terminal_height: u16) {
+        self.transcript_scroll = self.max_transcript_scroll_for_terminal(terminal_height);
+    }
+
+    fn max_transcript_scroll_for_terminal(&self, terminal_height: u16) -> u16 {
+        let reserved = 3 + 5 + 1;
+        let transcript_area_height = terminal_height.saturating_sub(reserved).max(4);
+        self.max_transcript_scroll(transcript_area_height)
+    }
+
+    fn max_transcript_scroll(&self, transcript_area_height: u16) -> u16 {
+        let visible_lines = transcript_area_height.saturating_sub(2).max(1) as usize;
+        agent_chat_transcript_lines(&self.messages, &self.status.notice)
+            .len()
+            .saturating_sub(visible_lines)
+            .min(u16::MAX as usize) as u16
+    }
+
+    fn at_transcript_end(&self, transcript_area_height: u16) -> bool {
+        self.transcript_scroll >= self.max_transcript_scroll(transcript_area_height)
+    }
+
+    fn draw(&mut self, frame: &mut ratatui::Frame) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(4),
+                Constraint::Length(5),
+                Constraint::Length(1),
+            ])
+            .split(frame.area());
+
+        let header = Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("Djinn Agent", title_style()),
+                Span::styled("  interactive chat", dim_style()),
+            ]),
+            Line::from(Span::styled(
+                format!(
+                    "session {} • profile {} • model {}",
+                    self.status.session_id, self.status.profile, self.status.model
+                ),
+                dim_style(),
+            )),
+        ])
+        .block(agent_chat_block("Agent"))
+        .style(base_style());
+        frame.render_widget(Clear, chunks[0]);
+        frame.render_widget(header, chunks[0]);
+
+        let transcript_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(chunks[1]);
+        let transcript = agent_chat_transcript_lines(&self.messages, &self.status.notice);
+        let transcript_title = if self.at_transcript_end(chunks[1].height) {
+            "Transcript"
+        } else {
+            "Transcript  ↓ End"
+        };
+        let transcript = Paragraph::new(transcript)
+            .block(agent_chat_block(transcript_title))
+            .style(base_style())
+            .scroll((self.transcript_scroll, 0))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(Clear, transcript_layout[0]);
+        frame.render_widget(transcript, transcript_layout[0]);
+        let scrollbar = Paragraph::new(transcript_scrollbar_lines(
+            self.transcript_scroll,
+            self.max_transcript_scroll(chunks[1].height),
+            chunks[1].height,
+        ))
+        .style(dim_style());
+        frame.render_widget(Clear, transcript_layout[1]);
+        frame.render_widget(scrollbar, transcript_layout[1]);
+
+        let input = if self.input.is_empty() {
+            vec![Line::from(Span::styled(
+                "Type a prompt and press Enter…",
+                dim_style(),
+            ))]
+        } else {
+            vec![Line::from(self.input.clone())]
+        };
+        let composer = Paragraph::new(input)
+            .block(agent_chat_block("Composer"))
+            .style(base_style())
+            .wrap(Wrap { trim: false });
+        frame.render_widget(Clear, chunks[2]);
+        frame.render_widget(composer, chunks[2]);
+
+        let footer = format!(
+            "Enter send • Esc/q quit empty • End jumps to ↓ latest • Home top • PgUp/PgDn scroll • cwd {}",
+            self.status.workspace
+        );
+        frame.render_widget(Clear, chunks[3]);
+        frame.render_widget(Paragraph::new(footer).style(dim_style()), chunks[3]);
+    }
+}
+
+fn agent_chat_transcript_lines(messages: &[AgentChatMessage], notice: &str) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if messages.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Start a new agent conversation below.",
+            dim_style(),
+        )));
+        lines.push(Line::from(Span::styled(
+            "This is the runtime chat surface; saved Chats remains a separate history/memory browser.",
+            dim_style(),
+        )));
+    } else {
+        for message in messages {
+            lines.extend(agent_chat_message_lines(message));
+            lines.push(Line::from(""));
+        }
+    }
+    if !notice.trim().is_empty() {
+        lines.push(Line::from(Span::styled(notice.to_string(), dim_style())));
+    }
+    lines
+}
+
+fn transcript_scrollbar_lines(scroll: u16, max_scroll: u16, height: u16) -> Vec<Line<'static>> {
+    if height == 0 {
+        return Vec::new();
+    }
+    if max_scroll == 0 {
+        return (0..height).map(|_| Line::from(" ")).collect();
+    }
+
+    let mut cells = vec!["│"; height as usize];
+    if scroll > 0 {
+        cells[0] = "↑";
+    }
+    if scroll < max_scroll {
+        cells[height.saturating_sub(1) as usize] = "↓";
+    }
+
+    let available = height.saturating_sub(2).max(1) as usize;
+    let thumb = 1 + ((scroll as usize * available) / max_scroll.max(1) as usize);
+    let thumb_max = if scroll < max_scroll {
+        height.saturating_sub(2)
+    } else {
+        height.saturating_sub(1)
+    } as usize;
+    let thumb = thumb.min(thumb_max);
+    cells[thumb] = "█";
+
+    cells
+        .into_iter()
+        .map(|cell| Line::from(Span::styled(cell, dim_style())))
+        .collect()
+}
+
+fn agent_chat_message_lines(message: &AgentChatMessage) -> Vec<Line<'static>> {
+    let (label, style) = match message.role {
+        AgentChatRole::User => ("You", Style::default().fg(CTP_GREEN).bg(CTP_BASE)),
+        AgentChatRole::Assistant => ("Djinn", title_style()),
+        AgentChatRole::Tool => ("Tool", Style::default().fg(CTP_PEACH).bg(CTP_BASE)),
+        AgentChatRole::Notice => ("Notice", dim_style()),
+    };
+    let mut lines = vec![Line::from(Span::styled(format!("{label}:"), style))];
+    let content = message.content.trim();
+    if content.is_empty() {
+        lines.push(Line::from(Span::styled("(empty)", dim_style())));
+    } else {
+        for line in content.lines() {
+            lines.push(Line::from(line.to_string()));
+        }
+    }
+    lines
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2453,6 +2820,139 @@ mod tests {
         assert!(fuzzy_match("ocd", "OpenCode Debug Session"));
         assert!(fuzzy_match("tl", "tool-list"));
         assert!(!fuzzy_match("xyz", "tool-list"));
+    }
+
+    #[test]
+    fn agent_chat_blocks_avoid_left_and_right_borders_for_copying() {
+        let borders = agent_chat_borders();
+        assert!(borders.contains(Borders::TOP));
+        assert!(borders.contains(Borders::BOTTOM));
+        assert!(!borders.contains(Borders::LEFT));
+        assert!(!borders.contains(Borders::RIGHT));
+    }
+
+    #[test]
+    fn agent_chat_transcript_starts_with_runtime_guidance() {
+        let lines = agent_chat_transcript_lines(&[], "ready")
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Start a new agent conversation")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("runtime chat surface")));
+        assert!(lines.iter().any(|line| line == "ready"));
+    }
+
+    #[test]
+    fn agent_chat_message_lines_render_roles() {
+        let lines = agent_chat_message_lines(&AgentChatMessage {
+            role: AgentChatRole::Assistant,
+            content: "Hello\nworld".to_string(),
+        })
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+        assert_eq!(lines, vec!["Djinn:", "Hello", "world"]);
+    }
+
+    #[test]
+    fn agent_chat_composer_keeps_status_and_scroll_state() {
+        let mut app = AgentChatComposerApp::new(
+            vec![AgentChatMessage {
+                role: AgentChatRole::User,
+                content: "hello".to_string(),
+            }],
+            AgentChatStatus {
+                session_id: "agt_test".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                model: "openai/gpt-5.5".to_string(),
+                notice: "Djinn is thinking…".to_string(),
+            },
+        );
+
+        assert_eq!(app.status.notice, "Djinn is thinking…");
+        assert_eq!(app.messages.len(), 1);
+        app.scroll_down();
+        assert_eq!(app.transcript_scroll, 8);
+        app.scroll_up();
+        assert_eq!(app.transcript_scroll, 0);
+    }
+
+    #[test]
+    fn agent_chat_composer_jumps_to_transcript_end_without_autoscroll() {
+        let messages = (0..12)
+            .map(|idx| AgentChatMessage {
+                role: AgentChatRole::User,
+                content: format!("message {idx}"),
+            })
+            .collect::<Vec<_>>();
+        let mut app = AgentChatComposerApp::new(
+            messages,
+            AgentChatStatus {
+                session_id: "agt_test".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                model: "openai/gpt-5.5".to_string(),
+                notice: "Ready.".to_string(),
+            },
+        );
+
+        assert_eq!(app.transcript_scroll, 0);
+        let max_scroll = app.max_transcript_scroll_for_terminal(17);
+        assert!(max_scroll > 0);
+        app.messages.push(AgentChatMessage {
+            role: AgentChatRole::Assistant,
+            content: "new answer".to_string(),
+        });
+        assert_eq!(app.transcript_scroll, 0);
+        app.jump_to_end(17);
+        assert_eq!(
+            app.transcript_scroll,
+            app.max_transcript_scroll_for_terminal(17)
+        );
+        app.jump_to_top();
+        assert_eq!(app.transcript_scroll, 0);
+    }
+
+    #[test]
+    fn transcript_scrollbar_shows_bottom_arrow_until_end() {
+        let rendered = transcript_scrollbar_lines(0, 10, 5)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rendered.last().map(String::as_str), Some("↓"));
+
+        let rendered = transcript_scrollbar_lines(10, 10, 5)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(rendered.last().map(String::as_str), Some("↓"));
     }
 
     #[test]
