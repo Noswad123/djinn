@@ -355,9 +355,18 @@ The first non-interactive agent slice is implemented as:
     alive to avoid alternate-screen flicker.
 25. Agent chat rich progress is rendered in-place during model turns. The runtime
     emits model/tool progress events, and the transcript uses distinct colored
-    blocks for thoughts/progress, `Tool Request` invocations, and `Tool
-    Execution` results so the turn shape is visible at a glance without dumping
-    raw JSON.
+    blocks for thoughts/progress, `▶ Tool Request · <tool>` invocations, and
+    `✓/✗ Tool Execution · <tool> · <status>` results so the turn shape and
+    success/failure state are visible at a glance without dumping raw JSON.
+26. The dashboard Chats tab doubles as the session picker. Djinn JSONL agent
+    sessions are projected into that tab as `djinn-agent` records; pressing Enter
+    or `r` resumes a Djinn agent session or converts an imported OpenCode chat
+    (`source=opencode`) into a Djinn JSONL agent session and stays inside Djinn.
+    The conversion records a bridge in Djinn's OpenCode watcher state. When the
+    installed OpenCode plugin later sees that OpenCode session, it best-effort
+    hydrates OpenCode session metadata with the Djinn agent session id/path so
+    OpenCode-side skills can discover the continuation. Share options moved to
+    `s` for chat records.
 
 Not in the first slice unless explicitly reopened:
 

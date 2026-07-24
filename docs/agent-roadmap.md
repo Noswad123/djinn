@@ -150,7 +150,8 @@ These are important but need more product/design detail before implementation.
 - Add the next interactive pieces:
   - live token/text streaming if explicitly needed;
   - build on the current runtime progress events with richer labels and grouping;
-  - secondary session picker/dialog on top of `djinn agent chat --resume <id>`;
+  - richer Chats-tab session picker affordances on top of the first
+    resume/convert behavior;
   - polish external prompt editing via Ctrl+E and `$VISUAL`/`$EDITOR`/`nvim`;
   - richer transcript wrapping and scroll affordances. Do not auto-scroll by
     default; keep an explicit jump-to-latest control instead.

@@ -236,6 +236,7 @@ pub fn run_approval_dialog(metadata: Value) -> Result<ApprovalDecision> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiAction {
     OpenAgentChat,
+    OpenChatSession(ChatSessionRequest),
     OpenTool(ToolEntry),
     OpenSkill(SkillRecord),
     ShareChats(ChatShareRequest),
@@ -243,6 +244,19 @@ pub enum TuiAction {
     RejectCandidates(Vec<String>),
     DeleteChats(Vec<String>),
     DeleteSuggestions(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatSessionRequest {
+    pub kind: ChatSessionKind,
+    pub session_id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatSessionKind {
+    DjinnAgent,
+    OpenCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,6 +356,7 @@ const CTP_LAVENDER: Color = Color::Rgb(180, 190, 254);
 const CTP_MAUVE: Color = Color::Rgb(203, 166, 247);
 const CTP_GREEN: Color = Color::Rgb(166, 227, 161);
 const CTP_PEACH: Color = Color::Rgb(250, 179, 135);
+const CTP_RED: Color = Color::Rgb(243, 139, 168);
 const CTP_SKY: Color = Color::Rgb(137, 220, 235);
 const CTP_YELLOW: Color = Color::Rgb(249, 226, 175);
 
@@ -1207,20 +1222,149 @@ fn agent_chat_message_lines(message: &AgentChatMessage) -> Vec<Line<'static>> {
         ),
         AgentChatRole::Notice => ("Notice", dim_style(), dim_style()),
     };
+    let content = message.content.trim();
+    let label = agent_chat_message_label(message.role, label, content);
+    let label_style = agent_chat_message_label_style(message.role, label_style, content);
     let mut lines = vec![Line::from(vec![
         Span::styled(" ", label_style),
-        Span::styled(label.to_string(), label_style.add_modifier(Modifier::BOLD)),
+        Span::styled(label, label_style.add_modifier(Modifier::BOLD)),
         Span::styled(" ", label_style),
     ])];
-    let content = message.content.trim();
     if content.is_empty() {
         lines.push(Line::from(Span::styled(" (empty) ", content_style)));
     } else {
-        for line in content.lines() {
+        for line in agent_chat_message_body_lines(message.role, content) {
             lines.push(Line::from(Span::styled(format!(" {line} "), content_style)));
         }
     }
     lines
+}
+
+fn agent_chat_message_label(role: AgentChatRole, default_label: &str, content: &str) -> String {
+    match role {
+        AgentChatRole::Tool => {
+            tool_request_label(content).unwrap_or_else(|| default_label.to_string())
+        }
+        AgentChatRole::ToolOutput => {
+            tool_execution_label(content).unwrap_or_else(|| default_label.to_string())
+        }
+        AgentChatRole::User
+        | AgentChatRole::Assistant
+        | AgentChatRole::Thought
+        | AgentChatRole::Notice => default_label.to_string(),
+    }
+}
+
+fn agent_chat_message_label_style(
+    role: AgentChatRole,
+    default_style: Style,
+    content: &str,
+) -> Style {
+    match role {
+        AgentChatRole::ToolOutput => {
+            let status = content.lines().next().and_then(|line| {
+                parse_tool_execution_status(line.trim()).map(|(_, status)| status)
+            });
+            match status {
+                Some("ok") => default_style.fg(CTP_GREEN),
+                Some("failed") => default_style.fg(CTP_RED),
+                _ => default_style,
+            }
+        }
+        AgentChatRole::User
+        | AgentChatRole::Assistant
+        | AgentChatRole::Thought
+        | AgentChatRole::Tool
+        | AgentChatRole::Notice => default_style,
+    }
+}
+
+fn agent_chat_message_body_lines(role: AgentChatRole, content: &str) -> Vec<String> {
+    match role {
+        AgentChatRole::Tool => tool_request_body_lines(content),
+        AgentChatRole::ToolOutput => tool_execution_body_lines(content),
+        AgentChatRole::User
+        | AgentChatRole::Assistant
+        | AgentChatRole::Thought
+        | AgentChatRole::Notice => content.lines().map(ToOwned::to_owned).collect(),
+    }
+}
+
+fn tool_request_label(content: &str) -> Option<String> {
+    let first = content.lines().next()?.trim();
+    if first.starts_with("# Running in ") {
+        return Some("▶ Tool Request · shell".to_string());
+    }
+    let (name, _) = first.split_once(':')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(format!("▶ Tool Request · {name}"))
+}
+
+fn tool_execution_label(content: &str) -> Option<String> {
+    let (name, status) = parse_tool_execution_status(content.lines().next()?.trim())?;
+    Some(format!(
+        "{} Tool Execution · {name} · {status}",
+        tool_execution_status_glyph(status)
+    ))
+}
+
+fn tool_execution_status_glyph(status: &str) -> &'static str {
+    match status {
+        "ok" => "✓",
+        "failed" => "✗",
+        _ => "•",
+    }
+}
+
+fn parse_tool_execution_status(line: &str) -> Option<(&str, &str)> {
+    let (name, status) = line.split_once(" result: ")?;
+    let name = name.trim();
+    let status = status.trim();
+    if name.is_empty() || status.is_empty() {
+        return None;
+    }
+    Some((name, status))
+}
+
+fn tool_request_body_lines(content: &str) -> Vec<String> {
+    let mut lines = content.lines();
+    let Some(first) = lines.next() else {
+        return Vec::new();
+    };
+    if first.trim_start().starts_with("# Running in ") {
+        return std::iter::once(first)
+            .chain(lines)
+            .map(ToOwned::to_owned)
+            .collect();
+    }
+    let mut rendered = Vec::new();
+    if let Some((_, rest)) = first.split_once(':') {
+        let rest = rest.trim();
+        if !rest.is_empty() {
+            rendered.push(rest.to_string());
+        }
+    } else {
+        rendered.push(first.to_string());
+    }
+    rendered.extend(lines.map(ToOwned::to_owned));
+    rendered
+}
+
+fn tool_execution_body_lines(content: &str) -> Vec<String> {
+    let mut lines = content.lines();
+    let Some(first) = lines.next() else {
+        return Vec::new();
+    };
+    if parse_tool_execution_status(first.trim()).is_some() {
+        return lines.map(ToOwned::to_owned).collect();
+    }
+    std::iter::once(first)
+        .chain(lines)
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1395,7 +1539,12 @@ fn run_dashboard_loop(
                                 return Ok(Some(TuiAction::OpenTool(tool)));
                             }
                         }
-                        DashboardTab::Chats => app.chats.open_options(),
+                        DashboardTab::Chats => {
+                            if let Some(request) = app.chats.selected_chat_session_request() {
+                                return Ok(Some(TuiAction::OpenChatSession(request)));
+                            }
+                            app.chats.open_options();
+                        }
                         DashboardTab::Skills => {
                             if let Some(skill) = app.skills.selected_skill().cloned() {
                                 return Ok(Some(TuiAction::OpenSkill(skill)));
@@ -1404,7 +1553,11 @@ fn run_dashboard_loop(
                         DashboardTab::Candidates | DashboardTab::Memories => {}
                     },
                     KeyCode::Char('r') => {
-                        if app.active_tab == DashboardTab::Candidates {
+                        if app.active_tab == DashboardTab::Chats {
+                            if let Some(request) = app.chats.selected_chat_session_request() {
+                                return Ok(Some(TuiAction::OpenChatSession(request)));
+                            }
+                        } else if app.active_tab == DashboardTab::Candidates {
                             let ids = app.candidates.selected_candidate_ids();
                             if !ids.is_empty() {
                                 let action = TuiAction::RejectCandidates(ids);
@@ -1419,9 +1572,14 @@ fn run_dashboard_loop(
                             }
                         }
                     }
+                    KeyCode::Char('s') => {
+                        if app.active_tab == DashboardTab::Chats {
+                            app.chats.open_options();
+                        }
+                    }
                     KeyCode::Char('x') | KeyCode::Delete => match app.active_tab {
                         DashboardTab::Chats => {
-                            let ids = app.chats.selected_chat_ids();
+                            let ids = app.chats.selected_persisted_chat_ids();
                             if !ids.is_empty() {
                                 let action = TuiAction::DeleteChats(ids);
                                 if handle_continue_action(
@@ -1640,6 +1798,7 @@ impl DashboardApp {
             TuiAction::DeleteSuggestions(ids) => self.suggestions.remove_ids(ids),
             TuiAction::OpenTool(_)
             | TuiAction::OpenAgentChat
+            | TuiAction::OpenChatSession(_)
             | TuiAction::OpenSkill(_)
             | TuiAction::ShareChats(_)
             | TuiAction::AcceptCandidate(_) => {}
@@ -1680,7 +1839,7 @@ impl DashboardApp {
 
         let help = match self.active_tab {
             DashboardTab::Tools => "Tab tabs • Shift+Tab agent • / filter/clear • ↑/↓ move • Enter open • PgUp/PgDn scroll preview • q quit",
-            DashboardTab::Chats => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a all visible • Enter share • x/Delete remove • q quit",
+            DashboardTab::Chats => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Enter/r resume session • s share • Space select • x/Delete remove • q quit",
             DashboardTab::Candidates => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a review memory • A all visible • r/x reject+remove • q quit",
             DashboardTab::Memories => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a all visible • x/Delete remove suggestion • q quit",
             DashboardTab::Skills => "Tab agent • Shift+Tab tabs • / filter/clear • ↑/↓ move • Enter open • PgUp/PgDn scroll preview • q quit",
@@ -1969,6 +2128,10 @@ impl ChatsApp {
             .filter(|chat| self.chat_matches(chat))
     }
 
+    fn selected_chat_session_request(&self) -> Option<ChatSessionRequest> {
+        self.selected_chat().and_then(chat_session_request)
+    }
+
     fn visible_indices(&self) -> Vec<usize> {
         self.chats
             .iter()
@@ -2017,6 +2180,19 @@ impl ChatsApp {
             .iter()
             .filter(|chat| self.checked.contains(&chat.id))
             .map(|chat| chat.id.clone())
+            .collect()
+    }
+
+    fn selected_persisted_chat_ids(&self) -> Vec<String> {
+        self.selected_chat_ids()
+            .into_iter()
+            .filter(|id| {
+                self.chats
+                    .iter()
+                    .find(|chat| chat.id == *id)
+                    .map(|chat| chat.source != "djinn-agent")
+                    .unwrap_or(false)
+            })
             .collect()
     }
 
@@ -2079,6 +2255,16 @@ impl ChatsApp {
 
     fn share_request(&self) -> Option<ChatShareRequest> {
         let chat_ids = self.selected_chat_ids();
+        let chat_ids = chat_ids
+            .into_iter()
+            .filter(|id| {
+                self.chats
+                    .iter()
+                    .find(|chat| chat.id == *id)
+                    .map(|chat| chat.source != "djinn-agent")
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
         if chat_ids.is_empty() {
             return None;
         }
@@ -2989,6 +3175,24 @@ fn chat_source_label(chat: &ChatRecord) -> String {
     }
 }
 
+fn chat_session_request(chat: &ChatRecord) -> Option<ChatSessionRequest> {
+    let source = chat.source.trim();
+    let source_id = chat.source_id.trim();
+    if source_id.is_empty() {
+        return None;
+    }
+    let kind = match source {
+        "djinn-agent" => ChatSessionKind::DjinnAgent,
+        "opencode" => ChatSessionKind::OpenCode,
+        _ => return None,
+    };
+    Some(ChatSessionRequest {
+        kind,
+        session_id: source_id.to_string(),
+        title: chat.title.clone(),
+    })
+}
+
 fn chat_preview_title(chat: &ChatRecord, chats: &[ChatRecord]) -> String {
     let title = chat.title.trim();
     if !title.is_empty()
@@ -3172,6 +3376,39 @@ mod tests {
     }
 
     #[test]
+    fn chats_can_request_djinn_or_opencode_session_resume() {
+        let djinn = ChatRecord {
+            id: "agent:agt_1".to_string(),
+            title: "Djinn".to_string(),
+            content: String::new(),
+            source: "djinn-agent".to_string(),
+            source_id: "agt_1".to_string(),
+            source_path: String::new(),
+            content_path: String::new(),
+            created_at: String::new(),
+        };
+        let opencode = ChatRecord {
+            id: "chat".to_string(),
+            title: "OpenCode".to_string(),
+            content: String::new(),
+            source: "opencode".to_string(),
+            source_id: "ses_1".to_string(),
+            source_path: String::new(),
+            content_path: String::new(),
+            created_at: String::new(),
+        };
+
+        assert_eq!(
+            chat_session_request(&djinn).map(|request| (request.kind, request.session_id)),
+            Some((ChatSessionKind::DjinnAgent, "agt_1".to_string()))
+        );
+        assert_eq!(
+            chat_session_request(&opencode).map(|request| (request.kind, request.session_id)),
+            Some((ChatSessionKind::OpenCode, "ses_1".to_string()))
+        );
+    }
+
+    #[test]
     fn fuzzy_match_matches_subsequence_case_insensitive() {
         assert!(fuzzy_match("ocd", "OpenCode Debug Session"));
         assert!(fuzzy_match("tl", "tool-list"));
@@ -3237,8 +3474,41 @@ mod tests {
             content: "read_file result: ok".to_string(),
         });
 
-        assert_eq!(request_lines[0], " Tool Request ");
-        assert_eq!(execution_lines[0], " Tool Execution ");
+        assert_eq!(
+            request_lines,
+            vec![" ▶ Tool Request · read_file ", " Cargo.toml "]
+        );
+        assert_eq!(execution_lines, vec![" ✓ Tool Execution · read_file · ok "]);
+    }
+
+    #[test]
+    fn agent_chat_failed_execution_uses_failure_glyph() {
+        let lines = rendered_agent_chat_message_lines(AgentChatMessage {
+            role: AgentChatRole::ToolOutput,
+            content: "shell result: failed\nexit 1".to_string(),
+        });
+
+        assert_eq!(
+            lines,
+            vec![" ✗ Tool Execution · shell · failed ", " exit 1 "]
+        );
+    }
+
+    #[test]
+    fn agent_chat_shell_request_label_preserves_command_block() {
+        let lines = rendered_agent_chat_message_lines(AgentChatMessage {
+            role: AgentChatRole::Tool,
+            content: "# Running in .\n$ cargo test".to_string(),
+        });
+
+        assert_eq!(
+            lines,
+            vec![
+                " ▶ Tool Request · shell ",
+                " # Running in . ",
+                " $ cargo test "
+            ]
+        );
     }
 
     #[test]

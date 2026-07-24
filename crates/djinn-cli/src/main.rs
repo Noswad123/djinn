@@ -23,10 +23,10 @@ use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
     ActionRecord, ActionStore, AgentSession, AgentSessionEvent, AgentSessionEventKind,
-    AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionStore, CandidateStore,
-    FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore,
-    JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryCandidate, MemoryInput, MemoryRecord,
-    MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
+    AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionStore, AgentSessionSummary,
+    CandidateStore, FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord,
+    IdeaStore, JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryCandidate, MemoryInput,
+    MemoryRecord, MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -1197,7 +1197,7 @@ const OPENCODE_PLUGIN: &str = r#"/**
  *   DJINN_BIN=/path/to/djinn           override djinn executable
  */
 
-import { appendFileSync, mkdirSync } from "fs"
+import { appendFileSync, mkdirSync, readFileSync } from "fs"
 import { homedir } from "os"
 import { join } from "path"
 
@@ -1207,6 +1207,8 @@ const CHILD = process.env.DJINN_OPENCODE_PLUGIN_CHILD === "1" || process.env.DJI
 const AUTO_REVIEW = process.env.DJINN_OPENCODE_AUTO_REVIEW === "1"
 const DJINN_BIN = process.env.DJINN_BIN || "djinn"
 const CACHE_DIR = process.env.DJINN_CACHE_DIR || join(homedir(), ".cache", "djinn")
+const CONFIG_DIR = process.env.DJINN_CONFIG_DIR || join(homedir(), ".config", "djinn")
+const WATCH_STATE_FILE = join(CONFIG_DIR, "watchers", "opencode.json")
 const LOG_FILE = join(CACHE_DIR, "opencode-plugin.log")
 const DEFAULT_COOLDOWN_MS = 30000
 const DEFAULT_REVIEW_COOLDOWN_MS = 3600000
@@ -1234,7 +1236,7 @@ function dbg(...args) {
   } catch {}
 }
 
-export const DjinnWatchPlugin = async () => {
+export const DjinnWatchPlugin = async (input) => {
   if (DISABLED || CHILD) {
     dbg("disabled", { DISABLED, CHILD })
     return {}
@@ -1244,6 +1246,7 @@ export const DjinnWatchPlugin = async () => {
   let timer = null
   let lastReviewAt = 0
   const lastImportAt = new Map()
+  const hydrated = new Set()
 
   function rememberSession(sessionId) {
     if (sessionId) currentSessionId = sessionId
@@ -1293,6 +1296,49 @@ export const DjinnWatchPlugin = async () => {
     dbg("scheduled import", currentSessionId, reason, waitMs)
   }
 
+  function bridgeFor(sessionId) {
+    if (!sessionId) return null
+    try {
+      const raw = readFileSync(WATCH_STATE_FILE, "utf8")
+      const state = JSON.parse(raw)
+      const session = state?.sessions?.[sessionId]
+      if (!session?.djinn_session_id) return null
+      return {
+        source: "djinn",
+        agentSessionId: session.djinn_session_id,
+        agentSessionPath: session.djinn_session_path || undefined,
+        convertedAt: session.converted_at || undefined,
+      }
+    } catch (err) {
+      dbg("bridge read failed", sessionId, err?.message || err)
+      return null
+    }
+  }
+
+  async function hydrateDjinnBridge(client, sessionId) {
+    sessionId = rememberSession(sessionId)
+    if (!sessionId || hydrated.has(sessionId)) return
+    const bridge = bridgeFor(sessionId)
+    if (!bridge) return
+    try {
+      const current = await client.session.get({ sessionID: sessionId })
+      if (current?.error) {
+        dbg("bridge get failed", sessionId, current.error?.message || current.error)
+        return
+      }
+      const metadata = { ...(current?.data?.metadata || {}), djinn: bridge }
+      const updated = await client.session.update({ sessionID: sessionId, metadata })
+      if (updated?.error) {
+        dbg("bridge update failed", sessionId, updated.error?.message || updated.error)
+        return
+      }
+      hydrated.add(sessionId)
+      dbg("hydrated bridge", sessionId, bridge.agentSessionId)
+    } catch (err) {
+      dbg("bridge hydrate failed", sessionId, err?.message || err)
+    }
+  }
+
   function spawnReview(reason, force = false) {
     if (!AUTO_REVIEW) return
     const now = Date.now()
@@ -1333,6 +1379,7 @@ export const DjinnWatchPlugin = async () => {
         const props = event?.properties || {}
         const info = props.info || {}
         const sessionId = info.id || info.sessionID || props.sessionID
+        await hydrateDjinnBridge(input.client, sessionId || currentSessionId)
 
         switch (event?.type) {
           case "session.created":
@@ -1375,6 +1422,12 @@ struct OpencodeSessionState {
     chat_id: String,
     #[serde(default)]
     title: String,
+    #[serde(default)]
+    djinn_session_id: String,
+    #[serde(default)]
+    djinn_session_path: String,
+    #[serde(default)]
+    converted_at: String,
 }
 
 fn main() -> Result<()> {
@@ -1420,8 +1473,8 @@ fn main() -> Result<()> {
         Command::Open(args) => run_open(args),
         Command::Agent(args) => run_agent(args),
         Command::Tui(args) => {
-            if run_tui(args)? {
-                run_interactive_app(default_agent_chat_args())
+            if let Some(args) = run_tui(args)? {
+                run_interactive_app(args)
             } else {
                 Ok(())
             }
@@ -1914,7 +1967,11 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                     ..args
                 };
                 match run_tui_in_session(&mut tui, &default_tui_args(), initial_tab)? {
-                    TuiRunOutcome::OpenAgentChat => {}
+                    TuiRunOutcome::OpenAgentChat { resume } => {
+                        if let Some(resume) = resume {
+                            args.resume = Some(resume);
+                        }
+                    }
                     TuiRunOutcome::Exit => return Ok(()),
                     TuiRunOutcome::Action(action) => {
                         tui.finish()?;
@@ -3417,20 +3474,26 @@ fn summarize_agent_tool_output(output: &Value, fallback: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TuiRunOutcome {
-    OpenAgentChat,
+    OpenAgentChat { resume: Option<String> },
     Exit,
     Action(djinn_tui::TuiAction),
 }
 
-fn run_tui(args: TuiArgs) -> Result<bool> {
+fn run_tui(args: TuiArgs) -> Result<Option<AgentChatArgs>> {
     let initial_tab = dashboard_tab(args.view);
     let mut tui = djinn_tui::TuiSession::enter()?;
     let outcome = run_tui_in_session(&mut tui, &args, initial_tab)?;
     tui.finish()?;
     match outcome {
-        TuiRunOutcome::OpenAgentChat => Ok(true),
-        TuiRunOutcome::Exit => Ok(false),
-        TuiRunOutcome::Action(action) => handle_tui_action(action, args.editor),
+        TuiRunOutcome::OpenAgentChat { resume } => Ok(Some(AgentChatArgs {
+            resume,
+            ..default_agent_chat_args()
+        })),
+        TuiRunOutcome::Exit => Ok(None),
+        TuiRunOutcome::Action(action) => {
+            handle_tui_action(action, args.editor)?;
+            Ok(None)
+        }
     }
 }
 
@@ -3441,7 +3504,7 @@ fn run_tui_in_session(
 ) -> Result<TuiRunOutcome> {
     let roots = tool_roots(args.roots.clone());
     let tools = scan_tools(&roots)?;
-    let chats = chat_store().list()?;
+    let chats = chats_for_session_picker()?;
     let candidates = pending_memories(candidate_store().list()?);
     let suggestions = suggestion_store().list()?;
     let skills = skill_records()?;
@@ -3459,6 +3522,7 @@ fn run_tui_in_session(
             djinn_tui::TuiAction::DeleteChats(ids) => delete_chats_silent(&ids).map(|_| ()),
             djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| ()),
             djinn_tui::TuiAction::OpenAgentChat
+            | djinn_tui::TuiAction::OpenChatSession(_)
             | djinn_tui::TuiAction::OpenTool(_)
             | djinn_tui::TuiAction::OpenSkill(_)
             | djinn_tui::TuiAction::ShareChats(_)
@@ -3470,15 +3534,31 @@ fn run_tui_in_session(
     };
 
     if action == djinn_tui::TuiAction::OpenAgentChat {
-        return Ok(TuiRunOutcome::OpenAgentChat);
+        return Ok(TuiRunOutcome::OpenAgentChat { resume: None });
     }
-
+    if let djinn_tui::TuiAction::OpenChatSession(request) = &action {
+        let resume = match request.kind {
+            djinn_tui::ChatSessionKind::DjinnAgent => request.session_id.clone(),
+            djinn_tui::ChatSessionKind::OpenCode => {
+                convert_opencode_chat_to_agent_session(&request.session_id)?.to_string()
+            }
+        };
+        return Ok(TuiRunOutcome::OpenAgentChat {
+            resume: Some(resume),
+        });
+    }
     Ok(TuiRunOutcome::Action(action))
 }
 
 fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Result<bool> {
     match action {
         djinn_tui::TuiAction::OpenAgentChat => Ok(true),
+        djinn_tui::TuiAction::OpenChatSession(request) => match request.kind {
+            djinn_tui::ChatSessionKind::DjinnAgent => Ok(true),
+            djinn_tui::ChatSessionKind::OpenCode => {
+                convert_opencode_chat_to_agent_session(&request.session_id).map(|_| true)
+            }
+        },
         djinn_tui::TuiAction::OpenTool(entry) => open_tool_entry(&entry, editor).map(|_| false),
         djinn_tui::TuiAction::OpenSkill(entry) => open_skill_entry(&entry, editor).map(|_| false),
         djinn_tui::TuiAction::ShareChats(request) => share_chats(ShareChatsArgs {
@@ -3503,6 +3583,236 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
         djinn_tui::TuiAction::RejectCandidates(ids) => reject_memories_silent(&ids).map(|_| false),
         djinn_tui::TuiAction::DeleteChats(ids) => delete_chats_silent(&ids).map(|_| false),
         djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| false),
+    }
+}
+
+fn chats_for_session_picker() -> Result<Vec<ChatRecord>> {
+    let mut chats = chat_store().list()?;
+    let existing_sessions = chats
+        .iter()
+        .filter(|chat| chat.source == "djinn-agent" && !chat.source_id.trim().is_empty())
+        .map(|chat| chat.source_id.clone())
+        .collect::<HashSet<_>>();
+    let store = agent_session_store();
+    for summary in store.list_sessions(AgentSessionFilter {
+        limit: Some(100),
+        ..AgentSessionFilter::default()
+    })? {
+        let id = summary.id.to_string();
+        if existing_sessions.contains(&id) {
+            continue;
+        }
+        chats.push(agent_session_chat_record(&summary, &store));
+    }
+    Ok(chats)
+}
+
+fn agent_session_chat_record(
+    summary: &AgentSessionSummary,
+    store: &JsonlAgentSessionStore,
+) -> ChatRecord {
+    let id = summary.id.to_string();
+    let title = if summary.title.trim().is_empty() {
+        format!("Djinn agent session {id}")
+    } else {
+        summary.title.clone()
+    };
+    ChatRecord {
+        id: format!("agent:{id}"),
+        title,
+        content: format!(
+            "Djinn agent session\n\nID: {id}\nWorkspace: {}\nProfile: {}\nSource: {}\nEvents: {}\nCreated: {}\nUpdated: {}",
+            summary.workspace,
+            summary.profile,
+            summary.source,
+            summary.event_count,
+            summary.created_at,
+            summary.updated_at
+        ),
+        source: "djinn-agent".to_string(),
+        source_id: id.clone(),
+        source_path: store.session_file_path(&summary.id).display().to_string(),
+        content_path: String::new(),
+        created_at: summary
+            .created_at
+            .split('T')
+            .next()
+            .unwrap_or(&summary.created_at)
+            .to_string(),
+    }
+}
+
+fn convert_opencode_chat_to_agent_session(opencode_session_id: &str) -> Result<AgentSessionId> {
+    let opencode_session_id = opencode_session_id.trim();
+    if opencode_session_id.is_empty() {
+        bail!("OpenCode session id is empty");
+    }
+    if let Some(existing) = existing_converted_opencode_agent_session(opencode_session_id)? {
+        return Ok(existing);
+    }
+
+    let chat = chat_store()
+        .list()?
+        .into_iter()
+        .find(|chat| chat.source == "opencode" && chat.source_id == opencode_session_id)
+        .with_context(|| format!("finding imported OpenCode chat for {opencode_session_id}"))?;
+    let workspace = opencode_export_workspace(&chat.content)
+        .or_else(|| {
+            env::current_dir()
+                .ok()
+                .map(|path| path.display().to_string())
+        })
+        .unwrap_or_default();
+    let store = agent_session_store();
+    let id = store.create_session(AgentSessionMeta {
+        title: if chat.title.trim().is_empty() {
+            format!("OpenCode session {opencode_session_id}")
+        } else {
+            chat.title.clone()
+        },
+        workspace,
+        profile: "default".to_string(),
+        source: "opencode".to_string(),
+        ..AgentSessionMeta::default()
+    })?;
+    store.append_event(
+        &id,
+        AgentSessionEvent::new(AgentSessionEventKind::Checkpoint {
+            label: opencode_conversion_checkpoint(opencode_session_id),
+        }),
+    )?;
+    for event in opencode_export_agent_events(&chat.content, opencode_session_id) {
+        store.append_event(&id, AgentSessionEvent::new(event))?;
+    }
+    record_opencode_djinn_bridge(opencode_session_id, &id, &store)?;
+    Ok(id)
+}
+
+fn record_opencode_djinn_bridge(
+    opencode_session_id: &str,
+    djinn_session_id: &AgentSessionId,
+    store: &JsonlAgentSessionStore,
+) -> Result<()> {
+    let mut state = load_opencode_watch_state().unwrap_or_default();
+    let entry = state
+        .sessions
+        .entry(opencode_session_id.to_string())
+        .or_default();
+    entry.djinn_session_id = djinn_session_id.to_string();
+    entry.djinn_session_path = store
+        .session_file_path(djinn_session_id)
+        .display()
+        .to_string();
+    entry.converted_at = chrono::Local::now().to_rfc3339();
+    save_opencode_watch_state(&state)
+}
+
+fn existing_converted_opencode_agent_session(
+    opencode_session_id: &str,
+) -> Result<Option<AgentSessionId>> {
+    let store = agent_session_store();
+    let checkpoint = opencode_conversion_checkpoint(opencode_session_id);
+    for summary in store.list_sessions(AgentSessionFilter {
+        source: Some("opencode".to_string()),
+        ..AgentSessionFilter::default()
+    })? {
+        let session = store.load_session(&summary.id)?;
+        if session.events.iter().any(|event| {
+            matches!(
+                &event.kind,
+                AgentSessionEventKind::Checkpoint { label } if label == &checkpoint
+            )
+        }) {
+            record_opencode_djinn_bridge(opencode_session_id, &summary.id, &store)?;
+            return Ok(Some(summary.id));
+        }
+    }
+    Ok(None)
+}
+
+fn opencode_conversion_checkpoint(opencode_session_id: &str) -> String {
+    format!("converted-opencode-session:{opencode_session_id}")
+}
+
+fn opencode_export_workspace(export: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(export).ok()?;
+    ["/info/directory", "/info/path/root", "/info/path/cwd"]
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+}
+
+fn opencode_export_agent_events(export: &str, session_id: &str) -> Vec<AgentSessionEventKind> {
+    let Ok(value) = serde_json::from_str::<Value>(export) else {
+        return vec![AgentSessionEventKind::Summary {
+            content: format!("Converted OpenCode session {session_id}.\n\n{export}"),
+        }];
+    };
+    let mut events = Vec::new();
+    for message in value
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let role = message
+            .pointer("/info/role")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let content = opencode_message_text(message);
+        if content.trim().is_empty() {
+            continue;
+        }
+        match role {
+            "user" => events.push(AgentSessionEventKind::UserMessage { content }),
+            "assistant" => events.push(AgentSessionEventKind::AssistantMessage { content }),
+            _ => events.push(AgentSessionEventKind::Summary {
+                content: format!("OpenCode {role} message:\n{content}"),
+            }),
+        }
+    }
+    if events.is_empty() {
+        events.push(AgentSessionEventKind::Summary {
+            content: format!("Converted OpenCode session {session_id}."),
+        });
+    }
+    events
+}
+
+fn opencode_message_text(message: &Value) -> String {
+    let mut lines = Vec::new();
+    for part in message
+        .get("parts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        match part.get("type").and_then(Value::as_str) {
+            Some("text") | Some("reasoning") => {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    push_nonempty_opencode_line(&mut lines, text);
+                }
+            }
+            Some("tool") => {
+                if let Some(title) = part.pointer("/state/title").and_then(Value::as_str) {
+                    push_nonempty_opencode_line(&mut lines, &format!("Tool: {title}"));
+                } else if let Some(tool) = part.get("tool").and_then(Value::as_str) {
+                    push_nonempty_opencode_line(&mut lines, &format!("Tool: {tool}"));
+                }
+                if let Some(output) = part.pointer("/state/output").and_then(Value::as_str) {
+                    push_nonempty_opencode_line(&mut lines, output);
+                }
+            }
+            _ => {}
+        }
+    }
+    lines.join("\n\n")
+}
+
+fn push_nonempty_opencode_line(lines: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if !value.is_empty() {
+        lines.push(value.to_string());
     }
 }
 
@@ -4012,6 +4322,7 @@ fn watch_opencode(args: WatchOpencodeArgs) -> Result<()> {
                 imported_at: chrono::Local::now().to_rfc3339(),
                 chat_id: record.id.clone(),
                 title: record.title.clone(),
+                ..state.sessions.get(&session_id).cloned().unwrap_or_default()
             },
         );
         save_opencode_watch_state(&state)?;
@@ -4111,9 +4422,14 @@ fn status_opencode(args: OpencodeIntegrationArgs) -> Result<()> {
     println!("Watcher state: {}", opencode_watch_state_path().display());
     println!("  tracked sessions: {}", state.sessions.len());
     for (session_id, session) in state.sessions.iter().take(10) {
+        let bridge = if session.djinn_session_id.is_empty() {
+            String::new()
+        } else {
+            format!(", djinn {}", session.djinn_session_id)
+        };
         println!(
-            "  - {} -> chat {} ({}, {})",
-            session_id, session.chat_id, session.title, session.imported_at
+            "  - {} -> chat {} ({}, {}{})",
+            session_id, session.chat_id, session.title, session.imported_at, bridge
         );
     }
     Ok(())
@@ -4320,8 +4636,13 @@ fn format_opencode_watcher_state_for_ideas() -> String {
         Ok(state) => {
             let mut out = format!("Tracked sessions: {}\n", state.sessions.len());
             for (idx, (session_id, session)) in state.sessions.iter().take(20).enumerate() {
+                let bridge = if session.djinn_session_id.is_empty() {
+                    String::new()
+                } else {
+                    format!(", djinn {}", session.djinn_session_id)
+                };
                 out.push_str(&format!(
-                    "  {}. {} -> chat {} ({}, imported {})\n",
+                    "  {}. {} -> chat {} ({}, imported {}{})\n",
                     idx + 1,
                     session_id,
                     if session.chat_id.is_empty() {
@@ -4338,7 +4659,8 @@ fn format_opencode_watcher_state_for_ideas() -> String {
                         "unknown"
                     } else {
                         &session.imported_at
-                    }
+                    },
+                    bridge
                 ));
             }
             if state.sessions.len() > 20 {
@@ -6782,6 +7104,14 @@ mod tests {
     }
 
     #[test]
+    fn opencode_plugin_hydrates_djinn_session_metadata() {
+        assert!(OPENCODE_PLUGIN.contains("hydrateDjinnBridge"));
+        assert!(OPENCODE_PLUGIN.contains("client.session.update"));
+        assert!(OPENCODE_PLUGIN
+            .contains("metadata = { ...(current?.data?.metadata || {}), djinn: bridge }"));
+    }
+
+    #[test]
     fn opencode_default_model_reads_coder_agent_model() {
         let model = opencode_default_model_from_content(
             r#"{
@@ -7070,6 +7400,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(api_key, None);
+    }
+
+    #[test]
+    fn opencode_export_agent_events_reads_text_parts() {
+        let events = opencode_export_agent_events(
+            r#"{
+              "info": {"directory": "/tmp/project"},
+              "messages": [
+                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "hello"}]},
+                {"info": {"role": "assistant"}, "parts": [
+                  {"type": "reasoning", "text": "thinking"},
+                  {"type": "text", "text": "world"}
+                ]}
+              ]
+            }"#,
+            "ses_test",
+        );
+
+        assert_eq!(
+            opencode_export_workspace(r#"{"info":{"directory":"/tmp/project"}}"#).as_deref(),
+            Some("/tmp/project")
+        );
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            AgentSessionEventKind::UserMessage { content } if content == "hello"
+        ));
+        assert!(matches!(
+            &events[1],
+            AgentSessionEventKind::AssistantMessage { content } if content.contains("thinking") && content.contains("world")
+        ));
+    }
+
+    #[test]
+    fn opencode_export_agent_events_falls_back_to_summary_for_raw_export() {
+        let events = opencode_export_agent_events("not json", "ses_test");
+
+        assert!(matches!(
+            &events[0],
+            AgentSessionEventKind::Summary { content } if content.contains("Converted OpenCode session ses_test")
+        ));
     }
 
     #[test]
