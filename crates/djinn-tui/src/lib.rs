@@ -1869,6 +1869,21 @@ fn run_dashboard_loop(
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
+                if app.help_open {
+                    match key.code {
+                        _ if agent_chat_help_key(key.code, key.modifiers) => app.close_help(),
+                        KeyCode::Esc | KeyCode::Enter => app.close_help(),
+                        KeyCode::Char('q') => return Ok(None),
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                if agent_chat_help_key(key.code, key.modifiers) {
+                    app.open_help();
+                    continue;
+                }
+
                 if app.chats.mode == ChatUiMode::Options && app.active_tab == DashboardTab::Chats {
                     match key.code {
                         KeyCode::Char('q') => return Ok(None),
@@ -2038,6 +2053,7 @@ struct DashboardApp {
     suggestions: SuggestionsApp,
     skills: SkillsApp,
     active_context: Option<ContextRecord>,
+    help_open: bool,
 }
 
 impl DashboardApp {
@@ -2058,7 +2074,16 @@ impl DashboardApp {
             suggestions: SuggestionsApp::new(suggestions),
             skills: SkillsApp::new(skills),
             active_context,
+            help_open: false,
         }
+    }
+
+    fn open_help(&mut self) {
+        self.help_open = true;
+    }
+
+    fn close_help(&mut self) {
+        self.help_open = false;
     }
 
     fn next_tab(&mut self) {
@@ -2225,19 +2250,97 @@ impl DashboardApp {
             DashboardTab::Skills => self.skills.draw_body(frame, chunks[1]),
         }
 
-        let help = match self.active_tab {
-            DashboardTab::Tools => "Tab tabs • Shift+Tab agent • / filter/clear • ↑/↓ move • Enter open • PgUp/PgDn scroll preview • q quit",
-            DashboardTab::Chats => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Enter/r resume session • s share • Space select • x/Delete remove • q quit",
-            DashboardTab::Candidates => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a review memory • A all visible • r/x reject+remove • q quit",
-            DashboardTab::Memories => "Tab/Shift+Tab tabs • / filter/clear • ↑/↓ move • Space select • a all visible • x/Delete remove suggestion • q quit",
-            DashboardTab::Skills => "Tab agent • Shift+Tab tabs • / filter/clear • ↑/↓ move • Enter open • PgUp/PgDn scroll preview • q quit",
-        };
         frame.render_widget(Clear, chunks[2]);
-        frame.render_widget(Paragraph::new(help).style(dim_style()), chunks[2]);
+        frame.render_widget(
+            Paragraph::new("Ctrl+/ help • q quit").style(dim_style()),
+            chunks[2],
+        );
 
         if self.active_tab == DashboardTab::Chats && self.chats.mode == ChatUiMode::Options {
             self.chats.draw_options(frame);
         }
+        if self.help_open {
+            self.draw_help(frame);
+        }
+    }
+
+    fn draw_help(&self, frame: &mut ratatui::Frame) {
+        let area = centered_rect(68, 64, frame.area());
+        let lines = vec![
+            Line::from(Span::styled("Dashboard", title_style())),
+            Line::from(""),
+            Line::from(Span::styled("Global", title_style())),
+            Line::from(vec![
+                Span::styled("Tab / Shift+Tab", selected_style()),
+                Span::raw(" move between tabs"),
+            ]),
+            Line::from(vec![
+                Span::styled("Ctrl+/", selected_style()),
+                Span::raw(" open or close this help"),
+            ]),
+            Line::from(vec![
+                Span::styled("/", selected_style()),
+                Span::raw(" filter current tab; / again clears while editing"),
+            ]),
+            Line::from(vec![
+                Span::styled("↑/↓ or j/k", selected_style()),
+                Span::raw(" move selection"),
+            ]),
+            Line::from(vec![
+                Span::styled("PgUp/PgDn or u/d", selected_style()),
+                Span::raw(" scroll preview"),
+            ]),
+            Line::from(vec![
+                Span::styled("q", selected_style()),
+                Span::raw(" quit"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("Tools", title_style())),
+            Line::from(vec![
+                Span::styled("Enter", selected_style()),
+                Span::raw(" open selected tool"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("Chats / session picker", title_style())),
+            Line::from(vec![
+                Span::styled("Enter / r", selected_style()),
+                Span::raw(" resume Djinn session or convert+resume OpenCode session"),
+            ]),
+            Line::from(vec![
+                Span::styled("s", selected_style()),
+                Span::raw(" open share options"),
+            ]),
+            Line::from(vec![
+                Span::styled("Space / A", selected_style()),
+                Span::raw(" select one / all visible"),
+            ]),
+            Line::from(vec![
+                Span::styled("x / Delete", selected_style()),
+                Span::raw(" remove persisted chat rows"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("Memories & Suggestions", title_style())),
+            Line::from(vec![
+                Span::styled("a", selected_style()),
+                Span::raw(" accept/review selected item where supported"),
+            ]),
+            Line::from(vec![
+                Span::styled("r / x", selected_style()),
+                Span::raw(" reject/remove selected item where supported"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("Skills", title_style())),
+            Line::from(vec![
+                Span::styled("Enter", selected_style()),
+                Span::raw(" open selected skill"),
+            ]),
+        ];
+        let help = Paragraph::new(lines)
+            .block(block("Help"))
+            .style(base_style())
+            .wrap(Wrap { trim: false });
+        frame.render_widget(Clear, area);
+        frame.render_widget(help, area);
     }
 
     fn header_title(&self) -> String {
@@ -4471,6 +4574,25 @@ mod tests {
                 "Skills"
             ]
         );
+    }
+
+    #[test]
+    fn dashboard_help_open_and_close() {
+        let mut app = DashboardApp::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            DashboardTab::Chats,
+        );
+
+        assert!(!app.help_open);
+        app.open_help();
+        assert!(app.help_open);
+        app.close_help();
+        assert!(!app.help_open);
     }
 
     #[test]

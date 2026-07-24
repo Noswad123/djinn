@@ -390,6 +390,9 @@ The first non-interactive agent slice is implemented as:
     source, source id/path, content path, and content are fuzzy-searchable. The
     selected preview shows the available session actions so resume/share/remove
     affordances are visible without relying only on the footer.
+32. The dashboard also uses Ctrl+/ for detailed help. Per-tab keybinding
+    guidance belongs in the help overlay, while the dashboard footer stays short
+    and points to help.
 
 Not in the first slice unless explicitly reopened:
 
