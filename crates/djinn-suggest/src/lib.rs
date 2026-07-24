@@ -1,15 +1,14 @@
 use chrono::Local;
 use djinn_chats::ChatRecord;
-use djinn_memory::{MemoryCandidate, MemoryRecord};
+use djinn_memory::MemoryRecord;
 use djinn_tools::ToolEntry;
 
 pub fn build_prompt(memories: &[MemoryRecord], tools: &[ToolEntry]) -> String {
-    build_prompt_with_pipeline(memories, &[], &[], tools, "No watcher state provided.")
+    build_prompt_with_pipeline(memories, &[], tools, "No watcher state provided.")
 }
 
 pub fn build_prompt_with_pipeline(
     memories: &[MemoryRecord],
-    candidates: &[MemoryCandidate],
     chats: &[ChatRecord],
     tools: &[ToolEntry],
     watcher_state: &str,
@@ -17,10 +16,6 @@ pub fn build_prompt_with_pipeline(
     let (deferred_memories, active_memories): (Vec<_>, Vec<_>) = memories
         .iter()
         .partition(|record| is_deferred(&record.not_before));
-    let (deferred_candidates, active_candidates): (Vec<_>, Vec<_>) = candidates
-        .iter()
-        .partition(|record| is_deferred(&record.not_before));
-
     let memory_lines = if active_memories.is_empty() {
         "Memory is empty.".to_string()
     } else {
@@ -53,48 +48,6 @@ pub fn build_prompt_with_pipeline(
                     record.id,
                     record.text,
                     format_memory_metadata(record)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    let candidate_lines = if active_candidates.is_empty() {
-        "No reviewable memories recorded.".to_string()
-    } else {
-        active_candidates
-            .iter()
-            .take(50)
-            .enumerate()
-            .map(|(idx, record)| {
-                format!(
-                    "  {}. [{}] {} ({}){}",
-                    idx + 1,
-                    record.id,
-                    record.text,
-                    record.status,
-                    format_candidate_metadata(record)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    let deferred_candidate_lines = if deferred_candidates.is_empty() {
-        "No deferred reviewable memories recorded.".to_string()
-    } else {
-        deferred_candidates
-            .iter()
-            .take(50)
-            .enumerate()
-            .map(|(idx, record)| {
-                format!(
-                    "  {}. [{}] {} ({}){}",
-                    idx + 1,
-                    record.id,
-                    record.text,
-                    record.status,
-                    format_candidate_metadata(record)
                 )
             })
             .collect::<Vec<_>>()
@@ -142,19 +95,19 @@ Djinn is a local-first companion for OpenCode and other AI coding agents. It sur
 
 The intended loop is:
 
-chats → promote/review → memories → suggestions → actions/skills
+chats → merge/add memories → suggestions → actions/skills
 
-Analyze the legacy memories, reviewable memories, recent chats, OpenCode watcher state, and discovered local tools below. Deferred memories with future `not_before` dates are included for awareness only; do not propose actions based on them until their date has arrived. Suggest:
+Analyze the active memories, recent chats, OpenCode watcher state, and discovered local tools below. Deferred memories with future `not_before` dates are included for awareness only; do not propose actions based on them until their date has arrived. Suggest:
 
 1. Workflow patterns or preferences worth preserving.
 2. Stale, noisy, or overly narrow memories to rewrite or remove.
-3. Reviewable memories that should be kept, rejected, rewritten, merged, or reviewed for suggestions.
-4. Recent chats worth promoting into memories.
+3. Memories that should become suggestions, actions, skills, rewrites, or cleanup.
+4. Recent chats worth merging into active memories.
 5. New aliases, scripts, wrappers, docs, or TUI actions to create.
 6. OpenCode skills or agent behaviors that should be added.
 7. The highest-impact next actions.
 
-Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Memory Review`, `Chats to Promote`, `Tooling/Skill Ideas`, and `Prioritized Next Actions`.
+Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Memory Activation`, `Chats to Merge`, `Tooling/Skill Ideas`, and `Prioritized Next Actions`.
 
 ## Memories
 
@@ -162,22 +115,10 @@ Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Mem
 {memory_lines}
 ```
 
-## Reviewable memories
-
-```text
-{candidate_lines}
-```
-
 ## Deferred memories
 
 ```text
 {deferred_memory_lines}
-```
-
-## Deferred reviewable memories
-
-```text
-{deferred_candidate_lines}
 ```
 
 ## Recent chats
@@ -199,30 +140,6 @@ Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Mem
 ```
 "#
     )
-}
-
-fn format_candidate_metadata(record: &MemoryCandidate) -> String {
-    let mut parts = Vec::new();
-    if !record.scope.trim().is_empty() {
-        parts.push(format!("scope={}", record.scope));
-    }
-    if !record.kind.trim().is_empty() {
-        parts.push(format!("kind={}", record.kind));
-    }
-    if !record.confidence.trim().is_empty() {
-        parts.push(format!("confidence={}", record.confidence));
-    }
-    if !record.not_before.trim().is_empty() {
-        parts.push(format!("not_before={}", record.not_before));
-    }
-    if !record.sources.is_empty() {
-        parts.push(format!("sources={}", record.sources.len()));
-    }
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", parts.join(", "))
-    }
 }
 
 fn format_memory_metadata(record: &MemoryRecord) -> String {
@@ -285,26 +202,12 @@ mod tests {
                 evidence: Vec::new(),
                 sources: Vec::new(),
             }],
-            &[MemoryCandidate {
-                id: "candidate".to_string(),
-                text: "Maybe add scoped tabs.".to_string(),
-                created_at: "2026-07-09".to_string(),
-                status: "pending".to_string(),
-                scope: "project".to_string(),
-                kind: "idea".to_string(),
-                confidence: "medium".to_string(),
-                not_before: "2999-01-01".to_string(),
-                evidence: Vec::new(),
-                sources: Vec::new(),
-                reinforcement_count: 1,
-            }],
             &[],
             &[],
             "none",
         );
         assert!(prompt.contains("## Deferred memories"));
         assert!(prompt.contains("defer-contexts"));
-        assert!(prompt.contains("## Deferred reviewable memories"));
         assert!(prompt.contains("not_before=2999-01-01"));
         assert!(prompt.contains("do not propose actions based on them"));
     }

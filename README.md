@@ -15,7 +15,7 @@ is the Rust rewrite.
 
 - Discovers tagged aliases, functions, scripts, and wrappers from local files.
 - Imports and searches saved chats, including sanitized OpenCode exports.
-- Promotes chat lessons into reviewable memories with evidence/provenance.
+- Promotes chat lessons into active memories with evidence/provenance.
 - Reviews memories to create lightweight suggestions for follow-up work.
 - Supports `not_before` dates for memories that should be remembered now but not
   acted on until later.
@@ -115,9 +115,10 @@ djinn list suggestions
 djinn accept suggestion ratatui-tui-checklist
 ```
 
-Repeated pending memories with the same text are reinforced instead of
-duplicated, so agent-created capture can accumulate evidence without flooding the
-review queue.
+`djinn add memory` writes active memories directly. Use `djinn review memory` to
+derive follow-up suggestions, `djinn ingest memory --as skill|idea|action` to
+route a memory into a downstream artifact, or `djinn reject memory` to remove
+stale/noisy memories.
 
 Define a context:
 

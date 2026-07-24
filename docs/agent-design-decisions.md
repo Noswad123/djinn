@@ -435,7 +435,27 @@ The first non-interactive agent slice is implemented as:
 39. The Chats tab delete action distinguishes backing stores. Saved chat rows are
     removed through the chat store, while projected `djinn-agent` rows delete the
     underlying JSONL agent session by `source_id`. Mixed selections can delete
-    both row types in one action.
+    both row types in one action. Because Djinn session deletion removes JSONL
+    files, the TUI requires an explicit confirmation before executing the delete.
+40. Chats/session picker share options only operate on saved chat rows. Projected
+    `djinn-agent` rows are resume/delete session targets and are skipped for
+    share requests, so an agent-only selection does not open the share dialog.
+41. Chat sharing emits context material rather than executing a model. Summary
+    mode is human-facing in direct CLI use and renders a local digest, not an
+    agent-review prompt; patterns/memories modes remain prompt-oriented review
+    helpers. From the TUI Chats picker, summary sharing creates an Agent session
+    seeded with selected chat context and a summarization request so follow-up can
+    continue conversationally instead of dumping output to stdout. When shared
+    chat content is an OpenCode JSON export, Djinn renders a compact role-labeled
+    digest of readable message/tool parts instead of embedding raw JSON.
+    Sanitized/redacted exports should state that source text may be unavailable
+    rather than burying that fact in large redacted payloads.
+42. Chat merge is the cleanup-oriented share workflow. It should group selected
+    chats/sessions, distill durable lessons, write active memories directly, and
+    only then archive the source chat rows when explicitly requested. Merge should
+    not introduce another memory-candidate/inbox step; later memory review should
+    focus on turning active memories into skills, suggestions, or concrete user
+    actions, and on clearing stale inbox/source material.
 
 Not in the first slice unless explicitly reopened:
 

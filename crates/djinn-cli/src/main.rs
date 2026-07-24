@@ -24,9 +24,9 @@ use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore}
 use djinn_memory::{
     ActionRecord, ActionStore, AgentSession, AgentSessionEvent, AgentSessionEventKind,
     AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionStore, AgentSessionSummary,
-    CandidateStore, FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord,
-    IdeaStore, JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryCandidate, MemoryInput,
-    MemoryRecord, MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
+    FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore,
+    JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource,
+    SuggestionInput, SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -52,15 +52,15 @@ enum Command {
     Show(ShowArgs),
     /// Add one item.
     Add(AddArgs),
-    /// Accept a pending item.
+    /// Accept/complete an item.
     Accept(AcceptArgs),
-    /// Reject a pending item.
+    /// Reject/remove an item.
     Reject(RejectArgs),
-    /// Route reviewable memories into suggestions, skills, ideas, actions, or durable memories.
+    /// Route memories into suggestions, skills, ideas, or actions.
     Ingest(IngestArgs),
-    /// Promote raw context into reviewable memories.
+    /// Promote raw context into active memories.
     Promote(PromoteArgs),
-    /// Run an external review to organically create reviewable memories.
+    /// Run an external review to create or activate durable knowledge.
     Review(ReviewArgs),
     /// Remove one item.
     Rm(RmArgs),
@@ -104,7 +104,7 @@ struct ListArgs {
 enum ListNoun {
     /// List discovered local aliases, functions, scripts, and wrappers.
     Tools(ToolsScope),
-    /// List reviewable memories.
+    /// List active memories.
     Memories,
     /// List open suggestions.
     Suggestions,
@@ -132,7 +132,7 @@ struct ShowArgs {
 enum ShowNoun {
     /// Show a chat/session by id.
     Chat(ShowChatArgs),
-    /// Show a reviewable memory by id or text fragment.
+    /// Show an active memory by id or text fragment.
     Memory { id: String },
     /// Show a suggestion by id or text fragment.
     Suggestion { id: String },
@@ -158,7 +158,7 @@ struct AddArgs {
 enum AddNoun {
     /// Add a raw or summarized AI interaction from a file.
     Chat(AddChatArgs),
-    /// Add a reviewable memory.
+    /// Add an active memory.
     Memory(AddMemoryArgs),
     /// Add a suggestion.
     Suggestion(AddSuggestionArgs),
@@ -194,7 +194,7 @@ struct RejectArgs {
 
 #[derive(Debug, Subcommand)]
 enum RejectNoun {
-    /// Reject reviewable memories and remove them permanently.
+    /// Remove memories permanently.
     Memory {
         /// Memory ids or text fragments.
         #[arg(required = true)]
@@ -216,9 +216,9 @@ struct IngestArgs {
 
 #[derive(Debug, Subcommand)]
 enum IngestNoun {
-    /// Route pending reviewable memories into the right durable collection.
+    /// Route active memories into the right downstream collection.
     Memories(IngestMemoriesArgs),
-    /// Route one pending reviewable memory into the right durable collection.
+    /// Route one active memory into the right downstream collection.
     Memory(IngestMemoriesArgs),
 }
 
@@ -262,7 +262,7 @@ struct ReviewArgs {
 
 #[derive(Debug, Subcommand)]
 enum ReviewSource {
-    /// Ask OpenCode to review recent Djinn chats and add reviewable memories.
+    /// Ask OpenCode to review recent Djinn chats and add active memories.
     Chats(ReviewChatsArgs),
     /// Ask OpenCode to review one or more memories and create suggestions.
     Memories(ReviewMemoriesArgs),
@@ -460,6 +460,8 @@ enum ShareNoun {
     Chat(ShareChatArgs),
     /// Emit an agent prompt from multiple chats/sessions.
     Chats(ShareChatsArgs),
+    /// Distill selected chats into active memories and optionally archive them.
+    Merge(ShareMergeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1247,6 +1249,48 @@ struct ShareChatsArgs {
     max_chars_per_chat: usize,
 }
 
+#[derive(Debug, Args)]
+struct ShareMergeArgs {
+    /// Optional chat ids, source ids, or unambiguous title fragments to include.
+    ids: Vec<String>,
+    /// Filter by source, for example: opencode.
+    #[arg(long)]
+    source: Option<String>,
+    /// Filter chats by id, title, source metadata, path, or content.
+    #[arg(long)]
+    query: Option<String>,
+    /// Maximum number of chats to include unless --all or explicit ids are used.
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
+    /// Include every matching chat. Use deliberately; this can produce a large prompt.
+    #[arg(long)]
+    all: bool,
+    /// Maximum characters to include from each chat body.
+    #[arg(long, default_value_t = 4000)]
+    max_chars_per_chat: usize,
+    /// Maximum memories the model should return.
+    #[arg(long, default_value_t = 20)]
+    max_memories: usize,
+    /// Archive selected chat rows after memories are written successfully.
+    #[arg(long)]
+    archive: bool,
+    /// Print the merge prompt instead of running the model, writing memories, or archiving.
+    #[arg(long)]
+    dry_run: bool,
+    /// Agent profile name.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// OpenAI model to use. Defaults to OpenCode config, DJINN_OPENAI_MODEL, or gpt-4o-mini.
+    #[arg(long)]
+    model: Option<String>,
+    /// OpenAI API key. Defaults to OpenCode config/auth or OPENAI_API_KEY.
+    #[arg(long = "api-key")]
+    api_key: Option<String>,
+    /// OpenAI-compatible base URL. Defaults to OPENAI_BASE_URL or https://api.openai.com/v1.
+    #[arg(long = "base-url")]
+    base_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ShareChatsMode {
     /// Ask the agent to summarize the grouped chats.
@@ -1641,10 +1685,7 @@ fn run_add(args: AddArgs) -> Result<()> {
         AddNoun::Chat(args) => add_chat(args),
         AddNoun::Memory(args) => {
             let record = add_memory(args)?;
-            println!(
-                "Memory saved [{}]: {} (reinforced {})",
-                record.id, record.text, record.reinforcement_count
-            );
+            println!("Memory saved [{}]: {}", record.id, record.text);
             Ok(())
         }
         AddNoun::Suggestion(args) => add_suggestion(args),
@@ -1777,6 +1818,7 @@ fn run_share(args: ShareArgs) -> Result<()> {
         ShareNoun::Skills(args) => share_skills(args),
         ShareNoun::Chat(args) => share_chat(args),
         ShareNoun::Chats(args) => share_chats(args),
+        ShareNoun::Merge(args) => share_merge(args),
     }
 }
 
@@ -2577,8 +2619,8 @@ fn agent_chat_command_palette(
     for (label, tab) in [
         ("Open Tools", djinn_tui::DashboardTab::Tools),
         ("Open Chats", djinn_tui::DashboardTab::Chats),
-        ("Open Memories", djinn_tui::DashboardTab::Candidates),
-        ("Open Suggestions", djinn_tui::DashboardTab::Memories),
+        ("Open Memories", djinn_tui::DashboardTab::Memories),
+        ("Open Suggestions", djinn_tui::DashboardTab::Suggestions),
         ("Open Skills", djinn_tui::DashboardTab::Skills),
     ] {
         entries.push(djinn_tui::AgentChatCommandEntry {
@@ -4402,20 +4444,20 @@ fn run_tui_in_session(
     let roots = tool_roots(args.roots.clone());
     let tools = scan_tools(&roots)?;
     let chats = chats_for_session_picker()?;
-    let candidates = pending_memories(candidate_store().list()?);
+    let memories = memory_store().list()?;
     let suggestions = suggestion_store().list()?;
     let skills = skill_records()?;
     let active_context = context_store().active()?;
     let Some(action) = tui.run_dashboard_with_handler(
         tools,
         chats,
-        candidates,
+        memories,
         suggestions,
         skills,
         active_context,
         initial_tab,
         |action| match action {
-            djinn_tui::TuiAction::RejectCandidates(ids) => reject_memories_silent(&ids).map(|_| ()),
+            djinn_tui::TuiAction::DeleteMemories(ids) => remove_memories_silent(&ids).map(|_| ()),
             djinn_tui::TuiAction::DeleteChatRows(request) => {
                 delete_chat_rows_silent(&request).map(|_| ())
             }
@@ -4425,7 +4467,7 @@ fn run_tui_in_session(
             | djinn_tui::TuiAction::OpenTool(_)
             | djinn_tui::TuiAction::OpenSkill(_)
             | djinn_tui::TuiAction::ShareChats(_)
-            | djinn_tui::TuiAction::AcceptCandidate(_) => Ok(()),
+            | djinn_tui::TuiAction::ReviewMemory(_) => Ok(()),
         },
     )?
     else {
@@ -4445,6 +4487,14 @@ fn run_tui_in_session(
         return Ok(TuiRunOutcome::OpenAgentChat {
             resume: Some(resume),
         });
+    }
+    if let djinn_tui::TuiAction::ShareChats(request) = &action {
+        if request.mode == djinn_tui::ChatShareMode::Summary && !request.context_only {
+            let id = create_chat_summary_agent_session(request)?;
+            return Ok(TuiRunOutcome::OpenAgentChat {
+                resume: Some(id.to_string()),
+            });
+        }
     }
     Ok(TuiRunOutcome::Action(action))
 }
@@ -4471,7 +4521,7 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
             max_chars_per_chat: 4000,
         })
         .map(|_| false),
-        djinn_tui::TuiAction::AcceptCandidate(id) => accept_memory(AcceptMemoryArgs {
+        djinn_tui::TuiAction::ReviewMemory(id) => accept_memory(AcceptMemoryArgs {
             id,
             agent: None,
             title: "djinn memory suggestion review".to_string(),
@@ -4479,12 +4529,48 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
             dry_run: false,
         })
         .map(|_| false),
-        djinn_tui::TuiAction::RejectCandidates(ids) => reject_memories_silent(&ids).map(|_| false),
+        djinn_tui::TuiAction::DeleteMemories(ids) => remove_memories_silent(&ids).map(|_| false),
         djinn_tui::TuiAction::DeleteChatRows(request) => {
             delete_chat_rows_silent(&request).map(|_| false)
         }
         djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| false),
     }
+}
+
+fn create_chat_summary_agent_session(
+    request: &djinn_tui::ChatShareRequest,
+) -> Result<AgentSessionId> {
+    let args = ShareChatsArgs {
+        ids: request.chat_ids.clone(),
+        source: None,
+        query: None,
+        limit: 10,
+        all: false,
+        mode: ShareChatsMode::Summary,
+        context_only: false,
+        max_chars_per_chat: 4000,
+    };
+    let records = chat_store().list()?;
+    let selected = select_chats_for_share(&records, &args)?;
+    let prompt = format_chat_summary_agent_prompt(&selected, &args);
+    let title = if selected.len() == 1 {
+        format!("Summarize {}", selected[0].title)
+    } else {
+        format!("Summarize {} selected chats", selected.len())
+    };
+    let store = agent_session_store();
+    let id = store.create_session(AgentSessionMeta {
+        title,
+        workspace: resolve_agent_workspace(None)?,
+        profile: "default".to_string(),
+        source: "djinn-chat-summary".to_string(),
+        ..AgentSessionMeta::default()
+    })?;
+    store.append_event(
+        &id,
+        AgentSessionEvent::new(AgentSessionEventKind::UserMessage { content: prompt }),
+    )?;
+    Ok(id)
 }
 
 fn chats_for_session_picker() -> Result<Vec<ChatRecord>> {
@@ -4769,8 +4855,8 @@ fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
     match view {
         TuiView::Tools => djinn_tui::DashboardTab::Tools,
         TuiView::Chats => djinn_tui::DashboardTab::Chats,
-        TuiView::Memories => djinn_tui::DashboardTab::Candidates,
-        TuiView::Suggestions => djinn_tui::DashboardTab::Memories,
+        TuiView::Memories => djinn_tui::DashboardTab::Memories,
+        TuiView::Suggestions => djinn_tui::DashboardTab::Suggestions,
         TuiView::Skills => djinn_tui::DashboardTab::Skills,
     }
 }
@@ -4828,7 +4914,7 @@ fn list_tools(scope: ToolsScope) -> Result<()> {
 }
 
 fn list_memories() -> Result<()> {
-    let records = pending_memories(candidate_store().list()?);
+    let records = memory_store().list()?;
     if records.is_empty() {
         println!("Memories are empty.");
     } else {
@@ -4838,7 +4924,7 @@ fn list_memories() -> Result<()> {
                 idx + 1,
                 record.id,
                 record.text,
-                format_candidate_suffix(record)
+                format_memory_suffix(record)
             );
         }
         println!("\nTotal: {} memories", records.len());
@@ -5143,8 +5229,8 @@ fn add_chat(args: AddChatArgs) -> Result<()> {
     Ok(())
 }
 
-fn add_memory(args: AddMemoryArgs) -> Result<MemoryCandidate> {
-    candidate_store().add_input(memory_input_from_args(args)?)
+fn add_memory(args: AddMemoryArgs) -> Result<MemoryRecord> {
+    memory_store().add_input(memory_input_from_args(args)?)
 }
 
 fn add_idea(args: AddMemoryArgs) -> Result<IdeaRecord> {
@@ -5159,11 +5245,11 @@ fn add_suggestion(args: AddSuggestionArgs) -> Result<()> {
     let sources = if args.source_memories.is_empty() {
         Vec::new()
     } else {
-        let memories = candidate_store().list()?;
+        let memories = memory_store().list()?;
         args.source_memories
             .iter()
             .map(|id| {
-                let memory = resolve_candidate(&memories, id)?;
+                let memory = resolve_memory(&memories, id)?;
                 Ok(MemorySource {
                     source_type: "memory".to_string(),
                     source: "djinn".to_string(),
@@ -5742,23 +5828,23 @@ fn delete_chat_rows_silent(request: &djinn_tui::ChatDeleteRequest) -> Result<()>
 }
 
 fn ingest_memories(args: IngestMemoriesArgs) -> Result<()> {
-    let candidates = pending_memories(candidate_store().list()?);
-    let resolved_ids = resolve_candidate_ids(&candidates, &args.ids)?;
+    let memories = memory_store().list()?;
+    let resolved_ids = resolve_memory_ids(&memories, &args.ids)?;
     let selected = resolved_ids
         .iter()
-        .map(|id| resolve_candidate(&candidates, id).cloned())
+        .map(|id| resolve_memory(&memories, id).cloned())
         .collect::<Result<Vec<_>>>()?;
     let mut outputs = Vec::new();
-    for candidate in &selected {
+    for memory in &selected {
         let target = if args.target == IngestTarget::Auto {
-            infer_ingest_target(candidate)
+            infer_ingest_target(memory)
         } else {
             args.target
         };
-        outputs.push(ingest_candidate_as(candidate, target, args.force)?);
+        outputs.push(ingest_memory_as(memory, target, args.force)?);
     }
     if !args.keep {
-        candidate_store().remove_ids(&resolved_ids)?;
+        memory_store().remove_ids(&resolved_ids)?;
     }
 
     println!("Ingested {} memories:", outputs.len());
@@ -5768,12 +5854,12 @@ fn ingest_memories(args: IngestMemoriesArgs) -> Result<()> {
     Ok(())
 }
 
-fn ingest_candidate_as(
-    candidate: &MemoryCandidate,
+fn ingest_memory_as(
+    memory: &MemoryRecord,
     target: IngestTarget,
     force_skill: bool,
 ) -> Result<String> {
-    let input = memory_input_from_candidate(candidate);
+    let input = memory_input_from_memory(memory);
     match target {
         IngestTarget::Auto => unreachable!("auto target must be resolved before ingestion"),
         IngestTarget::Memory => {
@@ -5782,12 +5868,12 @@ fn ingest_candidate_as(
         }
         IngestTarget::Suggestion => {
             let suggestion = suggestion_store().add_input(SuggestionInput {
-                text: candidate.text.clone(),
-                target: non_empty_option(&candidate.kind),
-                rationale: Some("Created from a reviewable memory.".to_string()),
+                text: memory.text.clone(),
+                target: non_empty_option(&memory.kind),
+                rationale: Some("Created from an active memory.".to_string()),
                 draft: None,
-                evidence: candidate.evidence.clone(),
-                sources: candidate.sources.clone(),
+                evidence: memory.evidence.clone(),
+                sources: memory.sources.clone(),
             })?;
             Ok(format!(
                 "suggestion [{}]: {}",
@@ -5795,10 +5881,10 @@ fn ingest_candidate_as(
             ))
         }
         IngestTarget::Skill => {
-            let name = skill_name_from_candidate(candidate);
-            let content = skill_content_from_candidate(candidate);
+            let name = skill_name_from_memory(memory);
+            let content = skill_content_from_memory(memory);
             let skill =
-                skill_store().add_with_content(&name, &candidate.text, content, force_skill)?;
+                skill_store().add_with_content(&name, &memory.text, content, force_skill)?;
             Ok(format!("skill [{}]: {}", skill.name, skill.path.display()))
         }
         IngestTarget::Idea => {
@@ -5812,8 +5898,8 @@ fn ingest_candidate_as(
     }
 }
 
-fn infer_ingest_target(candidate: &MemoryCandidate) -> IngestTarget {
-    let haystack = format!("{} {}", candidate.kind, candidate.text).to_lowercase();
+fn infer_ingest_target(memory: &MemoryRecord) -> IngestTarget {
+    let haystack = format!("{} {}", memory.kind, memory.text).to_lowercase();
     if haystack.contains("skill") {
         IngestTarget::Skill
     } else if haystack.contains("preference") || haystack.contains("instruction") {
@@ -5831,20 +5917,20 @@ fn infer_ingest_target(candidate: &MemoryCandidate) -> IngestTarget {
     }
 }
 
-fn memory_input_from_candidate(candidate: &MemoryCandidate) -> MemoryInput {
+fn memory_input_from_memory(memory: &MemoryRecord) -> MemoryInput {
     MemoryInput {
-        text: candidate.text.clone(),
-        scope: non_empty_option(&candidate.scope),
-        kind: non_empty_option(&candidate.kind),
-        confidence: non_empty_option(&candidate.confidence),
-        not_before: non_empty_option(&candidate.not_before),
-        evidence: candidate.evidence.clone(),
-        sources: candidate.sources.clone(),
+        text: memory.text.clone(),
+        scope: non_empty_option(&memory.scope),
+        kind: non_empty_option(&memory.kind),
+        confidence: non_empty_option(&memory.confidence),
+        not_before: non_empty_option(&memory.not_before),
+        evidence: memory.evidence.clone(),
+        sources: memory.sources.clone(),
     }
 }
 
-fn skill_name_from_candidate(candidate: &MemoryCandidate) -> String {
-    candidate
+fn skill_name_from_memory(memory: &MemoryRecord) -> String {
+    memory
         .id
         .split('-')
         .filter(|part| !part.is_empty())
@@ -5853,16 +5939,16 @@ fn skill_name_from_candidate(candidate: &MemoryCandidate) -> String {
         .join("-")
 }
 
-fn skill_content_from_candidate(candidate: &MemoryCandidate) -> String {
-    let name = skill_name_from_candidate(candidate);
+fn skill_content_from_memory(memory: &MemoryRecord) -> String {
+    let name = skill_name_from_memory(memory);
     let mut out = format!(
         "# Skill: {name}\n\n{}\n\n## When to use\n\n- Use when this remembered workflow applies to the current task.\n\n## Workflow\n\n1. Apply the remembered guidance below.\n\n## Ingested guidance\n\n{}\n",
-        candidate.text,
-        candidate.text
+        memory.text,
+        memory.text
     );
-    if !candidate.evidence.is_empty() {
+    if !memory.evidence.is_empty() {
         out.push_str("\n## Evidence\n\n");
-        for evidence in &candidate.evidence {
+        for evidence in &memory.evidence {
             out.push_str(&format!("- {evidence}\n"));
         }
     }
@@ -5883,33 +5969,22 @@ fn accept_memory(args: AcceptMemoryArgs) -> Result<()> {
 }
 
 fn reject_memories(ids: &[String]) -> Result<()> {
-    let removed = reject_memories_silent(ids)?;
+    let removed = remove_memories_silent(ids)?;
     if removed.is_empty() {
         println!("No memories were rejected.");
     } else {
         println!("Rejected and removed {} memories:", removed.len());
-        for candidate in removed {
-            println!("  - [{}] {}", candidate.id, candidate.text);
+        for memory in removed {
+            println!("  - [{}] {}", memory.id, memory.text);
         }
     }
     Ok(())
 }
 
-fn reject_memories_silent(ids: &[String]) -> Result<Vec<MemoryCandidate>> {
-    let candidates = pending_memories(candidate_store().list()?);
-    let resolved = resolve_candidate_ids(&candidates, ids)?;
-    candidate_store().remove_ids(&resolved)
-}
-
-fn pending_memories(records: Vec<MemoryCandidate>) -> Vec<MemoryCandidate> {
-    records
-        .into_iter()
-        .filter(is_pending_memory)
-        .collect::<Vec<_>>()
-}
-
-fn is_pending_memory(record: &MemoryCandidate) -> bool {
-    record.status.trim().is_empty() || record.status.eq_ignore_ascii_case("pending")
+fn remove_memories_silent(ids: &[String]) -> Result<Vec<MemoryRecord>> {
+    let memories = memory_store().list()?;
+    let resolved = resolve_memory_ids(&memories, ids)?;
+    memory_store().remove_ids(&resolved)
 }
 
 fn complete_suggestions(ids: &[String]) -> Result<()> {
@@ -6030,8 +6105,8 @@ fn show_chat(args: ShowChatArgs) -> Result<()> {
 }
 
 fn show_memory(id: &str) -> Result<()> {
-    let memories = pending_memories(candidate_store().list()?);
-    let record = resolve_candidate(&memories, id)?;
+    let memories = memory_store().list()?;
+    let record = resolve_memory(&memories, id)?;
     let chats = chat_store().list().unwrap_or_default();
 
     println!("# {}\n", record.id);
@@ -6049,8 +6124,6 @@ fn show_memory(id: &str) -> Result<()> {
     if !record.not_before.trim().is_empty() {
         println!("Not before: {}", record.not_before);
     }
-    println!("Reinforced: {}", record.reinforcement_count);
-
     if !record.evidence.is_empty() {
         println!("\n## Evidence\n");
         for (idx, evidence) in record.evidence.iter().enumerate() {
@@ -6200,9 +6273,10 @@ fn search_tools(args: SearchToolsArgs) -> Result<()> {
 
 fn search_memories(query: &str) -> Result<()> {
     let query = query.to_lowercase();
-    let matches = pending_memories(candidate_store().list()?)
+    let matches = memory_store()
+        .list()?
         .into_iter()
-        .filter(|record| candidate_matches(record, &query))
+        .filter(|record| memory_matches(record, &query))
         .collect::<Vec<_>>();
     for (idx, record) in matches.iter().enumerate() {
         println!(
@@ -6210,7 +6284,7 @@ fn search_memories(query: &str) -> Result<()> {
             idx + 1,
             record.id,
             record.text,
-            format_candidate_suffix(record)
+            format_memory_suffix(record)
         );
     }
     println!("\nTotal: {} matching memories", matches.len());
@@ -6218,14 +6292,14 @@ fn search_memories(query: &str) -> Result<()> {
 }
 
 fn select_memories_for_review(
-    records: &[MemoryCandidate],
+    records: &[MemoryRecord],
     args: &ReviewMemoriesArgs,
-) -> Result<Vec<MemoryCandidate>> {
+) -> Result<Vec<MemoryRecord>> {
     if !args.ids.is_empty() {
         let mut seen = HashSet::new();
         let mut selected = Vec::new();
         for id in &args.ids {
-            let record = resolve_candidate(records, id)?;
+            let record = resolve_memory(records, id)?;
             if seen.insert(record.id.clone()) {
                 selected.push(record.clone());
             }
@@ -6243,7 +6317,7 @@ fn select_memories_for_review(
         .filter(|record| {
             query
                 .as_deref()
-                .map(|query| candidate_matches(record, query))
+                .map(|query| memory_matches(record, query))
                 .unwrap_or(true)
         })
         .cloned()
@@ -6309,7 +6383,6 @@ fn search_chats(query: &str) -> Result<()> {
 
 fn share_ideas() -> Result<()> {
     let memories = memory_store().list()?;
-    let candidates = pending_memories(candidate_store().list()?);
     let chats = chat_store().list()?;
     let tools = scan_tools(&tool_roots(Vec::new()))?;
     let watcher_state = format_ideas_pipeline_context(
@@ -6319,13 +6392,7 @@ fn share_ideas() -> Result<()> {
     );
     println!(
         "{}",
-        djinn_suggest::build_prompt_with_pipeline(
-            &memories,
-            &candidates,
-            &chats,
-            &tools,
-            &watcher_state
-        )
+        djinn_suggest::build_prompt_with_pipeline(&memories, &chats, &tools, &watcher_state)
     );
     Ok(())
 }
@@ -6404,11 +6471,85 @@ fn share_chats(args: ShareChatsArgs) -> Result<()> {
     if args.context_only {
         println!("{}", format_chats_context(&selected, &args));
     } else {
-        let memories = memory_store().list()?;
-        println!(
-            "{}",
-            format_chats_review_prompt(&selected, &args, &memories)
-        );
+        match args.mode {
+            ShareChatsMode::Summary => println!("{}", format_chats_summary(&selected, &args)),
+            ShareChatsMode::Patterns | ShareChatsMode::Memories => {
+                let memories = memory_store().list()?;
+                println!(
+                    "{}",
+                    format_chats_review_prompt(&selected, &args, &memories)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn share_merge(args: ShareMergeArgs) -> Result<()> {
+    let records = chat_store().list()?;
+    let selected = select_chats_for_merge(&records, &args)?;
+    let prompt = format_chats_merge_prompt(&selected, &args);
+    if args.dry_run {
+        println!("{prompt}");
+        return Ok(());
+    }
+    if selected.is_empty() {
+        println!("No chats matched merge selection.");
+        return Ok(());
+    }
+
+    let profile = args.profile.trim().to_string();
+    let model = resolve_agent_model(args.model.clone(), &profile)?;
+    let store = agent_session_store();
+    let id = store.create_session(AgentSessionMeta {
+        title: format!("Merge {} chats into memories", selected.len()),
+        workspace: resolve_agent_workspace(None)?,
+        profile: profile.clone(),
+        source: "djinn-share-merge".to_string(),
+        ..AgentSessionMeta::default()
+    })?;
+    store.append_event(
+        &id,
+        AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+            content: prompt.clone(),
+        }),
+    )?;
+    let response = complete_openai_prompt(
+        &store,
+        &id,
+        prompt,
+        model,
+        args.api_key,
+        args.base_url,
+        0,
+        &profile,
+        false,
+    )?;
+    let merge = parse_chat_merge_response(&response.message.content)?;
+    let written = write_chat_merge_memories(&merge, &selected)?;
+    let archived = if args.archive && !written.is_empty() {
+        archive_chat_records(&selected)?
+    } else {
+        None
+    };
+
+    println!(
+        "Merged {} chats into {} memories.",
+        selected.len(),
+        written.len()
+    );
+    if let Some(path) = archived {
+        println!("Archived source chats: {}", path.display());
+    } else if args.archive {
+        println!("No source chats archived because no memories were written.");
+    }
+    println!(
+        "Agent session [{}]: {}",
+        id,
+        store.session_file_path(&id).display()
+    );
+    for memory in written {
+        println!("- [{}] {}", memory.id, memory.text);
     }
     Ok(())
 }
@@ -6417,7 +6558,7 @@ fn promote_chat(args: ShareChatArgs) -> Result<()> {
     let records = chat_store().list()?;
     let record = resolve_chat(&records, &args.id)?;
     let memories = memory_store().list()?;
-    println!("{}", format_chat_candidate_prompt(record, &memories));
+    println!("{}", format_chat_promotion_prompt(record, &memories));
     Ok(())
 }
 
@@ -6432,7 +6573,7 @@ fn build_promote_chats_prompt(mut args: ShareChatsArgs) -> Result<String> {
     let records = chat_store().list()?;
     let selected = select_chats_for_share(&records, &args)?;
     let memories = memory_store().list()?;
-    Ok(format_chats_candidate_prompt(&selected, &args, &memories))
+    Ok(format_chats_promotion_prompt(&selected, &args, &memories))
 }
 
 fn review_opencode(args: ReviewOpencodeArgs) -> Result<()> {
@@ -6474,7 +6615,7 @@ fn review_chats(args: ReviewChatsArgs) -> Result<()> {
 }
 
 fn review_memories(args: ReviewMemoriesArgs) -> Result<()> {
-    let memories = pending_memories(candidate_store().list()?);
+    let memories = memory_store().list()?;
     let selected = select_memories_for_review(&memories, &args)?;
     let suggestions = suggestion_store().list()?;
     let prompt = format_memory_review_prompt(&selected, &suggestions, &args);
@@ -6774,7 +6915,7 @@ fn format_suggestions_context(records: &[SuggestionRecord]) -> String {
 }
 
 fn format_memory_review_prompt(
-    memories: &[MemoryCandidate],
+    memories: &[MemoryRecord],
     suggestions: &[SuggestionRecord],
     args: &ReviewMemoriesArgs,
 ) -> String {
@@ -6901,7 +7042,7 @@ fn format_chat_memory_extraction_prompt(record: &ChatRecord, memories: &[MemoryR
     }
 
     out.push_str(
-        "\n## Extraction Guidelines\n\nExtract reviewable memories for:\n\n- user preferences and corrections\n- repeated workflows or tool choices\n- project-specific conventions\n- safety constraints or gotchas\n- reusable debugging/implementation patterns\n\nDo not extract:\n\n- one-off task status\n- secrets, credentials, tokens, private URLs, or sensitive raw data\n- facts that are already captured in existing memories\n- noisy transcript details that will not help future agents\n\nReturn only a short reviewed list of shell commands the user can run manually. Include enough metadata and copied evidence that the memory remains understandable even if the source chat is deleted later. Use `--not-before YYYY-MM-DD` when a true memory should not drive actions until a future date. Prefer this form:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"User explicitly corrected the agent to ...\" --source-chat CHAT_ID\n```\n\nIf there are no durable lessons, say: `No durable memories recommended.`\n",
+        "\n## Extraction Guidelines\n\nExtract active memories for:\n\n- user preferences and corrections\n- repeated workflows or tool choices\n- project-specific conventions\n- safety constraints or gotchas\n- reusable debugging/implementation patterns\n\nDo not extract:\n\n- one-off task status\n- secrets, credentials, tokens, private URLs, or sensitive raw data\n- facts that are already captured in existing memories\n- noisy transcript details that will not help future agents\n\nReturn only a short reviewed list of shell commands the user can run manually. Include enough metadata and copied evidence that the memory remains understandable even if the source chat is deleted later. Use `--not-before YYYY-MM-DD` when a true memory should not drive actions until a future date. Prefer this form:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"User explicitly corrected the agent to ...\" --source-chat CHAT_ID\n```\n\nIf there are no durable lessons, say: `No durable memories recommended.`\n",
     );
 
     out.push_str("\n## Existing Memories\n\n```text\n");
@@ -6927,7 +7068,7 @@ fn format_chat_memory_extraction_prompt(record: &ChatRecord, memories: &[MemoryR
     out
 }
 
-fn format_chat_candidate_prompt(record: &ChatRecord, memories: &[MemoryRecord]) -> String {
+fn format_chat_promotion_prompt(record: &ChatRecord, memories: &[MemoryRecord]) -> String {
     let mut out = format_chat_memory_extraction_prompt(record, memories);
     out = out.replace(
         "# Djinn Chat Memory Extraction",
@@ -6938,7 +7079,7 @@ fn format_chat_candidate_prompt(record: &ChatRecord, memories: &[MemoryRecord]) 
     );
     out.push_str(&record.id);
     out.push_str(
-        "\n```\n\nAfter review, the user can run `djinn list memories`, `djinn show memory <id>`, `djinn accept memory <id>`, or `djinn reject memory <id>`.\n",
+        "\n```\n\nAfter review, the user can run `djinn list memories`, `djinn show memory <id>`, `djinn accept memory <id>` to review for suggestions, or `djinn reject memory <id>` to remove it.\n",
     );
     out
 }
@@ -6966,6 +7107,249 @@ fn format_chats_context(records: &[ChatRecord], args: &ShareChatsArgs) -> String
         out.push_str(&format!("- Limit: latest {} matching chats\n", args.limit));
     }
     out.push_str("\nUse these chats together as source context for the next agent action.\n");
+    append_chats_bundle(&mut out, records, args.max_chars_per_chat);
+    out
+}
+
+fn format_chats_summary(records: &[ChatRecord], args: &ShareChatsArgs) -> String {
+    let mut out = String::from("# Djinn Chat Summary\n\n");
+    out.push_str("This is a local digest of the selected saved chats. No model was run.\n\n");
+    out.push_str("## Selection\n\n");
+    out.push_str(&format!("- Chat count: {}\n", records.len()));
+    if let Some(source) = args
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        out.push_str(&format!("- Source filter: {source}\n"));
+    }
+    if let Some(query) = args
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+    {
+        out.push_str(&format!("- Query filter: {query}\n"));
+    }
+    if !args.all && args.ids.is_empty() {
+        out.push_str(&format!("- Limit: latest {} matching chats\n", args.limit));
+    }
+
+    let redacted_count = records
+        .iter()
+        .filter(|record| chat_content_appears_redacted(&record.content))
+        .count();
+    if redacted_count > 0 {
+        out.push_str(&format!(
+            "- Redacted/sanitized chats: {redacted_count} (summary detail may be limited)\n"
+        ));
+    }
+
+    out.push_str("\n## Chats\n");
+    for (idx, record) in records.iter().enumerate() {
+        out.push_str(&format!(
+            "\n### {}. {}\n\n- ID: `{}`\n- Created: {}\n",
+            idx + 1,
+            record.title,
+            record.id,
+            record.created_at
+        ));
+        if !record.source.trim().is_empty() {
+            out.push_str(&format!("- Source type: {}\n", record.source));
+        }
+        if !record.source_id.trim().is_empty() {
+            out.push_str(&format!("- Source ID: {}\n", record.source_id));
+        }
+        let content = share_chat_content(record);
+        out.push_str("\n");
+        let excerpt = truncate(&content, args.max_chars_per_chat);
+        out.push_str(&excerpt);
+        if !excerpt.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn format_chats_merge_prompt(records: &[ChatRecord], args: &ShareMergeArgs) -> String {
+    let mut out = String::from("You are merging saved Djinn chats into durable memories.\n\n");
+    out.push_str("Group related sessions by topic/workflow. Distill only durable, reusable memories that should become active immediately. Do not create an inbox, candidates, suggestions, or todos. If there is no durable lesson, return an empty memories array.\n\n");
+    out.push_str("Return strict JSON only, with this shape:\n\n");
+    out.push_str(
+        r#"{
+  "groups": [
+    {"title": "short group title", "chat_ids": ["chat-id"], "rationale": "why these belong together"}
+  ],
+  "memories": [
+    {
+      "text": "durable memory text",
+      "scope": "project|global|work|personal",
+      "kind": "preference|convention|workflow|correction|gotcha",
+      "confidence": "medium|high",
+      "evidence": ["copied supporting evidence"],
+      "source_chat_ids": ["chat-id"]
+    }
+  ]
+}
+"#,
+    );
+    out.push_str("\nRules:\n");
+    out.push_str("- Create at most ");
+    out.push_str(&args.max_memories.to_string());
+    out.push_str(" memories.\n");
+    out.push_str("- Prefer fewer, higher-value memories over many small facts.\n");
+    out.push_str("- Memories should be actionable later by skills or follow-up actions.\n");
+    out.push_str("- Do not include secrets, tokens, private URLs, or sensitive raw data.\n");
+    out.push_str("- Preserve provenance with source_chat_ids.\n");
+    out.push_str("- If sanitized exports hide content, only create memories supported by readable metadata/text.\n");
+
+    let share_args = ShareChatsArgs {
+        ids: args.ids.clone(),
+        source: args.source.clone(),
+        query: args.query.clone(),
+        limit: args.limit,
+        all: args.all,
+        mode: ShareChatsMode::Memories,
+        context_only: true,
+        max_chars_per_chat: args.max_chars_per_chat,
+    };
+    append_chats_bundle(&mut out, records, share_args.max_chars_per_chat);
+    out
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct ChatMergeResponse {
+    #[serde(default)]
+    groups: Vec<ChatMergeGroup>,
+    #[serde(default)]
+    memories: Vec<ChatMergeMemory>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct ChatMergeGroup {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    chat_ids: Vec<String>,
+    #[serde(default)]
+    rationale: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct ChatMergeMemory {
+    text: String,
+    #[serde(default)]
+    scope: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    confidence: String,
+    #[serde(default)]
+    evidence: Vec<String>,
+    #[serde(default)]
+    source_chat_ids: Vec<String>,
+}
+
+fn parse_chat_merge_response(content: &str) -> Result<ChatMergeResponse> {
+    let raw = extract_json_payload(content).unwrap_or_else(|| content.trim().to_string());
+    let response: ChatMergeResponse = serde_json::from_str(&raw)
+        .with_context(|| "parsing chat merge JSON response from model")?;
+    Ok(ChatMergeResponse {
+        groups: response.groups,
+        memories: response
+            .memories
+            .into_iter()
+            .filter(|memory| !memory.text.trim().is_empty())
+            .collect(),
+    })
+}
+
+fn extract_json_payload(content: &str) -> Option<String> {
+    let trimmed = content.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Some(trimmed.to_string());
+    }
+    let marker = "```json";
+    let start = trimmed.find(marker)? + marker.len();
+    let rest = &trimmed[start..];
+    let end = rest.find("```")?;
+    Some(rest[..end].trim().to_string())
+}
+
+fn write_chat_merge_memories(
+    response: &ChatMergeResponse,
+    selected: &[ChatRecord],
+) -> Result<Vec<MemoryRecord>> {
+    let store = memory_store();
+    response
+        .memories
+        .iter()
+        .map(|memory| {
+            store.add_input(MemoryInput {
+                text: memory.text.trim().to_string(),
+                scope: nonempty_string(&memory.scope),
+                kind: nonempty_string(&memory.kind),
+                confidence: nonempty_string(&memory.confidence),
+                not_before: None,
+                evidence: memory.evidence.clone(),
+                sources: memory_sources_for_chat_ids(selected, &memory.source_chat_ids),
+            })
+        })
+        .collect()
+}
+
+fn memory_sources_for_chat_ids(selected: &[ChatRecord], ids: &[String]) -> Vec<MemorySource> {
+    ids.iter()
+        .filter_map(|id| {
+            selected
+                .iter()
+                .find(|chat| chat.id == *id || chat.source_id == *id)
+                .map(memory_source_from_chat)
+        })
+        .collect()
+}
+
+fn nonempty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn archive_chat_records(records: &[ChatRecord]) -> Result<Option<PathBuf>> {
+    if records.is_empty() {
+        return Ok(None);
+    }
+    let archive_dir = djinn_core::default_cache_dir().join("chat-archives");
+    fs::create_dir_all(&archive_dir)
+        .with_context(|| format!("creating chat archive dir {}", archive_dir.display()))?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let path = archive_dir.join(format!("merge-{stamp}.jsonl"));
+    let mut rendered = String::new();
+    for record in records {
+        rendered.push_str(&serde_json::to_string(record)?);
+        rendered.push('\n');
+    }
+    fs::write(&path, rendered)
+        .with_context(|| format!("writing chat archive {}", path.display()))?;
+    delete_chats_silent(
+        &records
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    Ok(Some(path))
+}
+
+fn format_chat_summary_agent_prompt(records: &[ChatRecord], args: &ShareChatsArgs) -> String {
+    let mut out = String::from(
+        "Please summarize the selected saved chats below so we can continue discussing them.\n\n",
+    );
+    out.push_str("Focus on:\n");
+    out.push_str("- main themes and outcomes;\n");
+    out.push_str("- important decisions;\n");
+    out.push_str("- unresolved follow-ups;\n");
+    out.push_str("- potentially reusable memories, clearly labeled as possible memories only.\n\n");
+    out.push_str("Do not write memories automatically. If sanitized exports hide the source text, say that the available detail is limited.\n");
     append_chats_bundle(&mut out, records, args.max_chars_per_chat);
     out
 }
@@ -7046,7 +7430,7 @@ fn format_chats_review_prompt(
     out
 }
 
-fn format_chats_candidate_prompt(
+fn format_chats_promotion_prompt(
     records: &[ChatRecord],
     args: &ShareChatsArgs,
     memories: &[MemoryRecord],
@@ -7054,7 +7438,7 @@ fn format_chats_candidate_prompt(
     let mut out = format_chats_review_prompt(records, args, memories);
     out = out.replace("# Djinn Multi-Chat Review", "# Djinn Multi-Chat Promotion");
     out.push_str(
-        "\n\n## Promotion Output\n\nReturn reviewed `djinn add memory` commands. Include scope, kind, confidence, copied evidence, and one or more `--source-chat` pointers when available. Use `--not-before YYYY-MM-DD` when a future activation date is appropriate. Example:\n\n```bash\ndjinn add memory \"...\" --scope project --kind convention --confidence high --not-before 2026-10-01 --evidence \"Repeated across reviewed chats ...\" --source-chat CHAT_ID\n```\n\nThe user will accept or reject memories with `djinn accept memory <id>` / `djinn reject memory <id>`.\n",
+        "\n\n## Promotion Output\n\nReturn reviewed `djinn add memory` commands. Include scope, kind, confidence, copied evidence, and one or more `--source-chat` pointers when available. Use `--not-before YYYY-MM-DD` when a future activation date is appropriate. Example:\n\n```bash\ndjinn add memory \"...\" --scope project --kind convention --confidence high --not-before 2026-10-01 --evidence \"Repeated across reviewed chats ...\" --source-chat CHAT_ID\n```\n\nThe user can review memories for downstream suggestions with `djinn accept memory <id>` or remove them with `djinn reject memory <id>`.\n",
     );
     out
 }
@@ -7079,7 +7463,8 @@ fn append_chats_bundle(out: &mut String, records: &[ChatRecord], max_chars_per_c
             out.push_str(&format!("- Source path: {}\n", record.source_path));
         }
         out.push_str("\n```text\n");
-        let (body, truncated) = truncate_with_flag(&record.content, max_chars_per_chat);
+        let content = share_chat_content(record);
+        let (body, truncated) = truncate_with_flag(&content, max_chars_per_chat);
         out.push_str(&body);
         if !body.ends_with('\n') {
             out.push('\n');
@@ -7090,6 +7475,132 @@ fn append_chats_bundle(out: &mut String, records: &[ChatRecord], max_chars_per_c
             ));
         }
         out.push_str("```\n");
+    }
+}
+
+fn share_chat_content(record: &ChatRecord) -> String {
+    if record.source.trim() == "opencode" {
+        if let Some(content) = format_opencode_export_for_share(&record.content) {
+            return content;
+        }
+        if content_looks_like_json(&record.content) {
+            return "OpenCode export digest\n- This OpenCode export looked like JSON but could not be parsed, so Djinn did not include the raw payload.\n".to_string();
+        }
+    }
+    record.content.clone()
+}
+
+fn content_looks_like_json(content: &str) -> bool {
+    let trimmed = content.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with('[')
+}
+
+fn chat_content_appears_redacted(content: &str) -> bool {
+    content.contains("[redacted:") || content.contains("\"redacted\"")
+}
+
+fn format_opencode_export_for_share(export: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(export).ok()?;
+    let messages = value.get("messages").and_then(Value::as_array)?;
+    let mut out = String::from("OpenCode export digest\n");
+    if let Some(id) = value.pointer("/info/id").and_then(Value::as_str) {
+        out.push_str(&format!("- Session: {id}\n"));
+    }
+    if let Some(slug) = value.pointer("/info/slug").and_then(Value::as_str) {
+        out.push_str(&format!("- Slug: {slug}\n"));
+    }
+    let model = value
+        .pointer("/info/model/id")
+        .or_else(|| value.pointer("/info/modelID"))
+        .and_then(Value::as_str);
+    let provider = value
+        .pointer("/info/model/providerID")
+        .or_else(|| value.pointer("/info/providerID"))
+        .and_then(Value::as_str);
+    match (provider, model) {
+        (Some(provider), Some(model)) => out.push_str(&format!("- Model: {provider}/{model}\n")),
+        (None, Some(model)) => out.push_str(&format!("- Model: {model}\n")),
+        _ => {}
+    }
+    out.push_str(&format!("- Messages: {}\n", messages.len()));
+    let tool_count = opencode_export_tool_part_count(messages);
+    if tool_count > 0 {
+        out.push_str(&format!("- Tool calls/results: {tool_count}\n"));
+    }
+    if chat_content_appears_redacted(export) {
+        out.push_str("- Redaction: this export appears sanitized; message/tool text may be unavailable. Re-import unsanitized only when it is safe to do so.\n");
+    }
+
+    out.push_str("\nTranscript excerpt:\n");
+    let mut appended = 0usize;
+    for message in messages {
+        let role = message
+            .pointer("/info/role")
+            .and_then(Value::as_str)
+            .unwrap_or("message");
+        let text = opencode_message_share_text(message);
+        if text.trim().is_empty() {
+            continue;
+        }
+        appended += 1;
+        out.push_str(&format!("\n{}:\n{}\n", title_case_role(role), text));
+    }
+    if appended == 0 {
+        out.push_str("\nNo readable message text was available in this export.\n");
+    }
+    Some(out)
+}
+
+fn opencode_export_tool_part_count(messages: &[Value]) -> usize {
+    messages
+        .iter()
+        .flat_map(|message| {
+            message
+                .get("parts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("tool"))
+        .count()
+}
+
+fn opencode_message_share_text(message: &Value) -> String {
+    let mut lines = Vec::new();
+    for part in message
+        .get("parts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        match part.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    push_nonempty_opencode_line(&mut lines, text);
+                }
+            }
+            Some("tool") => {
+                if let Some(title) = part.pointer("/state/title").and_then(Value::as_str) {
+                    push_nonempty_opencode_line(&mut lines, &format!("Tool: {title}"));
+                } else if let Some(tool) = part.get("tool").and_then(Value::as_str) {
+                    push_nonempty_opencode_line(&mut lines, &format!("Tool: {tool}"));
+                }
+                if let Some(output) = part.pointer("/state/output").and_then(Value::as_str) {
+                    push_nonempty_opencode_line(&mut lines, output);
+                }
+            }
+            Some("reasoning") | Some("step-start") => {}
+            _ => {}
+        }
+    }
+    lines.join("\n\n")
+}
+
+fn title_case_role(role: &str) -> String {
+    let mut chars = role.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => "Message".to_string(),
     }
 }
 
@@ -7154,7 +7665,7 @@ fn resolve_tool<'a>(entries: &'a [ToolEntry], name: &str) -> Result<&'a ToolEntr
     }
 }
 
-fn resolve_candidate<'a>(records: &'a [MemoryCandidate], id: &str) -> Result<&'a MemoryCandidate> {
+fn resolve_memory<'a>(records: &'a [MemoryRecord], id: &str) -> Result<&'a MemoryRecord> {
     if let Some(record) = records.iter().find(|record| record.id == id) {
         return Ok(record);
     }
@@ -7185,11 +7696,11 @@ fn resolve_candidate<'a>(records: &'a [MemoryCandidate], id: &str) -> Result<&'a
     }
 }
 
-fn resolve_candidate_ids(records: &[MemoryCandidate], ids: &[String]) -> Result<Vec<String>> {
+fn resolve_memory_ids(records: &[MemoryRecord], ids: &[String]) -> Result<Vec<String>> {
     let mut seen = HashSet::new();
     let mut resolved = Vec::new();
     for id in ids {
-        let record = resolve_candidate(records, id)?;
+        let record = resolve_memory(records, id)?;
         if seen.insert(record.id.clone()) {
             resolved.push(record.id.clone());
         }
@@ -7384,6 +7895,25 @@ fn select_chats_for_share(
     Ok(selected)
 }
 
+fn select_chats_for_merge(
+    records: &[ChatRecord],
+    args: &ShareMergeArgs,
+) -> Result<Vec<ChatRecord>> {
+    select_chats_for_share(
+        records,
+        &ShareChatsArgs {
+            ids: args.ids.clone(),
+            source: args.source.clone(),
+            query: args.query.clone(),
+            limit: args.limit,
+            all: args.all,
+            mode: ShareChatsMode::Memories,
+            context_only: false,
+            max_chars_per_chat: args.max_chars_per_chat,
+        },
+    )
+}
+
 fn resolve_chat<'a>(records: &'a [ChatRecord], id: &str) -> Result<&'a ChatRecord> {
     if let Some(record) = records.iter().find(|record| record.id == id) {
         return Ok(record);
@@ -7437,7 +7967,7 @@ fn chat_matches(record: &ChatRecord, query: &str) -> bool {
         || record.content.to_lowercase().contains(query)
 }
 
-fn candidate_matches(record: &MemoryCandidate, query: &str) -> bool {
+fn memory_matches(record: &MemoryRecord, query: &str) -> bool {
     record.id.to_lowercase().contains(query)
         || record.text.to_lowercase().contains(query)
         || record.scope.to_lowercase().contains(query)
@@ -7547,7 +8077,7 @@ fn memory_source_chat_exists(source: &MemorySource, chats: &[ChatRecord]) -> boo
     })
 }
 
-fn format_candidate_suffix(record: &MemoryCandidate) -> String {
+fn format_memory_suffix(record: &MemoryRecord) -> String {
     let mut parts = Vec::new();
     if !record.scope.trim().is_empty() {
         parts.push(record.scope.as_str());
@@ -7563,9 +8093,6 @@ fn format_candidate_suffix(record: &MemoryCandidate) -> String {
     }
     if !record.sources.is_empty() {
         parts.push("sourced");
-    }
-    if record.reinforcement_count > 1 {
-        parts.push("reinforced");
     }
     if parts.is_empty() {
         String::new()
@@ -7726,10 +8253,6 @@ fn memory_store() -> djinn_memory::MemoryStore {
     djinn_memory::MemoryStore::default_in(&djinn_core::default_data_dir())
 }
 
-fn candidate_store() -> CandidateStore {
-    CandidateStore::default_in(&djinn_core::default_data_dir())
-}
-
 fn idea_store() -> IdeaStore {
     IdeaStore::default_in(&djinn_core::default_data_dir())
 }
@@ -7820,19 +8343,18 @@ mod tests {
         JsonlAgentSessionStore::default_in(&dir)
     }
 
-    fn test_candidate(kind: &str, text: &str) -> MemoryCandidate {
-        MemoryCandidate {
-            id: "candidate".to_string(),
+    fn test_memory(kind: &str, text: &str) -> MemoryRecord {
+        MemoryRecord {
+            id: "memory".to_string(),
             text: text.to_string(),
             created_at: "2026-07-09".to_string(),
-            status: "pending".to_string(),
+            status: "active".to_string(),
             scope: "project:djinn".to_string(),
             kind: kind.to_string(),
             confidence: "medium".to_string(),
             not_before: String::new(),
             evidence: Vec::new(),
             sources: Vec::new(),
-            reinforcement_count: 1,
         }
     }
 
@@ -8376,7 +8898,7 @@ mod tests {
                 && entry.label == "Open Suggestions"
                 && entry.command
                     == djinn_tui::AgentChatCommand::OpenDashboardTab(
-                        djinn_tui::DashboardTab::Memories,
+                        djinn_tui::DashboardTab::Suggestions,
                     )
         }));
     }
@@ -8986,6 +9508,206 @@ mod tests {
     }
 
     #[test]
+    fn share_chats_renders_opencode_exports_as_digest_not_raw_json() {
+        let records = vec![test_chat(
+            "opencode-session-ses-test",
+            "OpenCode session ses_test",
+            "opencode",
+            r#"{
+              "info": {
+                "id": "ses_test",
+                "slug": "quiet-cactus",
+                "model": {"id": "gpt-5.5", "providerID": "openai"}
+              },
+              "messages": [
+                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "Please fix the CLI output"}]},
+                {"info": {"role": "assistant"}, "parts": [
+                  {"type": "reasoning", "text": "hidden chain of thought"},
+                  {"type": "tool", "tool": "read", "state": {"title": "Read main.rs", "output": "found share code"}},
+                  {"type": "text", "text": "I updated the formatter."}
+                ]}
+              ]
+            }"#,
+        )];
+        let mut args = default_share_chats_args();
+        args.mode = ShareChatsMode::Summary;
+
+        let prompt = format_chats_review_prompt(&records, &args, &[]);
+
+        assert!(prompt.contains("OpenCode export digest"));
+        assert!(prompt.contains("- Session: ses_test"));
+        assert!(prompt.contains("- Model: openai/gpt-5.5"));
+        assert!(prompt.contains("User:\nPlease fix the CLI output"));
+        assert!(prompt.contains("Assistant:\nTool: Read main.rs"));
+        assert!(prompt.contains("I updated the formatter."));
+        assert!(!prompt.contains("\"messages\""));
+        assert!(!prompt.contains("hidden chain of thought"));
+    }
+
+    #[test]
+    fn share_chats_warns_when_opencode_export_is_sanitized() {
+        let records = vec![test_chat(
+            "opencode-session-ses-test",
+            "OpenCode session ses_test",
+            "opencode",
+            r#"{
+              "info": {"id": "ses_test"},
+              "messages": [
+                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "[redacted:text:part]"}]}
+              ]
+            }"#,
+        )];
+        let mut args = default_share_chats_args();
+        args.mode = ShareChatsMode::Summary;
+
+        let prompt = format_chats_review_prompt(&records, &args, &[]);
+
+        assert!(prompt.contains("OpenCode export digest"));
+        assert!(prompt.contains("Redaction: this export appears sanitized"));
+        assert!(!prompt.contains("\"parts\""));
+    }
+
+    #[test]
+    fn share_chats_summary_is_human_facing_not_agent_prompt() {
+        let records = vec![test_chat(
+            "opencode-session-ses-test",
+            "OpenCode session ses_test",
+            "opencode",
+            r#"{
+              "info": {"id": "ses_test", "slug": "quiet-cactus"},
+              "messages": [
+                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "Need a useful summary"}]},
+                {"info": {"role": "assistant"}, "parts": [{"type": "text", "text": "Here is the useful result."}]}
+              ]
+            }"#,
+        )];
+        let mut args = default_share_chats_args();
+        args.mode = ShareChatsMode::Summary;
+
+        let summary = format_chats_summary(&records, &args);
+
+        assert!(summary.starts_with("# Djinn Chat Summary"));
+        assert!(summary.contains("This is a local digest"));
+        assert!(summary.contains("User:\nNeed a useful summary"));
+        assert!(summary.contains("Assistant:\nHere is the useful result."));
+        assert!(!summary.contains("You are reviewing"));
+        assert!(!summary.contains("Return Markdown"));
+        assert!(!summary.contains("## Existing Memories"));
+        assert!(!summary.contains("\"messages\""));
+    }
+
+    #[test]
+    fn chat_summary_agent_prompt_uses_digest_context_for_conversation() {
+        let records = vec![test_chat(
+            "opencode-session-ses-test",
+            "OpenCode session ses_test",
+            "opencode",
+            r#"{
+              "info": {"id": "ses_test", "slug": "quiet-cactus"},
+              "messages": [
+                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "Summarize this in chat"}]},
+                {"info": {"role": "assistant"}, "parts": [{"type": "text", "text": "Ready for follow-up."}]}
+              ]
+            }"#,
+        )];
+        let mut args = default_share_chats_args();
+        args.mode = ShareChatsMode::Summary;
+
+        let prompt = format_chat_summary_agent_prompt(&records, &args);
+
+        assert!(prompt.starts_with("Please summarize the selected saved chats"));
+        assert!(prompt.contains("so we can continue discussing them"));
+        assert!(prompt.contains("OpenCode export digest"));
+        assert!(prompt.contains("User:\nSummarize this in chat"));
+        assert!(prompt.contains("Assistant:\nReady for follow-up."));
+        assert!(!prompt.contains("\"messages\""));
+    }
+
+    #[test]
+    fn chat_merge_prompt_requires_direct_memories_not_candidates() {
+        let records = vec![test_chat(
+            "chat-one",
+            "Tooling discussion",
+            "manual",
+            "Prefer using the local wrapper for repeatable tasks.",
+        )];
+        let args = ShareMergeArgs {
+            ids: Vec::new(),
+            source: None,
+            query: None,
+            limit: 50,
+            all: false,
+            max_chars_per_chat: 4000,
+            max_memories: 5,
+            archive: true,
+            dry_run: true,
+            profile: "default".to_string(),
+            model: None,
+            api_key: None,
+            base_url: None,
+        };
+
+        let prompt = format_chats_merge_prompt(&records, &args);
+
+        assert!(prompt.contains("Group related sessions by topic/workflow"));
+        assert!(prompt.contains("active immediately"));
+        assert!(prompt.contains("Do not create an inbox, candidates, suggestions, or todos"));
+        assert!(prompt.contains("source_chat_ids"));
+        assert!(prompt.contains("Tooling discussion"));
+    }
+
+    #[test]
+    fn chat_merge_response_parses_fenced_json_and_filters_empty_memories() {
+        let parsed = parse_chat_merge_response(
+            r#"```json
+{
+  "groups": [{"title": "Tooling", "chat_ids": ["chat-one"], "rationale": "same topic"}],
+  "memories": [
+    {"text": "Use local wrappers for repeatable tasks.", "scope": "project", "kind": "workflow", "confidence": "high", "evidence": ["wrapper discussion"], "source_chat_ids": ["chat-one"]},
+    {"text": "   "}
+  ]
+}
+```"#,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.groups.len(), 1);
+        assert_eq!(parsed.memories.len(), 1);
+        assert_eq!(
+            parsed.memories[0].text,
+            "Use local wrappers for repeatable tasks."
+        );
+        assert_eq!(parsed.memories[0].source_chat_ids, vec!["chat-one"]);
+    }
+
+    #[test]
+    fn chat_merge_memory_sources_preserve_chat_provenance() {
+        let records = vec![test_chat("chat-one", "One", "opencode", "ses_one")];
+
+        let sources = memory_sources_for_chat_ids(&records, &["chat-one".to_string()]);
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].chat_id, "chat-one");
+        assert_eq!(sources[0].source_id, "source-chat-one");
+        assert_eq!(sources[0].title, "One");
+    }
+
+    #[test]
+    fn opencode_share_content_does_not_fall_back_to_raw_broken_json() {
+        let record = test_chat(
+            "opencode-session-ses-test",
+            "Broken OpenCode session",
+            " opencode ",
+            r#"{"info":{"id":"ses_test"},"messages":["#,
+        );
+
+        let content = share_chat_content(&record);
+
+        assert!(content.contains("looked like JSON but could not be parsed"));
+        assert!(!content.contains("\"messages\""));
+    }
+
+    #[test]
     fn extract_account_id_from_jwt_reads_nested_openai_claim() {
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct-1"}}"#);
@@ -9086,56 +9808,42 @@ mod tests {
     }
 
     #[test]
-    fn infer_ingest_target_routes_candidate_kinds() {
+    fn infer_ingest_target_routes_memory_kinds() {
         assert_eq!(
-            infer_ingest_target(&test_candidate("instruction", "Use uv")),
+            infer_ingest_target(&test_memory("instruction", "Use uv")),
             IngestTarget::Suggestion
         );
         assert_eq!(
-            infer_ingest_target(&test_candidate("skill-proposal", "Reusable workflow")),
+            infer_ingest_target(&test_memory("skill-proposal", "Reusable workflow")),
             IngestTarget::Skill
         );
         assert_eq!(
-            infer_ingest_target(&test_candidate("idea", "Consider better search")),
+            infer_ingest_target(&test_memory("idea", "Consider better search")),
             IngestTarget::Idea
         );
         assert_eq!(
-            infer_ingest_target(&test_candidate("action", "TODO: review docs")),
+            infer_ingest_target(&test_memory("action", "TODO: review docs")),
             IngestTarget::Action
         );
         assert_eq!(
-            infer_ingest_target(&test_candidate("preference", "Prefer concise output")),
+            infer_ingest_target(&test_memory("preference", "Prefer concise output")),
             IngestTarget::Suggestion
         );
-    }
-
-    #[test]
-    fn pending_memories_excludes_accepted_items() {
-        let mut accepted = test_candidate("preference", "Already reviewed");
-        accepted.id = "accepted".to_string();
-        accepted.status = "accepted".to_string();
-        let mut pending = test_candidate("preference", "Needs review");
-        pending.id = "pending".to_string();
-
-        let records = pending_memories(vec![accepted, pending]);
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].id, "pending");
     }
 
     #[test]
     fn format_memory_review_prompt_creates_suggestions_from_memories() {
-        let memories = vec![MemoryCandidate {
+        let memories = vec![MemoryRecord {
             id: "djinn-session-note".to_string(),
             text: "Djinn implementation session detail".to_string(),
             created_at: "2026-07-09".to_string(),
-            status: "pending".to_string(),
+            status: "active".to_string(),
             scope: "project:djinn".to_string(),
             kind: "implementation-note".to_string(),
             confidence: "medium".to_string(),
             not_before: String::new(),
             evidence: vec!["Captured during a Djinn session.".to_string()],
             sources: Vec::new(),
-            reinforcement_count: 1,
         }];
         let suggestions = vec![SuggestionRecord {
             id: "suggestion".to_string(),

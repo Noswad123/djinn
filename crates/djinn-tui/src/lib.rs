@@ -14,7 +14,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode};
 use djinn_chats::ChatRecord;
 use djinn_contexts::ContextRecord;
-use djinn_memory::{MemoryCandidate, SuggestionRecord};
+use djinn_memory::{MemoryRecord, SuggestionRecord};
 use djinn_skills::SkillRecord;
 use djinn_tools::ToolEntry;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -84,7 +84,7 @@ impl TuiSession {
         &mut self,
         tools: Vec<ToolEntry>,
         chats: Vec<ChatRecord>,
-        candidates: Vec<MemoryCandidate>,
+        memories: Vec<MemoryRecord>,
         suggestions: Vec<SuggestionRecord>,
         skills: Vec<SkillRecord>,
         active_context: Option<ContextRecord>,
@@ -98,7 +98,7 @@ impl TuiSession {
             &mut self.terminal,
             tools,
             chats,
-            candidates,
+            memories,
             suggestions,
             skills,
             active_context,
@@ -183,7 +183,7 @@ where
 pub fn run_dashboard(
     tools: Vec<ToolEntry>,
     chats: Vec<ChatRecord>,
-    candidates: Vec<MemoryCandidate>,
+    memories: Vec<MemoryRecord>,
     suggestions: Vec<SuggestionRecord>,
     skills: Vec<SkillRecord>,
     active_context: Option<ContextRecord>,
@@ -194,7 +194,7 @@ pub fn run_dashboard(
         &mut terminal,
         tools,
         chats,
-        candidates,
+        memories,
         suggestions,
         skills,
         active_context,
@@ -208,7 +208,7 @@ pub fn run_dashboard(
 pub fn run_dashboard_with_handler<F>(
     tools: Vec<ToolEntry>,
     chats: Vec<ChatRecord>,
-    candidates: Vec<MemoryCandidate>,
+    memories: Vec<MemoryRecord>,
     suggestions: Vec<SuggestionRecord>,
     skills: Vec<SkillRecord>,
     active_context: Option<ContextRecord>,
@@ -223,7 +223,7 @@ where
         &mut terminal,
         tools,
         chats,
-        candidates,
+        memories,
         suggestions,
         skills,
         active_context,
@@ -248,8 +248,8 @@ pub enum TuiAction {
     OpenTool(ToolEntry),
     OpenSkill(SkillRecord),
     ShareChats(ChatShareRequest),
-    AcceptCandidate(String),
-    RejectCandidates(Vec<String>),
+    ReviewMemory(String),
+    DeleteMemories(Vec<String>),
     DeleteChatRows(ChatDeleteRequest),
     DeleteSuggestions(Vec<String>),
 }
@@ -386,8 +386,8 @@ pub enum AgentChatExit {
 pub enum DashboardTab {
     Tools,
     Chats,
-    Candidates,
     Memories,
+    Suggestions,
     Skills,
 }
 
@@ -396,8 +396,8 @@ impl DashboardTab {
         match self {
             DashboardTab::Tools => 0,
             DashboardTab::Chats => 1,
-            DashboardTab::Candidates => 2,
-            DashboardTab::Memories => 3,
+            DashboardTab::Memories => 2,
+            DashboardTab::Suggestions => 3,
             DashboardTab::Skills => 4,
         }
     }
@@ -406,8 +406,8 @@ impl DashboardTab {
         match index % DASHBOARD_TABS.len() {
             0 => DashboardTab::Tools,
             1 => DashboardTab::Chats,
-            2 => DashboardTab::Candidates,
-            3 => DashboardTab::Memories,
+            2 => DashboardTab::Memories,
+            3 => DashboardTab::Suggestions,
             _ => DashboardTab::Skills,
         }
     }
@@ -1285,7 +1285,7 @@ fn run_dashboard_loop(
     terminal: &mut TuiTerminal,
     tools: Vec<ToolEntry>,
     chats: Vec<ChatRecord>,
-    candidates: Vec<MemoryCandidate>,
+    memories: Vec<MemoryRecord>,
     suggestions: Vec<SuggestionRecord>,
     skills: Vec<SkillRecord>,
     active_context: Option<ContextRecord>,
@@ -1295,7 +1295,7 @@ fn run_dashboard_loop(
     let mut app = DashboardApp::new(
         tools,
         chats,
-        candidates,
+        memories,
         suggestions,
         skills,
         active_context,
@@ -1357,19 +1357,53 @@ fn run_dashboard_loop(
                     continue;
                 }
 
-                if app.chats.mode == ChatUiMode::Options && app.active_tab == DashboardTab::Chats {
-                    match key.code {
-                        KeyCode::Char('q') => return Ok(None),
-                        KeyCode::Esc | KeyCode::Backspace => app.chats.mode = ChatUiMode::Selecting,
-                        KeyCode::Char('j') | KeyCode::Down => app.chats.next_option(),
-                        KeyCode::Char('k') | KeyCode::Up => app.chats.previous_option(),
-                        KeyCode::Char('c') => app.chats.context_only = !app.chats.context_only,
-                        KeyCode::Enter => {
-                            return Ok(app.chats.share_request().map(TuiAction::ShareChats));
+                if app.active_tab == DashboardTab::Chats {
+                    match &app.chats.mode {
+                        ChatUiMode::Options => {
+                            match key.code {
+                                KeyCode::Char('q') => return Ok(None),
+                                KeyCode::Esc | KeyCode::Backspace => {
+                                    app.chats.mode = ChatUiMode::Selecting
+                                }
+                                KeyCode::Char('j') | KeyCode::Down => app.chats.next_option(),
+                                KeyCode::Char('k') | KeyCode::Up => app.chats.previous_option(),
+                                KeyCode::Char('c') => {
+                                    app.chats.context_only = !app.chats.context_only
+                                }
+                                KeyCode::Enter => {
+                                    return Ok(app
+                                        .chats
+                                        .share_request()
+                                        .map(TuiAction::ShareChats));
+                                }
+                                _ => {}
+                            }
+                            continue;
                         }
-                        _ => {}
+                        ChatUiMode::ConfirmDelete(_) => {
+                            match key.code {
+                                KeyCode::Enter | KeyCode::Char('y') => {
+                                    if let Some(action) = app.chats.confirm_delete_action() {
+                                        if handle_continue_action(
+                                            &mut app,
+                                            &mut on_continue_action,
+                                            action.clone(),
+                                        )? {
+                                            continue;
+                                        }
+                                        return Ok(Some(action));
+                                    }
+                                }
+                                KeyCode::Esc
+                                | KeyCode::Backspace
+                                | KeyCode::Char('n')
+                                | KeyCode::Char('q') => app.chats.cancel_modal(),
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        ChatUiMode::Selecting => {}
                     }
-                    continue;
                 }
 
                 if app.filter_editing() {
@@ -1400,9 +1434,9 @@ fn run_dashboard_loop(
                     KeyCode::Char('u') | KeyCode::PageUp => app.scroll_up(),
                     KeyCode::Char(' ') => app.toggle_selected(),
                     KeyCode::Char('a') => {
-                        if app.active_tab == DashboardTab::Candidates {
-                            if let Some(id) = app.candidates.selected_candidate_id() {
-                                return Ok(Some(TuiAction::AcceptCandidate(id)));
+                        if app.active_tab == DashboardTab::Memories {
+                            if let Some(id) = app.memories.selected_memory_id() {
+                                return Ok(Some(TuiAction::ReviewMemory(id)));
                             }
                         } else {
                             app.toggle_all();
@@ -1426,17 +1460,17 @@ fn run_dashboard_loop(
                                 return Ok(Some(TuiAction::OpenSkill(skill)));
                             }
                         }
-                        DashboardTab::Candidates | DashboardTab::Memories => {}
+                        DashboardTab::Memories | DashboardTab::Suggestions => {}
                     },
                     KeyCode::Char('r') => {
                         if app.active_tab == DashboardTab::Chats {
                             if let Some(request) = app.chats.selected_chat_session_request() {
                                 return Ok(Some(TuiAction::OpenChatSession(request)));
                             }
-                        } else if app.active_tab == DashboardTab::Candidates {
-                            let ids = app.candidates.selected_candidate_ids();
+                        } else if app.active_tab == DashboardTab::Memories {
+                            let ids = app.memories.selected_memory_ids();
                             if !ids.is_empty() {
-                                let action = TuiAction::RejectCandidates(ids);
+                                let action = TuiAction::DeleteMemories(ids);
                                 if handle_continue_action(
                                     &mut app,
                                     &mut on_continue_action,
@@ -1455,33 +1489,23 @@ fn run_dashboard_loop(
                     }
                     KeyCode::Char('x') | KeyCode::Delete => match app.active_tab {
                         DashboardTab::Chats => {
-                            if let Some(request) = app.chats.delete_request() {
-                                let action = TuiAction::DeleteChatRows(request);
-                                if handle_continue_action(
-                                    &mut app,
-                                    &mut on_continue_action,
-                                    action.clone(),
-                                )? {
-                                    continue;
-                                }
-                                return Ok(Some(action));
-                            }
-                        }
-                        DashboardTab::Candidates => {
-                            let ids = app.candidates.selected_candidate_ids();
-                            if !ids.is_empty() {
-                                let action = TuiAction::RejectCandidates(ids);
-                                if handle_continue_action(
-                                    &mut app,
-                                    &mut on_continue_action,
-                                    action.clone(),
-                                )? {
-                                    continue;
-                                }
-                                return Ok(Some(action));
-                            }
+                            app.chats.open_delete_confirmation();
                         }
                         DashboardTab::Memories => {
+                            let ids = app.memories.selected_memory_ids();
+                            if !ids.is_empty() {
+                                let action = TuiAction::DeleteMemories(ids);
+                                if handle_continue_action(
+                                    &mut app,
+                                    &mut on_continue_action,
+                                    action.clone(),
+                                )? {
+                                    continue;
+                                }
+                                return Ok(Some(action));
+                            }
+                        }
+                        DashboardTab::Suggestions => {
                             let ids = app.suggestions.selected_suggestion_ids();
                             if !ids.is_empty() {
                                 let action = TuiAction::DeleteSuggestions(ids);
@@ -1544,7 +1568,7 @@ fn handle_dashboard_command(
                     return Ok(Some(TuiAction::OpenSkill(skill)));
                 }
             }
-            DashboardTab::Candidates | DashboardTab::Memories => {}
+            DashboardTab::Memories | DashboardTab::Suggestions => {}
         },
         DashboardCommand::ResumeSelectedChat => {
             if let Some(request) = app.chats.selected_chat_session_request() {
@@ -1555,8 +1579,8 @@ fn handle_dashboard_command(
         DashboardCommand::ToggleSelected => app.toggle_selected(),
         DashboardCommand::ToggleAll => app.toggle_all(),
         DashboardCommand::AcceptSelected => {
-            if let Some(id) = app.candidates.selected_candidate_id() {
-                return Ok(Some(TuiAction::AcceptCandidate(id)));
+            if let Some(id) = app.memories.selected_memory_id() {
+                return Ok(Some(TuiAction::ReviewMemory(id)));
             }
         }
         DashboardCommand::RejectSelected => {
@@ -1568,7 +1592,9 @@ fn handle_dashboard_command(
             }
         }
         DashboardCommand::DeleteSelected => {
-            if let Some(action) = app.delete_selected_action() {
+            if app.active_tab == DashboardTab::Chats {
+                app.chats.open_delete_confirmation();
+            } else if let Some(action) = app.delete_selected_action() {
                 if handle_continue_action(app, on_continue_action, action.clone())? {
                     return Ok(None);
                 }
@@ -1583,7 +1609,7 @@ struct DashboardApp {
     active_tab: DashboardTab,
     tools: ToolsApp,
     chats: ChatsApp,
-    candidates: CandidatesApp,
+    memories: MemoriesApp,
     suggestions: SuggestionsApp,
     skills: SkillsApp,
     active_context: Option<ContextRecord>,
@@ -1595,7 +1621,7 @@ impl DashboardApp {
     fn new(
         tools: Vec<ToolEntry>,
         chats: Vec<ChatRecord>,
-        candidates: Vec<MemoryCandidate>,
+        memories: Vec<MemoryRecord>,
         suggestions: Vec<SuggestionRecord>,
         skills: Vec<SkillRecord>,
         active_context: Option<ContextRecord>,
@@ -1605,7 +1631,7 @@ impl DashboardApp {
             active_tab: initial_tab,
             tools: ToolsApp::new(tools),
             chats: ChatsApp::new(chats),
-            candidates: CandidatesApp::new(candidates),
+            memories: MemoriesApp::new(memories),
             suggestions: SuggestionsApp::new(suggestions),
             skills: SkillsApp::new(skills),
             active_context,
@@ -1698,14 +1724,14 @@ impl DashboardApp {
             DashboardCommandEntry {
                 section: "Navigation".to_string(),
                 label: "Open Memories".to_string(),
-                description: "Jump to pending memories".to_string(),
-                command: DashboardCommand::OpenTab(DashboardTab::Candidates),
+                description: "Jump to active memories".to_string(),
+                command: DashboardCommand::OpenTab(DashboardTab::Memories),
             },
             DashboardCommandEntry {
                 section: "Navigation".to_string(),
                 label: "Open Suggestions".to_string(),
                 description: "Jump to suggestions".to_string(),
-                command: DashboardCommand::OpenTab(DashboardTab::Memories),
+                command: DashboardCommand::OpenTab(DashboardTab::Suggestions),
             },
             DashboardCommandEntry {
                 section: "Navigation".to_string(),
@@ -1750,7 +1776,7 @@ impl DashboardApp {
                 dashboard_command_entry(
                     "Chats",
                     "Share selected chats",
-                    "Open share options for selected chats",
+                    "Open share options for selected saved chat rows",
                     DashboardCommand::ShareChats,
                 ),
                 dashboard_command_entry(
@@ -1778,11 +1804,11 @@ impl DashboardApp {
                     DashboardCommand::ToggleFilter,
                 ),
             ],
-            DashboardTab::Candidates => vec![
+            DashboardTab::Memories => vec![
                 dashboard_command_entry(
                     "Memories",
                     "Review selected memory",
-                    "Accept/review the highlighted pending memory",
+                    "Review the highlighted memory for suggested actions",
                     DashboardCommand::AcceptSelected,
                 ),
                 dashboard_command_entry(
@@ -1799,8 +1825,8 @@ impl DashboardApp {
                 ),
                 dashboard_command_entry(
                     "Memories",
-                    "Reject selected memories",
-                    "Reject and remove selected memories",
+                    "Remove selected memories",
+                    "Remove selected memories",
                     DashboardCommand::RejectSelected,
                 ),
                 dashboard_command_entry(
@@ -1810,7 +1836,7 @@ impl DashboardApp {
                     DashboardCommand::ToggleFilter,
                 ),
             ],
-            DashboardTab::Memories => vec![
+            DashboardTab::Suggestions => vec![
                 dashboard_command_entry(
                     "Suggestions",
                     "Toggle selected suggestion",
@@ -1867,8 +1893,8 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.next(),
             DashboardTab::Chats => self.chats.next(),
-            DashboardTab::Candidates => self.candidates.next(),
-            DashboardTab::Memories => self.suggestions.next(),
+            DashboardTab::Memories => self.memories.next(),
+            DashboardTab::Suggestions => self.suggestions.next(),
             DashboardTab::Skills => self.skills.next(),
         }
     }
@@ -1877,8 +1903,8 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.previous(),
             DashboardTab::Chats => self.chats.previous(),
-            DashboardTab::Candidates => self.candidates.previous(),
-            DashboardTab::Memories => self.suggestions.previous(),
+            DashboardTab::Memories => self.memories.previous(),
+            DashboardTab::Suggestions => self.suggestions.previous(),
             DashboardTab::Skills => self.skills.previous(),
         }
     }
@@ -1887,8 +1913,8 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.scroll_down(),
             DashboardTab::Chats => self.chats.scroll_down(),
-            DashboardTab::Candidates => self.candidates.scroll_down(),
-            DashboardTab::Memories => self.suggestions.scroll_down(),
+            DashboardTab::Memories => self.memories.scroll_down(),
+            DashboardTab::Suggestions => self.suggestions.scroll_down(),
             DashboardTab::Skills => self.skills.scroll_down(),
         }
     }
@@ -1897,8 +1923,8 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.scroll_up(),
             DashboardTab::Chats => self.chats.scroll_up(),
-            DashboardTab::Candidates => self.candidates.scroll_up(),
-            DashboardTab::Memories => self.suggestions.scroll_up(),
+            DashboardTab::Memories => self.memories.scroll_up(),
+            DashboardTab::Suggestions => self.suggestions.scroll_up(),
             DashboardTab::Skills => self.skills.scroll_up(),
         }
     }
@@ -1907,8 +1933,8 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter.editing,
             DashboardTab::Chats => self.chats.filter.editing,
-            DashboardTab::Candidates => self.candidates.filter.editing,
-            DashboardTab::Memories => self.suggestions.filter.editing,
+            DashboardTab::Memories => self.memories.filter.editing,
+            DashboardTab::Suggestions => self.suggestions.filter.editing,
             DashboardTab::Skills => self.skills.filter.editing,
         }
     }
@@ -1917,8 +1943,8 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.toggle_filter(),
             DashboardTab::Chats => self.chats.toggle_filter(),
-            DashboardTab::Candidates => self.candidates.toggle_filter(),
-            DashboardTab::Memories => self.suggestions.toggle_filter(),
+            DashboardTab::Memories => self.memories.toggle_filter(),
+            DashboardTab::Suggestions => self.suggestions.toggle_filter(),
             DashboardTab::Skills => self.skills.toggle_filter(),
         }
     }
@@ -1927,8 +1953,8 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter_push(ch),
             DashboardTab::Chats => self.chats.filter_push(ch),
-            DashboardTab::Candidates => self.candidates.filter_push(ch),
-            DashboardTab::Memories => self.suggestions.filter_push(ch),
+            DashboardTab::Memories => self.memories.filter_push(ch),
+            DashboardTab::Suggestions => self.suggestions.filter_push(ch),
             DashboardTab::Skills => self.skills.filter_push(ch),
         }
     }
@@ -1937,8 +1963,8 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter_backspace(),
             DashboardTab::Chats => self.chats.filter_backspace(),
-            DashboardTab::Candidates => self.candidates.filter_backspace(),
-            DashboardTab::Memories => self.suggestions.filter_backspace(),
+            DashboardTab::Memories => self.memories.filter_backspace(),
+            DashboardTab::Suggestions => self.suggestions.filter_backspace(),
             DashboardTab::Skills => self.skills.filter_backspace(),
         }
     }
@@ -1947,8 +1973,8 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter.editing = false,
             DashboardTab::Chats => self.chats.filter.editing = false,
-            DashboardTab::Candidates => self.candidates.filter.editing = false,
-            DashboardTab::Memories => self.suggestions.filter.editing = false,
+            DashboardTab::Memories => self.memories.filter.editing = false,
+            DashboardTab::Suggestions => self.suggestions.filter.editing = false,
             DashboardTab::Skills => self.skills.filter.editing = false,
         }
     }
@@ -1956,8 +1982,8 @@ impl DashboardApp {
     fn toggle_selected(&mut self) {
         match self.active_tab {
             DashboardTab::Chats => self.chats.toggle_selected(),
-            DashboardTab::Candidates => self.candidates.toggle_selected(),
-            DashboardTab::Memories => self.suggestions.toggle_selected(),
+            DashboardTab::Memories => self.memories.toggle_selected(),
+            DashboardTab::Suggestions => self.suggestions.toggle_selected(),
             DashboardTab::Tools | DashboardTab::Skills => {}
         }
     }
@@ -1965,21 +1991,21 @@ impl DashboardApp {
     fn toggle_all(&mut self) {
         match self.active_tab {
             DashboardTab::Chats => self.chats.toggle_all(),
-            DashboardTab::Candidates => self.candidates.toggle_all(),
-            DashboardTab::Memories => self.suggestions.toggle_all(),
+            DashboardTab::Memories => self.memories.toggle_all(),
+            DashboardTab::Suggestions => self.suggestions.toggle_all(),
             DashboardTab::Tools | DashboardTab::Skills => {}
         }
     }
 
     fn reject_selected_action(&self) -> Option<TuiAction> {
         match self.active_tab {
-            DashboardTab::Candidates => {
-                let ids = self.candidates.selected_candidate_ids();
-                (!ids.is_empty()).then_some(TuiAction::RejectCandidates(ids))
+            DashboardTab::Memories => {
+                let ids = self.memories.selected_memory_ids();
+                (!ids.is_empty()).then_some(TuiAction::DeleteMemories(ids))
             }
             DashboardTab::Tools
             | DashboardTab::Chats
-            | DashboardTab::Memories
+            | DashboardTab::Suggestions
             | DashboardTab::Skills => None,
         }
     }
@@ -1987,8 +2013,8 @@ impl DashboardApp {
     fn delete_selected_action(&self) -> Option<TuiAction> {
         match self.active_tab {
             DashboardTab::Chats => self.chats.delete_request().map(TuiAction::DeleteChatRows),
-            DashboardTab::Candidates => self.reject_selected_action(),
-            DashboardTab::Memories => {
+            DashboardTab::Memories => self.reject_selected_action(),
+            DashboardTab::Suggestions => {
                 let ids = self.suggestions.selected_suggestion_ids();
                 (!ids.is_empty()).then_some(TuiAction::DeleteSuggestions(ids))
             }
@@ -2015,14 +2041,14 @@ impl DashboardApp {
     fn apply_completed_action(&mut self, action: &TuiAction) {
         match action {
             TuiAction::DeleteChatRows(request) => self.chats.remove_deleted_rows(request),
-            TuiAction::RejectCandidates(ids) => self.candidates.remove_ids(ids),
+            TuiAction::DeleteMemories(ids) => self.memories.remove_ids(ids),
             TuiAction::DeleteSuggestions(ids) => self.suggestions.remove_ids(ids),
             TuiAction::OpenTool(_)
             | TuiAction::OpenAgentChat
             | TuiAction::OpenChatSession(_)
             | TuiAction::OpenSkill(_)
             | TuiAction::ShareChats(_)
-            | TuiAction::AcceptCandidate(_) => {}
+            | TuiAction::ReviewMemory(_) => {}
         }
     }
 
@@ -2053,8 +2079,8 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.draw_body(frame, chunks[1]),
             DashboardTab::Chats => self.chats.draw_body(frame, chunks[1]),
-            DashboardTab::Candidates => self.candidates.draw_body(frame, chunks[1]),
-            DashboardTab::Memories => self.suggestions.draw_body(frame, chunks[1]),
+            DashboardTab::Memories => self.memories.draw_body(frame, chunks[1]),
+            DashboardTab::Suggestions => self.suggestions.draw_body(frame, chunks[1]),
             DashboardTab::Skills => self.skills.draw_body(frame, chunks[1]),
         }
 
@@ -2064,8 +2090,14 @@ impl DashboardApp {
             chunks[2],
         );
 
-        if self.active_tab == DashboardTab::Chats && self.chats.mode == ChatUiMode::Options {
-            self.chats.draw_options(frame);
+        if self.active_tab == DashboardTab::Chats {
+            match &self.chats.mode {
+                ChatUiMode::Options => self.chats.draw_options(frame),
+                ChatUiMode::ConfirmDelete(request) => {
+                    self.chats.draw_delete_confirmation(frame, request)
+                }
+                ChatUiMode::Selecting => {}
+            }
         }
         if self.help_open {
             self.draw_help(frame);
@@ -2178,7 +2210,7 @@ impl DashboardApp {
             ]),
             Line::from(vec![
                 Span::styled("x / Delete", selected_style()),
-                Span::raw(" remove persisted chats or Djinn sessions"),
+                Span::raw(" confirm removal of saved chats or Djinn sessions"),
             ]),
             Line::from(""),
             Line::from(Span::styled("Memories & Suggestions", title_style())),
@@ -2381,7 +2413,7 @@ fn run_chats_loop(
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
-                match app.mode {
+                match &app.mode {
                     ChatUiMode::Selecting => match key.code {
                         _ if app.filter.editing => match key.code {
                             KeyCode::Char('/') => app.toggle_filter(),
@@ -2410,16 +2442,24 @@ fn run_chats_loop(
                         KeyCode::Enter => return Ok(app.share_request()),
                         _ => {}
                     },
+                    ChatUiMode::ConfirmDelete(_) => match key.code {
+                        KeyCode::Esc
+                        | KeyCode::Backspace
+                        | KeyCode::Char('n')
+                        | KeyCode::Char('q') => app.cancel_modal(),
+                        _ => {}
+                    },
                 }
             }
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ChatUiMode {
     Selecting,
     Options,
+    ConfirmDelete(ChatDeleteRequest),
 }
 
 struct ChatsApp {
@@ -2528,9 +2568,10 @@ impl ChatsApp {
         self.ensure_selection_visible();
     }
 
-    fn selected_chat_ids(&self) -> Vec<String> {
+    fn selected_shareable_chat_ids(&self) -> Vec<String> {
         self.selected_chats()
             .into_iter()
+            .filter(|chat| chat.source != "djinn-agent")
             .map(|chat| chat.id.clone())
             .collect()
     }
@@ -2566,6 +2607,24 @@ impl ChatsApp {
             }
         }
         (!request.is_empty()).then_some(request)
+    }
+
+    fn open_delete_confirmation(&mut self) {
+        if let Some(request) = self.delete_request() {
+            self.mode = ChatUiMode::ConfirmDelete(request);
+        }
+    }
+
+    fn confirm_delete_action(&mut self) -> Option<TuiAction> {
+        let ChatUiMode::ConfirmDelete(request) = self.mode.clone() else {
+            return None;
+        };
+        self.mode = ChatUiMode::Selecting;
+        Some(TuiAction::DeleteChatRows(request))
+    }
+
+    fn cancel_modal(&mut self) {
+        self.mode = ChatUiMode::Selecting;
     }
 
     fn toggle_selected(&mut self) {
@@ -2617,7 +2676,7 @@ impl ChatsApp {
     }
 
     fn open_options(&mut self) {
-        if !self.chats.is_empty() {
+        if !self.selected_shareable_chat_ids().is_empty() {
             self.mode = ChatUiMode::Options;
         }
     }
@@ -2639,17 +2698,7 @@ impl ChatsApp {
     }
 
     fn share_request(&self) -> Option<ChatShareRequest> {
-        let chat_ids = self.selected_chat_ids();
-        let chat_ids = chat_ids
-            .into_iter()
-            .filter(|id| {
-                self.chats
-                    .iter()
-                    .find(|chat| chat.id == *id)
-                    .map(|chat| chat.source != "djinn-agent")
-                    .unwrap_or(false)
-            })
-            .collect::<Vec<_>>();
+        let chat_ids = self.selected_shareable_chat_ids();
         if chat_ids.is_empty() {
             return None;
         }
@@ -2669,7 +2718,7 @@ impl ChatsApp {
         self.draw_body(frame, chunks[0]);
 
         let help = Paragraph::new(
-            "↑/k ↓/j move • Space select • a all visible • Enter share options • x/Delete remove chats/sessions • PgUp/u PgDn/d scroll • q/Esc quit",
+            "↑/k ↓/j move • Space select • a all visible • Enter share options • x/Delete confirm removal • PgUp/u PgDn/d scroll • q/Esc quit",
         )
         .style(dim_style());
         frame.render_widget(Clear, chunks[1]);
@@ -2677,6 +2726,9 @@ impl ChatsApp {
 
         if self.mode == ChatUiMode::Options {
             self.draw_options(frame);
+        }
+        if let ChatUiMode::ConfirmDelete(request) = &self.mode {
+            self.draw_delete_confirmation(frame, request);
         }
     }
 
@@ -2765,7 +2817,10 @@ impl ChatsApp {
         let mut lines = vec![
             Line::from(Span::styled("Share selected chats", title_style())),
             Line::from(Span::styled(
-                format!("Chats: {}", self.selected_chat_ids().len()),
+                format!(
+                    "Shareable chats: {}",
+                    self.selected_shareable_chat_ids().len()
+                ),
                 dim_style(),
             )),
             Line::from(""),
@@ -2803,6 +2858,59 @@ impl ChatsApp {
 
         let modal = Paragraph::new(lines)
             .block(block("Share Options"))
+            .style(base_style())
+            .wrap(Wrap { trim: false });
+        frame.render_widget(Clear, area);
+        frame.render_widget(modal, area);
+    }
+
+    fn draw_delete_confirmation(&self, frame: &mut ratatui::Frame, request: &ChatDeleteRequest) {
+        let area = centered_rect(58, 34, frame.area());
+        let total = request.chat_ids.len() + request.agent_session_ids.len();
+        let mut lines = vec![
+            Line::from(Span::styled("Confirm removal", title_style())),
+            Line::from(""),
+            Line::from(format!("Selected items: {total}")),
+        ];
+        if !request.chat_ids.is_empty() {
+            lines.push(Line::from(format!(
+                "Saved chats: {}",
+                request.chat_ids.len()
+            )));
+            for id in request.chat_ids.iter().take(3) {
+                lines.push(Line::from(Span::styled(
+                    format!("  - {}", truncate_line(id, 52)),
+                    dim_style(),
+                )));
+            }
+        }
+        if !request.agent_session_ids.is_empty() {
+            lines.push(Line::from(format!(
+                "Djinn sessions: {}",
+                request.agent_session_ids.len()
+            )));
+            for id in request.agent_session_ids.iter().take(3) {
+                lines.push(Line::from(Span::styled(
+                    format!("  - {}", truncate_line(id, 52)),
+                    dim_style(),
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "This removes saved chats and deletes selected Djinn session JSONL files.",
+            dim_style(),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Enter / y", selected_style()),
+            Span::raw(" delete  •  "),
+            Span::styled("Esc / n", selected_style()),
+            Span::raw(" cancel"),
+        ]));
+
+        let modal = Paragraph::new(lines)
+            .block(block("Confirm Delete"))
             .style(base_style())
             .wrap(Wrap { trim: false });
         frame.render_widget(Clear, area);
@@ -3034,21 +3142,18 @@ impl SuggestionsApp {
     }
 }
 
-struct CandidatesApp {
-    candidates: Vec<MemoryCandidate>,
+struct MemoriesApp {
+    memories: Vec<MemoryRecord>,
     selected: usize,
     preview_scroll: u16,
     checked: HashSet<String>,
     filter: FilterState,
 }
 
-impl CandidatesApp {
-    fn new(candidates: Vec<MemoryCandidate>) -> Self {
+impl MemoriesApp {
+    fn new(memories: Vec<MemoryRecord>) -> Self {
         Self {
-            candidates: candidates
-                .into_iter()
-                .filter(is_pending_memory)
-                .collect::<Vec<_>>(),
+            memories,
             selected: 0,
             preview_scroll: 0,
             checked: HashSet::new(),
@@ -3084,46 +3189,46 @@ impl CandidatesApp {
         self.preview_scroll = self.preview_scroll.saturating_sub(8);
     }
 
-    fn selected_candidate(&self) -> Option<&MemoryCandidate> {
-        self.candidates
+    fn selected_memory(&self) -> Option<&MemoryRecord> {
+        self.memories
             .get(self.selected)
-            .filter(|candidate| self.candidate_matches(candidate))
+            .filter(|memory| self.memory_matches(memory))
     }
 
-    fn selected_candidate_id(&self) -> Option<String> {
-        self.selected_candidate()
-            .map(|candidate| candidate.id.clone())
+    fn selected_memory_id(&self) -> Option<String> {
+        self.selected_memory().map(|memory| memory.id.clone())
     }
 
-    fn selected_candidate_ids(&self) -> Vec<String> {
+    fn selected_memory_ids(&self) -> Vec<String> {
         if self.checked.is_empty() {
             return self
-                .selected_candidate()
-                .map(|candidate| vec![candidate.id.clone()])
+                .selected_memory()
+                .map(|memory| vec![memory.id.clone()])
                 .unwrap_or_default();
         }
-        self.candidates
+        self.memories
             .iter()
-            .filter(|candidate| self.checked.contains(&candidate.id))
-            .map(|candidate| candidate.id.clone())
+            .filter(|memory| self.checked.contains(&memory.id))
+            .map(|memory| memory.id.clone())
             .collect()
     }
 
     fn visible_indices(&self) -> Vec<usize> {
-        self.candidates
+        self.memories
             .iter()
             .enumerate()
-            .filter_map(|(idx, candidate)| self.candidate_matches(candidate).then_some(idx))
+            .filter_map(|(idx, memory)| self.memory_matches(memory).then_some(idx))
             .collect()
     }
 
-    fn candidate_matches(&self, candidate: &MemoryCandidate) -> bool {
-        fuzzy_match(&self.filter.query, &candidate.id)
-            || fuzzy_match(&self.filter.query, &candidate.text)
-            || fuzzy_match(&self.filter.query, &candidate.scope)
-            || fuzzy_match(&self.filter.query, &candidate.kind)
-            || fuzzy_match(&self.filter.query, &candidate.confidence)
-            || fuzzy_match(&self.filter.query, &candidate.not_before)
+    fn memory_matches(&self, memory: &MemoryRecord) -> bool {
+        fuzzy_match(&self.filter.query, &memory.id)
+            || fuzzy_match(&self.filter.query, &memory.text)
+            || fuzzy_match(&self.filter.query, &memory.status)
+            || fuzzy_match(&self.filter.query, &memory.scope)
+            || fuzzy_match(&self.filter.query, &memory.kind)
+            || fuzzy_match(&self.filter.query, &memory.confidence)
+            || fuzzy_match(&self.filter.query, &memory.not_before)
     }
 
     fn ensure_selection_visible(&mut self) {
@@ -3152,7 +3257,7 @@ impl CandidatesApp {
     }
 
     fn toggle_selected(&mut self) {
-        if let Some(id) = self.selected_candidate_id() {
+        if let Some(id) = self.selected_memory_id() {
             if !self.checked.insert(id.clone()) {
                 self.checked.remove(&id);
             }
@@ -3163,7 +3268,7 @@ impl CandidatesApp {
         let visible_ids = self
             .visible_indices()
             .iter()
-            .map(|idx| self.candidates[*idx].id.clone())
+            .map(|idx| self.memories[*idx].id.clone())
             .collect::<Vec<_>>();
         if visible_ids.is_empty() {
             return;
@@ -3177,11 +3282,10 @@ impl CandidatesApp {
 
     fn remove_ids(&mut self, ids: &[String]) {
         let removed = ids.iter().cloned().collect::<HashSet<_>>();
-        self.candidates
-            .retain(|candidate| !removed.contains(&candidate.id));
+        self.memories.retain(|memory| !removed.contains(&memory.id));
         self.checked.retain(|id| !removed.contains(id));
-        if self.selected >= self.candidates.len() {
-            self.selected = self.candidates.len().saturating_sub(1);
+        if self.selected >= self.memories.len() {
+            self.selected = self.memories.len().saturating_sub(1);
         }
         self.ensure_selection_visible();
     }
@@ -3193,7 +3297,7 @@ impl CandidatesApp {
             .split(area);
 
         let visible = self.visible_indices();
-        let items = if self.candidates.is_empty() {
+        let items = if self.memories.is_empty() {
             vec![ListItem::new("No memories recorded").style(dim_style())]
         } else if visible.is_empty() {
             vec![ListItem::new("No memories match filter").style(dim_style())]
@@ -3201,8 +3305,8 @@ impl CandidatesApp {
             visible
                 .iter()
                 .map(|idx| {
-                    let candidate = &self.candidates[*idx];
-                    let checked = if self.checked.contains(&candidate.id) {
+                    let memory = &self.memories[*idx];
+                    let checked = if self.checked.contains(&memory.id) {
                         "[x]"
                     } else {
                         "[ ]"
@@ -3217,12 +3321,9 @@ impl CandidatesApp {
                                     dim_style()
                                 },
                             ),
-                            Span::styled(candidate.id.clone(), title_style()),
+                            Span::styled(memory.id.clone(), title_style()),
                         ]),
-                        Line::from(Span::styled(
-                            truncate_line(&candidate.text, 96),
-                            dim_style(),
-                        )),
+                        Line::from(Span::styled(truncate_line(&memory.text, 96), dim_style())),
                     ])
                 })
                 .collect::<Vec<_>>()
@@ -3246,12 +3347,12 @@ impl CandidatesApp {
         frame.render_stateful_widget(list, body[0], &mut state);
 
         let preview = self
-            .selected_candidate()
-            .map(candidate_preview)
+            .selected_memory()
+            .map(memory_preview)
             .unwrap_or_else(|| "No preview available.".to_string());
         let preview_title = self
-            .selected_candidate()
-            .map(|candidate| compact_id(&candidate.id))
+            .selected_memory()
+            .map(|memory| compact_id(&memory.id))
             .unwrap_or_else(|| "Memory".to_string());
         let preview = Paragraph::new(preview)
             .block(block(&preview_title))
@@ -3449,10 +3550,6 @@ fn skill_source_style(skill: &SkillRecord) -> Style {
     }
 }
 
-fn is_pending_memory(candidate: &MemoryCandidate) -> bool {
-    candidate.status.trim().is_empty() || candidate.status.eq_ignore_ascii_case("pending")
-}
-
 fn skill_preview(skill: &SkillRecord) -> String {
     let mut out = format!(
         "Name: {}\nSource: {}\nManaged: {}\nPath: {}\nRoot: {}\n",
@@ -3553,11 +3650,11 @@ fn chat_preview(chat: &ChatRecord) -> String {
 
 fn chat_picker_action_hint(chat: &ChatRecord) -> &'static str {
     match chat.source.trim() {
-        "djinn-agent" => "Enter/r resume session • x delete session",
+        "djinn-agent" => "Enter/r resume session • x delete session (confirm)",
         "opencode" if !chat.source_id.trim().is_empty() => {
-            "Enter/r convert+resume in Djinn • s share • x remove"
+            "Enter/r convert+resume in Djinn • s share • x remove (confirm)"
         }
-        _ => "Enter/s share options • x remove",
+        _ => "Enter/s share options • x remove (confirm)",
     }
 }
 
@@ -3622,31 +3719,34 @@ fn truncate_title(value: &str, max_chars: usize) -> String {
     }
 }
 
-fn candidate_preview(candidate: &MemoryCandidate) -> String {
-    let mut out = format!("ID: {}\nCreated: {}\n", candidate.id, candidate.created_at);
-    if !candidate.scope.trim().is_empty() {
-        out.push_str(&format!("Scope: {}\n", candidate.scope));
+fn memory_preview(memory: &MemoryRecord) -> String {
+    let mut out = format!(
+        "ID: {}\nCreated: {}\nStatus: {}\n",
+        memory.id, memory.created_at, memory.status
+    );
+    if !memory.scope.trim().is_empty() {
+        out.push_str(&format!("Scope: {}\n", memory.scope));
     }
-    if !candidate.kind.trim().is_empty() {
-        out.push_str(&format!("Kind: {}\n", candidate.kind));
+    if !memory.kind.trim().is_empty() {
+        out.push_str(&format!("Kind: {}\n", memory.kind));
     }
-    if !candidate.confidence.trim().is_empty() {
-        out.push_str(&format!("Confidence: {}\n", candidate.confidence));
+    if !memory.confidence.trim().is_empty() {
+        out.push_str(&format!("Confidence: {}\n", memory.confidence));
     }
-    if !candidate.not_before.trim().is_empty() {
-        out.push_str(&format!("Not before: {}\n", candidate.not_before));
+    if !memory.not_before.trim().is_empty() {
+        out.push_str(&format!("Not before: {}\n", memory.not_before));
     }
     out.push_str("\n");
-    out.push_str(&candidate.text);
-    if !candidate.evidence.is_empty() {
+    out.push_str(&memory.text);
+    if !memory.evidence.is_empty() {
         out.push_str("\n\nEvidence:\n");
-        for evidence in &candidate.evidence {
+        for evidence in &memory.evidence {
             out.push_str(&format!("- {}\n", evidence));
         }
     }
-    if !candidate.sources.is_empty() {
+    if !memory.sources.is_empty() {
         out.push_str("\nSources:\n");
-        for source in &candidate.sources {
+        for source in &memory.sources {
             let label = if !source.title.trim().is_empty() {
                 source.title.as_str()
             } else if !source.chat_id.trim().is_empty() {
@@ -3663,7 +3763,7 @@ fn candidate_preview(candidate: &MemoryCandidate) -> String {
             out.push('\n');
         }
     }
-    out.push_str("\nActions: press `a` to review this memory, Space to select, `A` to select all visible, or `r`/`x`/Delete to reject and remove selected/current memories.\n");
+    out.push_str("\nActions: press `a` to review this memory, Space to select, `A` to select all visible, or `r`/`x`/Delete to remove selected/current memories.\n");
     sanitize_preview(&out)
 }
 
@@ -3884,11 +3984,87 @@ mod tests {
     }
 
     #[test]
+    fn chats_share_options_do_not_open_for_agent_session_only() {
+        let mut app = ChatsApp::new(vec![test_chat_record(
+            "agent:agt_1",
+            "Agent",
+            "djinn-agent",
+            "agt_1",
+        )]);
+
+        app.open_options();
+
+        assert_eq!(app.mode, ChatUiMode::Selecting);
+        assert!(app.share_request().is_none());
+    }
+
+    #[test]
+    fn chats_share_request_uses_only_shareable_saved_chat_rows() {
+        let mut app = ChatsApp::new(vec![
+            test_chat_record("chat-one", "Saved", "manual", ""),
+            test_chat_record("agent:agt_1", "Agent", "djinn-agent", "agt_1"),
+            test_chat_record("chat-two", "OpenCode", "opencode", "ses_2"),
+        ]);
+        app.checked.insert("chat-one".to_string());
+        app.checked.insert("agent:agt_1".to_string());
+        app.checked.insert("chat-two".to_string());
+
+        app.open_options();
+        let request = app.share_request().unwrap();
+
+        assert_eq!(app.mode, ChatUiMode::Options);
+        assert_eq!(request.chat_ids, vec!["chat-one", "chat-two"]);
+    }
+
+    #[test]
+    fn chats_delete_confirmation_requires_explicit_confirm() {
+        let mut app = ChatsApp::new(vec![test_chat_record(
+            "agent:agt_1",
+            "Agent",
+            "djinn-agent",
+            "agt_1",
+        )]);
+
+        app.open_delete_confirmation();
+
+        assert_eq!(
+            app.mode,
+            ChatUiMode::ConfirmDelete(ChatDeleteRequest {
+                chat_ids: Vec::new(),
+                agent_session_ids: vec!["agt_1".to_string()],
+            })
+        );
+
+        let action = app.confirm_delete_action().unwrap();
+        assert_eq!(
+            action,
+            TuiAction::DeleteChatRows(ChatDeleteRequest {
+                chat_ids: Vec::new(),
+                agent_session_ids: vec!["agt_1".to_string()],
+            })
+        );
+        assert_eq!(app.mode, ChatUiMode::Selecting);
+    }
+
+    #[test]
+    fn chats_delete_confirmation_can_cancel_without_action() {
+        let mut app = ChatsApp::new(vec![test_chat_record("chat-one", "Saved", "manual", "")]);
+
+        app.open_delete_confirmation();
+        app.cancel_modal();
+
+        assert_eq!(app.mode, ChatUiMode::Selecting);
+        assert_eq!(app.chats.len(), 1);
+        assert!(app.confirm_delete_action().is_none());
+    }
+
+    #[test]
     fn chat_preview_surfaces_session_picker_actions() {
         let djinn = test_chat_record("agent:agt_1", "Djinn", "djinn-agent", "agt_1");
         let opencode = test_chat_record("chat", "OpenCode", "opencode", "ses_1");
 
-        assert!(chat_preview(&djinn).contains("Actions: Enter/r resume session • x delete session"));
+        assert!(chat_preview(&djinn)
+            .contains("Actions: Enter/r resume session • x delete session (confirm)"));
         assert!(chat_preview(&opencode).contains("Actions: Enter/r convert+resume in Djinn"));
     }
 
@@ -4459,8 +4635,8 @@ mod tests {
         );
         assert_eq!(DashboardTab::Tools.index(), 0);
         assert_eq!(DashboardTab::Chats.index(), 1);
-        assert_eq!(DashboardTab::Candidates.index(), 2);
-        assert_eq!(DashboardTab::Memories.index(), 3);
+        assert_eq!(DashboardTab::Memories.index(), 2);
+        assert_eq!(DashboardTab::Suggestions.index(), 3);
         assert_eq!(DashboardTab::Skills.index(), 4);
         assert_eq!(DashboardTab::from_index(5), DashboardTab::Tools);
         assert!(dashboard_tab_returns_to_agent(DashboardTab::Skills));
@@ -4566,12 +4742,12 @@ mod tests {
     }
 
     #[test]
-    fn candidate_preview_includes_evidence_sources_and_actions() {
-        let candidate = MemoryCandidate {
+    fn memory_preview_includes_evidence_sources_and_actions() {
+        let memory = MemoryRecord {
             id: "prefer-uv".to_string(),
             text: "Prefer uv in this repo".to_string(),
             created_at: "2026-07-09".to_string(),
-            status: "pending".to_string(),
+            status: "active".to_string(),
             scope: "project".to_string(),
             kind: "tool-preference".to_string(),
             confidence: "high".to_string(),
@@ -4585,10 +4761,9 @@ mod tests {
                 title: "Debugging session".to_string(),
                 captured_at: "2026-07-09".to_string(),
             }],
-            reinforcement_count: 1,
         };
-        let preview = candidate_preview(&candidate);
-        assert!(!preview.contains("Status:"));
+        let preview = memory_preview(&memory);
+        assert!(preview.contains("Status: active"));
         assert!(preview.contains("Not before: 2026-10-01"));
         assert!(preview.contains("User corrected pip to uv."));
         assert!(preview.contains("Debugging session"));
@@ -4596,30 +4771,28 @@ mod tests {
     }
 
     #[test]
-    fn memories_app_only_lists_pending_memories() {
-        let pending = MemoryCandidate {
-            id: "pending-memory".to_string(),
+    fn memories_app_lists_active_memories() {
+        let first = MemoryRecord {
+            id: "first-memory".to_string(),
             text: "Review this".to_string(),
             created_at: "2026-07-15".to_string(),
-            status: "pending".to_string(),
+            status: "active".to_string(),
             scope: String::new(),
             kind: String::new(),
             confidence: String::new(),
             not_before: String::new(),
             evidence: Vec::new(),
             sources: Vec::new(),
-            reinforcement_count: 1,
         };
-        let accepted = MemoryCandidate {
-            id: "accepted-memory".to_string(),
-            text: "Already reviewed".to_string(),
-            status: "accepted".to_string(),
-            ..pending.clone()
+        let second = MemoryRecord {
+            id: "second-memory".to_string(),
+            text: "Also active".to_string(),
+            ..first.clone()
         };
 
-        let app = CandidatesApp::new(vec![pending, accepted]);
-        assert_eq!(app.candidates.len(), 1);
-        assert_eq!(app.candidates[0].id, "pending-memory");
+        let app = MemoriesApp::new(vec![first, second]);
+        assert_eq!(app.memories.len(), 2);
+        assert_eq!(app.memories[0].id, "first-memory");
     }
 
     #[test]

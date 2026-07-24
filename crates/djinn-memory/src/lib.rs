@@ -42,31 +42,6 @@ pub struct MemoryRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MemoryCandidate {
-    #[serde(default)]
-    pub id: String,
-    pub text: String,
-    #[serde(default = "today")]
-    pub created_at: String,
-    #[serde(default = "pending_status")]
-    pub status: String,
-    #[serde(default)]
-    pub scope: String,
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub confidence: String,
-    #[serde(default)]
-    pub not_before: String,
-    #[serde(default)]
-    pub evidence: Vec<String>,
-    #[serde(default)]
-    pub sources: Vec<MemorySource>,
-    #[serde(default = "one")]
-    pub reinforcement_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuleRecord {
     #[serde(default)]
     pub id: String,
@@ -212,11 +187,6 @@ pub struct BackupInfo {
 
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
-    path: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-pub struct CandidateStore {
     path: PathBuf,
 }
 
@@ -398,134 +368,6 @@ impl MemoryStore {
     }
 }
 
-impl CandidateStore {
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-
-    pub fn default_in(data_dir: &Path) -> Self {
-        Self::new(data_dir.join("memory-candidates.jsonl"))
-    }
-
-    pub fn list(&self) -> Result<Vec<MemoryCandidate>> {
-        if !self.path.exists() {
-            return Ok(Vec::new());
-        }
-        let content = fs::read_to_string(&self.path)
-            .with_context(|| format!("reading {}", self.path.display()))?;
-        let mut records = Vec::new();
-        for line in content.lines().filter(|line| !line.trim().is_empty()) {
-            let mut record: MemoryCandidate = serde_json::from_str(line)
-                .with_context(|| "parsing memory candidate JSONL record")?;
-            normalize_candidate(&mut record);
-            records.push(record);
-        }
-        Ok(records)
-    }
-
-    pub fn add_input(&self, input: MemoryInput) -> Result<MemoryCandidate> {
-        ensure_parent(&self.path)?;
-        let mut records = self.list()?;
-        let text = input.text.trim().to_string();
-        let base_id = slugify(&text);
-        let evidence = input
-            .evidence
-            .into_iter()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        let sources = input
-            .sources
-            .into_iter()
-            .map(normalized_source)
-            .collect::<Vec<_>>();
-
-        if let Some(record) = records
-            .iter_mut()
-            .find(|record| record.id == base_id && record.status == pending_status())
-        {
-            record.text = text;
-            record.scope = merge_optional(&record.scope, input.scope.as_deref());
-            record.kind = merge_optional(&record.kind, input.kind.as_deref());
-            record.confidence = merge_optional(&record.confidence, input.confidence.as_deref());
-            record.not_before = merge_optional(&record.not_before, input.not_before.as_deref());
-            merge_unique_strings(&mut record.evidence, evidence);
-            merge_sources(&mut record.sources, sources);
-            record.reinforcement_count = record.reinforcement_count.saturating_add(1);
-            let updated = record.clone();
-            self.save_all(&records)?;
-            return Ok(updated);
-        }
-
-        let id = unique_candidate_id(base_id, &records);
-        let record = MemoryCandidate {
-            id,
-            text,
-            created_at: today(),
-            status: pending_status(),
-            scope: clean_optional(input.scope.as_deref()),
-            kind: clean_optional(input.kind.as_deref()),
-            confidence: clean_optional(input.confidence.as_deref()),
-            not_before: clean_optional(input.not_before.as_deref()),
-            evidence,
-            sources,
-            reinforcement_count: 1,
-        };
-        records.push(record.clone());
-        self.save_all(&records)?;
-        Ok(record)
-    }
-
-    pub fn update_status(&self, id: &str, status: &str) -> Result<Option<MemoryCandidate>> {
-        let mut records = self.list()?;
-        let mut updated = None;
-        for record in &mut records {
-            if record.id == id {
-                record.status = status.to_string();
-                updated = Some(record.clone());
-                break;
-            }
-        }
-        self.save_all(&records)?;
-        Ok(updated)
-    }
-
-    pub fn remove_ids(&self, ids: &[String]) -> Result<Vec<MemoryCandidate>> {
-        let targets = ids
-            .iter()
-            .map(|id| id.trim().to_string())
-            .filter(|id| !id.is_empty())
-            .collect::<HashSet<_>>();
-        if targets.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let records = self.list()?;
-        let mut removed = Vec::new();
-        let mut kept = Vec::new();
-        for record in records {
-            if targets.contains(&record.id) {
-                removed.push(record);
-            } else {
-                kept.push(record);
-            }
-        }
-
-        self.save_all(&kept)?;
-        Ok(removed)
-    }
-
-    fn save_all(&self, records: &[MemoryCandidate]) -> Result<()> {
-        ensure_parent(&self.path)?;
-        let mut rendered = String::new();
-        for record in records {
-            rendered.push_str(&serde_json::to_string(record)?);
-            rendered.push('\n');
-        }
-        fs::write(&self.path, rendered).with_context(|| format!("writing {}", self.path.display()))
-    }
-}
-
 impl RuleStore {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
@@ -632,40 +474,6 @@ fn normalize_record(record: &mut MemoryRecord) {
                 || !source.source.is_empty()
         })
         .collect();
-}
-
-fn normalize_candidate(record: &mut MemoryCandidate) {
-    if record.id.trim().is_empty() {
-        record.id = slugify(&record.text);
-    }
-    if record.created_at.trim().is_empty() {
-        record.created_at = today();
-    }
-    if record.status.trim().is_empty() {
-        record.status = pending_status();
-    }
-    record.not_before = clean_optional(Some(&record.not_before));
-    record.evidence = record
-        .evidence
-        .iter()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect();
-    record.sources = record
-        .sources
-        .iter()
-        .cloned()
-        .map(normalized_source)
-        .filter(|source| {
-            !source.chat_id.is_empty()
-                || !source.source_id.is_empty()
-                || !source.title.is_empty()
-                || !source.source.is_empty()
-        })
-        .collect();
-    if record.reinforcement_count == 0 {
-        record.reinforcement_count = 1;
-    }
 }
 
 fn normalize_rule(record: &mut RuleRecord) {
@@ -1018,36 +826,6 @@ fn merge_tags(existing: &mut Vec<String>, tags: Vec<String>) {
     }
 }
 
-fn merge_unique_strings(existing: &mut Vec<String>, incoming: Vec<String>) {
-    let mut seen = existing.iter().cloned().collect::<HashSet<_>>();
-    for value in incoming {
-        if seen.insert(value.clone()) {
-            existing.push(value);
-        }
-    }
-}
-
-fn merge_sources(existing: &mut Vec<MemorySource>, incoming: Vec<MemorySource>) {
-    let mut seen = existing
-        .iter()
-        .map(source_key)
-        .collect::<HashSet<(String, String, String, String)>>();
-    for source in incoming {
-        if seen.insert(source_key(&source)) {
-            existing.push(source);
-        }
-    }
-}
-
-fn source_key(source: &MemorySource) -> (String, String, String, String) {
-    (
-        source.source_type.clone(),
-        source.source.clone(),
-        source.source_id.clone(),
-        source.chat_id.clone(),
-    )
-}
-
 fn merge_optional(existing: &str, incoming: Option<&str>) -> String {
     let incoming = clean_optional(incoming);
     if incoming.is_empty() {
@@ -1058,23 +836,6 @@ fn merge_optional(existing: &str, incoming: Option<&str>) -> String {
 }
 
 fn unique_id(base: String, records: &[MemoryRecord]) -> String {
-    let existing = records
-        .iter()
-        .map(|record| record.id.as_str())
-        .collect::<HashSet<_>>();
-    if !existing.contains(base.as_str()) {
-        return base;
-    }
-    for suffix in 2.. {
-        let candidate = format!("{base}-{suffix}");
-        if !existing.contains(candidate.as_str()) {
-            return candidate;
-        }
-    }
-    unreachable!()
-}
-
-fn unique_candidate_id(base: String, records: &[MemoryCandidate]) -> String {
     let existing = records
         .iter()
         .map(|record| record.id.as_str())
@@ -1189,10 +950,6 @@ fn active_status() -> String {
     "active".to_string()
 }
 
-fn pending_status() -> String {
-    "pending".to_string()
-}
-
 fn open_status() -> String {
     "open".to_string()
 }
@@ -1200,14 +957,6 @@ fn open_status() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp_candidate_store(name: &str) -> CandidateStore {
-        let dir = std::env::temp_dir().join(format!(
-            "djinn-candidates-test-{name}-{}",
-            Local::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        CandidateStore::default_in(&dir)
-    }
 
     fn temp_rule_store(name: &str) -> RuleStore {
         let dir = std::env::temp_dir().join(format!(
@@ -1234,53 +983,6 @@ mod tests {
     }
 
     #[test]
-    fn candidate_lifecycle_updates_status() {
-        let store = temp_candidate_store("lifecycle");
-        let candidate = store
-            .add_input(MemoryInput {
-                text: "Use uv in this repo".to_string(),
-                scope: Some("project".to_string()),
-                kind: Some("tool-preference".to_string()),
-                confidence: Some("high".to_string()),
-                not_before: Some("2026-10-01".to_string()),
-                evidence: vec!["User corrected pip to uv.".to_string()],
-                sources: Vec::new(),
-            })
-            .unwrap();
-        assert_eq!(candidate.status, "pending");
-        assert_eq!(candidate.not_before, "2026-10-01");
-        assert_eq!(candidate.reinforcement_count, 1);
-        let updated = store
-            .update_status(&candidate.id, "accepted")
-            .unwrap()
-            .unwrap();
-        assert_eq!(updated.status, "accepted");
-        assert_eq!(store.list().unwrap()[0].status, "accepted");
-    }
-
-    #[test]
-    fn remove_candidate_ids_deletes_exact_candidates() {
-        let store = temp_candidate_store("remove-ids");
-        let first = store
-            .add_input(MemoryInput {
-                text: "Reject this candidate".to_string(),
-                ..MemoryInput::default()
-            })
-            .unwrap();
-        let second = store
-            .add_input(MemoryInput {
-                text: "Keep this candidate".to_string(),
-                ..MemoryInput::default()
-            })
-            .unwrap();
-
-        let removed = store.remove_ids(&[first.id.clone()]).unwrap();
-        assert_eq!(removed.len(), 1);
-        assert_eq!(removed[0].id, first.id);
-        assert_eq!(store.list().unwrap(), vec![second]);
-    }
-
-    #[test]
     fn remove_memory_ids_deletes_exact_memories() {
         let dir = std::env::temp_dir().join(format!(
             "djinn-memories-test-remove-ids-{}",
@@ -1294,44 +996,6 @@ mod tests {
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0].id, first.id);
         assert_eq!(store.list().unwrap(), vec![second]);
-    }
-
-    #[test]
-    fn duplicate_pending_candidates_are_reinforced() {
-        let store = temp_candidate_store("reinforce");
-        let first = store
-            .add_input(MemoryInput {
-                text: "Use uv in this repo".to_string(),
-                scope: Some("project:djinn".to_string()),
-                kind: Some("preference".to_string()),
-                confidence: Some("medium".to_string()),
-                evidence: vec!["First observation".to_string()],
-                sources: Vec::new(),
-                ..MemoryInput::default()
-            })
-            .unwrap();
-        let second = store
-            .add_input(MemoryInput {
-                text: "Use uv in this repo".to_string(),
-                scope: None,
-                kind: None,
-                confidence: Some("high".to_string()),
-                evidence: vec!["Repeated observation".to_string()],
-                sources: Vec::new(),
-                ..MemoryInput::default()
-            })
-            .unwrap();
-
-        assert_eq!(second.id, first.id);
-        assert_eq!(second.scope, "project:djinn");
-        assert_eq!(second.kind, "preference");
-        assert_eq!(second.confidence, "high");
-        assert_eq!(second.reinforcement_count, 2);
-        assert_eq!(
-            second.evidence,
-            vec!["First observation", "Repeated observation"]
-        );
-        assert_eq!(store.list().unwrap().len(), 1);
     }
 
     #[test]

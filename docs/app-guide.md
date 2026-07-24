@@ -10,7 +10,7 @@ Tools → Chats → Memories → Suggestions → Skills
 - **Tools** are local commands, aliases, functions, and scripts discovered from
   tagged dotfiles or configured roots.
 - **Chats** are saved AI sessions or exported OpenCode conversations.
-- **Memories** are reviewable lessons, preferences, conventions, and product
+- **Memories** are active lessons, preferences, conventions, and product
   decisions captured with evidence, provenance, and optional `not_before` dates.
 - **Suggestions** are ephemeral review outcomes: possible skills, actions,
   documentation changes, code changes, or other next steps. Accepting or
@@ -25,9 +25,8 @@ work you are currently doing.
 Djinn uses Linux-style local paths on every platform:
 
 ```text
-~/.config/djinn/memory-candidates.jsonl    # reviewable memories (legacy filename)
+~/.config/djinn/memories.jsonl             # active memories
 ~/.config/djinn/suggestions.jsonl          # open suggestions
-~/.config/djinn/memories.jsonl             # legacy accepted-memory store
 ~/.config/djinn/contexts.json              # context registry and active context
 ~/.config/djinn/skills/                    # Djinn-managed skills
 ~/.config/djinn/watchers/opencode.json     # watcher state
@@ -86,12 +85,25 @@ djinn status opencode
 djinn uninstall opencode
 ```
 
-Sharing and promotion commands emit agent-ready prompts rather than writing
-memories automatically:
+Sharing emits reusable chat context. In the TUI, choosing `summary` from the
+Chats picker opens an Agent chat seeded with the selected chat context so you can
+ask follow-up questions conversationally. In the CLI, `--mode summary` prints a
+local, human-facing digest and does not run a model. `--mode patterns` and
+`--mode memories`, plus promotion/review commands, emit agent-ready prompts
+without writing memories automatically. For OpenCode exports, Djinn renders a
+readable digest of message/tool parts instead of raw JSON when possible;
+sanitized exports may still have redacted message text.
+
+`djinn share merge` is the cleanup-oriented path: it asks the model to group the
+selected chats and distill durable lessons into active memories directly. It does
+not create a memory inbox/candidate queue. With `--archive`, source chat rows
+are archived only after memory writes succeed.
 
 ```bash
 djinn share chat debugging-session
 djinn share chats --source opencode --limit 20 --mode patterns
+djinn share merge --source opencode --limit 50 --dry-run
+djinn share merge --source opencode --limit 50 --archive
 djinn promote chat debugging-session
 djinn promote chats --source opencode --limit 20
 djinn review chats --source opencode --dry-run
@@ -115,6 +127,7 @@ djinn add memory "Prefer uv in this repo" \
 djinn list memories
 djinn show memory prefer-uv
 djinn review memory prefer-uv --dry-run
+djinn ingest memory prefer-uv --as skill --keep
 djinn reject memory stale-memory
 ```
 
@@ -125,7 +138,7 @@ djinn add suggestion "Create a Python tooling preference skill." \
   --target skill \
   --rationale "The memory is reusable across projects." \
   --evidence "User corrected pip to uv." \
-  --source-chat <chat-id>
+  --source-memory prefer-uv
 djinn list suggestions
 djinn show suggestion python-tooling-preference
 djinn share suggestions
@@ -135,6 +148,10 @@ djinn reject suggestion stale-suggestion
 
 Accepting a suggestion means the follow-up is done or intentionally handled; it
 removes the suggestion from the list. Rejecting also removes it.
+
+`djinn ingest memory` routes active memories into downstream collections such as
+suggestions, skills, ideas, or actions. Without `--keep`, the source memory is
+consumed after the downstream artifact is written.
 
 Use `--not-before YYYY-MM-DD` when a memory is true and worth preserving, but
 should not drive suggestions or actions until later:
@@ -226,8 +243,9 @@ Keybindings:
 - `↑`/`k`, `↓`/`j`: move selection.
 - `PageUp`/`u`, `PageDown`/`d`: scroll preview.
 - Tools: `Enter` opens the selected tool.
-- Chats: `Enter`/`r` resumes sessions, `s` opens share options, `Space` selects,
-  `a` toggles all, and `x`/`Delete` removes saved chats or Djinn sessions.
+- Chats: `Enter`/`r` resumes sessions, `s` opens share options for saved chat
+  rows, `Space` selects, `a` toggles all, and `x`/`Delete` asks before removing
+  saved chats or Djinn sessions.
 - Memories: `a` reviews the selected memory, `r` rejects/removes it.
 - Suggestions: `r` removes selected suggestions.
 - Skills: `Enter` opens the selected skill.
