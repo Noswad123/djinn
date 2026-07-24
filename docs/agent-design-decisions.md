@@ -386,6 +386,10 @@ The first non-interactive agent slice is implemented as:
 30. The command palette keeps its search row fixed and scrolls only the action
     list. This keeps config-driven profile/model lists usable without hiding the
     search affordance or letting actions overflow the dialog.
+31. The Chats tab/session picker search matches more than titles: title, id,
+    source, source id/path, content path, and content are fuzzy-searchable. The
+    selected preview shows the available session actions so resume/share/remove
+    affordances are visible without relying only on the footer.
 
 Not in the first slice unless explicitly reopened:
 

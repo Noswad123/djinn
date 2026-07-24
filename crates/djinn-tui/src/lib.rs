@@ -2529,7 +2529,13 @@ impl ChatsApp {
     }
 
     fn chat_matches(&self, chat: &ChatRecord) -> bool {
-        fuzzy_match(&self.filter.query, &chat.title) || fuzzy_match(&self.filter.query, &chat.id)
+        fuzzy_match(&self.filter.query, &chat.title)
+            || fuzzy_match(&self.filter.query, &chat.id)
+            || fuzzy_match(&self.filter.query, &chat.source)
+            || fuzzy_match(&self.filter.query, &chat.source_id)
+            || fuzzy_match(&self.filter.query, &chat.source_path)
+            || fuzzy_match(&self.filter.query, &chat.content_path)
+            || fuzzy_match(&self.filter.query, &chat.content)
     }
 
     fn ensure_selection_visible(&mut self) {
@@ -2731,7 +2737,9 @@ impl ChatsApp {
             state.select(selected_visible_position(self.selected, &visible));
         }
         let title = format!(
-            "Chats ({} selected, {})",
+            "Chats ({} / {} visible, {} selected, {})",
+            visible.len(),
+            self.chats.len(),
             self.checked.len(),
             self.filter.label()
         );
@@ -3537,6 +3545,7 @@ fn chat_preview(chat: &ChatRecord) -> String {
         "ID: {}\nTitle: {}\nCreated: {}\n",
         chat.id, chat.title, chat.created_at
     );
+    out.push_str(&format!("Actions: {}\n", chat_picker_action_hint(chat)));
     if !chat.source.trim().is_empty() {
         out.push_str(&format!("Source: {}\n", chat.source));
     }
@@ -3549,6 +3558,16 @@ fn chat_preview(chat: &ChatRecord) -> String {
     out.push_str("\n");
     out.push_str(&sanitize_preview(&chat.content));
     out
+}
+
+fn chat_picker_action_hint(chat: &ChatRecord) -> &'static str {
+    match chat.source.trim() {
+        "djinn-agent" => "Enter/r resume session",
+        "opencode" if !chat.source_id.trim().is_empty() => {
+            "Enter/r convert+resume in Djinn • s share • x remove"
+        }
+        _ => "Enter/s share options • x remove",
+    }
 }
 
 fn chat_source_label(chat: &ChatRecord) -> String {
@@ -3805,6 +3824,65 @@ mod tests {
             chat_session_request(&opencode).map(|request| (request.kind, request.session_id)),
             Some((ChatSessionKind::OpenCode, "ses_1".to_string()))
         );
+    }
+
+    #[test]
+    fn chats_filter_matches_source_paths_and_content() {
+        let mut app = ChatsApp::new(vec![
+            ChatRecord {
+                id: "chat-one".to_string(),
+                title: "Architecture notes".to_string(),
+                content: "Discussed command palettes".to_string(),
+                source: "opencode".to_string(),
+                source_id: "ses_alpha".to_string(),
+                source_path: "/tmp/opencode/ses_alpha.json".to_string(),
+                content_path: "/tmp/cache/chat-one.md".to_string(),
+                created_at: String::new(),
+            },
+            ChatRecord {
+                id: "chat-two".to_string(),
+                title: "Other".to_string(),
+                content: "Unrelated".to_string(),
+                source: "manual".to_string(),
+                source_id: String::new(),
+                source_path: String::new(),
+                content_path: String::new(),
+                created_at: String::new(),
+            },
+        ]);
+
+        app.filter.query = "ocsa".to_string();
+        assert_eq!(app.visible_indices(), vec![0]);
+
+        app.filter.query = "cmdpal".to_string();
+        assert_eq!(app.visible_indices(), vec![0]);
+    }
+
+    #[test]
+    fn chat_preview_surfaces_session_picker_actions() {
+        let djinn = ChatRecord {
+            id: "agent:agt_1".to_string(),
+            title: "Djinn".to_string(),
+            content: String::new(),
+            source: "djinn-agent".to_string(),
+            source_id: "agt_1".to_string(),
+            source_path: String::new(),
+            content_path: String::new(),
+            created_at: String::new(),
+        };
+        let opencode = ChatRecord {
+            id: "chat".to_string(),
+            title: "OpenCode".to_string(),
+            content: String::new(),
+            source: "opencode".to_string(),
+            source_id: "ses_1".to_string(),
+            source_path: String::new(),
+            content_path: String::new(),
+            created_at: String::new(),
+        };
+
+        assert!(chat_preview(&djinn).contains("Actions: Enter/r resume session"));
+        assert!(chat_preview(&opencode).contains("Actions: Enter/r convert+resume in Djinn"));
     }
 
     #[test]
