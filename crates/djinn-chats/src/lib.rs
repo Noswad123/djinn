@@ -42,6 +42,13 @@ pub struct BackupInfo {
     pub record_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ChatRestoreReport {
+    pub restored: Vec<ChatRecord>,
+    pub skipped: Vec<ChatRecord>,
+    pub replaced: Vec<ChatRecord>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatBody {
     content: String,
@@ -223,6 +230,41 @@ impl ChatStore {
         Ok(removed)
     }
 
+    pub fn restore_records(
+        &self,
+        records: Vec<ChatRecord>,
+        overwrite: bool,
+    ) -> Result<ChatRestoreReport> {
+        ensure_parent(&self.path)?;
+        let mut existing = self.list()?;
+        let mut restored = Vec::new();
+        let mut skipped = Vec::new();
+        let mut replaced = Vec::new();
+
+        for mut record in records {
+            normalize_record(&mut record);
+            record.content_path.clear();
+            let existing_positions = matching_restore_positions(&existing, &record);
+            if !existing_positions.is_empty() && !overwrite {
+                skipped.push(record);
+                continue;
+            }
+            for idx in existing_positions.into_iter().rev() {
+                replaced.push(existing.remove(idx));
+            }
+            restored.push(record.clone());
+            existing.push(record);
+        }
+
+        self.delete_body_files(&replaced);
+        self.save_all(&existing)?;
+        Ok(ChatRestoreReport {
+            restored,
+            skipped,
+            replaced,
+        })
+    }
+
     pub fn clear_with_backup(&self, backup: bool) -> Result<Option<BackupInfo>> {
         ensure_parent(&self.path)?;
         let record_count = self.list()?.len();
@@ -400,6 +442,21 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+fn matching_restore_positions(existing: &[ChatRecord], incoming: &ChatRecord) -> Vec<usize> {
+    existing
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, record)| {
+            (record.id == incoming.id
+                || (!record.source.trim().is_empty()
+                    && !record.source_id.trim().is_empty()
+                    && record.source == incoming.source
+                    && record.source_id == incoming.source_id))
+                .then_some(idx)
+        })
+        .collect()
+}
+
 fn clean_optional(value: Option<&str>) -> String {
     value
         .map(str::trim)
@@ -566,5 +623,81 @@ mod tests {
         assert_eq!(remaining[0].id, second.id);
         assert!(!first_body_path.exists());
         assert!(second_body_path.exists());
+    }
+
+    #[test]
+    fn restore_records_preserves_ids_and_skips_duplicates_without_overwrite() {
+        let store = temp_store("restore-skip");
+        let existing = store
+            .add_content(
+                "Existing Chat".to_string(),
+                "existing body".to_string(),
+                "manual".to_string(),
+                Some("manual"),
+                Some("same-source"),
+            )
+            .unwrap();
+
+        let report = store
+            .restore_records(
+                vec![ChatRecord {
+                    id: existing.id.clone(),
+                    title: "Archived Chat".to_string(),
+                    content: "archived body".to_string(),
+                    source: "manual".to_string(),
+                    source_id: "same-source".to_string(),
+                    source_path: "archive".to_string(),
+                    content_path: "old/body.json".to_string(),
+                    created_at: "2026-07-24".to_string(),
+                }],
+                false,
+            )
+            .unwrap();
+
+        assert!(report.restored.is_empty());
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(store.list().unwrap()[0].content, "existing body");
+    }
+
+    #[test]
+    fn restore_records_overwrites_matching_chat_and_rewrites_body() {
+        let store = temp_store("restore-overwrite");
+        let existing = store
+            .add_content(
+                "Existing Chat".to_string(),
+                "existing body".to_string(),
+                "manual".to_string(),
+                Some("manual"),
+                Some("same-source"),
+            )
+            .unwrap();
+
+        let report = store
+            .restore_records(
+                vec![ChatRecord {
+                    id: existing.id.clone(),
+                    title: "Restored Chat".to_string(),
+                    content: "restored body".to_string(),
+                    source: "manual".to_string(),
+                    source_id: "same-source".to_string(),
+                    source_path: "archive".to_string(),
+                    content_path: "old/body.json".to_string(),
+                    created_at: "2026-07-24".to_string(),
+                }],
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(report.restored.len(), 1);
+        assert_eq!(report.replaced.len(), 1);
+        let restored = store.list().unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, existing.id);
+        assert_eq!(restored[0].title, "Restored Chat");
+        assert_eq!(restored[0].content, "restored body");
+        assert!(store
+            .bodies_dir()
+            .join(format!("{}.json", restored[0].id))
+            .exists());
     }
 }

@@ -456,6 +456,13 @@ The first non-interactive agent slice is implemented as:
     not introduce another memory-candidate/inbox step; later memory review should
     focus on turning active memories into skills, suggestions, or concrete user
     actions, and on clearing stale inbox/source material.
+43. Manual chat cleanup should be safe and reversible by default. `djinn archive
+    chats` selects saved chat rows with the same id/source/query/limit semantics
+    as sharing, supports `--dry-run` previews, requires `--force` before removal,
+    and writes full JSONL archives under `~/.cache/djinn/chat-archives/` before
+    deleting rows from the active chat index. Archive files should be listable
+    and restorable; restore skips conflicting active rows by default and requires
+    `--force` to replace rows with matching IDs or source/source-id pairs.
 
 Not in the first slice unless explicitly reopened:
 

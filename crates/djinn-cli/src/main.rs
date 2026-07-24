@@ -19,7 +19,7 @@ use djinn_agent::{
     PermissionEffect, PermissionGate, PermissionPolicy, PermissionRequest, PermissionRule,
     ReadAccessEffect, ReadAccessPolicy, ReadAccessRule, ToolSpec,
 };
-use djinn_chats::ChatRecord;
+use djinn_chats::{ChatRecord, ChatRestoreReport};
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
     ActionRecord, ActionStore, AgentSession, AgentSessionEvent, AgentSessionEventKind,
@@ -66,6 +66,8 @@ enum Command {
     Rm(RmArgs),
     /// Clear a collection after confirmation.
     Clear(ClearArgs),
+    /// Archive selected records before removing them from active views.
+    Archive(ArchiveArgs),
     /// Prune old transient/cache records.
     Prune(PruneArgs),
     /// Discover without writing durable state.
@@ -386,6 +388,12 @@ struct ClearArgs {
     noun: ClearNoun,
 }
 
+#[derive(Debug, Args)]
+struct ArchiveArgs {
+    #[command(subcommand)]
+    noun: ArchiveNoun,
+}
+
 #[derive(Debug, Subcommand)]
 enum ClearNoun {
     /// Clear all memories after interactive confirmation.
@@ -400,6 +408,16 @@ enum ClearNoun {
         #[arg(long)]
         no_backup: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ArchiveNoun {
+    /// Archive selected chat rows and remove them from the active chat index.
+    Chats(ArchiveChatsArgs),
+    /// List chat archive files.
+    List(ArchiveListArgs),
+    /// Restore chats from an archive file.
+    Restore(ArchiveRestoreArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1126,6 +1144,52 @@ struct PruneChatsArgs {
     no_backup: bool,
 }
 
+#[derive(Debug, Args)]
+struct ArchiveChatsArgs {
+    /// Optional chat ids, source ids, or unambiguous title fragments to archive.
+    ids: Vec<String>,
+    /// Filter by source, for example: opencode.
+    #[arg(long)]
+    source: Option<String>,
+    /// Filter chats by id, title, source metadata, path, or content.
+    #[arg(long)]
+    query: Option<String>,
+    /// Maximum number of chats to archive unless --all or explicit ids are used.
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
+    /// Include every matching chat. Use deliberately.
+    #[arg(long)]
+    all: bool,
+    /// Print selected chats without writing an archive or removing rows.
+    #[arg(long)]
+    dry_run: bool,
+    /// Required to actually archive and remove selected chat rows.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Debug, Args)]
+struct ArchiveListArgs {
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ArchiveRestoreArgs {
+    /// Archive path, filename, or basename from ~/.cache/djinn/chat-archives.
+    archive: String,
+    /// Replace existing chat rows with matching id or source/source-id.
+    #[arg(long)]
+    force: bool,
+    /// Print what would be restored without mutating the active chat index.
+    #[arg(long)]
+    dry_run: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum TuiView {
     Tools,
@@ -1632,6 +1696,7 @@ fn main() -> Result<()> {
         Command::Review(args) => run_review(args),
         Command::Rm(args) => run_rm(args),
         Command::Clear(args) => run_clear(args),
+        Command::Archive(args) => run_archive(args),
         Command::Prune(args) => run_prune(args),
         Command::Scan(args) => run_scan(args),
         Command::Index(args) => run_index(args),
@@ -1752,6 +1817,14 @@ fn run_clear(args: ClearArgs) -> Result<()> {
     match args.noun {
         ClearNoun::Memories { no_backup } => clear_memories(no_backup),
         ClearNoun::Chats { no_backup } => clear_chats(no_backup),
+    }
+}
+
+fn run_archive(args: ArchiveArgs) -> Result<()> {
+    match args.noun {
+        ArchiveNoun::Chats(args) => archive_chats(args),
+        ArchiveNoun::List(args) => list_archives(args),
+        ArchiveNoun::Restore(args) => restore_archive(args),
     }
 }
 
@@ -5827,6 +5900,253 @@ fn delete_chat_rows_silent(request: &djinn_tui::ChatDeleteRequest) -> Result<()>
     Ok(())
 }
 
+fn archive_chats(args: ArchiveChatsArgs) -> Result<()> {
+    let records = chat_store().list()?;
+    let selection_args = ShareChatsArgs {
+        ids: args.ids,
+        source: args.source,
+        query: args.query,
+        limit: args.limit,
+        all: args.all,
+        mode: ShareChatsMode::Summary,
+        context_only: true,
+        max_chars_per_chat: 0,
+    };
+    let selected = select_chats_for_share(&records, &selection_args)?;
+    if args.dry_run {
+        print_archive_chat_selection(&selected, true);
+        return Ok(());
+    }
+    if !args.force {
+        print_archive_chat_selection(&selected, false);
+        bail!("refusing to archive chats without --force; rerun with --dry-run to inspect only");
+    }
+
+    let Some(path) = archive_chat_records_with_label(&selected, "manual")? else {
+        println!("No chats archived.");
+        return Ok(());
+    };
+    println!(
+        "Archived {} chats to {} and removed them from the active chat index.",
+        selected.len(),
+        path.display()
+    );
+    for record in selected {
+        println!(
+            "  - [{}] {}{}",
+            record.id,
+            record.title,
+            format_chat_source_suffix(&record)
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChatArchiveSummary {
+    name: String,
+    path: String,
+    record_count: usize,
+    byte_size: u64,
+}
+
+fn list_archives(args: ArchiveListArgs) -> Result<()> {
+    let summaries = chat_archive_summaries()?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&summaries)?);
+        return Ok(());
+    }
+    if summaries.is_empty() {
+        println!("No chat archives found.");
+        return Ok(());
+    }
+    for summary in &summaries {
+        println!(
+            "{}\t{} chats\t{} bytes\t{}",
+            summary.name, summary.record_count, summary.byte_size, summary.path
+        );
+    }
+    println!("\nTotal: {} chat archives", summaries.len());
+    Ok(())
+}
+
+fn restore_archive(args: ArchiveRestoreArgs) -> Result<()> {
+    let path = resolve_chat_archive_path(&args.archive)?;
+    let records = read_chat_archive_records(&path)?;
+    let report = if args.dry_run {
+        preview_chat_restore(records, args.force)?
+    } else {
+        chat_store().restore_records(records, args.force)?
+    };
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "archive": path,
+                "dry_run": args.dry_run,
+                "force": args.force,
+                "report": report,
+            }))?
+        );
+        return Ok(());
+    }
+
+    let verb = if args.dry_run {
+        "Would restore"
+    } else {
+        "Restored"
+    };
+    println!(
+        "{verb} {} chats from {}{}.",
+        report.restored.len(),
+        path.display(),
+        if report.replaced.is_empty() {
+            String::new()
+        } else {
+            format!(" (replacing {} existing)", report.replaced.len())
+        }
+    );
+    for record in &report.restored {
+        println!(
+            "  - [{}] {}{}",
+            record.id,
+            record.title,
+            format_chat_source_suffix(record)
+        );
+    }
+    if !report.skipped.is_empty() {
+        println!(
+            "Skipped {} chats with existing id/source matches{}:",
+            report.skipped.len(),
+            if args.force {
+                ""
+            } else {
+                " (use --force to replace)"
+            }
+        );
+        for record in &report.skipped {
+            println!(
+                "  - [{}] {}{}",
+                record.id,
+                record.title,
+                format_chat_source_suffix(record)
+            );
+        }
+    }
+    Ok(())
+}
+
+fn chat_archive_summaries() -> Result<Vec<ChatArchiveSummary>> {
+    let dir = chat_archive_dir();
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut summaries = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        let records = read_chat_archive_records(&path)?;
+        summaries.push(ChatArchiveSummary {
+            name: path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            path: path.display().to_string(),
+            record_count: records.len(),
+            byte_size: metadata.len(),
+        });
+    }
+    summaries.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(summaries)
+}
+
+fn read_chat_archive_records(path: &Path) -> Result<Vec<ChatRecord>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading chat archive {}", path.display()))?;
+    let mut records = Vec::new();
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        records.push(
+            serde_json::from_str::<ChatRecord>(line)
+                .with_context(|| format!("parsing chat archive {}", path.display()))?,
+        );
+    }
+    Ok(records)
+}
+
+fn resolve_chat_archive_path(value: &str) -> Result<PathBuf> {
+    let candidate = PathBuf::from(value);
+    if candidate.exists() {
+        return Ok(candidate);
+    }
+    let archive_dir = chat_archive_dir();
+    let named = archive_dir.join(value);
+    if named.exists() {
+        return Ok(named);
+    }
+    if Path::new(value).extension().is_none() {
+        let jsonl = archive_dir.join(format!("{value}.jsonl"));
+        if jsonl.exists() {
+            return Ok(jsonl);
+        }
+    }
+    bail!(
+        "chat archive {value:?} not found; run `djinn archive list` to inspect available archives"
+    )
+}
+
+fn preview_chat_restore(records: Vec<ChatRecord>, overwrite: bool) -> Result<ChatRestoreReport> {
+    let existing = chat_store().list()?;
+    let mut restored = Vec::new();
+    let mut skipped = Vec::new();
+    let mut replaced = Vec::new();
+    for record in records {
+        let matches = existing
+            .iter()
+            .filter(|existing| chat_restore_conflicts(existing, &record))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !matches.is_empty() && !overwrite {
+            skipped.push(record);
+        } else {
+            restored.push(record);
+            replaced.extend(matches);
+        }
+    }
+    Ok(ChatRestoreReport {
+        restored,
+        skipped,
+        replaced,
+    })
+}
+
+fn chat_restore_conflicts(existing: &ChatRecord, incoming: &ChatRecord) -> bool {
+    existing.id == incoming.id
+        || (!existing.source.trim().is_empty()
+            && !existing.source_id.trim().is_empty()
+            && existing.source == incoming.source
+            && existing.source_id == incoming.source_id)
+}
+
+fn print_archive_chat_selection(records: &[ChatRecord], dry_run: bool) {
+    let label = if dry_run { "Would archive" } else { "Selected" };
+    println!("{label} {} chats:", records.len());
+    for record in records {
+        println!(
+            "  - [{}] {} — {} chars{}",
+            record.id,
+            record.title,
+            record.content.chars().count(),
+            format_chat_source_suffix(record)
+        );
+    }
+}
+
 fn ingest_memories(args: IngestMemoriesArgs) -> Result<()> {
     let memories = memory_store().list()?;
     let resolved_ids = resolve_memory_ids(&memories, &args.ids)?;
@@ -6528,7 +6848,7 @@ fn share_merge(args: ShareMergeArgs) -> Result<()> {
     let merge = parse_chat_merge_response(&response.message.content)?;
     let written = write_chat_merge_memories(&merge, &selected)?;
     let archived = if args.archive && !written.is_empty() {
-        archive_chat_records(&selected)?
+        archive_chat_records_with_label(&selected, "merge")?
     } else {
         None
     };
@@ -7315,15 +7635,16 @@ fn nonempty_string(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
-fn archive_chat_records(records: &[ChatRecord]) -> Result<Option<PathBuf>> {
+fn archive_chat_records_with_label(records: &[ChatRecord], label: &str) -> Result<Option<PathBuf>> {
     if records.is_empty() {
         return Ok(None);
     }
-    let archive_dir = djinn_core::default_cache_dir().join("chat-archives");
+    let archive_dir = chat_archive_dir();
     fs::create_dir_all(&archive_dir)
         .with_context(|| format!("creating chat archive dir {}", archive_dir.display()))?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let path = archive_dir.join(format!("merge-{stamp}.jsonl"));
+    let label = archive_label(label);
+    let path = archive_dir.join(format!("{label}-{stamp}.jsonl"));
     let mut rendered = String::new();
     for record in records {
         rendered.push_str(&serde_json::to_string(record)?);
@@ -7338,6 +7659,24 @@ fn archive_chat_records(records: &[ChatRecord]) -> Result<Option<PathBuf>> {
             .collect::<Vec<_>>(),
     )?;
     Ok(Some(path))
+}
+
+fn chat_archive_dir() -> PathBuf {
+    djinn_core::default_cache_dir().join("chat-archives")
+}
+
+fn archive_label(label: &str) -> String {
+    let cleaned = label
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_lowercase();
+    if cleaned.is_empty() {
+        "archive".to_string()
+    } else {
+        cleaned
+    }
 }
 
 fn format_chat_summary_agent_prompt(records: &[ChatRecord], args: &ShareChatsArgs) -> String {
@@ -8409,6 +8748,62 @@ mod tests {
         assert_eq!(delete_args.id, "agt_test");
         assert!(delete_args.force);
         assert!(delete_args.json);
+    }
+
+    #[test]
+    fn parses_archive_chats_selection_command() {
+        let cli = Cli::try_parse_from([
+            "djinn", "archive", "chats", "--source", "opencode", "--limit", "25", "--force",
+        ])
+        .unwrap();
+
+        let Some(Command::Archive(args)) = cli.command else {
+            panic!("expected archive command");
+        };
+        let ArchiveNoun::Chats(args) = args.noun else {
+            panic!("expected archive chats command");
+        };
+
+        assert_eq!(args.source.as_deref(), Some("opencode"));
+        assert_eq!(args.limit, 25);
+        assert!(args.force);
+    }
+
+    #[test]
+    fn parses_archive_list_and_restore_commands() {
+        let cli = Cli::try_parse_from(["djinn", "archive", "list", "--json"]).unwrap();
+        let Some(Command::Archive(args)) = cli.command else {
+            panic!("expected archive command");
+        };
+        let ArchiveNoun::List(args) = args.noun else {
+            panic!("expected archive list command");
+        };
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "archive",
+            "restore",
+            "manual-20260724.jsonl",
+            "--force",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::Archive(args)) = cli.command else {
+            panic!("expected archive command");
+        };
+        let ArchiveNoun::Restore(args) = args.noun else {
+            panic!("expected archive restore command");
+        };
+        assert_eq!(args.archive, "manual-20260724.jsonl");
+        assert!(args.force);
+        assert!(args.dry_run);
+    }
+
+    #[test]
+    fn archive_label_sanitizes_file_prefix() {
+        assert_eq!(archive_label("OpenCode Import"), "opencode-import");
+        assert_eq!(archive_label("***"), "archive");
     }
 
     #[test]

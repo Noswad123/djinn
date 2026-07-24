@@ -152,6 +152,19 @@ sends a notification when complete if `osascript` is available. The review is
 advisory and returns exact `djinn add suggestion ...` commands for you to run
 manually.
 
+Archive imported chat clutter after extracting useful memories:
+
+```bash
+djinn archive chats --source opencode --limit 50 --dry-run
+djinn archive chats --source opencode --limit 50 --force
+djinn archive list
+djinn archive restore manual-20260724-120000.jsonl --dry-run
+```
+
+Archives are written under `~/.cache/djinn/chat-archives/` before the selected
+chat rows are removed from the active chat index. Restore with `--force` to
+replace existing rows with matching IDs or source IDs.
+
 ## Storage
 
 Djinn uses Linux-style local paths on every platform:
