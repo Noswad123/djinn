@@ -72,6 +72,30 @@ pub struct ToolResult {
     pub success: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentProgressEvent {
+    ModelRequestStarted {
+        round: usize,
+    },
+    ModelResponseCompleted {
+        round: usize,
+        elapsed_ms: u128,
+        tool_calls: usize,
+        has_message: bool,
+    },
+    ToolCallStarted {
+        round: usize,
+        call: ModelToolCall,
+    },
+    ToolCallCompleted {
+        round: usize,
+        call: ModelToolCall,
+        result: ToolResult,
+        elapsed_ms: u128,
+    },
+}
+
 #[async_trait]
 pub trait ModelClient: Send + Sync {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse>;
@@ -2571,11 +2595,27 @@ where
         request: ModelRequest,
         max_tool_rounds: usize,
     ) -> Result<ModelResponse> {
+        self.complete_with_tools_and_progress(session, request, max_tool_rounds, |_| Ok(()))
+            .await
+    }
+
+    pub async fn complete_with_tools_and_progress<F>(
+        &self,
+        session: &AgentSessionId,
+        request: ModelRequest,
+        max_tool_rounds: usize,
+        mut on_progress: F,
+    ) -> Result<ModelResponse>
+    where
+        F: FnMut(AgentProgressEvent) -> Result<()>,
+    {
         let model = request.model;
         let mut messages = request.messages;
         let tools = self.tool_specs();
 
         for round in 0..=max_tool_rounds {
+            on_progress(AgentProgressEvent::ModelRequestStarted { round })?;
+            let model_started = Instant::now();
             let response = self
                 .model
                 .complete(ModelRequest {
@@ -2585,6 +2625,12 @@ where
                 })
                 .await?;
             self.persist_model_response(session, &response)?;
+            on_progress(AgentProgressEvent::ModelResponseCompleted {
+                round,
+                elapsed_ms: model_started.elapsed().as_millis(),
+                tool_calls: response.tool_calls.len(),
+                has_message: !response.message.content.trim().is_empty(),
+            })?;
 
             if response.tool_calls.is_empty() {
                 return Ok(response);
@@ -2601,6 +2647,11 @@ where
             });
 
             for call in response.tool_calls {
+                on_progress(AgentProgressEvent::ToolCallStarted {
+                    round,
+                    call: call.clone(),
+                })?;
+                let tool_started = Instant::now();
                 let result = self.invoke_tool_call(&call).await;
                 self.sessions.append_event(
                     session,
@@ -2610,6 +2661,12 @@ where
                         success: result.success,
                     }),
                 )?;
+                on_progress(AgentProgressEvent::ToolCallCompleted {
+                    round,
+                    call: call.clone(),
+                    result: result.clone(),
+                    elapsed_ms: tool_started.elapsed().as_millis(),
+                })?;
                 messages.push(ModelMessage {
                     role: ModelRole::Tool,
                     content: result.output.to_string(),

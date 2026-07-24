@@ -14,10 +14,10 @@ use async_trait::async_trait;
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use djinn_agent::{
-    tools_with_policies_file_history_and_gate, AgentRuntime, ModelMessage, ModelRequest, ModelRole,
-    OpenAiAuth, OpenAiClient, OpenAiOAuth, PermissionDecision, PermissionEffect, PermissionGate,
-    PermissionPolicy, PermissionRequest, PermissionRule, ReadAccessEffect, ReadAccessPolicy,
-    ReadAccessRule,
+    tools_with_policies_file_history_and_gate, AgentProgressEvent, AgentRuntime, ModelMessage,
+    ModelRequest, ModelRole, OpenAiAuth, OpenAiClient, OpenAiOAuth, PermissionDecision,
+    PermissionEffect, PermissionGate, PermissionPolicy, PermissionRequest, PermissionRule,
+    ReadAccessEffect, ReadAccessPolicy, ReadAccessRule,
 };
 use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
@@ -1945,7 +1945,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
     let base_url = args.base_url;
     let max_tool_rounds = args.max_tool_rounds;
 
-    let exit = tui.run_agent_chat_with_handler(
+    let exit = tui.run_agent_chat_with_progress_handler(
         agent_chat_messages(&session),
         djinn_tui::AgentChatStatus {
             session_id: id.to_string(),
@@ -1954,7 +1954,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
             model: model.clone(),
             notice: "History is secondary here; type a prompt to run the agent.".to_string(),
         },
-        |prompt| {
+        |prompt, progress| {
             store.append_event(
                 &id,
                 AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
@@ -1962,7 +1962,14 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                 }),
             )?;
             let session = store.load_session(&id)?;
-            complete_openai_messages(
+            progress(
+                agent_chat_messages(&session)
+                    .into_iter()
+                    .chain([agent_thought_message("Waiting for model response…")])
+                    .collect(),
+                "Waiting for model response…".to_string(),
+            )?;
+            complete_openai_messages_with_progress(
                 &store,
                 &id,
                 agent_model_messages(&session, &workspace),
@@ -1972,6 +1979,14 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                 max_tool_rounds,
                 &profile,
                 true,
+                |event| {
+                    let session = store.load_session(&id)?;
+                    let mut messages = agent_chat_messages(&session);
+                    if let Some(message) = agent_progress_message(&event) {
+                        messages.push(message);
+                    }
+                    progress(messages, agent_progress_notice(&event))
+                },
             )?;
             let session = store.load_session(&id)?;
             Ok(agent_chat_messages(&session))
@@ -2087,6 +2102,35 @@ fn complete_openai_messages(
     profile: &str,
     interactive_permissions: bool,
 ) -> Result<djinn_agent::ModelResponse> {
+    complete_openai_messages_with_progress(
+        store,
+        id,
+        messages,
+        model,
+        api_key,
+        base_url,
+        max_tool_rounds,
+        profile,
+        interactive_permissions,
+        |_| Ok(()),
+    )
+}
+
+fn complete_openai_messages_with_progress<F>(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    messages: Vec<ModelMessage>,
+    model: String,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    max_tool_rounds: usize,
+    profile: &str,
+    interactive_permissions: bool,
+    mut on_progress: F,
+) -> Result<djinn_agent::ModelResponse>
+where
+    F: FnMut(AgentProgressEvent) -> Result<()>,
+{
     let auth = resolve_openai_auth(api_key)?;
     let client = match auth {
         OpenAiAuth::ApiKey(api_key) => {
@@ -2126,7 +2170,7 @@ fn complete_openai_messages(
         .enable_all()
         .build()
         .with_context(|| "creating Tokio runtime for OpenAI request")?;
-    tokio.block_on(runtime.complete_with_tools(
+    tokio.block_on(runtime.complete_with_tools_and_progress(
         id,
         ModelRequest {
             model,
@@ -2134,6 +2178,7 @@ fn complete_openai_messages(
             tools: Vec::new(),
         },
         max_tool_rounds,
+        |event| on_progress(event),
     ))
 }
 
@@ -3014,7 +3059,7 @@ fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessag
                 calls.insert(id.clone(), call.clone());
                 messages.push(djinn_tui::AgentChatMessage {
                     role: djinn_tui::AgentChatRole::Tool,
-                    content: format!("{}: {}", call.name, call.invocation),
+                    content: format_agent_tool_call_message(name, input),
                 });
             }
             AgentSessionEventKind::ToolResult {
@@ -3024,7 +3069,7 @@ fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessag
             } => {
                 let call = calls.get(id);
                 messages.push(djinn_tui::AgentChatMessage {
-                    role: djinn_tui::AgentChatRole::Tool,
+                    role: djinn_tui::AgentChatRole::ToolOutput,
                     content: summarize_agent_tool_result(id, call, output, *success),
                 });
             }
@@ -3051,6 +3096,113 @@ fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessag
 struct AgentToolCallSummary {
     name: String,
     invocation: String,
+}
+
+fn agent_thought_message(content: impl Into<String>) -> djinn_tui::AgentChatMessage {
+    djinn_tui::AgentChatMessage {
+        role: djinn_tui::AgentChatRole::Thought,
+        content: content.into(),
+    }
+}
+
+fn agent_progress_message(event: &AgentProgressEvent) -> Option<djinn_tui::AgentChatMessage> {
+    match event {
+        AgentProgressEvent::ModelRequestStarted { round } => Some(agent_thought_message(format!(
+            "Planning next step{}…",
+            progress_round_suffix(*round)
+        ))),
+        AgentProgressEvent::ModelResponseCompleted {
+            elapsed_ms,
+            tool_calls,
+            has_message,
+            ..
+        } => {
+            let label = if *tool_calls > 0 {
+                format!(
+                    "Planned {tool_calls} tool call{}",
+                    plural_suffix(*tool_calls)
+                )
+            } else if *has_message {
+                "Drafted response".to_string()
+            } else {
+                "Completed model turn".to_string()
+            };
+            Some(agent_thought_message(format!(
+                "{label} · {}",
+                format_elapsed_ms(*elapsed_ms)
+            )))
+        }
+        AgentProgressEvent::ToolCallStarted { call, .. } => Some(agent_thought_message(format!(
+            "Running {}",
+            summarize_agent_tool_input(&call.name, &call.input)
+        ))),
+        AgentProgressEvent::ToolCallCompleted {
+            call,
+            result,
+            elapsed_ms,
+            ..
+        } => Some(agent_thought_message(format!(
+            "{} {} · {}",
+            if result.success { "Finished" } else { "Failed" },
+            call.name,
+            format_elapsed_ms(*elapsed_ms)
+        ))),
+    }
+}
+
+fn agent_progress_notice(event: &AgentProgressEvent) -> String {
+    match event {
+        AgentProgressEvent::ModelRequestStarted { .. } => "Planning next step…".to_string(),
+        AgentProgressEvent::ModelResponseCompleted { tool_calls, .. } if *tool_calls > 0 => {
+            format!(
+                "Planned {tool_calls} tool call{}.",
+                plural_suffix(*tool_calls)
+            )
+        }
+        AgentProgressEvent::ModelResponseCompleted { .. } => "Model response received.".to_string(),
+        AgentProgressEvent::ToolCallStarted { call, .. } => format!("Running {}…", call.name),
+        AgentProgressEvent::ToolCallCompleted { call, result, .. } => format!(
+            "{} {}.",
+            if result.success { "Finished" } else { "Failed" },
+            call.name
+        ),
+    }
+}
+
+fn progress_round_suffix(round: usize) -> String {
+    if round == 0 {
+        String::new()
+    } else {
+        format!(" (round {})", round + 1)
+    }
+}
+
+fn plural_suffix(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
+}
+
+fn format_elapsed_ms(elapsed_ms: u128) -> String {
+    if elapsed_ms >= 1_000 {
+        format!("{:.1}s", elapsed_ms as f64 / 1_000.0)
+    } else {
+        format!("{elapsed_ms}ms")
+    }
+}
+
+fn format_agent_tool_call_message(name: &str, input: &Value) -> String {
+    if name == "shell" {
+        let command = input.get("command").and_then(Value::as_str).unwrap_or("");
+        let workdir = input.get("workdir").and_then(Value::as_str).unwrap_or(".");
+        if command.trim().is_empty() {
+            return "shell".to_string();
+        }
+        return format!("# Running in {workdir}\n$ {command}");
+    }
+    format!("{name}: {}", summarize_agent_tool_input(name, input))
 }
 
 fn summarize_agent_tool_input(name: &str, input: &Value) -> String {
@@ -6457,7 +6609,9 @@ mod tests {
         let messages = agent_chat_messages(&session);
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, djinn_tui::AgentChatRole::User);
-        assert_eq!(messages[1].content, "shell: `cargo test`");
+        assert_eq!(messages[1].role, djinn_tui::AgentChatRole::Tool);
+        assert_eq!(messages[1].content, "# Running in .\n$ cargo test");
+        assert_eq!(messages[2].role, djinn_tui::AgentChatRole::ToolOutput);
         assert!(messages[2].content.contains("shell result: ok"));
         assert!(messages[2].content.contains("command: `cargo test`"));
         assert!(messages[2].content.contains("stdout:\ntests passed"));
@@ -6492,6 +6646,7 @@ mod tests {
 
         let messages = agent_chat_messages(&session);
         assert_eq!(messages[0].content, "search_files: /needle/ in src");
+        assert_eq!(messages[1].role, djinn_tui::AgentChatRole::ToolOutput);
         assert!(messages[1].content.contains("search_files result: ok"));
         assert!(messages[1].content.contains("path: /tmp/project/src"));
         assert!(messages[1].content.contains("2 matches"));

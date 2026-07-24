@@ -148,8 +148,8 @@ These are important but need more product/design detail before implementation.
   which has a prompt composer, readable transcript, named/correlated tool
   summaries, status metadata, JSONL persistence, and turn-by-turn runtime calls.
 - Add the next interactive pieces:
-  - live runtime event streaming;
-  - richer in-place "running tool" progress during a model turn;
+  - live token/text streaming if explicitly needed;
+  - build on the current runtime progress events with richer labels and grouping;
   - secondary session picker/dialog on top of `djinn agent chat --resume <id>`;
   - polish external prompt editing via Ctrl+E and `$VISUAL`/`$EDITOR`/`nvim`;
   - richer transcript wrapping and scroll affordances. Do not auto-scroll by

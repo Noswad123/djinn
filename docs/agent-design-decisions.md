@@ -353,6 +353,11 @@ The first non-interactive agent slice is implemented as:
     Tab from Skills or Shift+Tab from Tools returns to Agent chat and resumes the
     current agent session. Chat/dashboard transitions keep one terminal session
     alive to avoid alternate-screen flicker.
+25. Agent chat rich progress is rendered in-place during model turns. The runtime
+    emits model/tool progress events, and the transcript uses distinct colored
+    blocks for thoughts/progress, `Tool Request` invocations, and `Tool
+    Execution` results so the turn shape is visible at a glance without dumping
+    raw JSON.
 
 Not in the first slice unless explicitly reopened:
 

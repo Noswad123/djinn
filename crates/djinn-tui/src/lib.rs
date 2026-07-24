@@ -28,6 +28,7 @@ use ratatui::Terminal;
 use serde_json::Value;
 
 type TuiTerminal = Terminal<CrosstermBackend<Stdout>>;
+pub type AgentChatProgressHandler<'a> = dyn FnMut(Vec<AgentChatMessage>, String) -> Result<()> + 'a;
 
 pub struct TuiSession {
     terminal: TuiTerminal,
@@ -50,6 +51,23 @@ impl TuiSession {
     ) -> Result<AgentChatExit>
     where
         F: FnMut(String) -> Result<Vec<AgentChatMessage>>,
+    {
+        run_agent_chat_session_loop(
+            &mut self.terminal,
+            messages,
+            status,
+            &mut |prompt, _progress| on_prompt(prompt),
+        )
+    }
+
+    pub fn run_agent_chat_with_progress_handler<F>(
+        &mut self,
+        messages: Vec<AgentChatMessage>,
+        status: AgentChatStatus,
+        mut on_prompt: F,
+    ) -> Result<AgentChatExit>
+    where
+        F: FnMut(String, &mut AgentChatProgressHandler<'_>) -> Result<Vec<AgentChatMessage>>,
     {
         run_agent_chat_session_loop(&mut self.terminal, messages, status, &mut on_prompt)
     }
@@ -130,6 +148,23 @@ pub fn run_agent_chat_with_handler<F>(
 ) -> Result<AgentChatExit>
 where
     F: FnMut(String) -> Result<Vec<AgentChatMessage>>,
+{
+    let mut terminal = enter_terminal()?;
+    let result =
+        run_agent_chat_session_loop(&mut terminal, messages, status, &mut |prompt, _progress| {
+            on_prompt(prompt)
+        });
+    leave_terminal(&mut terminal)?;
+    result
+}
+
+pub fn run_agent_chat_with_progress_handler<F>(
+    messages: Vec<AgentChatMessage>,
+    status: AgentChatStatus,
+    mut on_prompt: F,
+) -> Result<AgentChatExit>
+where
+    F: FnMut(String, &mut AgentChatProgressHandler<'_>) -> Result<Vec<AgentChatMessage>>,
 {
     let mut terminal = enter_terminal()?;
     let result = run_agent_chat_session_loop(&mut terminal, messages, status, &mut on_prompt);
@@ -235,7 +270,9 @@ pub struct AgentChatMessage {
 pub enum AgentChatRole {
     User,
     Assistant,
+    Thought,
     Tool,
+    ToolOutput,
     Notice,
 }
 
@@ -305,6 +342,8 @@ const CTP_LAVENDER: Color = Color::Rgb(180, 190, 254);
 const CTP_MAUVE: Color = Color::Rgb(203, 166, 247);
 const CTP_GREEN: Color = Color::Rgb(166, 227, 161);
 const CTP_PEACH: Color = Color::Rgb(250, 179, 135);
+const CTP_SKY: Color = Color::Rgb(137, 220, 235);
+const CTP_YELLOW: Color = Color::Rgb(249, 226, 175);
 
 fn base_style() -> Style {
     Style::default().fg(CTP_TEXT).bg(CTP_BASE)
@@ -756,7 +795,7 @@ fn run_agent_chat_session_loop<F>(
     on_prompt: &mut F,
 ) -> Result<AgentChatExit>
 where
-    F: FnMut(String) -> Result<Vec<AgentChatMessage>>,
+    F: FnMut(String, &mut AgentChatProgressHandler<'_>) -> Result<Vec<AgentChatMessage>>,
 {
     let mut app = AgentChatComposerApp::new(messages, status);
     loop {
@@ -789,9 +828,20 @@ where
                             content: prompt.clone(),
                         });
                         app.status.notice = "Djinn is thinking…".to_string();
+                        app.messages.push(AgentChatMessage {
+                            role: AgentChatRole::Thought,
+                            content: "Waiting for model response…".to_string(),
+                        });
                         terminal.draw(|frame| app.draw(frame))?;
 
-                        match on_prompt(prompt) {
+                        let mut progress = |messages: Vec<AgentChatMessage>, notice: String| {
+                            app.messages = messages;
+                            app.status.notice = notice;
+                            terminal.draw(|frame| app.draw(frame))?;
+                            Ok(())
+                        };
+
+                        match on_prompt(prompt, &mut progress) {
                             Ok(messages) => {
                                 app.messages = messages;
                                 app.status.notice = "Ready.".to_string();
@@ -1129,19 +1179,45 @@ fn transcript_scrollbar_lines(scroll: u16, max_scroll: u16, height: u16) -> Vec<
 }
 
 fn agent_chat_message_lines(message: &AgentChatMessage) -> Vec<Line<'static>> {
-    let (label, style) = match message.role {
-        AgentChatRole::User => ("You", Style::default().fg(CTP_GREEN).bg(CTP_BASE)),
-        AgentChatRole::Assistant => ("Djinn", title_style()),
-        AgentChatRole::Tool => ("Tool", Style::default().fg(CTP_PEACH).bg(CTP_BASE)),
-        AgentChatRole::Notice => ("Notice", dim_style()),
+    let (label, label_style, content_style) = match message.role {
+        AgentChatRole::User => (
+            "You",
+            Style::default().fg(CTP_GREEN).bg(CTP_SURFACE0),
+            Style::default().fg(CTP_TEXT).bg(CTP_BASE),
+        ),
+        AgentChatRole::Assistant => (
+            "Djinn",
+            title_style().bg(CTP_SURFACE0),
+            Style::default().fg(CTP_TEXT).bg(CTP_BASE),
+        ),
+        AgentChatRole::Thought => (
+            "Thought",
+            Style::default().fg(CTP_MAUVE).bg(CTP_SURFACE0),
+            Style::default().fg(CTP_SUBTEXT0).bg(CTP_SURFACE0),
+        ),
+        AgentChatRole::Tool => (
+            "Tool Request",
+            Style::default().fg(CTP_PEACH).bg(CTP_SURFACE1),
+            Style::default().fg(CTP_YELLOW).bg(CTP_SURFACE1),
+        ),
+        AgentChatRole::ToolOutput => (
+            "Tool Execution",
+            Style::default().fg(CTP_SKY).bg(CTP_SURFACE0),
+            Style::default().fg(CTP_TEXT).bg(CTP_SURFACE0),
+        ),
+        AgentChatRole::Notice => ("Notice", dim_style(), dim_style()),
     };
-    let mut lines = vec![Line::from(Span::styled(format!("{label}:"), style))];
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" ", label_style),
+        Span::styled(label.to_string(), label_style.add_modifier(Modifier::BOLD)),
+        Span::styled(" ", label_style),
+    ])];
     let content = message.content.trim();
     if content.is_empty() {
-        lines.push(Line::from(Span::styled("(empty)", dim_style())));
+        lines.push(Line::from(Span::styled(" (empty) ", content_style)));
     } else {
         for line in content.lines() {
-            lines.push(Line::from(line.to_string()));
+            lines.push(Line::from(Span::styled(format!(" {line} "), content_style)));
         }
     }
     lines
@@ -3035,6 +3111,18 @@ fn sanitize_preview(preview: &str) -> String {
 mod tests {
     use super::*;
 
+    fn rendered_agent_chat_message_lines(message: AgentChatMessage) -> Vec<String> {
+        agent_chat_message_lines(&message)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
     #[test]
     fn strip_tool_metadata_lines_removes_name_and_description_tags() {
         let preview =
@@ -3135,7 +3223,22 @@ mod tests {
         })
         .collect::<Vec<_>>();
 
-        assert_eq!(lines, vec!["Djinn:", "Hello", "world"]);
+        assert_eq!(lines, vec![" Djinn ", " Hello ", " world "]);
+    }
+
+    #[test]
+    fn agent_chat_tool_blocks_use_request_and_execution_labels() {
+        let request_lines = rendered_agent_chat_message_lines(AgentChatMessage {
+            role: AgentChatRole::Tool,
+            content: "read_file: Cargo.toml".to_string(),
+        });
+        let execution_lines = rendered_agent_chat_message_lines(AgentChatMessage {
+            role: AgentChatRole::ToolOutput,
+            content: "read_file result: ok".to_string(),
+        });
+
+        assert_eq!(request_lines[0], " Tool Request ");
+        assert_eq!(execution_lines[0], " Tool Execution ");
     }
 
     #[test]
