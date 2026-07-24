@@ -3,34 +3,25 @@ mod command_palette;
 mod filter;
 mod keys;
 mod style;
+mod terminal;
 
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::io::{self, Stdout};
 use std::process::Command as ProcessCommand;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use crossterm::event::{
-    self, Event, KeyCode, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::event::{self, Event, KeyCode};
 use djinn_chats::ChatRecord;
 use djinn_contexts::ContextRecord;
 use djinn_memory::{MemoryCandidate, SuggestionRecord};
 use djinn_skills::SkillRecord;
 use djinn_tools::ToolEntry;
-use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
-use ratatui::Terminal;
 use serde_json::Value;
 
 #[cfg(test)]
@@ -43,8 +34,8 @@ use command_palette::{CommandPaletteItem, CommandPaletteState};
 use filter::{fuzzy_match, selected_visible_position, FilterState};
 use keys::*;
 use style::*;
+use terminal::{enter_terminal, leave_terminal, resume_terminal, suspend_terminal, TuiTerminal};
 
-type TuiTerminal = Terminal<CrosstermBackend<Stdout>>;
 pub type AgentChatProgressHandler<'a> = dyn FnMut(Vec<AgentChatMessage>, String) -> Result<()> + 'a;
 
 pub struct TuiSession {
@@ -1297,51 +1288,6 @@ pub enum ChatShareMode {
     Summary,
     Patterns,
     Memories,
-}
-
-fn enter_terminal() -> Result<TuiTerminal> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, push_keyboard_enhancement())?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
-    Ok(terminal)
-}
-
-fn leave_terminal(terminal: &mut TuiTerminal) -> Result<()> {
-    suspend_terminal(terminal)
-}
-
-fn suspend_terminal(terminal: &mut TuiTerminal) -> Result<()> {
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        PopKeyboardEnhancementFlags,
-        LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
-    Ok(())
-}
-
-fn resume_terminal(terminal: &mut TuiTerminal) -> Result<()> {
-    enable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        EnterAlternateScreen,
-        push_keyboard_enhancement()
-    )?;
-    terminal.clear()?;
-    Ok(())
-}
-
-fn push_keyboard_enhancement() -> PushKeyboardEnhancementFlags {
-    PushKeyboardEnhancementFlags(
-        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-            | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-            | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-            | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
-    )
 }
 
 fn run_tools_loop(terminal: &mut TuiTerminal, tools: Vec<ToolEntry>) -> Result<()> {
