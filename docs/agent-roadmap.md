@@ -59,8 +59,9 @@ These items are ready to implement next. Completed baseline behavior belongs in
   - runtime loop/event emission.
 - Keep `djinn-memory` focused on durable session/event storage.
 - Keep `djinn-cli` responsible for command parsing and human-facing output.
-- Keep `djinn agent tools list` backed by runtime registry construction so it
-  stays aligned with the tools and schemas actually sent to model providers.
+- Keep `djinn agent tools list` and `djinn agent tools show <name>` backed by
+  runtime registry construction so they stay aligned with the tools and schemas
+  actually sent to model providers.
 
 ### Mutation tools
 

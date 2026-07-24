@@ -599,6 +599,8 @@ enum AgentConfigCommand {
 enum AgentToolsCommand {
     /// List built-in tools exposed to the agent runtime.
     List(AgentToolsListArgs),
+    /// Show one built-in agent tool spec.
+    Show(AgentToolsShowArgs),
 }
 
 #[derive(Debug, Args)]
@@ -631,6 +633,24 @@ struct AgentConfigListArgs {
 
 #[derive(Debug, Args)]
 struct AgentToolsListArgs {
+    /// Workspace path used to resolve profile permissions. Defaults to the current directory.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    /// Agent profile name used for read/permission policy resolution.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentToolsShowArgs {
+    /// Tool name, case-insensitive. Falls back to substring matching.
+    name: String,
     /// Workspace path used to resolve profile permissions. Defaults to the current directory.
     #[arg(long)]
     workspace: Option<PathBuf>,
@@ -1777,6 +1797,7 @@ fn run_agent_config(args: AgentConfigArgs) -> Result<()> {
 fn run_agent_tools(args: AgentToolsArgs) -> Result<()> {
     match args.command {
         AgentToolsCommand::List(args) => agent_tools_list(args),
+        AgentToolsCommand::Show(args) => agent_tools_show(args),
     }
 }
 
@@ -1814,10 +1835,29 @@ fn agent_config_list(args: AgentConfigListArgs) -> Result<()> {
 }
 
 fn agent_tools_list(args: AgentToolsListArgs) -> Result<()> {
-    let workspace = resolve_agent_workspace(args.workspace)?;
+    let specs = agent_tool_specs(args.workspace, &args.profile)?;
+    print!(
+        "{}",
+        format_agent_tool_specs(&specs, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+fn agent_tools_show(args: AgentToolsShowArgs) -> Result<()> {
+    let specs = agent_tool_specs(args.workspace, &args.profile)?;
+    let spec = resolve_agent_tool_spec(&specs, &args.name)?;
+    print!(
+        "{}",
+        format_agent_tool_spec(spec, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+fn agent_tool_specs(workspace: Option<PathBuf>, profile: &str) -> Result<Vec<ToolSpec>> {
+    let workspace = resolve_agent_workspace(workspace)?;
     let workspace_path = Path::new(&workspace);
-    let read_access = resolve_agent_read_access_policy(&args.profile, workspace_path)?;
-    let permissions = resolve_agent_permission_policy(&args.profile, workspace_path)?;
+    let read_access = resolve_agent_read_access_policy(profile, workspace_path)?;
+    let permissions = resolve_agent_permission_policy(profile, workspace_path)?;
     let registry = tools_with_policies_file_history_and_gate(
         workspace_path,
         read_access,
@@ -1825,12 +1865,7 @@ fn agent_tools_list(args: AgentToolsListArgs) -> Result<()> {
         None,
         None,
     )?;
-    let specs = registry.specs();
-    print!(
-        "{}",
-        format_agent_tool_specs(&specs, output_format(args.format, args.json))?
-    );
-    Ok(())
+    Ok(registry.specs())
 }
 
 fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
@@ -2591,6 +2626,56 @@ fn format_agent_tool_specs(specs: &[ToolSpec], format: OutputFormat) -> Result<S
             lines.push(format!("  {summary}."));
         }
     }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn resolve_agent_tool_spec<'a>(specs: &'a [ToolSpec], name: &str) -> Result<&'a ToolSpec> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("agent tool name cannot be empty");
+    }
+    if let Some(spec) = specs
+        .iter()
+        .find(|spec| spec.name.eq_ignore_ascii_case(name))
+    {
+        return Ok(spec);
+    }
+    let lowered = name.to_ascii_lowercase();
+    let matches = specs
+        .iter()
+        .filter(|spec| spec.name.to_ascii_lowercase().contains(&lowered))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [spec] => Ok(spec),
+        [] => bail!("unknown agent tool `{name}`"),
+        _ => bail!(
+            "ambiguous agent tool `{name}`; matches: {}",
+            matches
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn format_agent_tool_spec(spec: &ToolSpec, format: OutputFormat) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(spec)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+
+    let schema = serde_json::to_string_pretty(&spec.input_schema)?;
+    let mut lines = vec![
+        spec.name.clone(),
+        String::new(),
+        spec.description.clone(),
+        String::new(),
+        "Input schema:".to_string(),
+        schema,
+    ];
     lines.push(String::new());
     Ok(lines.join("\n"))
 }
@@ -7750,6 +7835,76 @@ mod tests {
 
         assert_eq!(value[0]["name"], "write_file");
         assert_eq!(value[0]["input_schema"]["required"][0], "path");
+    }
+
+    #[test]
+    fn resolve_agent_tool_spec_matches_exact_and_unique_substrings() {
+        let specs = vec![
+            ToolSpec {
+                name: "read_file".to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            },
+            ToolSpec {
+                name: "write_file".to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            },
+        ];
+
+        assert_eq!(
+            resolve_agent_tool_spec(&specs, "READ_FILE").unwrap().name,
+            "read_file"
+        );
+        assert_eq!(
+            resolve_agent_tool_spec(&specs, "write").unwrap().name,
+            "write_file"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_tool_spec_rejects_unknown_and_ambiguous_names() {
+        let specs = vec![
+            ToolSpec {
+                name: "read_file".to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            },
+            ToolSpec {
+                name: "write_file".to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            },
+        ];
+
+        assert!(resolve_agent_tool_spec(&specs, "missing")
+            .unwrap_err()
+            .to_string()
+            .contains("unknown"));
+        assert!(resolve_agent_tool_spec(&specs, "file")
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+    }
+
+    #[test]
+    fn format_agent_tool_spec_shows_schema_in_text_and_json() {
+        let spec = ToolSpec {
+            name: "write_file".to_string(),
+            description: "Create or replace a file.".to_string(),
+            input_schema: serde_json::json!({"type": "object", "required": ["path", "content"]}),
+        };
+
+        let text = format_agent_tool_spec(&spec, OutputFormat::Text).unwrap();
+        assert!(text.contains("write_file"));
+        assert!(text.contains("Create or replace a file."));
+        assert!(text.contains("Input schema:"));
+        assert!(text.contains("\"required\""));
+
+        let json = format_agent_tool_spec(&spec, OutputFormat::Json).unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["name"], "write_file");
+        assert_eq!(value["input_schema"]["required"][1], "content");
     }
 
     #[test]

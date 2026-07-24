@@ -324,8 +324,9 @@ The first non-interactive agent slice is implemented as:
     line-oriented exact block replacement in existing UTF-8 files. They use
     `write`/`edit` permission rules while reusing approval previews and
     file-history accounting.
-15. `djinn agent tools list` inspects the built-in runtime tool set using the same
-    registry construction as agent runs. Text output lists names/summaries; JSON
+15. `djinn agent tools list` and `djinn agent tools show <name>` inspect the
+    built-in runtime tool set using the same registry construction as agent runs.
+    Text output lists names/summaries or a single tool description/schema; JSON
     output includes full tool specs and input schemas.
 16. CLI commands for session creation/list/show and one-shot prompting:
     `djinn agent session new`, `djinn agent session list`,
