@@ -1987,6 +1987,16 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
             AgentChatOutcome::Command { resume, command } => {
                 args.resume = Some(resume.clone());
                 match command {
+                    djinn_tui::AgentChatCommand::NewSession => {
+                        let store = agent_session_store();
+                        let id = AgentSessionId::new(resume);
+                        let session = store.load_session(&id)?;
+                        args.model = args.model.or_else(|| latest_session_model(&session));
+                        args.profile = session.meta.profile;
+                        args.resume = None;
+                        args.title = None;
+                        args.workspace = None;
+                    }
                     djinn_tui::AgentChatCommand::OpenSessions => {
                         match run_tui_in_session(
                             &mut tui,
@@ -2007,22 +2017,23 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                         }
                     }
                     djinn_tui::AgentChatCommand::SwitchProfile(profile) => {
-                        agent_session_store().append_event(
-                            &AgentSessionId::new(resume),
-                            AgentSessionEvent::new(AgentSessionEventKind::SessionProfileUpdated {
-                                profile: profile.clone(),
-                            }),
-                        )?;
+                        let store = agent_session_store();
+                        let id = AgentSessionId::new(resume);
+                        update_agent_session_profile(&store, &id, &profile)?;
                         args.profile = profile;
                         args.model = None;
                     }
                     djinn_tui::AgentChatCommand::SwitchModel(model) => {
-                        agent_session_store().append_event(
-                            &AgentSessionId::new(resume),
-                            AgentSessionEvent::new(AgentSessionEventKind::SessionModelUpdated {
-                                model: model.clone(),
-                            }),
+                        let store = agent_session_store();
+                        let id = AgentSessionId::new(resume);
+                        let session = store.load_session(&id)?;
+                        let current_model = resolve_agent_model(
+                            args.model
+                                .clone()
+                                .or_else(|| latest_session_model(&session)),
+                            &session.meta.profile,
                         )?;
+                        update_agent_session_model(&store, &id, &current_model, &model)?;
                         args.model = Some(model);
                     }
                 }
@@ -2237,17 +2248,30 @@ fn agent_chat_command_palette(
     profile: &str,
     model: &str,
 ) -> Result<Vec<djinn_tui::AgentChatCommandEntry>> {
-    let mut entries = vec![djinn_tui::AgentChatCommandEntry {
-        section: "Session".to_string(),
-        label: "Resume session…".to_string(),
-        description: "Open the Chats/session picker".to_string(),
-        command: djinn_tui::AgentChatCommand::OpenSessions,
-    }];
+    let mut entries = vec![
+        djinn_tui::AgentChatCommandEntry {
+            section: "Session".to_string(),
+            label: "New session".to_string(),
+            description: "Start a fresh Agent chat with the current profile/model".to_string(),
+            command: djinn_tui::AgentChatCommand::NewSession,
+        },
+        djinn_tui::AgentChatCommandEntry {
+            section: "Session".to_string(),
+            label: "Resume session…".to_string(),
+            description: "Open the Chats/session picker".to_string(),
+            command: djinn_tui::AgentChatCommand::OpenSessions,
+        },
+    ];
     for candidate in agent_profile_options(profile)? {
+        let current = same_agent_option(&candidate, profile);
         entries.push(djinn_tui::AgentChatCommandEntry {
             section: "Profile".to_string(),
-            label: format!("Switch profile · {candidate}"),
-            description: if candidate == profile {
+            label: if current {
+                format!("✓ Current profile · {candidate}")
+            } else {
+                format!("Switch profile · {candidate}")
+            },
+            description: if current {
                 "current profile".to_string()
             } else {
                 "Use this OpenCode/Djinn profile for future turns".to_string()
@@ -2256,10 +2280,15 @@ fn agent_chat_command_palette(
         });
     }
     for candidate in agent_model_options(model)? {
+        let current = same_agent_option(&candidate, model);
         entries.push(djinn_tui::AgentChatCommandEntry {
             section: "Model".to_string(),
-            label: format!("Switch model · {candidate}"),
-            description: if candidate == model {
+            label: if current {
+                format!("✓ Current model · {candidate}")
+            } else {
+                format!("Switch model · {candidate}")
+            },
+            description: if current {
                 "current model".to_string()
             } else {
                 "Use this model for future turns".to_string()
@@ -2268,6 +2297,46 @@ fn agent_chat_command_palette(
         });
     }
     Ok(entries)
+}
+
+fn update_agent_session_profile(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    profile: &str,
+) -> Result<bool> {
+    let session = store.load_session(id)?;
+    if same_agent_option(&session.meta.profile, profile) {
+        return Ok(false);
+    }
+    store.append_event(
+        id,
+        AgentSessionEvent::new(AgentSessionEventKind::SessionProfileUpdated {
+            profile: profile.to_string(),
+        }),
+    )?;
+    Ok(true)
+}
+
+fn update_agent_session_model(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    current_model: &str,
+    model: &str,
+) -> Result<bool> {
+    if same_agent_option(current_model, model) {
+        return Ok(false);
+    }
+    store.append_event(
+        id,
+        AgentSessionEvent::new(AgentSessionEventKind::SessionModelUpdated {
+            model: model.to_string(),
+        }),
+    )?;
+    Ok(true)
+}
+
+fn same_agent_option(left: &str, right: &str) -> bool {
+    left.trim() == right.trim()
 }
 
 fn agent_profile_options(current: &str) -> Result<Vec<String>> {
@@ -7373,6 +7442,93 @@ mod tests {
         assert_eq!(
             latest_session_model(&session).as_deref(),
             Some("openai/gpt-5.4-mini")
+        );
+    }
+
+    #[test]
+    fn agent_chat_command_palette_marks_current_profile_and_model() {
+        let entries = agent_chat_command_palette("default", "openai/gpt-5.5").unwrap();
+
+        assert!(entries
+            .iter()
+            .any(|entry| entry.label == "✓ Current profile · default"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.label == "✓ Current model · openai/gpt-5.5"));
+        assert!(entries.iter().any(|entry| {
+            entry.section == "Session"
+                && entry.label == "New session"
+                && entry.command == djinn_tui::AgentChatCommand::NewSession
+        }));
+    }
+
+    #[test]
+    fn update_agent_session_profile_skips_noop_and_records_changes() {
+        let store = temp_agent_store("profile-noop");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Agent chat".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        assert!(!update_agent_session_profile(&store, &id, " default ").unwrap());
+        assert!(update_agent_session_profile(&store, &id, "architect").unwrap());
+
+        let loaded = store.load_session(&id).unwrap();
+        assert_eq!(loaded.meta.profile, "architect");
+        assert_eq!(
+            loaded
+                .events
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    AgentSessionEventKind::SessionProfileUpdated { .. }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn update_agent_session_model_skips_noop_and_records_changes() {
+        let store = temp_agent_store("model-noop");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Agent chat".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        assert!(
+            !update_agent_session_model(&store, &id, "openai/gpt-5.5", " openai/gpt-5.5 ").unwrap()
+        );
+        assert!(
+            update_agent_session_model(&store, &id, "openai/gpt-5.5", "openai/gpt-5.4-mini")
+                .unwrap()
+        );
+
+        let loaded = store.load_session(&id).unwrap();
+        assert_eq!(
+            latest_session_model(&loaded).as_deref(),
+            Some("openai/gpt-5.4-mini")
+        );
+        assert_eq!(
+            loaded
+                .events
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    AgentSessionEventKind::SessionModelUpdated { .. }
+                ))
+                .count(),
+            1
         );
     }
 

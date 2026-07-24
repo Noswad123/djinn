@@ -286,6 +286,7 @@ pub struct AgentChatCommandEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentChatCommand {
+    NewSession,
     OpenSessions,
     SwitchProfile(String),
     SwitchModel(String),

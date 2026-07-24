@@ -393,6 +393,12 @@ The first non-interactive agent slice is implemented as:
 32. The dashboard also uses Ctrl+/ for detailed help. Per-tab keybinding
     guidance belongs in the help overlay, while the dashboard footer stays short
     and points to help.
+33. Current profile/model choices in the command palette should be visibly marked
+    with a check. Selecting the already-current profile/model is a no-op and must
+    not append redundant JSONL metadata events.
+34. The Agent command palette Session section includes New session as a first-class
+    action. Starting a new session from the palette should preserve the current
+    profile/model context while clearing the resumed session id/title/workspace.
 
 Not in the first slice unless explicitly reopened:
 
