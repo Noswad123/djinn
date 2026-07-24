@@ -151,6 +151,7 @@ pub trait AgentSessionStore {
     fn append_event(&self, session: &AgentSessionId, event: AgentSessionEvent) -> Result<()>;
     fn load_session(&self, session: &AgentSessionId) -> Result<AgentSession>;
     fn list_sessions(&self, filter: AgentSessionFilter) -> Result<Vec<AgentSessionSummary>>;
+    fn delete_session(&self, session: &AgentSessionId) -> Result<AgentSession>;
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +260,14 @@ impl AgentSessionStore for JsonlAgentSessionStore {
             summaries.truncate(limit);
         }
         Ok(summaries)
+    }
+
+    fn delete_session(&self, session: &AgentSessionId) -> Result<AgentSession> {
+        let path = self.session_path(session);
+        let deleted = self.load_session(session)?;
+        fs::remove_file(&path)
+            .with_context(|| format!("deleting agent session {}", path.display()))?;
+        Ok(deleted)
     }
 }
 
@@ -481,5 +490,33 @@ mod tests {
 
         assert_eq!(loaded.meta.profile, "architect");
         assert_eq!(listed[0].profile, "architect");
+    }
+
+    #[test]
+    fn deletes_existing_session_file() {
+        let store = temp_store("delete");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "delete me".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        let path = store.session_file_path(&id);
+        assert!(path.exists());
+
+        let deleted = store.delete_session(&id).unwrap();
+
+        assert_eq!(deleted.id, id);
+        assert_eq!(deleted.meta.title, "delete me");
+        assert!(!path.exists());
+        assert!(store.load_session(&id).is_err());
+        assert!(store
+            .list_sessions(AgentSessionFilter::default())
+            .unwrap()
+            .is_empty());
     }
 }

@@ -696,6 +696,8 @@ enum AgentSessionCommand {
     Show(AgentSessionShowArgs),
     /// Rename an agent session by appending a title metadata event.
     Rename(AgentSessionRenameArgs),
+    /// Delete an agent session JSONL file.
+    Delete(AgentSessionDeleteArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -920,6 +922,18 @@ struct AgentSessionRenameArgs {
     id: String,
     /// New human-friendly session title.
     title: String,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionDeleteArgs {
+    /// Agent session id.
+    id: String,
+    /// Actually delete the session file.
+    #[arg(long)]
+    force: bool,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -1842,6 +1856,7 @@ fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
         AgentSessionCommand::List(args) => agent_session_list(args),
         AgentSessionCommand::Show(args) => agent_session_show(args),
         AgentSessionCommand::Rename(args) => agent_session_rename(args),
+        AgentSessionCommand::Delete(args) => agent_session_delete(args),
     }
 }
 
@@ -2051,6 +2066,40 @@ fn agent_session_rename(args: AgentSessionRenameArgs) -> Result<()> {
             "Agent session [{}] already has title: {}",
             id, session.meta.title
         );
+    }
+    Ok(())
+}
+
+fn agent_session_delete(args: AgentSessionDeleteArgs) -> Result<()> {
+    if !args.force {
+        bail!("refusing to delete agent session without --force");
+    }
+
+    let id = AgentSessionId::new(args.id);
+    let store = agent_session_store();
+    let path = store.session_file_path(&id);
+    let session = store.delete_session(&id)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": session.id,
+                "title": session.meta.title,
+                "deleted": true,
+                "path": path,
+            }))?
+        );
+    } else {
+        println!(
+            "Deleted agent session [{}]: {}",
+            id,
+            if session.meta.title.is_empty() {
+                "Untitled agent session"
+            } else {
+                &session.meta.title
+            }
+        );
+        println!("Path: {}", path.display());
     }
     Ok(())
 }
@@ -7797,6 +7846,28 @@ mod tests {
         assert!(rendered.contains("    fn answer() -> i32 {"));
         assert!(rendered.contains("  -     41"));
         assert!(rendered.contains("  +     42"));
+    }
+
+    #[test]
+    fn parses_agent_session_delete_command() {
+        let cli = Cli::try_parse_from([
+            "djinn", "agent", "session", "delete", "agt_test", "--force", "--json",
+        ])
+        .unwrap();
+
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Session(session_args) = agent_args.command else {
+            panic!("expected agent session command");
+        };
+        let AgentSessionCommand::Delete(delete_args) = session_args.command else {
+            panic!("expected agent session delete command");
+        };
+
+        assert_eq!(delete_args.id, "agt_test");
+        assert!(delete_args.force);
+        assert!(delete_args.json);
     }
 
     #[test]
