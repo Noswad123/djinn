@@ -593,6 +593,8 @@ struct AgentToolsArgs {
 enum AgentConfigCommand {
     /// List discovered agent profiles and models.
     List(AgentConfigListArgs),
+    /// Show the effective agent runtime configuration.
+    Show(AgentConfigShowArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -621,6 +623,25 @@ struct AgentConfigListArgs {
     #[arg(long, default_value = "default")]
     profile: String,
     /// Model to treat as current. Defaults the same way as agent chat.
+    #[arg(long)]
+    model: Option<String>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentConfigShowArgs {
+    /// Workspace path to resolve. Defaults to the current directory.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    /// Agent profile name.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// OpenAI model to use. Defaults the same way as agent chat.
     #[arg(long)]
     model: Option<String>,
     /// Output format.
@@ -673,6 +694,8 @@ enum AgentSessionCommand {
     List(AgentSessionListArgs),
     /// Show one agent session.
     Show(AgentSessionShowArgs),
+    /// Rename an agent session by appending a title metadata event.
+    Rename(AgentSessionRenameArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -886,6 +909,17 @@ struct AgentSessionListArgs {
 struct AgentSessionShowArgs {
     /// Agent session id.
     id: String,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionRenameArgs {
+    /// Agent session id.
+    id: String,
+    /// New human-friendly session title.
+    title: String,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -1791,6 +1825,7 @@ fn run_agent(args: AgentArgs) -> Result<()> {
 fn run_agent_config(args: AgentConfigArgs) -> Result<()> {
     match args.command {
         AgentConfigCommand::List(args) => agent_config_list(args),
+        AgentConfigCommand::Show(args) => agent_config_show(args),
     }
 }
 
@@ -1806,6 +1841,7 @@ fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
         AgentSessionCommand::New(args) => agent_session_new(args),
         AgentSessionCommand::List(args) => agent_session_list(args),
         AgentSessionCommand::Show(args) => agent_session_show(args),
+        AgentSessionCommand::Rename(args) => agent_session_rename(args),
     }
 }
 
@@ -1832,6 +1868,41 @@ fn agent_config_list(args: AgentConfigListArgs) -> Result<()> {
         )?
     );
     Ok(())
+}
+
+fn agent_config_show(args: AgentConfigShowArgs) -> Result<()> {
+    let config = resolve_agent_effective_config(args.workspace, args.profile, args.model)?;
+    print!(
+        "{}",
+        format_agent_effective_config(&config, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentEffectiveConfig {
+    workspace: String,
+    profile: String,
+    model: String,
+    read_access: ReadAccessPolicy,
+    permissions: PermissionPolicy,
+}
+
+fn resolve_agent_effective_config(
+    workspace: Option<PathBuf>,
+    profile: String,
+    model: Option<String>,
+) -> Result<AgentEffectiveConfig> {
+    let profile = profile.trim().to_string();
+    let workspace = resolve_agent_workspace(workspace)?;
+    let workspace_path = Path::new(&workspace);
+    Ok(AgentEffectiveConfig {
+        model: resolve_agent_model(model, &profile)?,
+        read_access: resolve_agent_read_access_policy(&profile, workspace_path)?,
+        permissions: resolve_agent_permission_policy(&profile, workspace_path)?,
+        workspace,
+        profile,
+    })
 }
 
 fn agent_tools_list(args: AgentToolsListArgs) -> Result<()> {
@@ -1950,6 +2021,36 @@ fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
         for event in &session.events {
             println!("- {} {}", event.created_at, format_agent_event(event));
         }
+    }
+    Ok(())
+}
+
+fn agent_session_rename(args: AgentSessionRenameArgs) -> Result<()> {
+    let id = AgentSessionId::new(args.id);
+    let title = args.title.trim().to_string();
+    if title.is_empty() {
+        bail!("agent session title cannot be empty");
+    }
+    let store = agent_session_store();
+    let changed = update_agent_session_title(&store, &id, &title)?;
+    let session = store.load_session(&id)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": session.id,
+                "title": session.meta.title,
+                "changed": changed,
+                "path": store.session_file_path(&id),
+            }))?
+        );
+    } else if changed {
+        println!("Renamed agent session [{}]: {}", id, session.meta.title);
+    } else {
+        println!(
+            "Agent session [{}] already has title: {}",
+            id, session.meta.title
+        );
     }
     Ok(())
 }
@@ -2511,6 +2612,28 @@ fn update_agent_session_model(
     Ok(true)
 }
 
+fn update_agent_session_title(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    title: &str,
+) -> Result<bool> {
+    let title = title.trim();
+    if title.is_empty() {
+        bail!("agent session title cannot be empty");
+    }
+    let session = store.load_session(id)?;
+    if session.meta.title.trim() == title {
+        return Ok(false);
+    }
+    store.append_event(
+        id,
+        AgentSessionEvent::new(AgentSessionEventKind::SessionTitleUpdated {
+            title: title.to_string(),
+        }),
+    )?;
+    Ok(true)
+}
+
 fn same_agent_option(left: &str, right: &str) -> bool {
     left.trim() == right.trim()
 }
@@ -2596,6 +2719,57 @@ fn format_agent_config_options(
             " "
         };
         lines.push(format!("{marker} {model}"));
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn format_agent_effective_config(
+    config: &AgentEffectiveConfig,
+    format: OutputFormat,
+) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(config)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+
+    let mut lines = vec![
+        "Agent effective config".to_string(),
+        format!("Workspace: {}", config.workspace),
+        format!("Profile: {}", config.profile),
+        format!("Model: {}", config.model),
+        String::new(),
+        "Read access:".to_string(),
+    ];
+    if config.read_access.allow_roots.is_empty()
+        && config.read_access.deny_roots.is_empty()
+        && config.read_access.rules.is_empty()
+    {
+        lines.push("  allow by default".to_string());
+    } else {
+        for root in &config.read_access.allow_roots {
+            lines.push(format!("  allow root: {}", root.display()));
+        }
+        for root in &config.read_access.deny_roots {
+            lines.push(format!("  deny root: {}", root.display()));
+        }
+        for rule in &config.read_access.rules {
+            lines.push(format!("  {:?}: {}", rule.effect, rule.pattern));
+        }
+    }
+    lines.push(String::new());
+    lines.push("Permissions:".to_string());
+    if config.permissions.rules.is_empty() {
+        lines.push("  allow by default with destructive-action guardrails".to_string());
+    } else {
+        for rule in &config.permissions.rules {
+            lines.push(format!(
+                "  {:?}: {} {}",
+                rule.effect, rule.action, rule.resource
+            ));
+        }
+        lines.push("  destructive-action guardrails always apply".to_string());
     }
     lines.push(String::new());
     Ok(lines.join("\n"))
@@ -7806,6 +7980,61 @@ mod tests {
     }
 
     #[test]
+    fn format_agent_effective_config_renders_text_summary() {
+        let config = AgentEffectiveConfig {
+            workspace: "/tmp/project".to_string(),
+            profile: "architect".to_string(),
+            model: "openai/gpt-5.5".to_string(),
+            read_access: ReadAccessPolicy {
+                allow_roots: vec![PathBuf::from("/tmp/project")],
+                deny_roots: vec![PathBuf::from("/tmp/project/secrets")],
+                rules: vec![ReadAccessRule {
+                    pattern: "*/docs/*".to_string(),
+                    effect: ReadAccessEffect::Allow,
+                }],
+            },
+            permissions: PermissionPolicy {
+                rules: vec![PermissionRule {
+                    action: "write".to_string(),
+                    resource: "*.rs".to_string(),
+                    effect: PermissionEffect::Ask,
+                }],
+            },
+        };
+
+        let rendered = format_agent_effective_config(&config, OutputFormat::Text).unwrap();
+
+        assert!(rendered.contains("Agent effective config"));
+        assert!(rendered.contains("Workspace: /tmp/project"));
+        assert!(rendered.contains("Profile: architect"));
+        assert!(rendered.contains("Model: openai/gpt-5.5"));
+        assert!(rendered.contains("allow root: /tmp/project"));
+        assert!(rendered.contains("deny root: /tmp/project/secrets"));
+        assert!(rendered.contains("Allow: */docs/*"));
+        assert!(rendered.contains("Ask: write *.rs"));
+        assert!(rendered.contains("destructive-action guardrails always apply"));
+    }
+
+    #[test]
+    fn format_agent_effective_config_outputs_json() {
+        let config = AgentEffectiveConfig {
+            workspace: "/tmp/project".to_string(),
+            profile: "default".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            read_access: ReadAccessPolicy::allow_by_default(),
+            permissions: PermissionPolicy::allow_by_default(),
+        };
+
+        let rendered = format_agent_effective_config(&config, OutputFormat::Json).unwrap();
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(value["workspace"], "/tmp/project");
+        assert_eq!(value["profile"], "default");
+        assert_eq!(value["model"], "gpt-4o-mini");
+        assert_eq!(value["permissions"]["rules"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
     fn format_agent_tool_specs_lists_tool_names_and_summaries() {
         let specs = vec![ToolSpec {
             name: "edit_file".to_string(),
@@ -8126,6 +8355,37 @@ mod tests {
                 .filter(|event| matches!(
                     event.kind,
                     AgentSessionEventKind::SessionModelUpdated { .. }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn update_agent_session_title_skips_noop_and_records_changes() {
+        let store = temp_agent_store("title-noop");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Agent chat".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        assert!(!update_agent_session_title(&store, &id, " Agent chat ").unwrap());
+        assert!(update_agent_session_title(&store, &id, "Renamed session").unwrap());
+
+        let loaded = store.load_session(&id).unwrap();
+        assert_eq!(loaded.meta.title, "Renamed session");
+        assert_eq!(
+            loaded
+                .events
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    AgentSessionEventKind::SessionTitleUpdated { .. }
                 ))
                 .count(),
             1

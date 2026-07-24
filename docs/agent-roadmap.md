@@ -59,6 +59,9 @@ These items are ready to implement next. Completed baseline behavior belongs in
   - runtime loop/event emission.
 - Keep `djinn-memory` focused on durable session/event storage.
 - Keep `djinn-cli` responsible for command parsing and human-facing output.
+- Session metadata commands such as `djinn agent session rename` should append
+  metadata events and skip no-op writes, matching profile/model updates from the
+  TUI command palette.
 - Keep `djinn agent tools list` and `djinn agent tools show <name>` backed by
   runtime registry construction so they stay aligned with the tools and schemas
   actually sent to model providers.
@@ -175,6 +178,9 @@ These are important but need more product/design detail before implementation.
 - Keep `djinn agent config list` aligned with the same profile/model option
   builders used by the command palette so scripted and TUI workflows discover the
   same choices.
+- Keep `djinn agent config show` aligned with agent runtime policy resolution so
+  users can explain effective workspace/profile/model, read access, and mutation
+  permissions before starting an agent run.
 - Keep detailed keybinding guidance in the Ctrl+/ help dialog rather than in the
   Agent chat footer.
 - Decide which OpenCode-inspired dialogs are next:

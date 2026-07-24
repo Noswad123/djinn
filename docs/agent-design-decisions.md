@@ -328,9 +328,11 @@ The first non-interactive agent slice is implemented as:
     built-in runtime tool set using the same registry construction as agent runs.
     Text output lists names/summaries or a single tool description/schema; JSON
     output includes full tool specs and input schemas.
-16. CLI commands for session creation/list/show and one-shot prompting:
+16. CLI commands for session creation/list/show/rename and one-shot prompting:
     `djinn agent session new`, `djinn agent session list`,
-    `djinn agent session show`, and `djinn agent ask`.
+    `djinn agent session show`, `djinn agent session rename`, and
+    `djinn agent ask`. Rename appends a `SessionTitleUpdated` metadata event and
+    skips no-op updates.
 17. A dashboard pane that only browses JSONL agent sessions overlaps with the
     saved Chats pane and should not be treated as the Agent UI. The Agent UI must
     be an interactive chat/composer/runtime surface, with history/session picking
@@ -401,7 +403,9 @@ The first non-interactive agent slice is implemented as:
     metadata events so resumed sessions continue with the selected runtime
     context.
     `djinn agent config list` is the non-interactive companion for inspecting the
-    same discovered profile/model option sets in text or JSON form.
+    same discovered profile/model option sets in text or JSON form, while
+    `djinn agent config show` explains the effective workspace/profile/model,
+    read-access policy, and permission policy that an agent run will use.
 31. Agent chat uses Ctrl+/ for a help dialog. Detailed keybinding guidance lives
     there instead of crowding the footer; the footer should stay minimal and
     point to help.
