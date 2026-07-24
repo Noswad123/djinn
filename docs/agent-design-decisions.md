@@ -365,8 +365,13 @@ The first non-interactive agent slice is implemented as:
     The conversion records a bridge in Djinn's OpenCode watcher state. When the
     installed OpenCode plugin later sees that OpenCode session, it best-effort
     hydrates OpenCode session metadata with the Djinn agent session id/path so
-    OpenCode-side skills can discover the continuation. Share options moved to
-    `s` for chat records.
+    OpenCode-side skills can discover the continuation. Once an OpenCode chat has
+    a Djinn bridge, the Chats/session picker collapses that row to the Djinn
+    continuation instead of showing a separate stale OpenCode launch target.
+    Share options moved to `s` for chat records.
+27. Djinn agent sessions auto-title from the first user prompt when the session
+    still has a default title such as `Agent chat` or `Untitled agent session`.
+    Explicit titles and imported/converted session titles are preserved.
 
 Not in the first slice unless explicitly reopened:
 

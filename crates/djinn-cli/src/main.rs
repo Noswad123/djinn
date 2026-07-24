@@ -2018,6 +2018,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                     content: prompt.clone(),
                 }),
             )?;
+            maybe_auto_title_agent_session(&store, &id, &prompt)?;
             let session = store.load_session(&id)?;
             progress(
                 agent_chat_messages(&session)
@@ -2113,6 +2114,50 @@ fn prepare_agent_chat_session(
         workspace,
         profile: profile.to_string(),
     })
+}
+
+fn maybe_auto_title_agent_session(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    prompt: &str,
+) -> Result<()> {
+    let session = store.load_session(id)?;
+    if !should_auto_title_agent_session(&session) {
+        return Ok(());
+    }
+    let title = infer_agent_session_title(prompt);
+    if title.trim().is_empty() || title == session.meta.title {
+        return Ok(());
+    }
+    store.append_event(
+        id,
+        AgentSessionEvent::new(AgentSessionEventKind::SessionTitleUpdated { title }),
+    )
+}
+
+fn should_auto_title_agent_session(session: &AgentSession) -> bool {
+    let title = session.meta.title.trim();
+    let default_title =
+        title.is_empty() || title == "Agent chat" || title == "Untitled agent session";
+    default_title
+        && session
+            .events
+            .iter()
+            .filter(|event| matches!(event.kind, AgentSessionEventKind::UserMessage { .. }))
+            .count()
+            == 1
+}
+
+fn infer_agent_session_title(prompt: &str) -> String {
+    let title = prompt_title(prompt, "Agent chat")
+        .trim_matches(|ch: char| ch.is_ascii_punctuation() || ch.is_whitespace())
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        "Agent chat".to_string()
+    } else {
+        title
+    }
 }
 
 fn complete_openai_prompt(
@@ -3028,6 +3073,7 @@ fn prompt_title(prompt: &str, fallback: &str) -> String {
 fn format_agent_event(event: &AgentSessionEvent) -> String {
     match &event.kind {
         AgentSessionEventKind::SessionCreated { .. } => "session created".to_string(),
+        AgentSessionEventKind::SessionTitleUpdated { title } => format!("title: {title}"),
         AgentSessionEventKind::UserMessage { content } => {
             format!("user: {}", prompt_title(content, "(empty)"))
         }
@@ -3143,6 +3189,7 @@ fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessag
                 })
             }
             AgentSessionEventKind::SessionCreated { .. }
+            | AgentSessionEventKind::SessionTitleUpdated { .. }
             | AgentSessionEventKind::AssistantMessage { .. } => {}
         }
     }
@@ -3587,17 +3634,32 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
 }
 
 fn chats_for_session_picker() -> Result<Vec<ChatRecord>> {
-    let mut chats = chat_store().list()?;
+    let store = agent_session_store();
+    let summaries = store.list_sessions(AgentSessionFilter {
+        limit: Some(100),
+        ..AgentSessionFilter::default()
+    })?;
+    let summaries_by_id = summaries
+        .iter()
+        .map(|summary| (summary.id.to_string(), summary.clone()))
+        .collect::<HashMap<_, _>>();
+    let state = load_opencode_watch_state().unwrap_or_default();
+    let mut chats = chat_store()
+        .list()?
+        .into_iter()
+        .map(|chat| {
+            opencode_bridge_session_id(&state, &chat)
+                .and_then(|id| summaries_by_id.get(id))
+                .map(|summary| converted_opencode_chat_record(&chat, summary, &store))
+                .unwrap_or(chat)
+        })
+        .collect::<Vec<_>>();
     let existing_sessions = chats
         .iter()
         .filter(|chat| chat.source == "djinn-agent" && !chat.source_id.trim().is_empty())
         .map(|chat| chat.source_id.clone())
         .collect::<HashSet<_>>();
-    let store = agent_session_store();
-    for summary in store.list_sessions(AgentSessionFilter {
-        limit: Some(100),
-        ..AgentSessionFilter::default()
-    })? {
+    for summary in summaries {
         let id = summary.id.to_string();
         if existing_sessions.contains(&id) {
             continue;
@@ -3605,6 +3667,39 @@ fn chats_for_session_picker() -> Result<Vec<ChatRecord>> {
         chats.push(agent_session_chat_record(&summary, &store));
     }
     Ok(chats)
+}
+
+fn opencode_bridge_session_id<'a>(
+    state: &'a OpencodeWatchState,
+    chat: &ChatRecord,
+) -> Option<&'a str> {
+    if chat.source != "opencode" || chat.source_id.trim().is_empty() {
+        return None;
+    }
+    state
+        .sessions
+        .get(&chat.source_id)
+        .map(|session| session.djinn_session_id.trim())
+        .filter(|id| !id.is_empty())
+}
+
+fn converted_opencode_chat_record(
+    chat: &ChatRecord,
+    summary: &AgentSessionSummary,
+    store: &JsonlAgentSessionStore,
+) -> ChatRecord {
+    let mut record = agent_session_chat_record(summary, store);
+    record.id = format!("converted:{}:{}", chat.source_id, summary.id);
+    record.title = if summary.title.trim().is_empty() {
+        format!("{} (converted to Djinn)", chat.title)
+    } else {
+        format!("{} (converted)", summary.title)
+    };
+    record.content = format!(
+        "Converted from OpenCode session {}.\n\n{}",
+        chat.source_id, record.content
+    );
+    record
 }
 
 fn agent_session_chat_record(
@@ -7063,6 +7158,69 @@ mod tests {
     }
 
     #[test]
+    fn maybe_auto_title_agent_session_titles_first_default_session_prompt() {
+        let store = temp_agent_store("auto-title");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Agent chat".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "Implement session auto title\nwith extra details".to_string(),
+                }),
+            )
+            .unwrap();
+
+        maybe_auto_title_agent_session(
+            &store,
+            &id,
+            "Implement session auto title\nwith extra details",
+        )
+        .unwrap();
+
+        let loaded = store.load_session(&id).unwrap();
+        assert_eq!(loaded.meta.title, "Implement session auto title");
+        assert!(loaded.events.iter().any(|event| matches!(
+            &event.kind,
+            AgentSessionEventKind::SessionTitleUpdated { title } if title == "Implement session auto title"
+        )));
+    }
+
+    #[test]
+    fn maybe_auto_title_agent_session_preserves_explicit_title() {
+        let store = temp_agent_store("auto-title-explicit");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Explicit title".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "Different first prompt".to_string(),
+                }),
+            )
+            .unwrap();
+
+        maybe_auto_title_agent_session(&store, &id, "Different first prompt").unwrap();
+
+        let loaded = store.load_session(&id).unwrap();
+        assert_eq!(loaded.meta.title, "Explicit title");
+    }
+
+    #[test]
     fn patch_opencode_config_adds_schema_and_plugin_array() {
         let (rendered, changed) =
             patch_opencode_config_content(Some("{}\n"), "./plugins/djinn-watch.js").unwrap();
@@ -7109,6 +7267,65 @@ mod tests {
         assert!(OPENCODE_PLUGIN.contains("client.session.update"));
         assert!(OPENCODE_PLUGIN
             .contains("metadata = { ...(current?.data?.metadata || {}), djinn: bridge }"));
+    }
+
+    #[test]
+    fn opencode_bridge_session_id_detects_converted_chat() {
+        let mut state = OpencodeWatchState::default();
+        state.sessions.insert(
+            "ses_1".to_string(),
+            OpencodeSessionState {
+                djinn_session_id: "agt_1".to_string(),
+                ..OpencodeSessionState::default()
+            },
+        );
+        let chat = ChatRecord {
+            id: "chat".to_string(),
+            title: "OpenCode".to_string(),
+            content: String::new(),
+            source: "opencode".to_string(),
+            source_id: "ses_1".to_string(),
+            source_path: String::new(),
+            content_path: String::new(),
+            created_at: String::new(),
+        };
+
+        assert_eq!(opencode_bridge_session_id(&state, &chat), Some("agt_1"));
+    }
+
+    #[test]
+    fn converted_opencode_chat_record_points_at_djinn_session() {
+        let chat = ChatRecord {
+            id: "chat".to_string(),
+            title: "OpenCode".to_string(),
+            content: String::new(),
+            source: "opencode".to_string(),
+            source_id: "ses_1".to_string(),
+            source_path: String::new(),
+            content_path: String::new(),
+            created_at: "2026-07-24".to_string(),
+        };
+        let summary = AgentSessionSummary {
+            id: AgentSessionId::new("agt_1"),
+            title: "Converted title".to_string(),
+            workspace: "/tmp/project".to_string(),
+            profile: "default".to_string(),
+            source: "opencode".to_string(),
+            created_at: "2026-07-24T00:00:00Z".to_string(),
+            updated_at: "2026-07-24T01:00:00Z".to_string(),
+            event_count: 3,
+        };
+        let store = JsonlAgentSessionStore::default_in(&std::env::temp_dir());
+
+        let record = converted_opencode_chat_record(&chat, &summary, &store);
+
+        assert_eq!(record.source, "djinn-agent");
+        assert_eq!(record.source_id, "agt_1");
+        assert!(record.id.contains("ses_1"));
+        assert!(record.title.contains("converted"));
+        assert!(record
+            .content
+            .contains("Converted from OpenCode session ses_1"));
     }
 
     #[test]

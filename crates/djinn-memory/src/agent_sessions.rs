@@ -72,6 +72,9 @@ pub enum AgentSessionEventKind {
         id: AgentSessionId,
         meta: AgentSessionMeta,
     },
+    SessionTitleUpdated {
+        title: String,
+    },
     UserMessage {
         content: String,
     },
@@ -276,6 +279,13 @@ fn parse_session_file(id: &AgentSessionId, raw: &str) -> Result<AgentSession> {
                 meta = created_meta;
                 found_header = true;
             }
+            AgentSessionEventKind::SessionTitleUpdated { title } => {
+                meta.title = title.clone();
+                events.push(AgentSessionEvent {
+                    created_at: event.created_at,
+                    kind: AgentSessionEventKind::SessionTitleUpdated { title },
+                });
+            }
             kind => events.push(AgentSessionEvent {
                 created_at: event.created_at,
                 kind,
@@ -400,5 +410,34 @@ mod tests {
             .unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].event_count, 1);
+    }
+
+    #[test]
+    fn title_update_events_update_session_summary() {
+        let store = temp_store("title-update");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Agent chat".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::SessionTitleUpdated {
+                    title: "Implement auto title".to_string(),
+                }),
+            )
+            .unwrap();
+
+        let loaded = store.load_session(&id).unwrap();
+        let listed = store.list_sessions(AgentSessionFilter::default()).unwrap();
+
+        assert_eq!(loaded.meta.title, "Implement auto title");
+        assert_eq!(listed[0].title, "Implement auto title");
     }
 }
