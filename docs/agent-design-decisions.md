@@ -278,8 +278,12 @@ Direct write/edit direction:
   tool over the same reversible mutation pipeline, so workspace guardrails,
   `write` permission rules, approval previews, file-history preimages, and
   rollback metadata stay consistent with patch-based changes.
-- Direct edit helpers can come later, but should compile down to patch
-  application internally so mutation accounting stays consistent.
+- `edit_file` is available as a line-oriented exact-replacement helper for
+  existing UTF-8 files. It uses `edit` permission rules and compiles to the same
+  patch-backed mutation pipeline so previews, guardrails, file history, and
+  rollback metadata stay consistent.
+- Future edit variants can expand ergonomics, but should continue compiling down
+  to the shared patch/mutation application path.
 
 ## Implemented first-slice baseline
 
@@ -314,58 +318,66 @@ The first non-interactive agent slice is implemented as:
 12. Reusable `djinn-tui` approval-preview state/rendering helpers for a future
     scrollable Ratatui permission dialog.
 13. A Ratatui approval dialog used by terminal-backed `PermissionGate` flows.
-14. A default-on `write_file` tool for creating or replacing UTF-8 text files via
-    the shared reversible mutation pipeline. It preserves exact content, including
-    trailing newlines, and uses `write` permission rules while reusing approval
-    previews and file-history accounting.
-15. CLI commands for session creation/list/show and one-shot prompting:
+14. Default-on `write_file` and `edit_file` tools for direct file mutations via
+    the shared reversible mutation pipeline. `write_file` creates or replaces
+    UTF-8 text files while preserving exact content; `edit_file` performs
+    line-oriented exact block replacement in existing UTF-8 files. They use
+    `write`/`edit` permission rules while reusing approval previews and
+    file-history accounting.
+15. `djinn agent tools list` inspects the built-in runtime tool set using the same
+    registry construction as agent runs. Text output lists names/summaries; JSON
+    output includes full tool specs and input schemas.
+16. CLI commands for session creation/list/show and one-shot prompting:
     `djinn agent session new`, `djinn agent session list`,
     `djinn agent session show`, and `djinn agent ask`.
-16. A dashboard pane that only browses JSONL agent sessions overlaps with the
+17. A dashboard pane that only browses JSONL agent sessions overlaps with the
     saved Chats pane and should not be treated as the Agent UI. The Agent UI must
     be an interactive chat/composer/runtime surface, with history/session picking
     as secondary behavior.
-17. `djinn agent chat` opens the first real Agent TUI surface: a Ratatui chat
+18. `djinn agent chat` opens the first real Agent TUI surface: a Ratatui chat
     composer with readable transcript rendering, tool-call entries that identify
     the tool name and invocation details, correlated tool-result summaries that
     avoid raw JSON/call-id-first output, workspace/profile/model status, JSONL
     session persistence, and multi-turn calls through the existing agent runtime.
-18. The Agent chat TUI stays in the alternate screen across prompt submission and
+19. The Agent chat TUI stays in the alternate screen across prompt submission and
     runtime turns. It updates the transcript/status in-place while a turn runs
     instead of dropping to stdout with an out-of-band "thinking" message.
-19. Agent chat should not auto-scroll by default. It exposes an explicit bottom
+20. Agent chat should not auto-scroll by default. It exposes an explicit bottom
     arrow/jump-to-latest affordance (`End`) so the user can move instantly to the
     newest transcript content without losing their current scroll position.
-20. Agent chat transcript/composer boxes avoid left and right borders because
+21. Agent chat transcript/composer boxes avoid left and right borders because
     side borders interfere with copy/paste. Use top/bottom separators instead for
     text-heavy chat regions.
-21. Agent chat composer uses Enter to send and Shift+Enter to insert multiline
+22. Agent chat composer uses Enter to send and Shift+Enter to insert multiline
     prompts. Djinn enables crossterm keyboard enhancement flags so terminals that
     support enhanced key reporting can distinguish Shift+Enter from Enter. Do not
     use Ctrl+J as a newline fallback. The focused composer should show a visible
     terminal cursor, and typing `q` into an empty composer must insert text rather
     than quit the chat.
-22. Agent chat composer uses Ctrl+E to suspend the TUI and open the current prompt
+23. Agent chat composer uses Ctrl+E to suspend the TUI and open the current prompt
     in `$VISUAL`, `$EDITOR`, or `nvim`. This is the preferred path for advanced
     prompt editing instead of adding many inline composer editing controls.
-23. `djinn agent chat --resume <session-id>` resumes an existing JSONL agent
+24. `djinn agent chat --resume <session-id>` resumes an existing JSONL agent
     session using that session's stored workspace/profile metadata. This keeps
     resume as part of the Agent runtime surface rather than the saved Chats
     browser.
-24. `djinn` with no arguments now routes to that interactive Agent chat surface
+25. `djinn` with no arguments now routes to that interactive Agent chat surface
     when stdin/stdout are terminals. It must not route to the saved Chats tab.
-25. Agent chat keeps the same top tab row as the dashboard, with Agent selected
+26. Agent chat keeps the same top tab row as the dashboard, with Agent selected
     instead of showing a plain `Djinn Agent` title header. Pressing Tab from
     Agent chat enters Tools; Shift+Tab from Agent chat enters Skills. Pressing
     Tab from Skills or Shift+Tab from Tools returns to Agent chat and resumes the
     current agent session. Chat/dashboard transitions keep one terminal session
     alive to avoid alternate-screen flicker.
-26. Agent chat rich progress is rendered in-place during model turns. The runtime
+27. Agent chat rich progress is rendered in-place during model turns. The runtime
     emits model/tool progress events, and the transcript uses distinct colored
     blocks for thoughts/progress, `▶ Tool Request · <tool>` invocations, and
     `✓/✗ Tool Execution · <tool> · <status>` results so the turn shape and
     success/failure state are visible at a glance without dumping raw JSON.
-27. The dashboard Chats tab doubles as the session picker. Djinn JSONL agent
+    Mutation tools (`apply_patch`, `write_file`, and `edit_file`) summarize
+    operation/path/line counts from their shared mutation result payloads rather
+    than exposing raw `summary`/`preview` JSON.
+28. The dashboard Chats tab doubles as the session picker. Djinn JSONL agent
     sessions are projected into that tab as `djinn-agent` records; pressing Enter
     or `r` resumes a Djinn agent session or converts an imported OpenCode chat
     (`source=opencode`) into a Djinn JSONL agent session and stays inside Djinn.
@@ -376,10 +388,10 @@ The first non-interactive agent slice is implemented as:
     a Djinn bridge, the Chats/session picker collapses that row to the Djinn
     continuation instead of showing a separate stale OpenCode launch target.
     Share options moved to `s` for chat records.
-28. Djinn agent sessions auto-title from the first user prompt when the session
+29. Djinn agent sessions auto-title from the first user prompt when the session
     still has a default title such as `Agent chat` or `Untitled agent session`.
     Explicit titles and imported/converted session titles are preserved.
-29. Agent chat uses Ctrl+P as the command palette home for cross-cutting chat
+30. Agent chat uses Ctrl+P as the command palette home for cross-cutting chat
     actions instead of accumulating one-off keybindings. The palette follows the
     OpenCode-style shape: a search box with fuzzy matching, section headers for
     related actions, and Ctrl+P/Ctrl+N navigation while the palette is open. The
@@ -387,29 +399,31 @@ The first non-interactive agent slice is implemented as:
     profile or model; profile/model changes are persisted as JSONL session
     metadata events so resumed sessions continue with the selected runtime
     context.
-30. Agent chat uses Ctrl+/ for a help dialog. Detailed keybinding guidance lives
+    `djinn agent config list` is the non-interactive companion for inspecting the
+    same discovered profile/model option sets in text or JSON form.
+31. Agent chat uses Ctrl+/ for a help dialog. Detailed keybinding guidance lives
     there instead of crowding the footer; the footer should stay minimal and
     point to help.
-31. The command palette keeps its search row fixed and scrolls only the action
+32. The command palette keeps its search row fixed and scrolls only the action
     list. This keeps config-driven profile/model lists usable without hiding the
     search affordance or letting actions overflow the dialog.
-32. The Chats tab/session picker search matches more than titles: title, id,
+33. The Chats tab/session picker search matches more than titles: title, id,
     source, source id/path, content path, and content are fuzzy-searchable. The
     selected preview shows the available session actions so resume/share/remove
     affordances are visible without relying only on the footer.
-33. The dashboard also uses Ctrl+/ for detailed help. Per-tab keybinding
+34. The dashboard also uses Ctrl+/ for detailed help. Per-tab keybinding
     guidance belongs in the help overlay, while the dashboard footer stays short
     and points to help.
-34. Current profile/model choices in the command palette should be visibly marked
+35. Current profile/model choices in the command palette should be visibly marked
     with a check. Selecting the already-current profile/model is a no-op and must
     not append redundant JSONL metadata events.
-35. The Agent command palette Session section includes New session as a first-class
+36. The Agent command palette Session section includes New session as a first-class
     action. Starting a new session from the palette should preserve the current
     profile/model context while clearing the resumed session id/title/workspace.
-36. The Agent command palette includes Navigation actions for the shared top tabs
+37. The Agent command palette includes Navigation actions for the shared top tabs
     (Tools, Chats, Memories, Suggestions, Skills). Ctrl+P should be a central way
     to jump around the interface without remembering tab-specific shortcuts.
-37. Ctrl+P is a TUI-wide command palette entry point. Dashboard tabs expose the
+38. Ctrl+P is a TUI-wide command palette entry point. Dashboard tabs expose the
     same searchable/sectioned command palette pattern, with actions scoped to the
     active tab plus shared navigation/help commands.
 

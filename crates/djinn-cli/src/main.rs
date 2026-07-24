@@ -17,7 +17,7 @@ use djinn_agent::{
     tools_with_policies_file_history_and_gate, AgentProgressEvent, AgentRuntime, ModelMessage,
     ModelRequest, ModelRole, OpenAiAuth, OpenAiClient, OpenAiOAuth, PermissionDecision,
     PermissionEffect, PermissionGate, PermissionPolicy, PermissionRequest, PermissionRule,
-    ReadAccessEffect, ReadAccessPolicy, ReadAccessRule,
+    ReadAccessEffect, ReadAccessPolicy, ReadAccessRule, ToolSpec,
 };
 use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
@@ -563,6 +563,10 @@ struct AgentArgs {
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
+    /// Inspect discovered agent profiles and models.
+    Config(AgentConfigArgs),
+    /// Inspect built-in agent runtime tools.
+    Tools(AgentToolsArgs),
     /// Manage Djinn-native agent sessions.
     Session(AgentSessionArgs),
     /// Inspect or restore apply_patch file-history entries.
@@ -571,6 +575,30 @@ enum AgentCommand {
     Ask(AgentAskArgs),
     /// Open an interactive terminal chat with the Djinn agent runtime.
     Chat(AgentChatArgs),
+}
+
+#[derive(Debug, Args)]
+struct AgentConfigArgs {
+    #[command(subcommand)]
+    command: AgentConfigCommand,
+}
+
+#[derive(Debug, Args)]
+struct AgentToolsArgs {
+    #[command(subcommand)]
+    command: AgentToolsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentConfigCommand {
+    /// List discovered agent profiles and models.
+    List(AgentConfigListArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentToolsCommand {
+    /// List built-in tools exposed to the agent runtime.
+    List(AgentToolsListArgs),
 }
 
 #[derive(Debug, Args)]
@@ -583,6 +611,38 @@ struct AgentSessionArgs {
 struct AgentFileHistoryArgs {
     #[command(subcommand)]
     command: AgentFileHistoryCommand,
+}
+
+#[derive(Debug, Args)]
+struct AgentConfigListArgs {
+    /// Agent profile to treat as current.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// Model to treat as current. Defaults the same way as agent chat.
+    #[arg(long)]
+    model: Option<String>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentToolsListArgs {
+    /// Workspace path used to resolve profile permissions. Defaults to the current directory.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    /// Agent profile name used for read/permission policy resolution.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1699,10 +1759,24 @@ fn run_open(args: OpenArgs) -> Result<()> {
 
 fn run_agent(args: AgentArgs) -> Result<()> {
     match args.command {
+        AgentCommand::Config(args) => run_agent_config(args),
+        AgentCommand::Tools(args) => run_agent_tools(args),
         AgentCommand::Session(args) => run_agent_session(args),
         AgentCommand::FileHistory(args) => run_agent_file_history(args),
         AgentCommand::Ask(args) => agent_ask(args),
         AgentCommand::Chat(args) => run_interactive_app(args),
+    }
+}
+
+fn run_agent_config(args: AgentConfigArgs) -> Result<()> {
+    match args.command {
+        AgentConfigCommand::List(args) => agent_config_list(args),
+    }
+}
+
+fn run_agent_tools(args: AgentToolsArgs) -> Result<()> {
+    match args.command {
+        AgentToolsCommand::List(args) => agent_tools_list(args),
     }
 }
 
@@ -1719,6 +1793,44 @@ fn run_agent_file_history(args: AgentFileHistoryArgs) -> Result<()> {
         AgentFileHistoryCommand::List(args) => agent_file_history_list(args),
         AgentFileHistoryCommand::Restore(args) => agent_file_history_restore(args),
     }
+}
+
+fn agent_config_list(args: AgentConfigListArgs) -> Result<()> {
+    let current_profile = args.profile.trim().to_string();
+    let current_model = resolve_agent_model(args.model, &current_profile)?;
+    let profiles = agent_profile_options(&current_profile)?;
+    let models = agent_model_options(&current_model)?;
+    print!(
+        "{}",
+        format_agent_config_options(
+            &current_profile,
+            &current_model,
+            &profiles,
+            &models,
+            output_format(args.format, args.json),
+        )?
+    );
+    Ok(())
+}
+
+fn agent_tools_list(args: AgentToolsListArgs) -> Result<()> {
+    let workspace = resolve_agent_workspace(args.workspace)?;
+    let workspace_path = Path::new(&workspace);
+    let read_access = resolve_agent_read_access_policy(&args.profile, workspace_path)?;
+    let permissions = resolve_agent_permission_policy(&args.profile, workspace_path)?;
+    let registry = tools_with_policies_file_history_and_gate(
+        workspace_path,
+        read_access,
+        permissions,
+        None,
+        None,
+    )?;
+    let specs = registry.specs();
+    print!(
+        "{}",
+        format_agent_tool_specs(&specs, output_format(args.format, args.json))?
+    );
+    Ok(())
 }
 
 fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
@@ -2405,6 +2517,82 @@ fn agent_model_options(current: &str) -> Result<Vec<String>> {
         }
     }
     Ok(clean_unique_options(models))
+}
+
+fn format_agent_config_options(
+    current_profile: &str,
+    current_model: &str,
+    profiles: &[String],
+    models: &[String],
+    format: OutputFormat,
+) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(&serde_json::json!({
+            "current_profile": current_profile,
+            "current_model": current_model,
+            "profiles": profiles,
+            "models": models,
+        }))?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+
+    let mut lines = vec![
+        "Agent config options".to_string(),
+        format!("Current profile: {current_profile}"),
+        format!("Current model: {current_model}"),
+        String::new(),
+        "Profiles:".to_string(),
+    ];
+    for profile in profiles {
+        let marker = if same_agent_option(profile, current_profile) {
+            "*"
+        } else {
+            " "
+        };
+        lines.push(format!("{marker} {profile}"));
+    }
+    lines.push(String::new());
+    lines.push("Models:".to_string());
+    for model in models {
+        let marker = if same_agent_option(model, current_model) {
+            "*"
+        } else {
+            " "
+        };
+        lines.push(format!("{marker} {model}"));
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn format_agent_tool_specs(specs: &[ToolSpec], format: OutputFormat) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(specs)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+
+    let mut lines = vec![
+        "Agent runtime tools".to_string(),
+        format!("{} tool{}", specs.len(), plural_suffix(specs.len())),
+        String::new(),
+    ];
+    for spec in specs {
+        lines.push(format!("- {}", spec.name));
+        let summary = spec
+            .description
+            .split('.')
+            .next()
+            .map(str::trim)
+            .filter(|summary| !summary.is_empty())
+            .unwrap_or(&spec.description);
+        if !summary.trim().is_empty() {
+            lines.push(format!("  {summary}."));
+        }
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
 }
 
 fn opencode_config_values() -> Result<Vec<Value>> {
@@ -3612,6 +3800,31 @@ fn summarize_agent_tool_input(name: &str, input: &Value) -> String {
             format!("/{pattern}/ in {path}")
         }
         "apply_patch" => "workspace patch".to_string(),
+        "write_file" => {
+            let path = input.get("path").and_then(Value::as_str).unwrap_or("file");
+            let content = input.get("content").and_then(Value::as_str).unwrap_or("");
+            format!(
+                "{path} ({} bytes, {} lines)",
+                content.len(),
+                content.lines().count()
+            )
+        }
+        "edit_file" => {
+            let path = input.get("path").and_then(Value::as_str).unwrap_or("file");
+            let old_lines = input
+                .get("old_text")
+                .and_then(Value::as_str)
+                .map(str::lines)
+                .map(Iterator::count)
+                .unwrap_or_default();
+            let new_lines = input
+                .get("new_text")
+                .and_then(Value::as_str)
+                .map(str::lines)
+                .map(Iterator::count)
+                .unwrap_or_default();
+            format!("{path} (+{new_lines}/-{old_lines})")
+        }
         _ => compact_json_value(input),
     }
 }
@@ -3633,7 +3846,9 @@ fn summarize_agent_tool_result(
         "list_dir" | "find_files" | "search_files" => {
             summarize_matches_result(tool, status, output)
         }
-        "apply_patch" => summarize_patch_result(status, output),
+        "apply_patch" | "write_file" | "edit_file" => {
+            summarize_mutation_result(tool, status, output)
+        }
         _ => format!(
             "{tool} result: {status}\n{}",
             summarize_agent_tool_output(output, id)
@@ -3730,16 +3945,63 @@ fn summarize_matches_result(tool: &str, status: &str, output: &Value) -> String 
     lines.join("\n")
 }
 
-fn summarize_patch_result(status: &str, output: &Value) -> String {
-    let mut lines = vec![format!("apply_patch result: {status}")];
+fn summarize_mutation_result(tool: &str, status: &str, output: &Value) -> String {
+    let mut lines = vec![format!("{tool} result: {status}")];
     if let Some(patch_id) = output.get("patch_id").and_then(Value::as_str) {
         lines.push(format!("patch: {patch_id}"));
     }
-    if let Some(files) = output.get("files").and_then(Value::as_array) {
-        lines.push(format!("{} files touched", files.len()));
+    if let Some(summary) = output.get("summary").and_then(Value::as_array) {
+        lines.push(format!(
+            "{} operation{}",
+            summary.len(),
+            plural_suffix(summary.len())
+        ));
+        for item in summary.iter().take(6) {
+            let operation = item
+                .get("operation")
+                .and_then(Value::as_str)
+                .unwrap_or("mutation");
+            let path = item
+                .get("relative_path")
+                .or_else(|| item.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or("file");
+            let added = item
+                .get("lines_added")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let removed = item
+                .get("lines_removed")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            if let Some(new_path) = item.get("relative_new_path").and_then(Value::as_str) {
+                lines.push(format!(
+                    "- {operation} {path} -> {new_path} (+{added}/-{removed})"
+                ));
+            } else {
+                lines.push(format!("- {operation} {path} (+{added}/-{removed})"));
+            }
+        }
+        if summary.len() > 6 {
+            lines.push(format!("… {} more operations", summary.len() - 6));
+        }
+    } else if let Some(preview) = output.get("preview").and_then(Value::as_array) {
+        lines.push("approval required".to_string());
+        for item in preview.iter().take(6) {
+            let operation = item
+                .get("operation")
+                .and_then(Value::as_str)
+                .unwrap_or("mutation");
+            let path = item
+                .get("relative_path")
+                .or_else(|| item.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or("file");
+            lines.push(format!("- {operation} {path}"));
+        }
     }
     if lines.len() == 1 {
-        lines.push(summarize_agent_tool_output(output, "apply_patch"));
+        lines.push(summarize_agent_tool_output(output, tool));
     }
     lines.join("\n")
 }
@@ -7348,6 +7610,146 @@ mod tests {
         assert!(messages[1].content.contains("path: /tmp/project/src"));
         assert!(messages[1].content.contains("2 matches"));
         assert!(messages[1].content.contains("- lib.rs"));
+    }
+
+    #[test]
+    fn agent_chat_messages_summarize_write_file_mutations() {
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_test"),
+            meta: AgentSessionMeta::default(),
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::ToolCall {
+                    id: "call-write".to_string(),
+                    name: "write_file".to_string(),
+                    input: serde_json::json!({"path": "docs/note.md", "content": "hello\nworld\n"}),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
+                    id: "call-write".to_string(),
+                    output: serde_json::json!({
+                        "patch_id": "patch_1",
+                        "summary": [
+                            {"operation": "write", "relative_path": "docs/note.md", "lines_added": 2, "lines_removed": 0}
+                        ]
+                    }),
+                    success: true,
+                }),
+            ],
+        };
+
+        let messages = agent_chat_messages(&session);
+        assert_eq!(
+            messages[0].content,
+            "write_file: docs/note.md (12 bytes, 2 lines)"
+        );
+        assert!(messages[1].content.contains("write_file result: ok"));
+        assert!(messages[1].content.contains("patch: patch_1"));
+        assert!(messages[1].content.contains("- write docs/note.md (+2/-0)"));
+        assert!(!messages[1].content.contains("relative_path"));
+    }
+
+    #[test]
+    fn agent_chat_messages_summarize_edit_file_mutations() {
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_test"),
+            meta: AgentSessionMeta::default(),
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::ToolCall {
+                    id: "call-edit".to_string(),
+                    name: "edit_file".to_string(),
+                    input: serde_json::json!({
+                        "path": "src/lib.rs",
+                        "old_text": "old\ntext",
+                        "new_text": "new"
+                    }),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
+                    id: "call-edit".to_string(),
+                    output: serde_json::json!({
+                        "approval_required": true,
+                        "preview": [
+                            {"operation": "edit", "relative_path": "src/lib.rs", "lines_added": 1, "lines_removed": 2}
+                        ]
+                    }),
+                    success: false,
+                }),
+            ],
+        };
+
+        let messages = agent_chat_messages(&session);
+        assert_eq!(messages[0].content, "edit_file: src/lib.rs (+1/-2)");
+        assert!(messages[1].content.contains("edit_file result: failed"));
+        assert!(messages[1].content.contains("approval required"));
+        assert!(messages[1].content.contains("- edit src/lib.rs"));
+        assert!(!messages[1].content.contains("approval_required"));
+    }
+
+    #[test]
+    fn format_agent_config_options_marks_current_choices() {
+        let rendered = format_agent_config_options(
+            "architect",
+            "openai/gpt-5.5",
+            &["default".to_string(), "architect".to_string()],
+            &["gpt-4o-mini".to_string(), "openai/gpt-5.5".to_string()],
+            OutputFormat::Text,
+        )
+        .unwrap();
+
+        assert!(rendered.contains("Agent config options"));
+        assert!(rendered.contains("Current profile: architect"));
+        assert!(rendered.contains("* architect"));
+        assert!(rendered.contains("  default"));
+        assert!(rendered.contains("Current model: openai/gpt-5.5"));
+        assert!(rendered.contains("* openai/gpt-5.5"));
+    }
+
+    #[test]
+    fn format_agent_config_options_outputs_json() {
+        let rendered = format_agent_config_options(
+            "default",
+            "gpt-4o-mini",
+            &["default".to_string()],
+            &["gpt-4o-mini".to_string()],
+            OutputFormat::Json,
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(value["current_profile"], "default");
+        assert_eq!(value["current_model"], "gpt-4o-mini");
+        assert_eq!(value["profiles"][0], "default");
+        assert_eq!(value["models"][0], "gpt-4o-mini");
+    }
+
+    #[test]
+    fn format_agent_tool_specs_lists_tool_names_and_summaries() {
+        let specs = vec![ToolSpec {
+            name: "edit_file".to_string(),
+            description: "Replace one exact text block. Extra detail.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+
+        let rendered = format_agent_tool_specs(&specs, OutputFormat::Text).unwrap();
+
+        assert!(rendered.contains("Agent runtime tools"));
+        assert!(rendered.contains("1 tool"));
+        assert!(rendered.contains("- edit_file"));
+        assert!(rendered.contains("Replace one exact text block."));
+        assert!(!rendered.contains("Extra detail"));
+    }
+
+    #[test]
+    fn format_agent_tool_specs_outputs_json_schemas() {
+        let specs = vec![ToolSpec {
+            name: "write_file".to_string(),
+            description: "Create or replace a file.".to_string(),
+            input_schema: serde_json::json!({"type": "object", "required": ["path"]}),
+        }];
+
+        let rendered = format_agent_tool_specs(&specs, OutputFormat::Json).unwrap();
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(value[0]["name"], "write_file");
+        assert_eq!(value[0]["input_schema"]["required"][0], "path");
     }
 
     #[test]

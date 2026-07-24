@@ -1261,6 +1261,14 @@ pub struct WriteFileTool {
     permission_gate: Option<Arc<dyn PermissionGate>>,
 }
 
+#[derive(Clone)]
+pub struct EditFileTool {
+    workspace: PathBuf,
+    permissions: PermissionPolicy,
+    history: Option<Arc<dyn FileHistoryStore>>,
+    permission_gate: Option<Arc<dyn PermissionGate>>,
+}
+
 impl ShellTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self::with_permissions(workspace, PermissionPolicy::allow_by_default())
@@ -1300,6 +1308,31 @@ impl ApplyPatchTool {
 }
 
 impl WriteFileTool {
+    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        Self::with_permissions(workspace, PermissionPolicy::allow_by_default())
+    }
+
+    pub fn with_permissions(workspace: impl Into<PathBuf>, permissions: PermissionPolicy) -> Self {
+        Self {
+            workspace: workspace.into(),
+            permissions,
+            history: None,
+            permission_gate: None,
+        }
+    }
+
+    pub fn with_file_history(mut self, history: Arc<dyn FileHistoryStore>) -> Self {
+        self.history = Some(history);
+        self
+    }
+
+    pub fn with_permission_gate(mut self, gate: Arc<dyn PermissionGate>) -> Self {
+        self.permission_gate = Some(gate);
+        self
+    }
+}
+
+impl EditFileTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self::with_permissions(workspace, PermissionPolicy::allow_by_default())
     }
@@ -1448,6 +1481,51 @@ impl AgentTool for WriteFileTool {
 }
 
 #[async_trait]
+impl AgentTool for EditFileTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "edit_file".to_string(),
+            description: "Replace one exact line-oriented text block in an existing UTF-8 file inside the workspace. This compiles to Djinn's reversible patch-backed mutation path, so edit permission rules, approval prompts, file history, and rollback metadata are preserved.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Existing file path to edit, relative to the workspace or absolute inside it." },
+                    "old_text": { "type": "string", "description": "Exact text block to replace. It must be non-empty and must appear exactly once or in an unambiguous location in the target file." },
+                    "new_text": { "type": "string", "description": "Replacement text block. Use an empty string to remove the old block." }
+                },
+                "required": ["path", "old_text", "new_text"]
+            }),
+        }
+    }
+
+    async fn invoke(&self, input: serde_json::Value) -> Result<ToolResult> {
+        let input: EditFileInput =
+            serde_json::from_value(input).with_context(|| "parsing edit_file input")?;
+        let path = input.path.trim();
+        if path.is_empty() {
+            bail!("edit_file path cannot be empty");
+        }
+        if input.old_text.is_empty() {
+            bail!("edit_file old_text cannot be empty");
+        }
+        invoke_mutation_operations(
+            "edit",
+            "Approve edit_file mutation",
+            &self.workspace,
+            &self.permissions,
+            self.history.as_deref(),
+            self.permission_gate.as_ref(),
+            vec![PatchOperation::Edit {
+                path: path.to_string(),
+                old_text: input.old_text,
+                new_text: input.new_text,
+            }],
+        )
+        .await
+    }
+}
+
+#[async_trait]
 impl AgentTool for ListDirTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
@@ -1552,17 +1630,21 @@ pub fn tools_with_policies_file_history_and_gate(
         access.clone(),
     ))?;
     registry.register(SearchFilesTool::with_access(workspace.clone(), access))?;
+    let mut edit_file = EditFileTool::with_permissions(workspace.clone(), permissions.clone());
     let mut apply_patch = ApplyPatchTool::with_permissions(workspace.clone(), permissions.clone());
     let mut write_file = WriteFileTool::with_permissions(workspace.clone(), permissions.clone());
     if let Some(history) = history.clone() {
+        edit_file = edit_file.with_file_history(history.clone());
         apply_patch = apply_patch.with_file_history(history.clone());
         write_file = write_file.with_file_history(history);
     }
     if let Some(gate) = permission_gate.clone() {
+        edit_file = edit_file.with_permission_gate(gate.clone());
         apply_patch = apply_patch.with_permission_gate(gate.clone());
         write_file = write_file.with_permission_gate(gate);
     }
     registry.register(apply_patch)?;
+    registry.register(edit_file)?;
     registry.register(write_file)?;
     registry.register(ShellTool::with_permissions(workspace, permissions))?;
     Ok(registry)
@@ -1612,6 +1694,13 @@ struct WriteFileInput {
     content: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct EditFileInput {
+    path: String,
+    old_text: String,
+    new_text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PatchOperation {
     Add {
@@ -1633,6 +1722,11 @@ enum PatchOperation {
     Write {
         path: String,
         content: String,
+    },
+    Edit {
+        path: String,
+        old_text: String,
+        new_text: String,
     },
 }
 
@@ -1998,7 +2092,8 @@ fn operation_resources(operation: &PatchOperation, workspace: &Path) -> Result<V
         PatchOperation::Add { path, .. }
         | PatchOperation::Update { path, .. }
         | PatchOperation::Delete { path }
-        | PatchOperation::Write { path, .. } => Ok(vec![resolve_mutation_path(workspace, path)?
+        | PatchOperation::Write { path, .. }
+        | PatchOperation::Edit { path, .. } => Ok(vec![resolve_mutation_path(workspace, path)?
             .display()
             .to_string()]),
     }
@@ -2097,6 +2192,26 @@ fn preview_patch_operation(
                 "hunks": [{
                     "lines": content.lines().map(|line| json!({"kind": "add", "content": line})).collect::<Vec<_>>()
                 }],
+            }))
+        }
+        PatchOperation::Edit {
+            path,
+            old_text,
+            new_text,
+        } => {
+            let path = resolve_mutation_path(workspace, path)?;
+            let hunk = edit_patch_hunk(old_text, new_text);
+            let (lines_added, lines_removed) = hunk_line_counts(std::slice::from_ref(&hunk));
+            Ok(json!({
+                "operation": "edit",
+                "path": path.display().to_string(),
+                "relative_path": relative_to_workspace(workspace, &path),
+                "permission": permissions.evaluate(permission_action, &path.display().to_string()),
+                "lines_added": lines_added,
+                "lines_removed": lines_removed,
+                "preimage": file_snapshot(&path)?,
+                "git_status_before": git_status_short(workspace, &path),
+                "hunks": preview_hunks(&[hunk]),
             }))
         }
     }
@@ -2280,7 +2395,8 @@ fn apply_patch_operation_summary(
                 PatchOperation::Add { path, .. }
                 | PatchOperation::Update { path, .. }
                 | PatchOperation::Delete { path }
-                | PatchOperation::Write { path, .. } => path,
+                | PatchOperation::Write { path, .. }
+                | PatchOperation::Edit { path, .. } => path,
                 PatchOperation::Move { .. } => unreachable!("move handled above"),
             };
             let path = resolve_mutation_path(workspace, path)?;
@@ -2303,6 +2419,7 @@ fn apply_patch_operation_summary(
                 PatchOperation::Update { .. } => "update",
                 PatchOperation::Delete { .. } => "delete",
                 PatchOperation::Write { .. } => "write",
+                PatchOperation::Edit { .. } => "edit",
                 PatchOperation::Move { .. } => unreachable!("move handled above"),
             };
             let history_entry =
@@ -2332,6 +2449,9 @@ fn apply_patch_operation(operation: PatchOperation, path: &Path) -> Result<Appli
         PatchOperation::Update { hunks, .. } => apply_update_file(path, hunks),
         PatchOperation::Delete { .. } => apply_delete_file(path),
         PatchOperation::Write { content, .. } => apply_write_file(path, content),
+        PatchOperation::Edit {
+            old_text, new_text, ..
+        } => apply_edit_file(path, old_text, new_text),
         PatchOperation::Move { .. } => unreachable!("move operations need source and destination"),
     }
 }
@@ -2372,6 +2492,26 @@ fn apply_write_file(path: &Path, content: String) -> Result<AppliedPatchChange> 
         lines_added,
         lines_removed,
     })
+}
+
+fn apply_edit_file(path: &Path, old_text: String, new_text: String) -> Result<AppliedPatchChange> {
+    apply_update_file(path, vec![edit_patch_hunk(&old_text, &new_text)]).map(|mut change| {
+        change.operation = "edit";
+        change
+    })
+}
+
+fn edit_patch_hunk(old_text: &str, new_text: &str) -> PatchHunk {
+    let mut lines = old_text
+        .lines()
+        .map(|line| PatchHunkLine::Remove(line.to_string()))
+        .collect::<Vec<_>>();
+    lines.extend(
+        new_text
+            .lines()
+            .map(|line| PatchHunkLine::Add(line.to_string())),
+    );
+    PatchHunk { lines }
 }
 
 fn apply_update_file(path: &Path, hunks: Vec<PatchHunk>) -> Result<AppliedPatchChange> {
@@ -3032,6 +3172,7 @@ mod tests {
             names,
             vec![
                 "apply_patch",
+                "edit_file",
                 "find_files",
                 "list_dir",
                 "read_file",
@@ -3399,6 +3540,78 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.join("notes/todo.md")).unwrap(),
             "three"
+        );
+    }
+
+    #[test]
+    fn edit_file_tool_replaces_exact_text_block() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-edit-file-tool-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("src.rs"), "fn answer() -> i32 {\n    41\n}\n").unwrap();
+        let tool = EditFileTool::new(&root);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = runtime
+            .block_on(tool.invoke(json!({
+                "path": "src.rs",
+                "old_text": "fn answer() -> i32 {\n    41\n}",
+                "new_text": "fn answer() -> i32 {\n    42\n}"
+            })))
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["summary"][0]["operation"], "edit");
+        assert_eq!(result.output["summary"][0]["relative_path"], "src.rs");
+        assert_eq!(result.output["summary"][0]["lines_added"], 3);
+        assert_eq!(result.output["summary"][0]["lines_removed"], 3);
+        assert_eq!(
+            fs::read_to_string(root.join("src.rs")).unwrap(),
+            "fn answer() -> i32 {\n    42\n}\n"
+        );
+    }
+
+    #[test]
+    fn edit_file_tool_returns_preview_when_permission_requires_approval() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-edit-file-ask-preview-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("ask.txt"), "before\n").unwrap();
+        let mut policy = PermissionPolicy::allow_by_default();
+        policy.rules.push(PermissionRule {
+            action: "edit".to_string(),
+            resource: "*ask.txt".to_string(),
+            effect: PermissionEffect::Ask,
+        });
+        let tool = EditFileTool::with_permissions(&root, policy);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = runtime
+            .block_on(tool.invoke(json!({
+                "path": "ask.txt",
+                "old_text": "before",
+                "new_text": "after"
+            })))
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.output["approval_required"], true);
+        assert_eq!(result.output["preview"][0]["operation"], "edit");
+        assert_eq!(result.output["preview"][0]["permission"], "ask");
+        assert_eq!(result.output["preview"][0]["relative_path"], "ask.txt");
+        assert_eq!(result.output["preview"][0]["lines_added"], 1);
+        assert_eq!(result.output["preview"][0]["lines_removed"], 1);
+        assert_eq!(
+            fs::read_to_string(root.join("ask.txt")).unwrap(),
+            "before\n"
         );
     }
 

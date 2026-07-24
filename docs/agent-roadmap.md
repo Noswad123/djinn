@@ -59,15 +59,17 @@ These items are ready to implement next. Completed baseline behavior belongs in
   - runtime loop/event emission.
 - Keep `djinn-memory` focused on durable session/event storage.
 - Keep `djinn-cli` responsible for command parsing and human-facing output.
+- Keep `djinn agent tools list` backed by runtime registry construction so it
+  stays aligned with the tools and schemas actually sent to model providers.
 
 ### Mutation tools
 
 - Build on the implemented `apply_patch` surface rather than adding independent
   mutation paths.
-- `write_file` is implemented as a direct whole-file helper over the shared
-  reversible mutation pipeline. Keep future direct edit helpers compiled down to
-  patch/mutation application so session accounting, guardrails, and rollback
-  metadata stay consistent.
+- `write_file` and `edit_file` are implemented as direct helper tools over the
+  shared reversible mutation pipeline. Keep future direct mutation helpers
+  compiled down to patch/mutation application so session accounting, guardrails,
+  and rollback metadata stay consistent.
 
 ## Need refinement
 
@@ -169,6 +171,9 @@ These are important but need more product/design detail before implementation.
   picker, and the Ctrl+P command palette. Ctrl+P is the preferred place for
   switching profile/model and jumping to session selection; keep the palette
   sectioned, searchable, scrollable, and navigable with Ctrl+P/Ctrl+N.
+- Keep `djinn agent config list` aligned with the same profile/model option
+  builders used by the command palette so scripted and TUI workflows discover the
+  same choices.
 - Keep detailed keybinding guidance in the Ctrl+/ help dialog rather than in the
   Agent chat footer.
 - Decide which OpenCode-inspired dialogs are next:
