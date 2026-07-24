@@ -64,8 +64,10 @@ These items are ready to implement next. Completed baseline behavior belongs in
 
 - Build on the implemented `apply_patch` surface rather than adding independent
   mutation paths.
-- Keep future direct write/edit helpers compiled down to patch application so
-  session accounting, guardrails, and rollback metadata stay consistent.
+- `write_file` is implemented as a direct whole-file helper over the shared
+  reversible mutation pipeline. Keep future direct edit helpers compiled down to
+  patch/mutation application so session accounting, guardrails, and rollback
+  metadata stay consistent.
 
 ## Need refinement
 
@@ -174,6 +176,25 @@ These are important but need more product/design detail before implementation.
   - richer searchable model/profile picker behavior;
   - permission prompt;
   - file picker.
+
+### TUI refactor checkpoint
+
+- The first low-risk `djinn-tui` refactor pass extracted shared/infrastructure
+  seams from the original large `lib.rs` without changing behavior:
+  - `approval.rs` for the mutation approval dialog and patch preview state;
+  - `command_palette.rs` for shared sectioned/searchable palette state;
+  - `editor.rs` for external editor handoff and composer text normalization;
+  - `filter.rs` for reusable filter state and fuzzy/list selection helpers;
+  - `keys.rs` for keyboard shortcut predicates;
+  - `style.rs` for Catppuccin theme/style/block helpers;
+  - `terminal.rs` for raw-mode, alternate-screen, and keyboard enhancement
+    lifecycle helpers.
+- Stop broad refactoring here for now. The remaining seams (`AgentChatComposerApp`,
+  `DashboardApp`, and per-tab Tools/Chats/Suggestions/Candidates/Skills apps) are
+  more feature-adjacent and should be extracted opportunistically when the next
+  feature needs that code, not as standalone churn.
+- Continue validating refactors and features with:
+  `cargo fmt --check && cargo test -p djinn-memory -p djinn-tui -p djinn-cli && git diff --check`.
 
 ## Blocked
 

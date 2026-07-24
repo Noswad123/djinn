@@ -1253,6 +1253,14 @@ pub struct ApplyPatchTool {
     permission_gate: Option<Arc<dyn PermissionGate>>,
 }
 
+#[derive(Clone)]
+pub struct WriteFileTool {
+    workspace: PathBuf,
+    permissions: PermissionPolicy,
+    history: Option<Arc<dyn FileHistoryStore>>,
+    permission_gate: Option<Arc<dyn PermissionGate>>,
+}
+
 impl ShellTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self::with_permissions(workspace, PermissionPolicy::allow_by_default())
@@ -1267,6 +1275,31 @@ impl ShellTool {
 }
 
 impl ApplyPatchTool {
+    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        Self::with_permissions(workspace, PermissionPolicy::allow_by_default())
+    }
+
+    pub fn with_permissions(workspace: impl Into<PathBuf>, permissions: PermissionPolicy) -> Self {
+        Self {
+            workspace: workspace.into(),
+            permissions,
+            history: None,
+            permission_gate: None,
+        }
+    }
+
+    pub fn with_file_history(mut self, history: Arc<dyn FileHistoryStore>) -> Self {
+        self.history = Some(history);
+        self
+    }
+
+    pub fn with_permission_gate(mut self, gate: Arc<dyn PermissionGate>) -> Self {
+        self.permission_gate = Some(gate);
+        self
+    }
+}
+
+impl WriteFileTool {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self::with_permissions(workspace, PermissionPolicy::allow_by_default())
     }
@@ -1361,75 +1394,56 @@ impl AgentTool for ApplyPatchTool {
         if operations.is_empty() {
             bail!("apply_patch patch contains no file operations");
         }
-        let workspace = self
-            .workspace
-            .canonicalize()
-            .with_context(|| format!("resolving workspace {}", self.workspace.display()))?;
-        let patch_id = fresh_patch_id();
-        let mut approval_granted = false;
-        if patch_requires_approval(&operations, &workspace, &self.permissions)? {
-            let previews = operations
-                .iter()
-                .map(|operation| preview_patch_operation(operation, &workspace, &self.permissions))
-                .collect::<Result<Vec<_>>>()?;
-            let approval_payload = json!({
-                "patch_id": patch_id,
-                "workspace": workspace.display().to_string(),
-                "approval_required": true,
-                "reason": "permission requires approval",
-                "preview": previews,
-            });
-            if let Some(gate) = self.permission_gate.as_ref() {
-                let decision = gate
-                    .approve(PermissionRequest {
-                        action: "apply_patch".to_string(),
-                        description: "Approve apply_patch mutation".to_string(),
-                        metadata: approval_payload.clone(),
-                    })
-                    .await?;
-                if decision == PermissionDecision::Allow {
-                    approval_granted = true;
-                } else {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: json!({
-                            "patch_id": patch_id,
-                            "workspace": workspace.display().to_string(),
-                            "approval_required": true,
-                            "approval_denied": true,
-                            "reason": "permission approval denied",
-                            "preview": approval_payload["preview"].clone(),
-                        }),
-                    });
-                }
-            } else {
-                return Ok(ToolResult {
-                    success: false,
-                    output: approval_payload,
-                });
-            }
-        }
-        let mut summaries = Vec::new();
+        invoke_mutation_operations(
+            "apply_patch",
+            "Approve apply_patch mutation",
+            &self.workspace,
+            &self.permissions,
+            self.history.as_deref(),
+            self.permission_gate.as_ref(),
+            operations,
+        )
+        .await
+    }
+}
 
-        for operation in operations {
-            summaries.push(apply_patch_operation_summary(
-                operation,
-                &workspace,
-                &self.permissions,
-                self.history.as_deref(),
-                &patch_id,
-                approval_granted,
-            )?);
-        }
-
-        Ok(ToolResult {
-            success: true,
-            output: json!({
-                "patch_id": patch_id,
-                "workspace": workspace.display().to_string(),
-                "summary": summaries,
+#[async_trait]
+impl AgentTool for WriteFileTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "write_file".to_string(),
+            description: "Create or replace a UTF-8 text file inside the workspace. This is a convenience wrapper over Djinn's reversible patch-backed mutation path, so permission prompts, guardrails, file history, and rollback metadata are preserved.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path to create or replace, relative to the workspace or absolute inside it." },
+                    "content": { "type": "string", "description": "Exact UTF-8 text content to write. Djinn does not add or remove trailing newlines." }
+                },
+                "required": ["path", "content"]
             }),
-        })
+        }
+    }
+
+    async fn invoke(&self, input: serde_json::Value) -> Result<ToolResult> {
+        let input: WriteFileInput =
+            serde_json::from_value(input).with_context(|| "parsing write_file input")?;
+        let path = input.path.trim();
+        if path.is_empty() {
+            bail!("write_file path cannot be empty");
+        }
+        invoke_mutation_operations(
+            "write",
+            "Approve write_file mutation",
+            &self.workspace,
+            &self.permissions,
+            self.history.as_deref(),
+            self.permission_gate.as_ref(),
+            vec![PatchOperation::Write {
+                path: path.to_string(),
+                content: input.content,
+            }],
+        )
+        .await
     }
 }
 
@@ -1539,13 +1553,17 @@ pub fn tools_with_policies_file_history_and_gate(
     ))?;
     registry.register(SearchFilesTool::with_access(workspace.clone(), access))?;
     let mut apply_patch = ApplyPatchTool::with_permissions(workspace.clone(), permissions.clone());
-    if let Some(history) = history {
-        apply_patch = apply_patch.with_file_history(history);
+    let mut write_file = WriteFileTool::with_permissions(workspace.clone(), permissions.clone());
+    if let Some(history) = history.clone() {
+        apply_patch = apply_patch.with_file_history(history.clone());
+        write_file = write_file.with_file_history(history);
     }
-    if let Some(gate) = permission_gate {
-        apply_patch = apply_patch.with_permission_gate(gate);
+    if let Some(gate) = permission_gate.clone() {
+        apply_patch = apply_patch.with_permission_gate(gate.clone());
+        write_file = write_file.with_permission_gate(gate);
     }
     registry.register(apply_patch)?;
+    registry.register(write_file)?;
     registry.register(ShellTool::with_permissions(workspace, permissions))?;
     Ok(registry)
 }
@@ -1588,6 +1606,12 @@ struct ApplyPatchInput {
     patch: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct WriteFileInput {
+    path: String,
+    content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PatchOperation {
     Add {
@@ -1605,6 +1629,10 @@ enum PatchOperation {
     },
     Delete {
         path: String,
+    },
+    Write {
+        path: String,
+        content: String,
     },
 }
 
@@ -1854,7 +1882,90 @@ fn record_file_history(
     serde_json::to_value(entry).with_context(|| "serializing file-history entry")
 }
 
-fn patch_requires_approval(
+async fn invoke_mutation_operations(
+    permission_action: &str,
+    approval_description: &str,
+    workspace: &Path,
+    permissions: &PermissionPolicy,
+    history: Option<&dyn FileHistoryStore>,
+    permission_gate: Option<&Arc<dyn PermissionGate>>,
+    operations: Vec<PatchOperation>,
+) -> Result<ToolResult> {
+    let workspace = workspace
+        .canonicalize()
+        .with_context(|| format!("resolving workspace {}", workspace.display()))?;
+    let patch_id = fresh_patch_id();
+    let mut approval_granted = false;
+    if mutation_requires_approval(permission_action, &operations, &workspace, permissions)? {
+        let previews = operations
+            .iter()
+            .map(|operation| {
+                preview_patch_operation(operation, &workspace, permissions, permission_action)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let approval_payload = json!({
+            "patch_id": patch_id,
+            "workspace": workspace.display().to_string(),
+            "approval_required": true,
+            "reason": "permission requires approval",
+            "preview": previews,
+        });
+        if let Some(gate) = permission_gate {
+            let decision = gate
+                .approve(PermissionRequest {
+                    action: permission_action.to_string(),
+                    description: approval_description.to_string(),
+                    metadata: approval_payload.clone(),
+                })
+                .await?;
+            if decision == PermissionDecision::Allow {
+                approval_granted = true;
+            } else {
+                return Ok(ToolResult {
+                    success: false,
+                    output: json!({
+                        "patch_id": patch_id,
+                        "workspace": workspace.display().to_string(),
+                        "approval_required": true,
+                        "approval_denied": true,
+                        "reason": "permission approval denied",
+                        "preview": approval_payload["preview"].clone(),
+                    }),
+                });
+            }
+        } else {
+            return Ok(ToolResult {
+                success: false,
+                output: approval_payload,
+            });
+        }
+    }
+    let mut summaries = Vec::new();
+
+    for operation in operations {
+        summaries.push(apply_patch_operation_summary(
+            operation,
+            &workspace,
+            permissions,
+            history,
+            &patch_id,
+            approval_granted,
+            permission_action,
+        )?);
+    }
+
+    Ok(ToolResult {
+        success: true,
+        output: json!({
+            "patch_id": patch_id,
+            "workspace": workspace.display().to_string(),
+            "summary": summaries,
+        }),
+    })
+}
+
+fn mutation_requires_approval(
+    permission_action: &str,
     operations: &[PatchOperation],
     workspace: &Path,
     permissions: &PermissionPolicy,
@@ -1862,10 +1973,12 @@ fn patch_requires_approval(
     let mut requires_approval = false;
     for operation in operations {
         for resource in operation_resources(operation, workspace)? {
-            match permissions.evaluate("apply_patch", &resource) {
+            match permissions.evaluate(permission_action, &resource) {
                 PermissionEffect::Allow => {}
                 PermissionEffect::Ask => requires_approval = true,
-                PermissionEffect::Deny => permissions.assert_allowed("apply_patch", &resource)?,
+                PermissionEffect::Deny => {
+                    permissions.assert_allowed(permission_action, &resource)?
+                }
             }
         }
     }
@@ -1884,7 +1997,8 @@ fn operation_resources(operation: &PatchOperation, workspace: &Path) -> Result<V
         ]),
         PatchOperation::Add { path, .. }
         | PatchOperation::Update { path, .. }
-        | PatchOperation::Delete { path } => Ok(vec![resolve_mutation_path(workspace, path)?
+        | PatchOperation::Delete { path }
+        | PatchOperation::Write { path, .. } => Ok(vec![resolve_mutation_path(workspace, path)?
             .display()
             .to_string()]),
     }
@@ -1894,6 +2008,7 @@ fn preview_patch_operation(
     operation: &PatchOperation,
     workspace: &Path,
     permissions: &PermissionPolicy,
+    permission_action: &str,
 ) -> Result<Value> {
     match operation {
         PatchOperation::Move {
@@ -1911,8 +2026,8 @@ fn preview_patch_operation(
                 "new_path": destination.display().to_string(),
                 "relative_new_path": relative_to_workspace(workspace, &destination),
                 "permission": combined_permission_effect([
-                    permissions.evaluate("apply_patch", &source.display().to_string()),
-                    permissions.evaluate("apply_patch", &destination.display().to_string()),
+                    permissions.evaluate(permission_action, &source.display().to_string()),
+                    permissions.evaluate(permission_action, &destination.display().to_string()),
                 ]),
                 "lines_added": lines_added,
                 "lines_removed": lines_removed,
@@ -1929,7 +2044,7 @@ fn preview_patch_operation(
                 "operation": "add",
                 "path": path.display().to_string(),
                 "relative_path": relative_to_workspace(workspace, &path),
-                "permission": permissions.evaluate("apply_patch", &path.display().to_string()),
+                "permission": permissions.evaluate(permission_action, &path.display().to_string()),
                 "lines_added": lines.len(),
                 "lines_removed": 0,
                 "preimage": file_snapshot(&path)?,
@@ -1946,7 +2061,7 @@ fn preview_patch_operation(
                 "operation": "update",
                 "path": path.display().to_string(),
                 "relative_path": relative_to_workspace(workspace, &path),
-                "permission": permissions.evaluate("apply_patch", &path.display().to_string()),
+                "permission": permissions.evaluate(permission_action, &path.display().to_string()),
                 "lines_added": lines_added,
                 "lines_removed": lines_removed,
                 "preimage": file_snapshot(&path)?,
@@ -1960,12 +2075,28 @@ fn preview_patch_operation(
                 "operation": "delete",
                 "path": path.display().to_string(),
                 "relative_path": relative_to_workspace(workspace, &path),
-                "permission": permissions.evaluate("apply_patch", &path.display().to_string()),
+                "permission": permissions.evaluate(permission_action, &path.display().to_string()),
                 "lines_added": 0,
                 "lines_removed": count_file_lines(&path),
                 "preimage": file_snapshot(&path)?,
                 "git_status_before": git_status_short(workspace, &path),
                 "hunks": delete_preview_hunks(&path),
+            }))
+        }
+        PatchOperation::Write { path, content } => {
+            let path = resolve_mutation_path(workspace, path)?;
+            Ok(json!({
+                "operation": "write",
+                "path": path.display().to_string(),
+                "relative_path": relative_to_workspace(workspace, &path),
+                "permission": permissions.evaluate(permission_action, &path.display().to_string()),
+                "lines_added": count_text_lines(content),
+                "lines_removed": count_file_lines(&path).unwrap_or_default(),
+                "preimage": file_snapshot(&path)?,
+                "git_status_before": git_status_short(workspace, &path),
+                "hunks": [{
+                    "lines": content.lines().map(|line| json!({"kind": "add", "content": line})).collect::<Vec<_>>()
+                }],
             }))
         }
     }
@@ -2040,21 +2171,30 @@ fn count_file_lines(path: &Path) -> Option<usize> {
         .map(|content| content.lines().count())
 }
 
-fn assert_patch_permission(
+fn count_text_lines(content: &str) -> usize {
+    content.lines().count()
+}
+
+fn assert_mutation_permission(
     permissions: &PermissionPolicy,
     resource: &str,
     approval_granted: bool,
+    permission_action: &str,
 ) -> Result<()> {
-    if let Some(reason) = destructive_denial("apply_patch", resource) {
+    if let Some(reason) = destructive_denial(permission_action, resource) {
         bail!("permission denied by destructive-action guardrail: {reason}");
     }
-    match permissions.evaluate("apply_patch", resource) {
+    match permissions.evaluate(permission_action, resource) {
         PermissionEffect::Allow => Ok(()),
         PermissionEffect::Ask if approval_granted => Ok(()),
         PermissionEffect::Ask => {
-            bail!("permission requires approval in non-interactive mode: apply_patch {resource}")
+            bail!(
+                "permission requires approval in non-interactive mode: {permission_action} {resource}"
+            )
         }
-        PermissionEffect::Deny => bail!("permission denied by policy: apply_patch {resource}"),
+        PermissionEffect::Deny => {
+            bail!("permission denied by policy: {permission_action} {resource}")
+        }
     }
 }
 
@@ -2065,6 +2205,7 @@ fn apply_patch_operation_summary(
     history: Option<&dyn FileHistoryStore>,
     patch_id: &str,
     approval_granted: bool,
+    permission_action: &str,
 ) -> Result<Value> {
     match operation {
         PatchOperation::Move {
@@ -2076,8 +2217,18 @@ fn apply_patch_operation_summary(
             let destination = resolve_mutation_path(workspace, &new_path)?;
             let source_resource = source.display().to_string();
             let destination_resource = destination.display().to_string();
-            assert_patch_permission(permissions, &source_resource, approval_granted)?;
-            assert_patch_permission(permissions, &destination_resource, approval_granted)?;
+            assert_mutation_permission(
+                permissions,
+                &source_resource,
+                approval_granted,
+                permission_action,
+            )?;
+            assert_mutation_permission(
+                permissions,
+                &destination_resource,
+                approval_granted,
+                permission_action,
+            )?;
             let relative_path = source
                 .strip_prefix(workspace)
                 .unwrap_or(&source)
@@ -2128,12 +2279,18 @@ fn apply_patch_operation_summary(
             let path = match &other {
                 PatchOperation::Add { path, .. }
                 | PatchOperation::Update { path, .. }
-                | PatchOperation::Delete { path } => path,
+                | PatchOperation::Delete { path }
+                | PatchOperation::Write { path, .. } => path,
                 PatchOperation::Move { .. } => unreachable!("move handled above"),
             };
             let path = resolve_mutation_path(workspace, path)?;
             let resource = path.display().to_string();
-            assert_patch_permission(permissions, &resource, approval_granted)?;
+            assert_mutation_permission(
+                permissions,
+                &resource,
+                approval_granted,
+                permission_action,
+            )?;
             let relative_path = path
                 .strip_prefix(workspace)
                 .unwrap_or(&path)
@@ -2145,6 +2302,7 @@ fn apply_patch_operation_summary(
                 PatchOperation::Add { .. } => "add",
                 PatchOperation::Update { .. } => "update",
                 PatchOperation::Delete { .. } => "delete",
+                PatchOperation::Write { .. } => "write",
                 PatchOperation::Move { .. } => unreachable!("move handled above"),
             };
             let history_entry =
@@ -2173,6 +2331,7 @@ fn apply_patch_operation(operation: PatchOperation, path: &Path) -> Result<Appli
         PatchOperation::Add { lines, .. } => apply_add_file(path, lines),
         PatchOperation::Update { hunks, .. } => apply_update_file(path, hunks),
         PatchOperation::Delete { .. } => apply_delete_file(path),
+        PatchOperation::Write { content, .. } => apply_write_file(path, content),
         PatchOperation::Move { .. } => unreachable!("move operations need source and destination"),
     }
 }
@@ -2194,6 +2353,24 @@ fn apply_add_file(path: &Path, lines: Vec<String>) -> Result<AppliedPatchChange>
         operation: "add",
         lines_added: lines.len(),
         lines_removed: 0,
+    })
+}
+
+fn apply_write_file(path: &Path, content: String) -> Result<AppliedPatchChange> {
+    let lines_removed = count_file_lines(path).unwrap_or_default();
+    if path.exists() && !path.is_file() {
+        bail!("write target is not a file: {}", path.display());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating directory {}", parent.display()))?;
+    }
+    let lines_added = count_text_lines(&content);
+    fs::write(path, content).with_context(|| format!("writing file {}", path.display()))?;
+    Ok(AppliedPatchChange {
+        operation: "write",
+        lines_added,
+        lines_removed,
     })
 }
 
@@ -2859,7 +3036,8 @@ mod tests {
                 "list_dir",
                 "read_file",
                 "search_files",
-                "shell"
+                "shell",
+                "write_file"
             ]
         );
     }
@@ -3177,6 +3355,83 @@ mod tests {
 
         assert!(!result.success);
         assert_eq!(result.output["approval_denied"], true);
+        assert_eq!(
+            fs::read_to_string(root.join("ask.txt")).unwrap(),
+            "before\n"
+        );
+    }
+
+    #[test]
+    fn write_file_tool_creates_and_replaces_files() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-write-file-tool-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let tool = WriteFileTool::new(&root);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"path": "notes/todo.md", "content": "one\ntwo\n"})))
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["summary"][0]["operation"], "write");
+        assert_eq!(
+            result.output["summary"][0]["relative_path"],
+            "notes/todo.md"
+        );
+        assert_eq!(result.output["summary"][0]["lines_added"], 2);
+        assert_eq!(result.output["summary"][0]["lines_removed"], 0);
+        assert_eq!(
+            fs::read_to_string(root.join("notes/todo.md")).unwrap(),
+            "one\ntwo\n"
+        );
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"path": "notes/todo.md", "content": "three"})))
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["summary"][0]["operation"], "write");
+        assert_eq!(result.output["summary"][0]["lines_added"], 1);
+        assert_eq!(result.output["summary"][0]["lines_removed"], 2);
+        assert_eq!(
+            fs::read_to_string(root.join("notes/todo.md")).unwrap(),
+            "three"
+        );
+    }
+
+    #[test]
+    fn write_file_tool_returns_preview_when_permission_requires_approval() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-write-file-ask-preview-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("ask.txt"), "before\n").unwrap();
+        let mut policy = PermissionPolicy::allow_by_default();
+        policy.rules.push(PermissionRule {
+            action: "write".to_string(),
+            resource: "*ask.txt".to_string(),
+            effect: PermissionEffect::Ask,
+        });
+        let tool = WriteFileTool::with_permissions(&root, policy);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"path": "ask.txt", "content": "after\n"})))
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.output["approval_required"], true);
+        assert_eq!(result.output["preview"][0]["operation"], "write");
+        assert_eq!(result.output["preview"][0]["permission"], "ask");
+        assert_eq!(result.output["preview"][0]["relative_path"], "ask.txt");
+        assert_eq!(result.output["preview"][0]["lines_added"], 1);
+        assert_eq!(result.output["preview"][0]["lines_removed"], 1);
         assert_eq!(
             fs::read_to_string(root.join("ask.txt")).unwrap(),
             "before\n"
