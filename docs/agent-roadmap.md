@@ -163,13 +163,16 @@ These are important but need more product/design detail before implementation.
   Tab from the last dashboard tab and Shift+Tab from Tools should return to Agent
   chat/resume the active agent session. Keep the tab row visible at the top of
   Agent chat and avoid alternate-screen flicker during tab transitions.
-- Keep designing the full interface around chat + logs, a session picker, and a
-  command palette.
-- Decide which OpenCode-inspired dialogs are first:
-  - session picker;
-  - model picker;
+- Keep designing the full interface around chat + logs, the Chats-tab session
+  picker, and the Ctrl+P command palette. Ctrl+P is the preferred place for
+  switching profile/model and jumping to session selection; keep the palette
+  sectioned, searchable, and navigable with Ctrl+P/Ctrl+N.
+- Keep detailed keybinding guidance in the Ctrl+/ help dialog rather than in the
+  Agent chat footer.
+- Decide which OpenCode-inspired dialogs are next:
+  - richer session picker filtering/actions;
+  - richer searchable model/profile picker behavior;
   - permission prompt;
-  - help dialog;
   - file picker.
 
 ## Blocked

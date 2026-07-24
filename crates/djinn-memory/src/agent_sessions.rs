@@ -75,6 +75,12 @@ pub enum AgentSessionEventKind {
     SessionTitleUpdated {
         title: String,
     },
+    SessionProfileUpdated {
+        profile: String,
+    },
+    SessionModelUpdated {
+        model: String,
+    },
     UserMessage {
         content: String,
     },
@@ -286,6 +292,13 @@ fn parse_session_file(id: &AgentSessionId, raw: &str) -> Result<AgentSession> {
                     kind: AgentSessionEventKind::SessionTitleUpdated { title },
                 });
             }
+            AgentSessionEventKind::SessionProfileUpdated { profile } => {
+                meta.profile = profile.clone();
+                events.push(AgentSessionEvent {
+                    created_at: event.created_at,
+                    kind: AgentSessionEventKind::SessionProfileUpdated { profile },
+                });
+            }
             kind => events.push(AgentSessionEvent {
                 created_at: event.created_at,
                 kind,
@@ -439,5 +452,34 @@ mod tests {
 
         assert_eq!(loaded.meta.title, "Implement auto title");
         assert_eq!(listed[0].title, "Implement auto title");
+    }
+
+    #[test]
+    fn profile_update_events_update_session_summary() {
+        let store = temp_store("profile-update");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Agent chat".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::SessionProfileUpdated {
+                    profile: "architect".to_string(),
+                }),
+            )
+            .unwrap();
+
+        let loaded = store.load_session(&id).unwrap();
+        let listed = store.list_sessions(AgentSessionFilter::default()).unwrap();
+
+        assert_eq!(loaded.meta.profile, "architect");
+        assert_eq!(listed[0].profile, "architect");
     }
 }

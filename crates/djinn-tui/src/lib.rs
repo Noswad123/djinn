@@ -272,6 +272,23 @@ pub struct AgentChatStatus {
     pub profile: String,
     pub model: String,
     pub notice: String,
+    #[allow(dead_code)]
+    pub command_palette: Vec<AgentChatCommandEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentChatCommandEntry {
+    pub section: String,
+    pub label: String,
+    pub description: String,
+    pub command: AgentChatCommand,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentChatCommand {
+    OpenSessions,
+    SwitchProfile(String),
+    SwitchModel(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,10 +307,11 @@ pub enum AgentChatRole {
     Notice,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentChatExit {
     Quit,
     Dashboard { initial_tab: DashboardTab },
+    Command(AgentChatCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -817,7 +835,44 @@ where
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
+                if app.help_open {
+                    match key.code {
+                        _ if agent_chat_help_key(key.code, key.modifiers) => app.close_help(),
+                        KeyCode::Esc | KeyCode::Enter => app.close_help(),
+                        _ if agent_chat_quit_key(key.code, key.modifiers, app.input.is_empty()) => {
+                            return Ok(AgentChatExit::Quit);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                if app.palette_open {
+                    match key.code {
+                        _ if agent_chat_help_key(key.code, key.modifiers) => app.open_help(),
+                        KeyCode::Esc => app.close_palette(),
+                        KeyCode::Backspace => app.backspace_palette_query_or_close(),
+                        _ if agent_chat_palette_next_key(key.code, key.modifiers) => {
+                            app.next_palette_item()
+                        }
+                        _ if agent_chat_palette_previous_key(key.code, key.modifiers) => {
+                            app.previous_palette_item()
+                        }
+                        KeyCode::Enter => {
+                            if let Some(command) = app.selected_palette_command() {
+                                return Ok(AgentChatExit::Command(command));
+                            }
+                            app.close_palette();
+                        }
+                        KeyCode::Char(ch) if palette_text_key(key.modifiers) => {
+                            app.push_palette_query(ch)
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 match key.code {
+                    _ if agent_chat_help_key(key.code, key.modifiers) => app.open_help(),
+                    _ if agent_chat_palette_key(key.code, key.modifiers) => app.open_palette(),
                     _ if agent_chat_dashboard_target(key.code).is_some() => {
                         return Ok(AgentChatExit::Dashboard {
                             initial_tab: agent_chat_dashboard_target(key.code).unwrap(),
@@ -892,6 +947,10 @@ struct AgentChatComposerApp {
     status: AgentChatStatus,
     input: String,
     transcript_scroll: u16,
+    palette_open: bool,
+    palette_selected: usize,
+    palette_query: String,
+    help_open: bool,
 }
 
 impl AgentChatComposerApp {
@@ -901,6 +960,97 @@ impl AgentChatComposerApp {
             status,
             input: String::new(),
             transcript_scroll: 0,
+            palette_open: false,
+            palette_selected: 0,
+            palette_query: String::new(),
+            help_open: false,
+        }
+    }
+
+    fn open_help(&mut self) {
+        self.palette_open = false;
+        self.help_open = true;
+    }
+
+    fn close_help(&mut self) {
+        self.help_open = false;
+    }
+
+    fn open_palette(&mut self) {
+        if self.status.command_palette.is_empty() {
+            self.status.notice = "No command palette actions available.".to_string();
+            return;
+        }
+        self.palette_open = true;
+        self.palette_query.clear();
+        self.palette_selected = 0;
+        self.normalize_palette_selection();
+    }
+
+    fn close_palette(&mut self) {
+        self.palette_open = false;
+    }
+
+    fn push_palette_query(&mut self, ch: char) {
+        self.palette_query.push(ch);
+        self.normalize_palette_selection();
+    }
+
+    fn backspace_palette_query_or_close(&mut self) {
+        if self.palette_query.is_empty() {
+            self.close_palette();
+        } else {
+            self.palette_query.pop();
+            self.normalize_palette_selection();
+        }
+    }
+
+    fn next_palette_item(&mut self) {
+        let visible = self.visible_palette_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let position = selected_visible_position(self.palette_selected, &visible).unwrap_or(0);
+        self.palette_selected = visible[(position + 1).min(visible.len() - 1)];
+    }
+
+    fn previous_palette_item(&mut self) {
+        let visible = self.visible_palette_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let position = selected_visible_position(self.palette_selected, &visible).unwrap_or(0);
+        self.palette_selected = visible[position.saturating_sub(1)];
+    }
+
+    fn selected_palette_command(&self) -> Option<AgentChatCommand> {
+        let visible = self.visible_palette_indices();
+        if !visible.contains(&self.palette_selected) {
+            return None;
+        }
+        self.status
+            .command_palette
+            .get(self.palette_selected)
+            .map(|entry| entry.command.clone())
+    }
+
+    fn visible_palette_indices(&self) -> Vec<usize> {
+        self.status
+            .command_palette
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, entry)| {
+                palette_entry_matches_query(entry, &self.palette_query).then_some(idx)
+            })
+            .collect()
+    }
+
+    fn normalize_palette_selection(&mut self) {
+        let visible = self.visible_palette_indices();
+        if visible.is_empty() {
+            self.palette_selected = 0;
+        } else if !visible.contains(&self.palette_selected) {
+            self.palette_selected = visible[0];
         }
     }
 
@@ -1036,12 +1186,161 @@ impl AgentChatComposerApp {
         frame.render_widget(composer, chunks[2]);
         frame.set_cursor_position(self.cursor_position(chunks[2]));
 
-        let footer = format!(
-            "Enter send • Shift+Enter newline • Ctrl+E edit • Tab dashboard • Esc empty/Ctrl-C quit • cwd {}",
-            self.status.workspace
-        );
+        let footer = format!("Ctrl+/ help • cwd {}", self.status.workspace);
         frame.render_widget(Clear, chunks[3]);
         frame.render_widget(Paragraph::new(footer).style(dim_style()), chunks[3]);
+
+        if self.palette_open {
+            self.draw_palette(frame);
+        }
+        if self.help_open {
+            self.draw_help(frame);
+        }
+    }
+
+    fn draw_help(&self, frame: &mut ratatui::Frame) {
+        let area = centered_rect(66, 58, frame.area());
+        let lines = vec![
+            Line::from(Span::styled("Agent chat", title_style())),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Enter", selected_style()),
+                Span::raw(" send prompt"),
+            ]),
+            Line::from(vec![
+                Span::styled("Shift+Enter", selected_style()),
+                Span::raw(" insert newline"),
+            ]),
+            Line::from(vec![
+                Span::styled("Ctrl+E", selected_style()),
+                Span::raw(" edit prompt in $VISUAL/$EDITOR/nvim"),
+            ]),
+            Line::from(vec![
+                Span::styled("Esc", selected_style()),
+                Span::raw(" quit when composer is empty"),
+            ]),
+            Line::from(vec![
+                Span::styled("Ctrl+C", selected_style()),
+                Span::raw(" quit"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("Navigation", title_style())),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Ctrl+P", selected_style()),
+                Span::raw(" open command palette"),
+            ]),
+            Line::from(vec![
+                Span::styled("Ctrl+/", selected_style()),
+                Span::raw(" open or close this help"),
+            ]),
+            Line::from(vec![
+                Span::styled("Tab / Shift+Tab", selected_style()),
+                Span::raw(" jump to Tools / Skills"),
+            ]),
+            Line::from(vec![
+                Span::styled("↑/↓ or PgUp/PgDn", selected_style()),
+                Span::raw(" scroll transcript"),
+            ]),
+            Line::from(vec![
+                Span::styled("Home / End", selected_style()),
+                Span::raw(" jump to transcript top / latest"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("Command palette", title_style())),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("type", selected_style()),
+                Span::raw(" fuzzy-search actions"),
+            ]),
+            Line::from(vec![
+                Span::styled("Ctrl+N / Ctrl+P", selected_style()),
+                Span::raw(" move selection"),
+            ]),
+            Line::from(vec![
+                Span::styled("Enter", selected_style()),
+                Span::raw(" run selected action"),
+            ]),
+            Line::from(vec![
+                Span::styled("Esc", selected_style()),
+                Span::raw(" close palette"),
+            ]),
+        ];
+        let help = Paragraph::new(lines)
+            .block(block("Help"))
+            .style(base_style())
+            .wrap(Wrap { trim: false });
+        frame.render_widget(Clear, area);
+        frame.render_widget(help, area);
+    }
+
+    fn draw_palette(&self, frame: &mut ratatui::Frame) {
+        let area = centered_rect(68, 50, frame.area());
+        let mut lines = vec![Line::from(vec![
+            Span::styled("Search: ", dim_style()),
+            if self.palette_query.is_empty() {
+                Span::styled("find action…", dim_style())
+            } else {
+                Span::raw(self.palette_query.clone())
+            },
+        ])];
+        lines.push(Line::from(""));
+        let visible = self.visible_palette_indices();
+        let mut previous_section = None::<String>;
+        for idx in visible.iter().copied() {
+            let Some(entry) = self.status.command_palette.get(idx) else {
+                continue;
+            };
+            if previous_section.as_deref() != Some(entry.section.as_str()) {
+                if previous_section.is_some() {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(Span::styled(
+                    entry.section.clone(),
+                    title_style(),
+                )));
+                previous_section = Some(entry.section.clone());
+            }
+            let marker = if idx == self.palette_selected {
+                "›"
+            } else {
+                " "
+            };
+            let style = if idx == self.palette_selected {
+                selected_style()
+            } else {
+                base_style()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{marker} {}", entry.label),
+                style,
+            )));
+            if !entry.description.trim().is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", entry.description),
+                    dim_style(),
+                )));
+            }
+        }
+        if visible.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No commands match your search.",
+                dim_style(),
+            )));
+        }
+        let palette = Paragraph::new(lines)
+            .block(block("Command palette"))
+            .style(base_style())
+            .wrap(Wrap { trim: false });
+        frame.render_widget(Clear, area);
+        frame.render_widget(palette, area);
+        let cursor_x = area
+            .x
+            .saturating_add(1)
+            .saturating_add("Search: ".len() as u16)
+            .saturating_add(self.palette_query.chars().count() as u16)
+            .min(area.right().saturating_sub(2));
+        frame.set_cursor_position(Position::new(cursor_x, area.y.saturating_add(1)));
     }
 
     fn composer_lines(&self) -> Vec<Line<'static>> {
@@ -1087,6 +1386,36 @@ fn agent_chat_newline_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
 
 fn agent_chat_editor_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('e'))
+}
+
+fn agent_chat_help_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(code, KeyCode::Char('/') | KeyCode::Char('_'))
+}
+
+fn agent_chat_palette_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('p'))
+}
+
+fn agent_chat_palette_next_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Down)
+        || (modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('n')))
+}
+
+fn agent_chat_palette_previous_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    matches!(code, KeyCode::Up)
+        || (modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('p')))
+}
+
+fn palette_text_key(modifiers: KeyModifiers) -> bool {
+    !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
+fn palette_entry_matches_query(entry: &AgentChatCommandEntry, query: &str) -> bool {
+    fuzzy_match(
+        query,
+        &format!("{} {} {}", entry.section, entry.label, entry.description),
+    )
 }
 
 fn agent_chat_dashboard_target(code: KeyCode) -> Option<DashboardTab> {
@@ -3327,6 +3656,17 @@ mod tests {
             .collect()
     }
 
+    fn test_agent_chat_status(notice: impl Into<String>) -> AgentChatStatus {
+        AgentChatStatus {
+            session_id: "agt_test".to_string(),
+            workspace: "/tmp/project".to_string(),
+            profile: "default".to_string(),
+            model: "openai/gpt-5.5".to_string(),
+            notice: notice.into(),
+            command_palette: Vec::new(),
+        }
+    }
+
     #[test]
     fn strip_tool_metadata_lines_removes_name_and_description_tags() {
         let preview =
@@ -3518,13 +3858,7 @@ mod tests {
                 role: AgentChatRole::User,
                 content: "hello".to_string(),
             }],
-            AgentChatStatus {
-                session_id: "agt_test".to_string(),
-                workspace: "/tmp/project".to_string(),
-                profile: "default".to_string(),
-                model: "openai/gpt-5.5".to_string(),
-                notice: "Djinn is thinking…".to_string(),
-            },
+            test_agent_chat_status("Djinn is thinking…"),
         );
 
         assert_eq!(app.status.notice, "Djinn is thinking…");
@@ -3537,16 +3871,7 @@ mod tests {
 
     #[test]
     fn agent_chat_composer_uses_shift_enter_newline_and_enter_submit_model() {
-        let mut app = AgentChatComposerApp::new(
-            Vec::new(),
-            AgentChatStatus {
-                session_id: "agt_test".to_string(),
-                workspace: "/tmp/project".to_string(),
-                profile: "default".to_string(),
-                model: "openai/gpt-5.5".to_string(),
-                notice: String::new(),
-            },
-        );
+        let mut app = AgentChatComposerApp::new(Vec::new(), test_agent_chat_status(String::new()));
 
         app.push_char('h');
         app.push_char('i');
@@ -3604,6 +3929,134 @@ mod tests {
     }
 
     #[test]
+    fn agent_chat_help_key_uses_ctrl_slash() {
+        assert!(agent_chat_help_key(
+            KeyCode::Char('/'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(agent_chat_help_key(
+            KeyCode::Char('_'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(!agent_chat_help_key(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert!(!agent_chat_help_key(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL
+        ));
+    }
+
+    #[test]
+    fn agent_chat_help_open_closes_palette() {
+        let mut status = test_agent_chat_status("Ready.");
+        status.command_palette = vec![AgentChatCommandEntry {
+            section: "Session".to_string(),
+            label: "Resume session…".to_string(),
+            description: String::new(),
+            command: AgentChatCommand::OpenSessions,
+        }];
+        let mut app = AgentChatComposerApp::new(Vec::new(), status);
+
+        app.open_palette();
+        app.open_help();
+
+        assert!(!app.palette_open);
+        assert!(app.help_open);
+
+        app.close_help();
+        assert!(!app.help_open);
+    }
+
+    #[test]
+    fn agent_chat_palette_key_uses_ctrl_p() {
+        assert!(agent_chat_palette_key(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(agent_chat_palette_previous_key(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(agent_chat_palette_next_key(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(!agent_chat_palette_key(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE
+        ));
+        assert!(!agent_chat_palette_key(
+            KeyCode::Char('e'),
+            KeyModifiers::CONTROL
+        ));
+    }
+
+    #[test]
+    fn agent_chat_palette_selects_commands() {
+        let mut status = test_agent_chat_status("Ready.");
+        status.command_palette = vec![
+            AgentChatCommandEntry {
+                section: "Session".to_string(),
+                label: "Resume session…".to_string(),
+                description: String::new(),
+                command: AgentChatCommand::OpenSessions,
+            },
+            AgentChatCommandEntry {
+                section: "Model".to_string(),
+                label: "Switch model · test".to_string(),
+                description: String::new(),
+                command: AgentChatCommand::SwitchModel("test".to_string()),
+            },
+        ];
+        let mut app = AgentChatComposerApp::new(Vec::new(), status);
+
+        app.open_palette();
+        app.next_palette_item();
+
+        assert!(app.palette_open);
+        assert_eq!(
+            app.selected_palette_command(),
+            Some(AgentChatCommand::SwitchModel("test".to_string()))
+        );
+    }
+
+    #[test]
+    fn agent_chat_palette_filters_commands_with_fuzzy_query() {
+        let mut status = test_agent_chat_status("Ready.");
+        status.command_palette = vec![
+            AgentChatCommandEntry {
+                section: "Session".to_string(),
+                label: "Resume session…".to_string(),
+                description: "Open the Chats/session picker".to_string(),
+                command: AgentChatCommand::OpenSessions,
+            },
+            AgentChatCommandEntry {
+                section: "Profile".to_string(),
+                label: "Switch profile · architect".to_string(),
+                description: String::new(),
+                command: AgentChatCommand::SwitchProfile("architect".to_string()),
+            },
+            AgentChatCommandEntry {
+                section: "Model".to_string(),
+                label: "Switch model · openai/gpt-5.5".to_string(),
+                description: String::new(),
+                command: AgentChatCommand::SwitchModel("openai/gpt-5.5".to_string()),
+            },
+        ];
+        let mut app = AgentChatComposerApp::new(Vec::new(), status);
+
+        app.open_palette();
+        for ch in "mdl".chars() {
+            app.push_palette_query(ch);
+        }
+
+        assert_eq!(app.visible_palette_indices(), vec![2]);
+        assert_eq!(
+            app.selected_palette_command(),
+            Some(AgentChatCommand::SwitchModel("openai/gpt-5.5".to_string()))
+        );
+    }
+
+    #[test]
     fn agent_chat_dashboard_target_uses_tab_direction() {
         assert_eq!(
             agent_chat_dashboard_target(KeyCode::Tab),
@@ -3651,16 +4104,7 @@ mod tests {
 
     #[test]
     fn agent_chat_composer_cursor_tracks_multiline_input() {
-        let mut app = AgentChatComposerApp::new(
-            Vec::new(),
-            AgentChatStatus {
-                session_id: "agt_test".to_string(),
-                workspace: "/tmp/project".to_string(),
-                profile: "default".to_string(),
-                model: "openai/gpt-5.5".to_string(),
-                notice: String::new(),
-            },
-        );
+        let mut app = AgentChatComposerApp::new(Vec::new(), test_agent_chat_status(String::new()));
         app.input = "hello\nworld".to_string();
 
         assert_eq!(
@@ -3677,16 +4121,7 @@ mod tests {
                 content: format!("message {idx}"),
             })
             .collect::<Vec<_>>();
-        let mut app = AgentChatComposerApp::new(
-            messages,
-            AgentChatStatus {
-                session_id: "agt_test".to_string(),
-                workspace: "/tmp/project".to_string(),
-                profile: "default".to_string(),
-                model: "openai/gpt-5.5".to_string(),
-                notice: "Ready.".to_string(),
-            },
-        );
+        let mut app = AgentChatComposerApp::new(messages, test_agent_chat_status("Ready."));
 
         assert_eq!(app.transcript_scroll, 0);
         let max_scroll = app.max_transcript_scroll_for_terminal(17);

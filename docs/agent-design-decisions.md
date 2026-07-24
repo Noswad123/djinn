@@ -372,6 +372,17 @@ The first non-interactive agent slice is implemented as:
 27. Djinn agent sessions auto-title from the first user prompt when the session
     still has a default title such as `Agent chat` or `Untitled agent session`.
     Explicit titles and imported/converted session titles are preserved.
+28. Agent chat uses Ctrl+P as the command palette home for cross-cutting chat
+    actions instead of accumulating one-off keybindings. The palette follows the
+    OpenCode-style shape: a search box with fuzzy matching, section headers for
+    related actions, and Ctrl+P/Ctrl+N navigation while the palette is open. The
+    first action sections open the Chats/session picker and switch the active
+    profile or model; profile/model changes are persisted as JSONL session
+    metadata events so resumed sessions continue with the selected runtime
+    context.
+29. Agent chat uses Ctrl+/ for a help dialog. Detailed keybinding guidance lives
+    there instead of crowding the footer; the footer should stay minimal and
+    point to help.
 
 Not in the first slice unless explicitly reopened:
 

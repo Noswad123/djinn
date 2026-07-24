@@ -1940,6 +1940,10 @@ enum AgentChatOutcome {
         resume: String,
         initial_tab: djinn_tui::DashboardTab,
     },
+    Command {
+        resume: String,
+        command: djinn_tui::AgentChatCommand,
+    },
 }
 
 fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
@@ -1980,6 +1984,49 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                     }
                 }
             }
+            AgentChatOutcome::Command { resume, command } => {
+                args.resume = Some(resume.clone());
+                match command {
+                    djinn_tui::AgentChatCommand::OpenSessions => {
+                        match run_tui_in_session(
+                            &mut tui,
+                            &default_tui_args(),
+                            djinn_tui::DashboardTab::Chats,
+                        )? {
+                            TuiRunOutcome::OpenAgentChat { resume } => {
+                                if let Some(resume) = resume {
+                                    args.resume = Some(resume);
+                                }
+                            }
+                            TuiRunOutcome::Exit => return Ok(()),
+                            TuiRunOutcome::Action(action) => {
+                                tui.finish()?;
+                                handle_tui_action(action, None)?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                    djinn_tui::AgentChatCommand::SwitchProfile(profile) => {
+                        agent_session_store().append_event(
+                            &AgentSessionId::new(resume),
+                            AgentSessionEvent::new(AgentSessionEventKind::SessionProfileUpdated {
+                                profile: profile.clone(),
+                            }),
+                        )?;
+                        args.profile = profile;
+                        args.model = None;
+                    }
+                    djinn_tui::AgentChatCommand::SwitchModel(model) => {
+                        agent_session_store().append_event(
+                            &AgentSessionId::new(resume),
+                            AgentSessionEvent::new(AgentSessionEventKind::SessionModelUpdated {
+                                model: model.clone(),
+                            }),
+                        )?;
+                        args.model = Some(model);
+                    }
+                }
+            }
         }
     }
 }
@@ -1996,8 +2043,11 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
     let id = chat_session.id;
     let workspace = chat_session.workspace;
     let profile = chat_session.profile;
-    let model = resolve_agent_model(args.model, &profile)?;
     let session = store.load_session(&id)?;
+    let model = resolve_agent_model(
+        args.model.or_else(|| latest_session_model(&session)),
+        &profile,
+    )?;
     let api_key = args.api_key;
     let base_url = args.base_url;
     let max_tool_rounds = args.max_tool_rounds;
@@ -2010,6 +2060,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
             profile: profile.clone(),
             model: model.clone(),
             notice: "History is secondary here; type a prompt to run the agent.".to_string(),
+            command_palette: agent_chat_command_palette(&profile, &model)?,
         },
         |prompt, progress| {
             store.append_event(
@@ -2055,6 +2106,12 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
         return Ok(AgentChatOutcome::Dashboard {
             resume: id.to_string(),
             initial_tab,
+        });
+    }
+    if let djinn_tui::AgentChatExit::Command(command) = exit {
+        return Ok(AgentChatOutcome::Command {
+            resume: id.to_string(),
+            command,
         });
     }
 
@@ -2158,6 +2215,127 @@ fn infer_agent_session_title(prompt: &str) -> String {
     } else {
         title
     }
+}
+
+fn latest_session_model(session: &AgentSession) -> Option<String> {
+    for event in session.events.iter().rev() {
+        match &event.kind {
+            AgentSessionEventKind::SessionModelUpdated { model } => {
+                let model = model.trim();
+                if !model.is_empty() {
+                    return Some(model.to_string());
+                }
+            }
+            AgentSessionEventKind::SessionProfileUpdated { .. } => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn agent_chat_command_palette(
+    profile: &str,
+    model: &str,
+) -> Result<Vec<djinn_tui::AgentChatCommandEntry>> {
+    let mut entries = vec![djinn_tui::AgentChatCommandEntry {
+        section: "Session".to_string(),
+        label: "Resume session…".to_string(),
+        description: "Open the Chats/session picker".to_string(),
+        command: djinn_tui::AgentChatCommand::OpenSessions,
+    }];
+    for candidate in agent_profile_options(profile)? {
+        entries.push(djinn_tui::AgentChatCommandEntry {
+            section: "Profile".to_string(),
+            label: format!("Switch profile · {candidate}"),
+            description: if candidate == profile {
+                "current profile".to_string()
+            } else {
+                "Use this OpenCode/Djinn profile for future turns".to_string()
+            },
+            command: djinn_tui::AgentChatCommand::SwitchProfile(candidate),
+        });
+    }
+    for candidate in agent_model_options(model)? {
+        entries.push(djinn_tui::AgentChatCommandEntry {
+            section: "Model".to_string(),
+            label: format!("Switch model · {candidate}"),
+            description: if candidate == model {
+                "current model".to_string()
+            } else {
+                "Use this model for future turns".to_string()
+            },
+            command: djinn_tui::AgentChatCommand::SwitchModel(candidate),
+        });
+    }
+    Ok(entries)
+}
+
+fn agent_profile_options(current: &str) -> Result<Vec<String>> {
+    let mut profiles = vec!["default".to_string(), current.trim().to_string()];
+    for value in opencode_config_values()? {
+        for container in ["agent", "agents"] {
+            if let Some(agents) = value.get(container).and_then(Value::as_object) {
+                profiles.extend(agents.keys().cloned());
+            }
+        }
+        if let Some(default_agent) = value.get("default_agent").and_then(Value::as_str) {
+            profiles.push(default_agent.to_string());
+        }
+    }
+    Ok(clean_unique_options(profiles))
+}
+
+fn agent_model_options(current: &str) -> Result<Vec<String>> {
+    let mut models = vec![current.trim().to_string(), "gpt-4o-mini".to_string()];
+    if let Ok(model) = env::var("DJINN_OPENAI_MODEL") {
+        models.push(model);
+    }
+    for value in opencode_config_values()? {
+        for pointer in ["/model", "/small_model", "/agent/model"] {
+            if let Some(model) = json_string_pointer(&value, pointer) {
+                models.push(model);
+            }
+        }
+        for container in ["agent", "agents"] {
+            if let Some(agents) = value.get(container).and_then(Value::as_object) {
+                for agent in agents.values() {
+                    if let Some(model) = agent.get("model").and_then(Value::as_str) {
+                        models.push(model.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(clean_unique_options(models))
+}
+
+fn opencode_config_values() -> Result<Vec<Value>> {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut values = Vec::new();
+    for path in opencode_model_config_paths(&cwd) {
+        if !path.exists() {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("reading OpenCode config {}", path.display()))?;
+        values.push(
+            serde_json::from_str(&content)
+                .with_context(|| format!("parsing OpenCode config {}", path.display()))?,
+        );
+    }
+    Ok(values)
+}
+
+fn clean_unique_options(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for value in values.into_iter().map(|value| value.trim().to_string()) {
+        if value.is_empty() || !seen.insert(value.clone()) {
+            continue;
+        }
+        out.push(value);
+    }
+    out
 }
 
 fn complete_openai_prompt(
@@ -3074,6 +3252,8 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
     match &event.kind {
         AgentSessionEventKind::SessionCreated { .. } => "session created".to_string(),
         AgentSessionEventKind::SessionTitleUpdated { title } => format!("title: {title}"),
+        AgentSessionEventKind::SessionProfileUpdated { profile } => format!("profile: {profile}"),
+        AgentSessionEventKind::SessionModelUpdated { model } => format!("model: {model}"),
         AgentSessionEventKind::UserMessage { content } => {
             format!("user: {}", prompt_title(content, "(empty)"))
         }
@@ -3190,6 +3370,8 @@ fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessag
             }
             AgentSessionEventKind::SessionCreated { .. }
             | AgentSessionEventKind::SessionTitleUpdated { .. }
+            | AgentSessionEventKind::SessionProfileUpdated { .. }
+            | AgentSessionEventKind::SessionModelUpdated { .. }
             | AgentSessionEventKind::AssistantMessage { .. } => {}
         }
     }
@@ -7155,6 +7337,43 @@ mod tests {
         assert_eq!(prepared.id, id);
         assert_eq!(prepared.workspace, "/tmp/existing-workspace");
         assert_eq!(prepared.profile, "architect");
+    }
+
+    #[test]
+    fn latest_session_model_uses_latest_model_until_profile_changes() {
+        let mut session = AgentSession {
+            id: AgentSessionId::new("agt_model"),
+            meta: AgentSessionMeta::default(),
+            events: vec![AgentSessionEvent::new(
+                AgentSessionEventKind::SessionModelUpdated {
+                    model: "openai/gpt-5.5".to_string(),
+                },
+            )],
+        };
+
+        assert_eq!(
+            latest_session_model(&session).as_deref(),
+            Some("openai/gpt-5.5")
+        );
+
+        session.events.push(AgentSessionEvent::new(
+            AgentSessionEventKind::SessionProfileUpdated {
+                profile: "architect".to_string(),
+            },
+        ));
+
+        assert_eq!(latest_session_model(&session), None);
+
+        session.events.push(AgentSessionEvent::new(
+            AgentSessionEventKind::SessionModelUpdated {
+                model: "openai/gpt-5.4-mini".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            latest_session_model(&session).as_deref(),
+            Some("openai/gpt-5.4-mini")
+        );
     }
 
     #[test]
