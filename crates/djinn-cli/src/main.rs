@@ -4416,7 +4416,9 @@ fn run_tui_in_session(
         initial_tab,
         |action| match action {
             djinn_tui::TuiAction::RejectCandidates(ids) => reject_memories_silent(&ids).map(|_| ()),
-            djinn_tui::TuiAction::DeleteChats(ids) => delete_chats_silent(&ids).map(|_| ()),
+            djinn_tui::TuiAction::DeleteChatRows(request) => {
+                delete_chat_rows_silent(&request).map(|_| ())
+            }
             djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| ()),
             djinn_tui::TuiAction::OpenAgentChat
             | djinn_tui::TuiAction::OpenChatSession(_)
@@ -4478,7 +4480,9 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
         })
         .map(|_| false),
         djinn_tui::TuiAction::RejectCandidates(ids) => reject_memories_silent(&ids).map(|_| false),
-        djinn_tui::TuiAction::DeleteChats(ids) => delete_chats_silent(&ids).map(|_| false),
+        djinn_tui::TuiAction::DeleteChatRows(request) => {
+            delete_chat_rows_silent(&request).map(|_| false)
+        }
         djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| false),
     }
 }
@@ -5720,6 +5724,21 @@ fn delete_chats_silent(ids: &[String]) -> Result<Vec<ChatRecord>> {
     let chats = chat_store().list()?;
     let resolved = resolve_chat_ids(&chats, ids)?;
     chat_store().remove_ids(&resolved)
+}
+
+fn delete_chat_rows_silent(request: &djinn_tui::ChatDeleteRequest) -> Result<()> {
+    if !request.chat_ids.is_empty() {
+        delete_chats_silent(&request.chat_ids)?;
+    }
+
+    if !request.agent_session_ids.is_empty() {
+        let store = agent_session_store();
+        for id in &request.agent_session_ids {
+            store.delete_session(&AgentSessionId::new(id.clone()))?;
+        }
+    }
+
+    Ok(())
 }
 
 fn ingest_memories(args: IngestMemoriesArgs) -> Result<()> {

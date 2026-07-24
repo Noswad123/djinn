@@ -328,11 +328,12 @@ The first non-interactive agent slice is implemented as:
     built-in runtime tool set using the same registry construction as agent runs.
     Text output lists names/summaries or a single tool description/schema; JSON
     output includes full tool specs and input schemas.
-16. CLI commands for session creation/list/show/rename and one-shot prompting:
+16. CLI commands for session creation/list/show/rename/delete and one-shot prompting:
     `djinn agent session new`, `djinn agent session list`,
-    `djinn agent session show`, `djinn agent session rename`, and
-    `djinn agent ask`. Rename appends a `SessionTitleUpdated` metadata event and
-    skips no-op updates.
+    `djinn agent session show`, `djinn agent session rename`,
+    `djinn agent session delete`, and `djinn agent ask`. Rename appends a
+    `SessionTitleUpdated` metadata event and skips no-op updates. Delete requires
+    `--force` and removes the session JSONL file.
 17. A dashboard pane that only browses JSONL agent sessions overlaps with the
     saved Chats pane and should not be treated as the Agent UI. The Agent UI must
     be an interactive chat/composer/runtime surface, with history/session picking
@@ -431,6 +432,10 @@ The first non-interactive agent slice is implemented as:
 38. Ctrl+P is a TUI-wide command palette entry point. Dashboard tabs expose the
     same searchable/sectioned command palette pattern, with actions scoped to the
     active tab plus shared navigation/help commands.
+39. The Chats tab delete action distinguishes backing stores. Saved chat rows are
+    removed through the chat store, while projected `djinn-agent` rows delete the
+    underlying JSONL agent session by `source_id`. Mixed selections can delete
+    both row types in one action.
 
 Not in the first slice unless explicitly reopened:
 

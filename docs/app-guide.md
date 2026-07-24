@@ -226,7 +226,8 @@ Keybindings:
 - `↑`/`k`, `↓`/`j`: move selection.
 - `PageUp`/`u`, `PageDown`/`d`: scroll preview.
 - Tools: `Enter` opens the selected tool.
-- Chats: `Space` selects, `a` toggles all, `Enter` opens share options.
+- Chats: `Enter`/`r` resumes sessions, `s` opens share options, `Space` selects,
+  `a` toggles all, and `x`/`Delete` removes saved chats or Djinn sessions.
 - Memories: `a` reviews the selected memory, `r` rejects/removes it.
 - Suggestions: `r` removes selected suggestions.
 - Skills: `Enter` opens the selected skill.

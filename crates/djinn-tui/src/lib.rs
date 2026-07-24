@@ -250,8 +250,20 @@ pub enum TuiAction {
     ShareChats(ChatShareRequest),
     AcceptCandidate(String),
     RejectCandidates(Vec<String>),
-    DeleteChats(Vec<String>),
+    DeleteChatRows(ChatDeleteRequest),
     DeleteSuggestions(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatDeleteRequest {
+    pub chat_ids: Vec<String>,
+    pub agent_session_ids: Vec<String>,
+}
+
+impl ChatDeleteRequest {
+    fn is_empty(&self) -> bool {
+        self.chat_ids.is_empty() && self.agent_session_ids.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1443,9 +1455,8 @@ fn run_dashboard_loop(
                     }
                     KeyCode::Char('x') | KeyCode::Delete => match app.active_tab {
                         DashboardTab::Chats => {
-                            let ids = app.chats.selected_persisted_chat_ids();
-                            if !ids.is_empty() {
-                                let action = TuiAction::DeleteChats(ids);
+                            if let Some(request) = app.chats.delete_request() {
+                                let action = TuiAction::DeleteChatRows(request);
                                 if handle_continue_action(
                                     &mut app,
                                     &mut on_continue_action,
@@ -1756,8 +1767,8 @@ impl DashboardApp {
                 ),
                 dashboard_command_entry(
                     "Chats",
-                    "Remove selected chats",
-                    "Remove selected persisted chat rows",
+                    "Remove selected chats/sessions",
+                    "Remove selected persisted chat rows or Djinn sessions",
                     DashboardCommand::DeleteSelected,
                 ),
                 dashboard_command_entry(
@@ -1975,10 +1986,7 @@ impl DashboardApp {
 
     fn delete_selected_action(&self) -> Option<TuiAction> {
         match self.active_tab {
-            DashboardTab::Chats => {
-                let ids = self.chats.selected_persisted_chat_ids();
-                (!ids.is_empty()).then_some(TuiAction::DeleteChats(ids))
-            }
+            DashboardTab::Chats => self.chats.delete_request().map(TuiAction::DeleteChatRows),
             DashboardTab::Candidates => self.reject_selected_action(),
             DashboardTab::Memories => {
                 let ids = self.suggestions.selected_suggestion_ids();
@@ -2006,7 +2014,7 @@ impl DashboardApp {
 
     fn apply_completed_action(&mut self, action: &TuiAction) {
         match action {
-            TuiAction::DeleteChats(ids) => self.chats.remove_ids(ids),
+            TuiAction::DeleteChatRows(request) => self.chats.remove_deleted_rows(request),
             TuiAction::RejectCandidates(ids) => self.candidates.remove_ids(ids),
             TuiAction::DeleteSuggestions(ids) => self.suggestions.remove_ids(ids),
             TuiAction::OpenTool(_)
@@ -2170,7 +2178,7 @@ impl DashboardApp {
             ]),
             Line::from(vec![
                 Span::styled("x / Delete", selected_style()),
-                Span::raw(" remove persisted chat rows"),
+                Span::raw(" remove persisted chats or Djinn sessions"),
             ]),
             Line::from(""),
             Line::from(Span::styled("Memories & Suggestions", title_style())),
@@ -2521,30 +2529,43 @@ impl ChatsApp {
     }
 
     fn selected_chat_ids(&self) -> Vec<String> {
+        self.selected_chats()
+            .into_iter()
+            .map(|chat| chat.id.clone())
+            .collect()
+    }
+
+    fn selected_chats(&self) -> Vec<&ChatRecord> {
         if self.checked.is_empty() {
             return self
                 .selected_chat()
-                .map(|chat| vec![chat.id.clone()])
+                .map(|chat| vec![chat])
                 .unwrap_or_default();
         }
         self.chats
             .iter()
             .filter(|chat| self.checked.contains(&chat.id))
-            .map(|chat| chat.id.clone())
             .collect()
     }
 
-    fn selected_persisted_chat_ids(&self) -> Vec<String> {
-        self.selected_chat_ids()
-            .into_iter()
-            .filter(|id| {
-                self.chats
-                    .iter()
-                    .find(|chat| chat.id == *id)
-                    .map(|chat| chat.source != "djinn-agent")
-                    .unwrap_or(false)
-            })
-            .collect()
+    fn delete_request(&self) -> Option<ChatDeleteRequest> {
+        let mut request = ChatDeleteRequest {
+            chat_ids: Vec::new(),
+            agent_session_ids: Vec::new(),
+        };
+        for chat in self.selected_chats() {
+            if chat.source == "djinn-agent" {
+                let session_id = chat.source_id.trim();
+                if !session_id.is_empty()
+                    && !request.agent_session_ids.iter().any(|id| id == session_id)
+                {
+                    request.agent_session_ids.push(session_id.to_string());
+                }
+            } else if !request.chat_ids.iter().any(|id| id == &chat.id) {
+                request.chat_ids.push(chat.id.clone());
+            }
+        }
+        (!request.is_empty()).then_some(request)
     }
 
     fn toggle_selected(&mut self) {
@@ -2571,10 +2592,23 @@ impl ChatsApp {
         }
     }
 
-    fn remove_ids(&mut self, ids: &[String]) {
-        let removed = ids.iter().cloned().collect::<HashSet<_>>();
-        self.chats.retain(|chat| !removed.contains(&chat.id));
-        self.checked.retain(|id| !removed.contains(id));
+    fn remove_deleted_rows(&mut self, request: &ChatDeleteRequest) {
+        let removed_chats = request.chat_ids.iter().cloned().collect::<HashSet<_>>();
+        let removed_sessions = request
+            .agent_session_ids
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        self.chats.retain(|chat| {
+            !removed_chats.contains(&chat.id)
+                && !(chat.source == "djinn-agent" && removed_sessions.contains(&chat.source_id))
+        });
+        self.checked.retain(|id| !removed_chats.contains(id));
+        self.checked.retain(|id| {
+            self.chats
+                .iter()
+                .any(|chat| chat.id == *id || chat.source_id == *id)
+        });
         if self.selected >= self.chats.len() {
             self.selected = self.chats.len().saturating_sub(1);
         }
@@ -2635,7 +2669,7 @@ impl ChatsApp {
         self.draw_body(frame, chunks[0]);
 
         let help = Paragraph::new(
-            "↑/k ↓/j move • Space select • a all visible • Enter share options • x/Delete remove • PgUp/u PgDn/d scroll • q/Esc quit",
+            "↑/k ↓/j move • Space select • a all visible • Enter share options • x/Delete remove chats/sessions • PgUp/u PgDn/d scroll • q/Esc quit",
         )
         .style(dim_style());
         frame.render_widget(Clear, chunks[1]);
@@ -3519,7 +3553,7 @@ fn chat_preview(chat: &ChatRecord) -> String {
 
 fn chat_picker_action_hint(chat: &ChatRecord) -> &'static str {
     match chat.source.trim() {
-        "djinn-agent" => "Enter/r resume session",
+        "djinn-agent" => "Enter/r resume session • x delete session",
         "opencode" if !chat.source_id.trim().is_empty() => {
             "Enter/r convert+resume in Djinn • s share • x remove"
         }
@@ -3704,6 +3738,19 @@ mod tests {
         }
     }
 
+    fn test_chat_record(id: &str, title: &str, source: &str, source_id: &str) -> ChatRecord {
+        ChatRecord {
+            id: id.to_string(),
+            title: title.to_string(),
+            content: String::new(),
+            source: source.to_string(),
+            source_id: source_id.to_string(),
+            source_path: String::new(),
+            content_path: String::new(),
+            created_at: String::new(),
+        }
+    }
+
     #[test]
     fn strip_tool_metadata_lines_removes_name_and_description_tags() {
         let preview =
@@ -3754,26 +3801,8 @@ mod tests {
 
     #[test]
     fn chats_can_request_djinn_or_opencode_session_resume() {
-        let djinn = ChatRecord {
-            id: "agent:agt_1".to_string(),
-            title: "Djinn".to_string(),
-            content: String::new(),
-            source: "djinn-agent".to_string(),
-            source_id: "agt_1".to_string(),
-            source_path: String::new(),
-            content_path: String::new(),
-            created_at: String::new(),
-        };
-        let opencode = ChatRecord {
-            id: "chat".to_string(),
-            title: "OpenCode".to_string(),
-            content: String::new(),
-            source: "opencode".to_string(),
-            source_id: "ses_1".to_string(),
-            source_path: String::new(),
-            content_path: String::new(),
-            created_at: String::new(),
-        };
+        let djinn = test_chat_record("agent:agt_1", "Djinn", "djinn-agent", "agt_1");
+        let opencode = test_chat_record("chat", "OpenCode", "opencode", "ses_1");
 
         assert_eq!(
             chat_session_request(&djinn).map(|request| (request.kind, request.session_id)),
@@ -3818,29 +3847,48 @@ mod tests {
     }
 
     #[test]
-    fn chat_preview_surfaces_session_picker_actions() {
-        let djinn = ChatRecord {
-            id: "agent:agt_1".to_string(),
-            title: "Djinn".to_string(),
-            content: String::new(),
-            source: "djinn-agent".to_string(),
-            source_id: "agt_1".to_string(),
-            source_path: String::new(),
-            content_path: String::new(),
-            created_at: String::new(),
-        };
-        let opencode = ChatRecord {
-            id: "chat".to_string(),
-            title: "OpenCode".to_string(),
-            content: String::new(),
-            source: "opencode".to_string(),
-            source_id: "ses_1".to_string(),
-            source_path: String::new(),
-            content_path: String::new(),
-            created_at: String::new(),
-        };
+    fn chats_delete_request_separates_saved_chats_and_agent_sessions() {
+        let mut app = ChatsApp::new(vec![
+            test_chat_record("chat-one", "Saved", "manual", ""),
+            test_chat_record("agent:agt_1", "Agent", "djinn-agent", "agt_1"),
+            test_chat_record("chat-two", "Other", "opencode", "ses_2"),
+        ]);
+        app.checked.insert("chat-one".to_string());
+        app.checked.insert("agent:agt_1".to_string());
 
-        assert!(chat_preview(&djinn).contains("Actions: Enter/r resume session"));
+        let request = app.delete_request().unwrap();
+
+        assert_eq!(request.chat_ids, vec!["chat-one"]);
+        assert_eq!(request.agent_session_ids, vec!["agt_1"]);
+
+        app.remove_deleted_rows(&request);
+
+        assert_eq!(app.chats.len(), 1);
+        assert_eq!(app.chats[0].id, "chat-two");
+        assert!(app.checked.is_empty());
+    }
+
+    #[test]
+    fn chats_delete_request_defaults_to_selected_agent_session() {
+        let app = ChatsApp::new(vec![test_chat_record(
+            "agent:agt_1",
+            "Agent",
+            "djinn-agent",
+            "agt_1",
+        )]);
+
+        let request = app.delete_request().unwrap();
+
+        assert!(request.chat_ids.is_empty());
+        assert_eq!(request.agent_session_ids, vec!["agt_1"]);
+    }
+
+    #[test]
+    fn chat_preview_surfaces_session_picker_actions() {
+        let djinn = test_chat_record("agent:agt_1", "Djinn", "djinn-agent", "agt_1");
+        let opencode = test_chat_record("chat", "OpenCode", "opencode", "ses_1");
+
+        assert!(chat_preview(&djinn).contains("Actions: Enter/r resume session • x delete session"));
         assert!(chat_preview(&opencode).contains("Actions: Enter/r convert+resume in Djinn"));
     }
 
