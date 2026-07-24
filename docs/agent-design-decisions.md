@@ -399,6 +399,12 @@ The first non-interactive agent slice is implemented as:
 34. The Agent command palette Session section includes New session as a first-class
     action. Starting a new session from the palette should preserve the current
     profile/model context while clearing the resumed session id/title/workspace.
+35. The Agent command palette includes Navigation actions for the shared top tabs
+    (Tools, Chats, Memories, Suggestions, Skills). Ctrl+P should be a central way
+    to jump around the interface without remembering tab-specific shortcuts.
+36. Ctrl+P is a TUI-wide command palette entry point. Dashboard tabs expose the
+    same searchable/sectioned command palette pattern, with actions scoped to the
+    active tab plus shared navigation/help commands.
 
 Not in the first slice unless explicitly reopened:
 

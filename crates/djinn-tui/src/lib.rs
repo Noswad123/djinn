@@ -1,3 +1,8 @@
+mod command_palette;
+mod filter;
+mod keys;
+mod style;
+
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -7,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use crossterm::event::{
-    self, Event, KeyCode, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    self, Event, KeyCode, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -21,11 +26,16 @@ use djinn_skills::SkillRecord;
 use djinn_tools::ToolEntry;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use ratatui::Terminal;
 use serde_json::Value;
+
+use command_palette::{CommandPaletteItem, CommandPaletteState};
+use filter::{fuzzy_match, selected_visible_position, FilterState};
+use keys::*;
+use style::*;
 
 type TuiTerminal = Terminal<CrosstermBackend<Stdout>>;
 pub type AgentChatProgressHandler<'a> = dyn FnMut(Vec<AgentChatMessage>, String) -> Result<()> + 'a;
@@ -284,12 +294,65 @@ pub struct AgentChatCommandEntry {
     pub command: AgentChatCommand,
 }
 
+impl CommandPaletteItem for AgentChatCommandEntry {
+    fn section(&self) -> &str {
+        &self.section
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentChatCommand {
     NewSession,
     OpenSessions,
+    OpenDashboardTab(DashboardTab),
     SwitchProfile(String),
     SwitchModel(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DashboardCommandEntry {
+    section: String,
+    label: String,
+    description: String,
+    command: DashboardCommand,
+}
+
+impl CommandPaletteItem for DashboardCommandEntry {
+    fn section(&self) -> &str {
+        &self.section
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DashboardCommand {
+    OpenAgent,
+    OpenTab(DashboardTab),
+    OpenHelp,
+    ToggleFilter,
+    OpenSelected,
+    ResumeSelectedChat,
+    ShareChats,
+    ToggleSelected,
+    ToggleAll,
+    AcceptSelected,
+    RejectSelected,
+    DeleteSelected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,50 +426,6 @@ const APP_TABS: [&str; 6] = [
     "Suggestions",
     "Skills",
 ];
-
-// Catppuccin Mocha palette.
-const CTP_BASE: Color = Color::Rgb(30, 30, 46);
-const CTP_MANTLE: Color = Color::Rgb(24, 24, 37);
-const CTP_SURFACE0: Color = Color::Rgb(49, 50, 68);
-const CTP_SURFACE1: Color = Color::Rgb(69, 71, 90);
-const CTP_TEXT: Color = Color::Rgb(205, 214, 244);
-const CTP_SUBTEXT0: Color = Color::Rgb(166, 173, 200);
-const CTP_LAVENDER: Color = Color::Rgb(180, 190, 254);
-const CTP_MAUVE: Color = Color::Rgb(203, 166, 247);
-const CTP_GREEN: Color = Color::Rgb(166, 227, 161);
-const CTP_PEACH: Color = Color::Rgb(250, 179, 135);
-const CTP_RED: Color = Color::Rgb(243, 139, 168);
-const CTP_SKY: Color = Color::Rgb(137, 220, 235);
-const CTP_YELLOW: Color = Color::Rgb(249, 226, 175);
-
-fn base_style() -> Style {
-    Style::default().fg(CTP_TEXT).bg(CTP_BASE)
-}
-
-fn dim_style() -> Style {
-    Style::default().fg(CTP_SUBTEXT0).bg(CTP_BASE)
-}
-
-fn title_style() -> Style {
-    Style::default()
-        .fg(CTP_LAVENDER)
-        .bg(CTP_BASE)
-        .add_modifier(Modifier::BOLD)
-}
-
-fn highlight_style() -> Style {
-    Style::default()
-        .fg(CTP_MAUVE)
-        .bg(CTP_SURFACE1)
-        .add_modifier(Modifier::BOLD)
-}
-
-fn selected_style() -> Style {
-    Style::default()
-        .fg(CTP_PEACH)
-        .bg(CTP_BASE)
-        .add_modifier(Modifier::BOLD)
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalPreviewState {
@@ -705,79 +724,6 @@ pub fn approval_preview_file_lines(file: &ApprovalPreviewFile) -> Vec<Line<'stat
     lines
 }
 
-fn block<'a>(title: &'a str) -> Block<'a> {
-    Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(title_style())
-        .border_style(Style::default().fg(CTP_SURFACE0).bg(CTP_MANTLE))
-        .style(Style::default().fg(CTP_TEXT).bg(CTP_MANTLE))
-}
-
-fn agent_chat_block<'a>(title: &'a str) -> Block<'a> {
-    Block::default()
-        .borders(agent_chat_borders())
-        .title(title)
-        .title_style(title_style())
-        .border_style(Style::default().fg(CTP_SURFACE0).bg(CTP_MANTLE))
-        .style(Style::default().fg(CTP_TEXT).bg(CTP_MANTLE))
-}
-
-fn agent_chat_borders() -> Borders {
-    Borders::TOP | Borders::BOTTOM
-}
-
-#[derive(Debug, Clone, Default)]
-struct FilterState {
-    query: String,
-    editing: bool,
-}
-
-impl FilterState {
-    fn toggle(&mut self) {
-        if self.query.is_empty() {
-            self.editing = true;
-        } else {
-            self.query.clear();
-            self.editing = false;
-        }
-    }
-
-    fn push(&mut self, ch: char) {
-        self.query.push(ch);
-    }
-
-    fn backspace(&mut self) {
-        self.query.pop();
-    }
-
-    fn label(&self) -> String {
-        if self.query.is_empty() && self.editing {
-            "filter: ".to_string()
-        } else if self.query.is_empty() {
-            "filter: off".to_string()
-        } else if self.editing {
-            format!("filter: {}", self.query)
-        } else {
-            format!("filter: {} (/ clears)", self.query)
-        }
-    }
-}
-
-fn fuzzy_match(query: &str, candidate: &str) -> bool {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return true;
-    }
-    let candidate = candidate.to_lowercase();
-    let mut chars = candidate.chars();
-    query.chars().all(|needle| chars.any(|ch| ch == needle))
-}
-
-fn selected_visible_position(selected: usize, visible: &[usize]) -> Option<usize> {
-    visible.iter().position(|idx| *idx == selected)
-}
-
 fn run_agent_chat_prompt_loop(
     terminal: &mut TuiTerminal,
     messages: Vec<AgentChatMessage>,
@@ -847,7 +793,7 @@ where
                     }
                     continue;
                 }
-                if app.palette_open {
+                if app.palette.open {
                     match key.code {
                         _ if agent_chat_help_key(key.code, key.modifiers) => app.open_help(),
                         KeyCode::Esc => app.close_palette(),
@@ -948,10 +894,7 @@ struct AgentChatComposerApp {
     status: AgentChatStatus,
     input: String,
     transcript_scroll: u16,
-    palette_open: bool,
-    palette_selected: usize,
-    palette_query: String,
-    palette_scroll: usize,
+    palette: CommandPaletteState,
     help_open: bool,
 }
 
@@ -962,16 +905,13 @@ impl AgentChatComposerApp {
             status,
             input: String::new(),
             transcript_scroll: 0,
-            palette_open: false,
-            palette_selected: 0,
-            palette_query: String::new(),
-            palette_scroll: 0,
+            palette: CommandPaletteState::default(),
             help_open: false,
         }
     }
 
     fn open_help(&mut self) {
-        self.palette_open = false;
+        self.palette.close();
         self.help_open = true;
     }
 
@@ -984,133 +924,60 @@ impl AgentChatComposerApp {
             self.status.notice = "No command palette actions available.".to_string();
             return;
         }
-        self.palette_open = true;
-        self.palette_query.clear();
-        self.palette_selected = 0;
-        self.palette_scroll = 0;
+        self.palette.open();
         self.normalize_palette_selection();
     }
 
     fn close_palette(&mut self) {
-        self.palette_open = false;
+        self.palette.close();
     }
 
     fn push_palette_query(&mut self, ch: char) {
-        self.palette_query.push(ch);
-        self.palette_scroll = 0;
+        self.palette.push_query(ch);
         self.normalize_palette_selection();
     }
 
     fn backspace_palette_query_or_close(&mut self) {
-        if self.palette_query.is_empty() {
-            self.close_palette();
-        } else {
-            self.palette_query.pop();
-            self.palette_scroll = 0;
-            self.normalize_palette_selection();
-        }
+        self.palette.backspace_query_or_close();
+        self.normalize_palette_selection();
     }
 
     fn next_palette_item(&mut self) {
         let visible = self.visible_palette_indices();
-        if visible.is_empty() {
-            return;
-        }
-        let position = selected_visible_position(self.palette_selected, &visible).unwrap_or(0);
-        self.palette_selected = visible[(position + 1).min(visible.len() - 1)];
+        self.palette.next(&visible);
     }
 
     fn previous_palette_item(&mut self) {
         let visible = self.visible_palette_indices();
-        if visible.is_empty() {
-            return;
-        }
-        let position = selected_visible_position(self.palette_selected, &visible).unwrap_or(0);
-        self.palette_selected = visible[position.saturating_sub(1)];
+        self.palette.previous(&visible);
     }
 
     fn selected_palette_command(&self) -> Option<AgentChatCommand> {
         let visible = self.visible_palette_indices();
-        if !visible.contains(&self.palette_selected) {
-            return None;
-        }
-        self.status
-            .command_palette
-            .get(self.palette_selected)
-            .map(|entry| entry.command.clone())
+        command_palette::selected_command(
+            &self.status.command_palette,
+            &visible,
+            self.palette.selected,
+            |entry| entry.command.clone(),
+        )
     }
 
     fn visible_palette_indices(&self) -> Vec<usize> {
-        self.status
-            .command_palette
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, entry)| {
-                palette_entry_matches_query(entry, &self.palette_query).then_some(idx)
-            })
-            .collect()
+        command_palette::visible_indices(&self.status.command_palette, &self.palette.query)
     }
 
     fn normalize_palette_selection(&mut self) {
         let visible = self.visible_palette_indices();
-        if visible.is_empty() {
-            self.palette_selected = 0;
-            self.palette_scroll = 0;
-        } else if !visible.contains(&self.palette_selected) {
-            self.palette_selected = visible[0];
-        }
+        self.palette.normalize_selection(&visible);
     }
 
     fn palette_body_lines_and_selected_row(&self) -> (Vec<Line<'static>>, Option<usize>) {
         let visible = self.visible_palette_indices();
-        let mut lines = Vec::new();
-        let mut selected_row = None;
-        let mut previous_section = None::<String>;
-        for idx in visible.iter().copied() {
-            let Some(entry) = self.status.command_palette.get(idx) else {
-                continue;
-            };
-            if previous_section.as_deref() != Some(entry.section.as_str()) {
-                if previous_section.is_some() {
-                    lines.push(Line::from(""));
-                }
-                lines.push(Line::from(Span::styled(
-                    entry.section.clone(),
-                    title_style(),
-                )));
-                previous_section = Some(entry.section.clone());
-            }
-            let marker = if idx == self.palette_selected {
-                "›"
-            } else {
-                " "
-            };
-            let style = if idx == self.palette_selected {
-                selected_style()
-            } else {
-                base_style()
-            };
-            if idx == self.palette_selected {
-                selected_row = Some(lines.len());
-            }
-            lines.push(Line::from(Span::styled(
-                format!("{marker} {}", entry.label),
-                style,
-            )));
-            if !entry.description.trim().is_empty() {
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", entry.description),
-                    dim_style(),
-                )));
-            }
-        }
-        if visible.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No commands match your search.",
-                dim_style(),
-            )));
-        }
-        (lines, selected_row)
+        command_palette::body_lines_and_selected_row(
+            &self.status.command_palette,
+            &visible,
+            self.palette.selected,
+        )
     }
 
     fn ensure_palette_selection_visible(
@@ -1119,21 +986,8 @@ impl AgentChatComposerApp {
         selected_row: Option<usize>,
         total_lines: usize,
     ) {
-        if body_height == 0 || total_lines <= body_height {
-            self.palette_scroll = 0;
-            return;
-        }
-        let max_scroll = total_lines.saturating_sub(body_height);
-        if let Some(selected_row) = selected_row {
-            if selected_row < body_height {
-                self.palette_scroll = 0;
-            } else if selected_row < self.palette_scroll {
-                self.palette_scroll = selected_row;
-            } else if selected_row >= self.palette_scroll.saturating_add(body_height) {
-                self.palette_scroll = selected_row.saturating_add(1).saturating_sub(body_height);
-            }
-        }
-        self.palette_scroll = self.palette_scroll.min(max_scroll);
+        self.palette
+            .ensure_selection_visible(body_height, selected_row, total_lines);
     }
 
     fn scroll_down(&mut self) {
@@ -1272,7 +1126,7 @@ impl AgentChatComposerApp {
         frame.render_widget(Clear, chunks[3]);
         frame.render_widget(Paragraph::new(footer).style(dim_style()), chunks[3]);
 
-        if self.palette_open {
+        if self.palette.open {
             self.draw_palette(frame);
         }
         if self.help_open {
@@ -1374,10 +1228,10 @@ impl AgentChatComposerApp {
             .split(inner);
         let search_line = Line::from(vec![
             Span::styled("Search: ", dim_style()),
-            if self.palette_query.is_empty() {
+            if self.palette.query.is_empty() {
                 Span::styled("find action…", dim_style())
             } else {
-                Span::raw(self.palette_query.clone())
+                Span::raw(self.palette.query.clone())
             },
         ]);
         let (body_lines, selected_row) = self.palette_body_lines_and_selected_row();
@@ -1388,7 +1242,7 @@ impl AgentChatComposerApp {
         );
         let body = Paragraph::new(body_lines)
             .style(base_style())
-            .scroll((self.palette_scroll.min(u16::MAX as usize) as u16, 0))
+            .scroll((self.palette.scroll.min(u16::MAX as usize) as u16, 0))
             .wrap(Wrap { trim: false });
         frame.render_widget(Clear, area);
         frame.render_widget(block("Command palette"), area);
@@ -1398,7 +1252,7 @@ impl AgentChatComposerApp {
             .x
             .saturating_add(1)
             .saturating_add("Search: ".len() as u16)
-            .saturating_add(self.palette_query.chars().count() as u16)
+            .saturating_add(self.palette.query.chars().count() as u16)
             .min(area.right().saturating_sub(2));
         frame.set_cursor_position(Position::new(cursor_x, area.y.saturating_add(1)));
     }
@@ -1440,42 +1294,18 @@ fn agent_chat_transcript_lines(messages: &[AgentChatMessage], notice: &str) -> V
     lines
 }
 
-fn agent_chat_newline_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::SHIFT) && matches!(code, KeyCode::Enter)
-}
-
-fn agent_chat_editor_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('e'))
-}
-
-fn agent_chat_help_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(code, KeyCode::Char('/') | KeyCode::Char('_'))
-}
-
-fn agent_chat_palette_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('p'))
-}
-
-fn agent_chat_palette_next_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    matches!(code, KeyCode::Down)
-        || (modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('n')))
-}
-
-fn agent_chat_palette_previous_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
-    matches!(code, KeyCode::Up)
-        || (modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('p')))
-}
-
-fn palette_text_key(modifiers: KeyModifiers) -> bool {
-    !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-}
-
-fn palette_entry_matches_query(entry: &AgentChatCommandEntry, query: &str) -> bool {
-    fuzzy_match(
-        query,
-        &format!("{} {} {}", entry.section, entry.label, entry.description),
-    )
+fn dashboard_command_entry(
+    section: &str,
+    label: &str,
+    description: &str,
+    command: DashboardCommand,
+) -> DashboardCommandEntry {
+    DashboardCommandEntry {
+        section: section.to_string(),
+        label: label.to_string(),
+        description: description.to_string(),
+        command,
+    }
 }
 
 fn agent_chat_dashboard_target(code: KeyCode) -> Option<DashboardTab> {
@@ -1484,11 +1314,6 @@ fn agent_chat_dashboard_target(code: KeyCode) -> Option<DashboardTab> {
         KeyCode::BackTab => Some(DashboardTab::Skills),
         _ => None,
     }
-}
-
-fn agent_chat_quit_key(code: KeyCode, modifiers: KeyModifiers, input_empty: bool) -> bool {
-    (modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c')))
-        || (input_empty && matches!(code, KeyCode::Esc))
 }
 
 fn edit_agent_chat_input(terminal: &mut TuiTerminal, app: &mut AgentChatComposerApp) -> Result<()> {
@@ -1880,6 +1705,43 @@ fn run_dashboard_loop(
                     continue;
                 }
 
+                if app.palette.open {
+                    match key.code {
+                        KeyCode::Esc => app.close_palette(),
+                        KeyCode::Backspace => app.backspace_palette_query_or_close(),
+                        _ if agent_chat_palette_next_key(key.code, key.modifiers) => {
+                            app.next_palette_item()
+                        }
+                        _ if agent_chat_palette_previous_key(key.code, key.modifiers) => {
+                            app.previous_palette_item()
+                        }
+                        KeyCode::Enter => {
+                            if let Some(command) = app.selected_palette_command() {
+                                app.close_palette();
+                                if let Some(action) = handle_dashboard_command(
+                                    &mut app,
+                                    &mut on_continue_action,
+                                    command,
+                                )? {
+                                    return Ok(Some(action));
+                                }
+                            } else {
+                                app.close_palette();
+                            }
+                        }
+                        KeyCode::Char(ch) if palette_text_key(key.modifiers) => {
+                            app.push_palette_query(ch)
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                if agent_chat_palette_key(key.code, key.modifiers) {
+                    app.open_palette();
+                    continue;
+                }
+
                 if agent_chat_help_key(key.code, key.modifiers) {
                     app.open_help();
                     continue;
@@ -2046,6 +1908,68 @@ fn handle_continue_action(
     Ok(true)
 }
 
+fn handle_dashboard_command(
+    app: &mut DashboardApp,
+    on_continue_action: &mut Option<&mut dyn FnMut(TuiAction) -> Result<()>>,
+    command: DashboardCommand,
+) -> Result<Option<TuiAction>> {
+    match command {
+        DashboardCommand::OpenAgent => return Ok(Some(TuiAction::OpenAgentChat)),
+        DashboardCommand::OpenTab(tab) => app.active_tab = tab,
+        DashboardCommand::OpenHelp => app.open_help(),
+        DashboardCommand::ToggleFilter => app.toggle_filter(),
+        DashboardCommand::OpenSelected => match app.active_tab {
+            DashboardTab::Tools => {
+                if let Some(tool) = app.tools.selected_tool().cloned() {
+                    return Ok(Some(TuiAction::OpenTool(tool)));
+                }
+            }
+            DashboardTab::Chats => {
+                if let Some(request) = app.chats.selected_chat_session_request() {
+                    return Ok(Some(TuiAction::OpenChatSession(request)));
+                }
+                app.chats.open_options();
+            }
+            DashboardTab::Skills => {
+                if let Some(skill) = app.skills.selected_skill().cloned() {
+                    return Ok(Some(TuiAction::OpenSkill(skill)));
+                }
+            }
+            DashboardTab::Candidates | DashboardTab::Memories => {}
+        },
+        DashboardCommand::ResumeSelectedChat => {
+            if let Some(request) = app.chats.selected_chat_session_request() {
+                return Ok(Some(TuiAction::OpenChatSession(request)));
+            }
+        }
+        DashboardCommand::ShareChats => app.chats.open_options(),
+        DashboardCommand::ToggleSelected => app.toggle_selected(),
+        DashboardCommand::ToggleAll => app.toggle_all(),
+        DashboardCommand::AcceptSelected => {
+            if let Some(id) = app.candidates.selected_candidate_id() {
+                return Ok(Some(TuiAction::AcceptCandidate(id)));
+            }
+        }
+        DashboardCommand::RejectSelected => {
+            if let Some(action) = app.reject_selected_action() {
+                if handle_continue_action(app, on_continue_action, action.clone())? {
+                    return Ok(None);
+                }
+                return Ok(Some(action));
+            }
+        }
+        DashboardCommand::DeleteSelected => {
+            if let Some(action) = app.delete_selected_action() {
+                if handle_continue_action(app, on_continue_action, action.clone())? {
+                    return Ok(None);
+                }
+                return Ok(Some(action));
+            }
+        }
+    }
+    Ok(None)
+}
+
 struct DashboardApp {
     active_tab: DashboardTab,
     tools: ToolsApp,
@@ -2055,6 +1979,7 @@ struct DashboardApp {
     skills: SkillsApp,
     active_context: Option<ContextRecord>,
     help_open: bool,
+    palette: CommandPaletteState,
 }
 
 impl DashboardApp {
@@ -2076,15 +2001,247 @@ impl DashboardApp {
             skills: SkillsApp::new(skills),
             active_context,
             help_open: false,
+            palette: CommandPaletteState::default(),
         }
     }
 
     fn open_help(&mut self) {
+        self.palette.close();
         self.help_open = true;
     }
 
     fn close_help(&mut self) {
         self.help_open = false;
+    }
+
+    fn open_palette(&mut self) {
+        if self.active_tab == DashboardTab::Chats {
+            self.chats.mode = ChatUiMode::Selecting;
+        }
+        self.help_open = false;
+        self.palette.open();
+        self.normalize_palette_selection();
+    }
+
+    fn close_palette(&mut self) {
+        self.palette.close();
+    }
+
+    fn push_palette_query(&mut self, ch: char) {
+        self.palette.push_query(ch);
+        self.normalize_palette_selection();
+    }
+
+    fn backspace_palette_query_or_close(&mut self) {
+        self.palette.backspace_query_or_close();
+        self.normalize_palette_selection();
+    }
+
+    fn next_palette_item(&mut self) {
+        let visible = self.visible_palette_indices();
+        self.palette.next(&visible);
+    }
+
+    fn previous_palette_item(&mut self) {
+        let visible = self.visible_palette_indices();
+        self.palette.previous(&visible);
+    }
+
+    fn selected_palette_command(&self) -> Option<DashboardCommand> {
+        let visible = self.visible_palette_indices();
+        command_palette::selected_command(
+            &self.dashboard_command_palette(),
+            &visible,
+            self.palette.selected,
+            |entry| entry.command,
+        )
+    }
+
+    fn visible_palette_indices(&self) -> Vec<usize> {
+        command_palette::visible_indices(&self.dashboard_command_palette(), &self.palette.query)
+    }
+
+    fn normalize_palette_selection(&mut self) {
+        let visible = self.visible_palette_indices();
+        self.palette.normalize_selection(&visible);
+    }
+
+    fn dashboard_command_palette(&self) -> Vec<DashboardCommandEntry> {
+        let mut entries = vec![
+            DashboardCommandEntry {
+                section: "Navigation".to_string(),
+                label: "Open Agent".to_string(),
+                description: "Return to the active Agent chat".to_string(),
+                command: DashboardCommand::OpenAgent,
+            },
+            DashboardCommandEntry {
+                section: "Navigation".to_string(),
+                label: "Open Tools".to_string(),
+                description: "Jump to Tools".to_string(),
+                command: DashboardCommand::OpenTab(DashboardTab::Tools),
+            },
+            DashboardCommandEntry {
+                section: "Navigation".to_string(),
+                label: "Open Chats".to_string(),
+                description: "Jump to the session picker".to_string(),
+                command: DashboardCommand::OpenTab(DashboardTab::Chats),
+            },
+            DashboardCommandEntry {
+                section: "Navigation".to_string(),
+                label: "Open Memories".to_string(),
+                description: "Jump to pending memories".to_string(),
+                command: DashboardCommand::OpenTab(DashboardTab::Candidates),
+            },
+            DashboardCommandEntry {
+                section: "Navigation".to_string(),
+                label: "Open Suggestions".to_string(),
+                description: "Jump to suggestions".to_string(),
+                command: DashboardCommand::OpenTab(DashboardTab::Memories),
+            },
+            DashboardCommandEntry {
+                section: "Navigation".to_string(),
+                label: "Open Skills".to_string(),
+                description: "Jump to Skills".to_string(),
+                command: DashboardCommand::OpenTab(DashboardTab::Skills),
+            },
+            DashboardCommandEntry {
+                section: "Help".to_string(),
+                label: "Open Help".to_string(),
+                description: "Show dashboard keybindings".to_string(),
+                command: DashboardCommand::OpenHelp,
+            },
+        ];
+        entries.extend(self.active_tab_command_palette());
+        entries
+    }
+
+    fn active_tab_command_palette(&self) -> Vec<DashboardCommandEntry> {
+        match self.active_tab {
+            DashboardTab::Tools => vec![
+                dashboard_command_entry(
+                    "Tools",
+                    "Open selected tool",
+                    "Open the highlighted tool preview target",
+                    DashboardCommand::OpenSelected,
+                ),
+                dashboard_command_entry(
+                    "Tools",
+                    "Filter tools",
+                    "Edit the Tools filter",
+                    DashboardCommand::ToggleFilter,
+                ),
+            ],
+            DashboardTab::Chats => vec![
+                dashboard_command_entry(
+                    "Chats",
+                    "Resume selected session",
+                    "Resume Djinn session or convert+resume OpenCode session",
+                    DashboardCommand::ResumeSelectedChat,
+                ),
+                dashboard_command_entry(
+                    "Chats",
+                    "Share selected chats",
+                    "Open share options for selected chats",
+                    DashboardCommand::ShareChats,
+                ),
+                dashboard_command_entry(
+                    "Chats",
+                    "Toggle selected chat",
+                    "Select or unselect the highlighted chat",
+                    DashboardCommand::ToggleSelected,
+                ),
+                dashboard_command_entry(
+                    "Chats",
+                    "Select all visible chats",
+                    "Toggle all filtered chat rows",
+                    DashboardCommand::ToggleAll,
+                ),
+                dashboard_command_entry(
+                    "Chats",
+                    "Remove selected chats",
+                    "Remove selected persisted chat rows",
+                    DashboardCommand::DeleteSelected,
+                ),
+                dashboard_command_entry(
+                    "Chats",
+                    "Filter sessions",
+                    "Edit the session picker filter",
+                    DashboardCommand::ToggleFilter,
+                ),
+            ],
+            DashboardTab::Candidates => vec![
+                dashboard_command_entry(
+                    "Memories",
+                    "Review selected memory",
+                    "Accept/review the highlighted pending memory",
+                    DashboardCommand::AcceptSelected,
+                ),
+                dashboard_command_entry(
+                    "Memories",
+                    "Toggle selected memory",
+                    "Select or unselect the highlighted memory",
+                    DashboardCommand::ToggleSelected,
+                ),
+                dashboard_command_entry(
+                    "Memories",
+                    "Select all visible memories",
+                    "Toggle all filtered memory rows",
+                    DashboardCommand::ToggleAll,
+                ),
+                dashboard_command_entry(
+                    "Memories",
+                    "Reject selected memories",
+                    "Reject and remove selected memories",
+                    DashboardCommand::RejectSelected,
+                ),
+                dashboard_command_entry(
+                    "Memories",
+                    "Filter memories",
+                    "Edit the Memories filter",
+                    DashboardCommand::ToggleFilter,
+                ),
+            ],
+            DashboardTab::Memories => vec![
+                dashboard_command_entry(
+                    "Suggestions",
+                    "Toggle selected suggestion",
+                    "Select or unselect the highlighted suggestion",
+                    DashboardCommand::ToggleSelected,
+                ),
+                dashboard_command_entry(
+                    "Suggestions",
+                    "Select all visible suggestions",
+                    "Toggle all filtered suggestion rows",
+                    DashboardCommand::ToggleAll,
+                ),
+                dashboard_command_entry(
+                    "Suggestions",
+                    "Remove selected suggestions",
+                    "Remove selected suggestions",
+                    DashboardCommand::DeleteSelected,
+                ),
+                dashboard_command_entry(
+                    "Suggestions",
+                    "Filter suggestions",
+                    "Edit the Suggestions filter",
+                    DashboardCommand::ToggleFilter,
+                ),
+            ],
+            DashboardTab::Skills => vec![
+                dashboard_command_entry(
+                    "Skills",
+                    "Open selected skill",
+                    "Open the highlighted skill",
+                    DashboardCommand::OpenSelected,
+                ),
+                dashboard_command_entry(
+                    "Skills",
+                    "Filter skills",
+                    "Edit the Skills filter",
+                    DashboardCommand::ToggleFilter,
+                ),
+            ],
+        }
     }
 
     fn next_tab(&mut self) {
@@ -2205,6 +2362,50 @@ impl DashboardApp {
         }
     }
 
+    fn reject_selected_action(&self) -> Option<TuiAction> {
+        match self.active_tab {
+            DashboardTab::Candidates => {
+                let ids = self.candidates.selected_candidate_ids();
+                (!ids.is_empty()).then_some(TuiAction::RejectCandidates(ids))
+            }
+            DashboardTab::Tools
+            | DashboardTab::Chats
+            | DashboardTab::Memories
+            | DashboardTab::Skills => None,
+        }
+    }
+
+    fn delete_selected_action(&self) -> Option<TuiAction> {
+        match self.active_tab {
+            DashboardTab::Chats => {
+                let ids = self.chats.selected_persisted_chat_ids();
+                (!ids.is_empty()).then_some(TuiAction::DeleteChats(ids))
+            }
+            DashboardTab::Candidates => self.reject_selected_action(),
+            DashboardTab::Memories => {
+                let ids = self.suggestions.selected_suggestion_ids();
+                (!ids.is_empty()).then_some(TuiAction::DeleteSuggestions(ids))
+            }
+            DashboardTab::Tools | DashboardTab::Skills => None,
+        }
+    }
+
+    fn palette_body_lines_and_selected_row(&self) -> (Vec<Line<'static>>, Option<usize>) {
+        let entries = self.dashboard_command_palette();
+        let visible = self.visible_palette_indices();
+        command_palette::body_lines_and_selected_row(&entries, &visible, self.palette.selected)
+    }
+
+    fn ensure_palette_selection_visible(
+        &mut self,
+        body_height: usize,
+        selected_row: Option<usize>,
+        total_lines: usize,
+    ) {
+        self.palette
+            .ensure_selection_visible(body_height, selected_row, total_lines);
+    }
+
     fn apply_completed_action(&mut self, action: &TuiAction) {
         match action {
             TuiAction::DeleteChats(ids) => self.chats.remove_ids(ids),
@@ -2253,7 +2454,7 @@ impl DashboardApp {
 
         frame.render_widget(Clear, chunks[2]);
         frame.render_widget(
-            Paragraph::new("Ctrl+/ help • q quit").style(dim_style()),
+            Paragraph::new("Ctrl+P commands • Ctrl+/ help • q quit").style(dim_style()),
             chunks[2],
         );
 
@@ -2263,6 +2464,56 @@ impl DashboardApp {
         if self.help_open {
             self.draw_help(frame);
         }
+        if self.palette.open {
+            self.draw_palette(frame);
+        }
+    }
+
+    fn draw_palette(&mut self, frame: &mut ratatui::Frame) {
+        let area = centered_rect(68, 50, frame.area());
+        let inner = Rect::new(
+            area.x.saturating_add(1),
+            area.y.saturating_add(1),
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(2),
+        );
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+        let search_line = Line::from(vec![
+            Span::styled("Search: ", dim_style()),
+            if self.palette.query.is_empty() {
+                Span::styled("find action…", dim_style())
+            } else {
+                Span::raw(self.palette.query.clone())
+            },
+        ]);
+        let (body_lines, selected_row) = self.palette_body_lines_and_selected_row();
+        self.ensure_palette_selection_visible(
+            chunks[2].height as usize,
+            selected_row,
+            body_lines.len(),
+        );
+        let body = Paragraph::new(body_lines)
+            .style(base_style())
+            .scroll((self.palette.scroll.min(u16::MAX as usize) as u16, 0))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(Clear, area);
+        frame.render_widget(block("Command palette"), area);
+        frame.render_widget(Paragraph::new(search_line).style(base_style()), chunks[0]);
+        frame.render_widget(body, chunks[2]);
+        let cursor_x = area
+            .x
+            .saturating_add(1)
+            .saturating_add("Search: ".len() as u16)
+            .saturating_add(self.palette.query.chars().count() as u16)
+            .min(area.right().saturating_sub(2));
+        frame.set_cursor_position(Position::new(cursor_x, area.y.saturating_add(1)));
     }
 
     fn draw_help(&self, frame: &mut ratatui::Frame) {
@@ -2278,6 +2529,10 @@ impl DashboardApp {
             Line::from(vec![
                 Span::styled("Ctrl+/", selected_style()),
                 Span::raw(" open or close this help"),
+            ]),
+            Line::from(vec![
+                Span::styled("Ctrl+P", selected_style()),
+                Span::raw(" open command palette scoped to this tab"),
             ]),
             Line::from(vec![
                 Span::styled("/", selected_style()),
@@ -3825,6 +4080,8 @@ fn sanitize_preview(preview: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyModifiers;
+    use ratatui::widgets::Borders;
 
     fn rendered_agent_chat_message_lines(message: AgentChatMessage) -> Vec<String> {
         agent_chat_message_lines(&message)
@@ -4200,7 +4457,7 @@ mod tests {
         app.open_palette();
         app.open_help();
 
-        assert!(!app.palette_open);
+        assert!(!app.palette.open);
         assert!(app.help_open);
 
         app.close_help();
@@ -4253,7 +4510,7 @@ mod tests {
         app.open_palette();
         app.next_palette_item();
 
-        assert!(app.palette_open);
+        assert!(app.palette.open);
         assert_eq!(
             app.selected_palette_command(),
             Some(AgentChatCommand::SwitchModel("test".to_string()))
@@ -4318,9 +4575,9 @@ mod tests {
         app.ensure_palette_selection_visible(5, selected_row, lines.len());
 
         let selected_row = selected_row.unwrap();
-        assert!(app.palette_scroll > 0);
-        assert!(selected_row >= app.palette_scroll);
-        assert!(selected_row < app.palette_scroll + 5);
+        assert!(app.palette.scroll > 0);
+        assert!(selected_row >= app.palette.scroll);
+        assert!(selected_row < app.palette.scroll + 5);
 
         for _ in 0..10 {
             app.previous_palette_item();
@@ -4328,7 +4585,7 @@ mod tests {
         let (lines, selected_row) = app.palette_body_lines_and_selected_row();
         app.ensure_palette_selection_visible(5, selected_row, lines.len());
 
-        assert_eq!(app.palette_scroll, 0);
+        assert_eq!(app.palette.scroll, 0);
     }
 
     #[test]
@@ -4594,6 +4851,72 @@ mod tests {
         assert!(app.help_open);
         app.close_help();
         assert!(!app.help_open);
+    }
+
+    #[test]
+    fn dashboard_palette_scopes_commands_to_active_tab() {
+        let chats_app = DashboardApp::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            DashboardTab::Chats,
+        );
+        let chat_entries = chats_app.dashboard_command_palette();
+
+        assert!(chat_entries.iter().any(|entry| {
+            entry.section == "Navigation" && entry.command == DashboardCommand::OpenAgent
+        }));
+        assert!(chat_entries.iter().any(|entry| {
+            entry.section == "Chats" && entry.command == DashboardCommand::ResumeSelectedChat
+        }));
+        assert!(!chat_entries.iter().any(|entry| {
+            entry.section == "Skills" && entry.command == DashboardCommand::OpenSelected
+        }));
+
+        let skills_app = DashboardApp::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            DashboardTab::Skills,
+        );
+        let skill_entries = skills_app.dashboard_command_palette();
+        assert!(skill_entries.iter().any(|entry| {
+            entry.section == "Skills" && entry.command == DashboardCommand::OpenSelected
+        }));
+        assert!(!skill_entries.iter().any(|entry| {
+            entry.section == "Chats" && entry.command == DashboardCommand::ResumeSelectedChat
+        }));
+    }
+
+    #[test]
+    fn dashboard_palette_filters_and_selects_commands() {
+        let mut app = DashboardApp::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            DashboardTab::Chats,
+        );
+
+        app.open_palette();
+        for ch in "Share selected chats".chars() {
+            app.push_palette_query(ch);
+        }
+
+        let visible = app.visible_palette_indices();
+        assert!(!visible.is_empty());
+        assert_eq!(
+            app.selected_palette_command(),
+            Some(DashboardCommand::ShareChats)
+        );
     }
 
     #[test]

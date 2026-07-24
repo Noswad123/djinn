@@ -2016,6 +2016,21 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                             }
                         }
                     }
+                    djinn_tui::AgentChatCommand::OpenDashboardTab(initial_tab) => {
+                        match run_tui_in_session(&mut tui, &default_tui_args(), initial_tab)? {
+                            TuiRunOutcome::OpenAgentChat { resume } => {
+                                if let Some(resume) = resume {
+                                    args.resume = Some(resume);
+                                }
+                            }
+                            TuiRunOutcome::Exit => return Ok(()),
+                            TuiRunOutcome::Action(action) => {
+                                tui.finish()?;
+                                handle_tui_action(action, None)?;
+                                return Ok(());
+                            }
+                        }
+                    }
                     djinn_tui::AgentChatCommand::SwitchProfile(profile) => {
                         let store = agent_session_store();
                         let id = AgentSessionId::new(resume);
@@ -2262,6 +2277,20 @@ fn agent_chat_command_palette(
             command: djinn_tui::AgentChatCommand::OpenSessions,
         },
     ];
+    for (label, tab) in [
+        ("Open Tools", djinn_tui::DashboardTab::Tools),
+        ("Open Chats", djinn_tui::DashboardTab::Chats),
+        ("Open Memories", djinn_tui::DashboardTab::Candidates),
+        ("Open Suggestions", djinn_tui::DashboardTab::Memories),
+        ("Open Skills", djinn_tui::DashboardTab::Skills),
+    ] {
+        entries.push(djinn_tui::AgentChatCommandEntry {
+            section: "Navigation".to_string(),
+            label: label.to_string(),
+            description: "Jump to this dashboard tab".to_string(),
+            command: djinn_tui::AgentChatCommand::OpenDashboardTab(tab),
+        });
+    }
     for candidate in agent_profile_options(profile)? {
         let current = same_agent_option(&candidate, profile);
         entries.push(djinn_tui::AgentChatCommandEntry {
@@ -7459,6 +7488,20 @@ mod tests {
             entry.section == "Session"
                 && entry.label == "New session"
                 && entry.command == djinn_tui::AgentChatCommand::NewSession
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.section == "Navigation"
+                && entry.label == "Open Tools"
+                && entry.command
+                    == djinn_tui::AgentChatCommand::OpenDashboardTab(djinn_tui::DashboardTab::Tools)
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.section == "Navigation"
+                && entry.label == "Open Suggestions"
+                && entry.command
+                    == djinn_tui::AgentChatCommand::OpenDashboardTab(
+                        djinn_tui::DashboardTab::Memories,
+                    )
         }));
     }
 
