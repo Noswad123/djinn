@@ -383,6 +383,9 @@ The first non-interactive agent slice is implemented as:
 29. Agent chat uses Ctrl+/ for a help dialog. Detailed keybinding guidance lives
     there instead of crowding the footer; the footer should stay minimal and
     point to help.
+30. The command palette keeps its search row fixed and scrolls only the action
+    list. This keeps config-driven profile/model lists usable without hiding the
+    search affordance or letting actions overflow the dialog.
 
 Not in the first slice unless explicitly reopened:
 

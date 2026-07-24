@@ -950,6 +950,7 @@ struct AgentChatComposerApp {
     palette_open: bool,
     palette_selected: usize,
     palette_query: String,
+    palette_scroll: usize,
     help_open: bool,
 }
 
@@ -963,6 +964,7 @@ impl AgentChatComposerApp {
             palette_open: false,
             palette_selected: 0,
             palette_query: String::new(),
+            palette_scroll: 0,
             help_open: false,
         }
     }
@@ -984,6 +986,7 @@ impl AgentChatComposerApp {
         self.palette_open = true;
         self.palette_query.clear();
         self.palette_selected = 0;
+        self.palette_scroll = 0;
         self.normalize_palette_selection();
     }
 
@@ -993,6 +996,7 @@ impl AgentChatComposerApp {
 
     fn push_palette_query(&mut self, ch: char) {
         self.palette_query.push(ch);
+        self.palette_scroll = 0;
         self.normalize_palette_selection();
     }
 
@@ -1001,6 +1005,7 @@ impl AgentChatComposerApp {
             self.close_palette();
         } else {
             self.palette_query.pop();
+            self.palette_scroll = 0;
             self.normalize_palette_selection();
         }
     }
@@ -1049,9 +1054,85 @@ impl AgentChatComposerApp {
         let visible = self.visible_palette_indices();
         if visible.is_empty() {
             self.palette_selected = 0;
+            self.palette_scroll = 0;
         } else if !visible.contains(&self.palette_selected) {
             self.palette_selected = visible[0];
         }
+    }
+
+    fn palette_body_lines_and_selected_row(&self) -> (Vec<Line<'static>>, Option<usize>) {
+        let visible = self.visible_palette_indices();
+        let mut lines = Vec::new();
+        let mut selected_row = None;
+        let mut previous_section = None::<String>;
+        for idx in visible.iter().copied() {
+            let Some(entry) = self.status.command_palette.get(idx) else {
+                continue;
+            };
+            if previous_section.as_deref() != Some(entry.section.as_str()) {
+                if previous_section.is_some() {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(Span::styled(
+                    entry.section.clone(),
+                    title_style(),
+                )));
+                previous_section = Some(entry.section.clone());
+            }
+            let marker = if idx == self.palette_selected {
+                "›"
+            } else {
+                " "
+            };
+            let style = if idx == self.palette_selected {
+                selected_style()
+            } else {
+                base_style()
+            };
+            if idx == self.palette_selected {
+                selected_row = Some(lines.len());
+            }
+            lines.push(Line::from(Span::styled(
+                format!("{marker} {}", entry.label),
+                style,
+            )));
+            if !entry.description.trim().is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", entry.description),
+                    dim_style(),
+                )));
+            }
+        }
+        if visible.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No commands match your search.",
+                dim_style(),
+            )));
+        }
+        (lines, selected_row)
+    }
+
+    fn ensure_palette_selection_visible(
+        &mut self,
+        body_height: usize,
+        selected_row: Option<usize>,
+        total_lines: usize,
+    ) {
+        if body_height == 0 || total_lines <= body_height {
+            self.palette_scroll = 0;
+            return;
+        }
+        let max_scroll = total_lines.saturating_sub(body_height);
+        if let Some(selected_row) = selected_row {
+            if selected_row < body_height {
+                self.palette_scroll = 0;
+            } else if selected_row < self.palette_scroll {
+                self.palette_scroll = selected_row;
+            } else if selected_row >= self.palette_scroll.saturating_add(body_height) {
+                self.palette_scroll = selected_row.saturating_add(1).saturating_sub(body_height);
+            }
+        }
+        self.palette_scroll = self.palette_scroll.min(max_scroll);
     }
 
     fn scroll_down(&mut self) {
@@ -1274,66 +1355,44 @@ impl AgentChatComposerApp {
         frame.render_widget(help, area);
     }
 
-    fn draw_palette(&self, frame: &mut ratatui::Frame) {
+    fn draw_palette(&mut self, frame: &mut ratatui::Frame) {
         let area = centered_rect(68, 50, frame.area());
-        let mut lines = vec![Line::from(vec![
+        let inner = Rect::new(
+            area.x.saturating_add(1),
+            area.y.saturating_add(1),
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(2),
+        );
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+        let search_line = Line::from(vec![
             Span::styled("Search: ", dim_style()),
             if self.palette_query.is_empty() {
                 Span::styled("find action…", dim_style())
             } else {
                 Span::raw(self.palette_query.clone())
             },
-        ])];
-        lines.push(Line::from(""));
-        let visible = self.visible_palette_indices();
-        let mut previous_section = None::<String>;
-        for idx in visible.iter().copied() {
-            let Some(entry) = self.status.command_palette.get(idx) else {
-                continue;
-            };
-            if previous_section.as_deref() != Some(entry.section.as_str()) {
-                if previous_section.is_some() {
-                    lines.push(Line::from(""));
-                }
-                lines.push(Line::from(Span::styled(
-                    entry.section.clone(),
-                    title_style(),
-                )));
-                previous_section = Some(entry.section.clone());
-            }
-            let marker = if idx == self.palette_selected {
-                "›"
-            } else {
-                " "
-            };
-            let style = if idx == self.palette_selected {
-                selected_style()
-            } else {
-                base_style()
-            };
-            lines.push(Line::from(Span::styled(
-                format!("{marker} {}", entry.label),
-                style,
-            )));
-            if !entry.description.trim().is_empty() {
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", entry.description),
-                    dim_style(),
-                )));
-            }
-        }
-        if visible.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No commands match your search.",
-                dim_style(),
-            )));
-        }
-        let palette = Paragraph::new(lines)
-            .block(block("Command palette"))
+        ]);
+        let (body_lines, selected_row) = self.palette_body_lines_and_selected_row();
+        self.ensure_palette_selection_visible(
+            chunks[2].height as usize,
+            selected_row,
+            body_lines.len(),
+        );
+        let body = Paragraph::new(body_lines)
             .style(base_style())
+            .scroll((self.palette_scroll.min(u16::MAX as usize) as u16, 0))
             .wrap(Wrap { trim: false });
         frame.render_widget(Clear, area);
-        frame.render_widget(palette, area);
+        frame.render_widget(block("Command palette"), area);
+        frame.render_widget(Paragraph::new(search_line).style(base_style()), chunks[0]);
+        frame.render_widget(body, chunks[2]);
         let cursor_x = area
             .x
             .saturating_add(1)
@@ -4054,6 +4113,40 @@ mod tests {
             app.selected_palette_command(),
             Some(AgentChatCommand::SwitchModel("openai/gpt-5.5".to_string()))
         );
+    }
+
+    #[test]
+    fn agent_chat_palette_scroll_keeps_selected_action_visible() {
+        let mut status = test_agent_chat_status("Ready.");
+        status.command_palette = (0..12)
+            .map(|idx| AgentChatCommandEntry {
+                section: "Model".to_string(),
+                label: format!("Switch model · model-{idx}"),
+                description: String::new(),
+                command: AgentChatCommand::SwitchModel(format!("model-{idx}")),
+            })
+            .collect();
+        let mut app = AgentChatComposerApp::new(Vec::new(), status);
+
+        app.open_palette();
+        for _ in 0..10 {
+            app.next_palette_item();
+        }
+        let (lines, selected_row) = app.palette_body_lines_and_selected_row();
+        app.ensure_palette_selection_visible(5, selected_row, lines.len());
+
+        let selected_row = selected_row.unwrap();
+        assert!(app.palette_scroll > 0);
+        assert!(selected_row >= app.palette_scroll);
+        assert!(selected_row < app.palette_scroll + 5);
+
+        for _ in 0..10 {
+            app.previous_palette_item();
+        }
+        let (lines, selected_row) = app.palette_body_lines_and_selected_row();
+        app.ensure_palette_selection_visible(5, selected_row, lines.len());
+
+        assert_eq!(app.palette_scroll, 0);
     }
 
     #[test]

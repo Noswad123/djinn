@@ -166,7 +166,7 @@ These are important but need more product/design detail before implementation.
 - Keep designing the full interface around chat + logs, the Chats-tab session
   picker, and the Ctrl+P command palette. Ctrl+P is the preferred place for
   switching profile/model and jumping to session selection; keep the palette
-  sectioned, searchable, and navigable with Ctrl+P/Ctrl+N.
+  sectioned, searchable, scrollable, and navigable with Ctrl+P/Ctrl+N.
 - Keep detailed keybinding guidance in the Ctrl+/ help dialog rather than in the
   Agent chat footer.
 - Decide which OpenCode-inspired dialogs are next:
