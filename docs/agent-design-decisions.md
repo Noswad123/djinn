@@ -65,19 +65,34 @@ Rationale:
 - Easy to inspect, backup, diff, and migrate.
 - Good enough for the first agent harness slice.
 
-Open questions:
-
-- Whether sessions should be one append-only JSONL file per session or a hybrid
-  index/body layout like existing chats.
-- Whether branching, search, or high-volume transcripts will eventually justify
-  SQLite.
-- Whether file history/rollback should have a separate storage model.
-
 Implications:
 
 - Start with file-backed session/event persistence.
 - Keep the `AgentSessionStore` trait narrow so SQLite can replace or supplement
   it later.
+- Store one append-only JSONL file per session under
+  `~/.config/djinn/agent-sessions/<session-id>.jsonl` for now. There is no
+  separate metadata index yet; listing sessions scans these files and derives the
+  current title/profile/model from session metadata events.
+- Use an explicit event envelope for each JSONL line:
+  - `schema_version`: currently `1`;
+  - `event_id`: stable event identifier, generated for new writes;
+  - `session_id`: owning session id, matching the filename;
+  - `parent_event_id`: optional future branch/correlation pointer;
+  - `created_at`: RFC3339 timestamp;
+  - `type`: snake_case event payload discriminator;
+  - payload fields specific to the event type.
+- Keep legacy JSONL readable. Events without the envelope fields are normalized
+  in memory with `schema_version = 1`, `session_id` from the filename, and
+  deterministic `legacy-<session-id>-<line>` event ids.
+
+Open questions:
+
+- Whether search, high-volume transcripts, or external indexing will eventually
+  justify a lightweight index file or SQLite.
+- How to add token/cost usage and structured error payloads once provider/tool
+  adapters consistently expose those values.
+- Whether branch/session-tree semantics need more than `parent_event_id`.
 
 ### D4. MCP support: defer until there is a concrete need
 
@@ -460,9 +475,11 @@ The first non-interactive agent slice is implemented as:
     chats` selects saved chat rows with the same id/source/query/limit semantics
     as sharing, supports `--dry-run` previews, requires `--force` before removal,
     and writes full JSONL archives under `~/.cache/djinn/chat-archives/` before
-    deleting rows from the active chat index. Archive files should be listable
-    and restorable; restore skips conflicting active rows by default and requires
-    `--force` to replace rows with matching IDs or source/source-id pairs.
+    deleting rows from the active chat index. Archive files should be listable,
+    inspectable with bounded content previews, and restorable; restore skips
+    conflicting active rows by default and requires `--force` to replace rows
+    with matching IDs or source/source-id pairs. Archive removal should require
+    `--force` and refuse to delete files outside Djinn's chat archive directory.
 
 Not in the first slice unless explicitly reopened:
 

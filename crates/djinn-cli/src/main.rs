@@ -416,8 +416,12 @@ enum ArchiveNoun {
     Chats(ArchiveChatsArgs),
     /// List chat archive files.
     List(ArchiveListArgs),
+    /// Show the contents of one chat archive file.
+    Show(ArchiveShowArgs),
     /// Restore chats from an archive file.
     Restore(ArchiveRestoreArgs),
+    /// Remove one chat archive file after confirmation.
+    Rm(ArchiveRemoveArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1176,6 +1180,21 @@ struct ArchiveListArgs {
 }
 
 #[derive(Debug, Args)]
+struct ArchiveShowArgs {
+    /// Archive path, filename, or basename from ~/.cache/djinn/chat-archives.
+    archive: String,
+    /// Include chat content previews.
+    #[arg(long)]
+    content: bool,
+    /// Maximum characters to show per chat when --content is set.
+    #[arg(long, default_value_t = 1200)]
+    max_chars_per_chat: usize,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
 struct ArchiveRestoreArgs {
     /// Archive path, filename, or basename from ~/.cache/djinn/chat-archives.
     archive: String,
@@ -1185,6 +1204,21 @@ struct ArchiveRestoreArgs {
     /// Print what would be restored without mutating the active chat index.
     #[arg(long)]
     dry_run: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ArchiveRemoveArgs {
+    /// Archive path, filename, or basename from ~/.cache/djinn/chat-archives.
+    archive: String,
+    /// Print what would be removed without deleting the archive file.
+    #[arg(long)]
+    dry_run: bool,
+    /// Required to actually delete the archive file.
+    #[arg(long)]
+    force: bool,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -1824,7 +1858,9 @@ fn run_archive(args: ArchiveArgs) -> Result<()> {
     match args.noun {
         ArchiveNoun::Chats(args) => archive_chats(args),
         ArchiveNoun::List(args) => list_archives(args),
+        ArchiveNoun::Show(args) => show_archive(args),
         ArchiveNoun::Restore(args) => restore_archive(args),
+        ArchiveNoun::Rm(args) => remove_archive(args),
     }
 }
 
@@ -5970,6 +6006,58 @@ fn list_archives(args: ArchiveListArgs) -> Result<()> {
     Ok(())
 }
 
+fn show_archive(args: ArchiveShowArgs) -> Result<()> {
+    let path = resolve_chat_archive_path(&args.archive)?;
+    let records = read_chat_archive_records(&path)?;
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "archive": path,
+                "record_count": records.len(),
+                "records": records,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("# Chat Archive\n");
+    println!("Path: {}", path.display());
+    println!("Records: {}", records.len());
+    if records.is_empty() {
+        return Ok(());
+    }
+
+    println!("\n## Chats\n");
+    for (idx, record) in records.iter().enumerate() {
+        println!(
+            "{}. [{}] {} — {} chars{}",
+            idx + 1,
+            record.id,
+            record.title,
+            record.content.chars().count(),
+            format_chat_source_suffix(record)
+        );
+        if !record.source_path.trim().is_empty() {
+            println!("   source path: {}", record.source_path);
+        }
+        if args.content {
+            let (content, truncated) = truncate_with_flag(&record.content, args.max_chars_per_chat);
+            println!("\n```text");
+            println!("{content}");
+            if truncated {
+                println!(
+                    "... chat content truncated to {} chars ...",
+                    args.max_chars_per_chat
+                );
+            }
+            println!("```\n");
+        }
+    }
+    Ok(())
+}
+
 fn restore_archive(args: ArchiveRestoreArgs) -> Result<()> {
     let path = resolve_chat_archive_path(&args.archive)?;
     let records = read_chat_archive_records(&path)?;
@@ -6033,6 +6121,103 @@ fn restore_archive(args: ArchiveRestoreArgs) -> Result<()> {
                 format_chat_source_suffix(record)
             );
         }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChatArchiveRemovalSummary {
+    name: String,
+    path: String,
+    record_count: Option<usize>,
+    byte_size: u64,
+    dry_run: bool,
+    removed: bool,
+}
+
+fn remove_archive(args: ArchiveRemoveArgs) -> Result<()> {
+    let path = resolve_chat_archive_path(&args.archive)?;
+    ensure_removable_chat_archive_path(&path)?;
+    let metadata = fs::metadata(&path)
+        .with_context(|| format!("reading chat archive metadata {}", path.display()))?;
+    let record_count = read_chat_archive_records(&path)
+        .map(|records| records.len())
+        .ok();
+    let summary = ChatArchiveRemovalSummary {
+        name: path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string(),
+        path: path.display().to_string(),
+        record_count,
+        byte_size: metadata.len(),
+        dry_run: args.dry_run,
+        removed: !args.dry_run && args.force,
+    };
+
+    if args.dry_run {
+        print_archive_removal_summary(&summary, args.json)?;
+        return Ok(());
+    }
+    if !args.force {
+        print_archive_removal_summary(&summary, args.json)?;
+        bail!("refusing to remove archive without --force; rerun with --dry-run to inspect only");
+    }
+
+    fs::remove_file(&path).with_context(|| format!("removing chat archive {}", path.display()))?;
+    print_archive_removal_summary(&summary, args.json)
+}
+
+fn print_archive_removal_summary(summary: &ChatArchiveRemovalSummary, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(summary)?);
+        return Ok(());
+    }
+    let record_count = summary
+        .record_count
+        .map(|count| count.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if summary.removed {
+        println!(
+            "Removed archive {} ({} chats, {} bytes).",
+            summary.path, record_count, summary.byte_size
+        );
+    } else if summary.dry_run {
+        println!(
+            "Would remove archive {} ({} chats, {} bytes).",
+            summary.path, record_count, summary.byte_size
+        );
+    } else {
+        println!(
+            "Selected archive {} ({} chats, {} bytes).",
+            summary.path, record_count, summary.byte_size
+        );
+    }
+    Ok(())
+}
+
+fn ensure_removable_chat_archive_path(path: &Path) -> Result<()> {
+    let archive_dir = chat_archive_dir().canonicalize().with_context(|| {
+        format!(
+            "resolving chat archive dir {}",
+            chat_archive_dir().display()
+        )
+    })?;
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("resolving chat archive {}", path.display()))?;
+    if !canonical.starts_with(&archive_dir) {
+        bail!(
+            "refusing to remove archive outside {}; use a file from `djinn archive list`",
+            archive_dir.display()
+        );
+    }
+    if canonical.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        bail!(
+            "refusing to remove non-jsonl archive {}",
+            canonical.display()
+        );
     }
     Ok(())
 }
@@ -8770,7 +8955,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_archive_list_and_restore_commands() {
+    fn parses_archive_list_show_restore_and_rm_commands() {
         let cli = Cli::try_parse_from(["djinn", "archive", "list", "--json"]).unwrap();
         let Some(Command::Archive(args)) = cli.command else {
             panic!("expected archive command");
@@ -8779,6 +8964,26 @@ mod tests {
             panic!("expected archive list command");
         };
         assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "archive",
+            "show",
+            "manual-20260724.jsonl",
+            "--content",
+            "--max-chars-per-chat",
+            "500",
+        ])
+        .unwrap();
+        let Some(Command::Archive(args)) = cli.command else {
+            panic!("expected archive command");
+        };
+        let ArchiveNoun::Show(args) = args.noun else {
+            panic!("expected archive show command");
+        };
+        assert_eq!(args.archive, "manual-20260724.jsonl");
+        assert!(args.content);
+        assert_eq!(args.max_chars_per_chat, 500);
 
         let cli = Cli::try_parse_from([
             "djinn",
@@ -8798,6 +9003,25 @@ mod tests {
         assert_eq!(args.archive, "manual-20260724.jsonl");
         assert!(args.force);
         assert!(args.dry_run);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "archive",
+            "rm",
+            "manual-20260724.jsonl",
+            "--force",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Archive(args)) = cli.command else {
+            panic!("expected archive command");
+        };
+        let ArchiveNoun::Rm(args) = args.noun else {
+            panic!("expected archive rm command");
+        };
+        assert_eq!(args.archive, "manual-20260724.jsonl");
+        assert!(args.force);
+        assert!(args.json);
     }
 
     #[test]

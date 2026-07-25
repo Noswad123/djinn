@@ -107,8 +107,11 @@ djinn share merge --source opencode --limit 50 --archive
 djinn archive chats --source opencode --limit 50 --dry-run
 djinn archive chats --source opencode --limit 50 --force
 djinn archive list
+djinn archive show manual-20260724-120000.jsonl --content
 djinn archive restore manual-20260724-120000.jsonl --dry-run
 djinn archive restore manual-20260724-120000.jsonl --force
+djinn archive rm manual-20260724-120000.jsonl --dry-run
+djinn archive rm manual-20260724-120000.jsonl --force
 djinn promote chat debugging-session
 djinn promote chats --source opencode --limit 20
 djinn review chats --source opencode --dry-run
@@ -123,8 +126,12 @@ source, query, limit, or `--all`, writes full chat records to
 `~/.cache/djinn/chat-archives/manual-*.jsonl`, then removes those rows from the
 active chat index. It requires `--force`; use `--dry-run` first to preview the
 selection. `djinn archive list` shows available archive files, and
-`djinn archive restore <archive>` restores archived chats. Restore skips rows
-with matching IDs or source/source-id pairs unless `--force` is provided.
+`djinn archive show <archive>` previews the archived chat rows, with optional
+content snippets via `--content`. `djinn archive restore <archive>` restores
+archived chats. Restore skips rows with matching IDs or source/source-id pairs
+unless `--force` is provided. `djinn archive rm <archive>` removes an archive
+file only after `--force` and refuses to delete files outside Djinn's archive
+directory.
 
 ## Memories and suggestions
 

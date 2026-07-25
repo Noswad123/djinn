@@ -2,13 +2,18 @@ use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use chrono::Local;
 use djinn_core::ensure_parent;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub const AGENT_SESSION_EVENT_SCHEMA_VERSION: u16 = 1;
+
+static AGENT_SESSION_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct AgentSessionId(String);
 
 impl AgentSessionId {
@@ -17,10 +22,7 @@ impl AgentSessionId {
     }
 
     pub fn fresh() -> Self {
-        Self(format!(
-            "agt_{}",
-            Local::now().timestamp_nanos_opt().unwrap_or_default()
-        ))
+        Self(fresh_id("agt"))
     }
 
     pub fn as_str(&self) -> &str {
@@ -50,6 +52,14 @@ pub struct AgentSessionMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSessionEvent {
+    #[serde(default = "agent_session_event_schema_version")]
+    pub schema_version: u16,
+    #[serde(default)]
+    pub event_id: String,
+    #[serde(default)]
+    pub session_id: AgentSessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_event_id: Option<String>,
     #[serde(default = "now_rfc3339")]
     pub created_at: String,
     #[serde(flatten)]
@@ -59,9 +69,19 @@ pub struct AgentSessionEvent {
 impl AgentSessionEvent {
     pub fn new(kind: AgentSessionEventKind) -> Self {
         Self {
+            schema_version: AGENT_SESSION_EVENT_SCHEMA_VERSION,
+            event_id: String::new(),
+            session_id: AgentSessionId::default(),
+            parent_event_id: None,
             created_at: now_rfc3339(),
             kind,
         }
+    }
+
+    pub fn with_session(session_id: AgentSessionId, kind: AgentSessionEventKind) -> Self {
+        let mut event = Self::new(kind);
+        stamp_event_envelope(&mut event, &session_id, None);
+        event
     }
 }
 
@@ -198,19 +218,26 @@ impl AgentSessionStore for JsonlAgentSessionStore {
     fn create_session(&self, meta: AgentSessionMeta) -> Result<AgentSessionId> {
         let id = AgentSessionId::fresh();
         let session = AgentSession::new(id.clone(), meta);
-        let event = AgentSessionEvent {
+        let mut event = AgentSessionEvent {
+            schema_version: AGENT_SESSION_EVENT_SCHEMA_VERSION,
+            event_id: fresh_event_id(),
+            session_id: id.clone(),
+            parent_event_id: None,
             created_at: session.meta.created_at.clone(),
             kind: AgentSessionEventKind::SessionCreated {
                 id: id.clone(),
                 meta: session.meta,
             },
         };
+        stamp_event_envelope(&mut event, &id, None);
         self.append_line(&id, &event)?;
         Ok(id)
     }
 
-    fn append_event(&self, session: &AgentSessionId, event: AgentSessionEvent) -> Result<()> {
+    fn append_event(&self, session: &AgentSessionId, mut event: AgentSessionEvent) -> Result<()> {
         self.load_session(session)?;
+        stamp_event_envelope(&mut event, session, None);
+        ensure_event_session_matches(session, &event)?;
         self.append_line(session, &event)
     }
 
@@ -276,9 +303,15 @@ fn parse_session_file(id: &AgentSessionId, raw: &str) -> Result<AgentSession> {
     let mut found_header = false;
     let mut events = Vec::new();
 
-    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
-        let event: AgentSessionEvent =
+    for (idx, line) in raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
+    {
+        let mut event: AgentSessionEvent =
             serde_json::from_str(line).with_context(|| "parsing agent session JSONL event")?;
+        stamp_event_envelope(&mut event, id, Some(idx + 1));
+        ensure_event_session_matches(id, &event)?;
         match event.kind {
             AgentSessionEventKind::SessionCreated {
                 id: created_id,
@@ -297,6 +330,10 @@ fn parse_session_file(id: &AgentSessionId, raw: &str) -> Result<AgentSession> {
             AgentSessionEventKind::SessionTitleUpdated { title } => {
                 meta.title = title.clone();
                 events.push(AgentSessionEvent {
+                    schema_version: event.schema_version,
+                    event_id: event.event_id,
+                    session_id: event.session_id,
+                    parent_event_id: event.parent_event_id,
                     created_at: event.created_at,
                     kind: AgentSessionEventKind::SessionTitleUpdated { title },
                 });
@@ -304,11 +341,19 @@ fn parse_session_file(id: &AgentSessionId, raw: &str) -> Result<AgentSession> {
             AgentSessionEventKind::SessionProfileUpdated { profile } => {
                 meta.profile = profile.clone();
                 events.push(AgentSessionEvent {
+                    schema_version: event.schema_version,
+                    event_id: event.event_id,
+                    session_id: event.session_id,
+                    parent_event_id: event.parent_event_id,
                     created_at: event.created_at,
                     kind: AgentSessionEventKind::SessionProfileUpdated { profile },
                 });
             }
             kind => events.push(AgentSessionEvent {
+                schema_version: event.schema_version,
+                event_id: event.event_id,
+                session_id: event.session_id,
+                parent_event_id: event.parent_event_id,
                 created_at: event.created_at,
                 kind,
             }),
@@ -369,10 +414,57 @@ fn normalize_session(session: &mut AgentSession) {
         session.meta.created_at = now_rfc3339();
     }
     for event in &mut session.events {
-        if event.created_at.trim().is_empty() {
-            event.created_at = session.meta.created_at.clone();
-        }
+        stamp_event_envelope(event, &session.id, None);
     }
+}
+
+fn stamp_event_envelope(
+    event: &mut AgentSessionEvent,
+    session_id: &AgentSessionId,
+    legacy_line_number: Option<usize>,
+) {
+    if event.schema_version == 0 {
+        event.schema_version = AGENT_SESSION_EVENT_SCHEMA_VERSION;
+    }
+    if event.event_id.trim().is_empty() {
+        event.event_id = legacy_line_number
+            .map(|line| format!("legacy-{}-{line}", session_id.as_str()))
+            .unwrap_or_else(fresh_event_id);
+    }
+    if event.session_id.as_str().trim().is_empty() {
+        event.session_id = session_id.clone();
+    }
+    if event.created_at.trim().is_empty() {
+        event.created_at = now_rfc3339();
+    }
+}
+
+fn fresh_event_id() -> String {
+    fresh_id("evt")
+}
+
+fn fresh_id(prefix: &str) -> String {
+    let sequence = AGENT_SESSION_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{prefix}_{}_{}_{}",
+        Local::now().timestamp_nanos_opt().unwrap_or_default(),
+        std::process::id(),
+        sequence
+    )
+}
+
+fn ensure_event_session_matches(
+    session_id: &AgentSessionId,
+    event: &AgentSessionEvent,
+) -> Result<()> {
+    if event.session_id != *session_id {
+        anyhow::bail!(
+            "session id mismatch: file is {}, event envelope is {}",
+            session_id,
+            event.session_id
+        );
+    }
+    Ok(())
 }
 
 fn sanitize_id(id: &str) -> String {
@@ -383,6 +475,10 @@ fn sanitize_id(id: &str) -> String {
 
 fn now_rfc3339() -> String {
     Local::now().to_rfc3339()
+}
+
+fn agent_session_event_schema_version() -> u16 {
+    AGENT_SESSION_EVENT_SCHEMA_VERSION
 }
 
 #[cfg(test)]
@@ -422,6 +518,12 @@ mod tests {
         let loaded = store.load_session(&id).unwrap();
         assert_eq!(loaded.id, id);
         assert_eq!(loaded.events.len(), 1);
+        assert_eq!(
+            loaded.events[0].schema_version,
+            AGENT_SESSION_EVENT_SCHEMA_VERSION
+        );
+        assert!(loaded.events[0].event_id.starts_with("evt_"));
+        assert_eq!(loaded.events[0].session_id, id);
         assert!(store.root().join(format!("{}.jsonl", loaded.id)).exists());
 
         let summaries = store
@@ -432,6 +534,118 @@ mod tests {
             .unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].event_count, 1);
+    }
+
+    #[test]
+    fn writes_explicit_jsonl_event_envelope_fields() {
+        let store = temp_store("event-envelope");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "event schema".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::Checkpoint {
+                    label: "after setup".to_string(),
+                }),
+            )
+            .unwrap();
+
+        let raw = fs::read_to_string(store.session_file_path(&id)).unwrap();
+        let values = raw
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(values.len(), 2);
+        for value in values {
+            assert_eq!(
+                value
+                    .get("schema_version")
+                    .and_then(serde_json::Value::as_u64),
+                Some(AGENT_SESSION_EVENT_SCHEMA_VERSION as u64)
+            );
+            assert!(value
+                .get("event_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .starts_with("evt_"));
+            assert_eq!(
+                value.get("session_id").and_then(serde_json::Value::as_str),
+                Some(id.as_str())
+            );
+            assert!(value.get("created_at").is_some());
+            assert!(value.get("type").is_some());
+        }
+    }
+
+    #[test]
+    fn loads_legacy_events_without_envelope_fields() {
+        let id = AgentSessionId::new("agt_legacy");
+        let raw = r#"
+{"created_at":"2026-07-24T00:00:00Z","type":"session_created","id":"agt_legacy","meta":{"title":"Legacy","workspace":"/tmp/project","profile":"default","source":"djinn-agent","created_at":"2026-07-24T00:00:00Z"}}
+{"created_at":"2026-07-24T00:00:01Z","type":"user_message","content":"hello"}
+"#;
+
+        let session = parse_session_file(&id, raw).unwrap();
+
+        assert_eq!(session.events.len(), 1);
+        assert_eq!(session.events[0].event_id, "legacy-agt_legacy-2");
+        assert_eq!(session.events[0].session_id, id);
+        assert_eq!(
+            session.events[0].schema_version,
+            AGENT_SESSION_EVENT_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn generated_session_and_event_ids_are_unique_in_process() {
+        let session_ids = (0..128)
+            .map(|_| AgentSessionId::fresh())
+            .collect::<std::collections::HashSet<_>>();
+        let event_ids = (0..128)
+            .map(|_| fresh_event_id())
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(session_ids.len(), 128);
+        assert_eq!(event_ids.len(), 128);
+    }
+
+    #[test]
+    fn append_rejects_mismatched_event_session_id_before_writing() {
+        let store = temp_store("mismatched-event-session");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "event schema".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        let result = store.append_event(
+            &id,
+            AgentSessionEvent::with_session(
+                AgentSessionId::new("agt_other"),
+                AgentSessionEventKind::UserMessage {
+                    content: "hello".to_string(),
+                },
+            ),
+        );
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("session id mismatch"));
+        let raw = fs::read_to_string(store.session_file_path(&id)).unwrap();
+        assert_eq!(raw.lines().count(), 1);
     }
 
     #[test]

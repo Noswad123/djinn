@@ -158,12 +158,15 @@ Archive imported chat clutter after extracting useful memories:
 djinn archive chats --source opencode --limit 50 --dry-run
 djinn archive chats --source opencode --limit 50 --force
 djinn archive list
+djinn archive show manual-20260724-120000.jsonl --content
 djinn archive restore manual-20260724-120000.jsonl --dry-run
+djinn archive rm manual-20260724-120000.jsonl --force
 ```
 
 Archives are written under `~/.cache/djinn/chat-archives/` before the selected
-chat rows are removed from the active chat index. Restore with `--force` to
-replace existing rows with matching IDs or source IDs.
+chat rows are removed from the active chat index. Use `archive show` to inspect
+contents before restoring. Restore with `--force` to replace existing rows with
+matching IDs or source IDs. Remove old archive files with `archive rm --force`.
 
 ## Storage
 

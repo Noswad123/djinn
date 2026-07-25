@@ -79,19 +79,20 @@ These items are ready to implement next. Completed baseline behavior belongs in
 
 These are important but need more product/design detail before implementation.
 
-### Exact JSONL event schema
+### JSONL event schema extensions
 
-- Finalize required fields for every event:
-  - event id;
-  - session id;
-  - timestamp;
-  - parent/branch fields, if any;
-  - model/provider metadata;
-  - token/cost usage;
-  - tool-call correlation ids;
-  - error records.
-- Decide whether session metadata is only the first JSONL event or also mirrored
-  in a lightweight index file.
+The baseline event envelope is now decided and implemented in
+[`agent-design-decisions.md`](./agent-design-decisions.md): each JSONL event has
+`schema_version`, `event_id`, `session_id`, optional `parent_event_id`,
+`created_at`, and typed payload fields. Remaining schema work should focus on
+provider/runtime payload details:
+
+- Decide model/provider metadata placement for model request/response events.
+- Add token/cost usage once providers consistently report it.
+- Add structured error records instead of storing errors only in text/tool output.
+- Decide whether branch/session-tree behavior needs more than `parent_event_id`.
+- Decide if session listing/search needs a lightweight index file or SQLite after
+  JSONL scanning shows real limits.
 
 ### Provider order and scope
 
