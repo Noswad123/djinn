@@ -159,6 +159,8 @@ provider/runtime payload details:
 - Import writeback now merges into existing Djinn config without replacing
   same-name profiles/providers; consider whether to expose an explicit `--merge`
   alias for discoverability.
+- Copilot provider merge treats `copilot` and `github-copilot` as aliases and the
+  import write UX reports added/skipped merge counts by name.
 
 ### Sub-agent model
 

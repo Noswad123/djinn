@@ -249,6 +249,9 @@ Implications:
 - Import `--write` is merge-by-default when the Djinn destination already exists:
   it adds missing providers, profiles, and shared permissions while preserving
   same-name existing providers/profiles. `--force` remains the replacement path.
+- `copilot` and `github-copilot` are provider aliases for import merge purposes;
+  the write summary should show when an imported alias was skipped because the
+  equivalent provider already exists.
 
 ### D7. Sub-agent support: support the concept for OpenCode compatibility
 

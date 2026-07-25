@@ -150,6 +150,9 @@ values layered last. Version 1 includes canonical sections for providers,
 profiles, shared permissions, instructions, command templates, tools, and future
 agents. Import writes merge into an existing Djinn config without overwriting
 same-name providers or profiles; `--force` replaces the destination instead.
+`copilot` and `github-copilot` provider names are treated as aliases during
+merge, so importing Copilot config will not create a duplicate provider if either
+name already exists.
 Agent runtime resolution reads Djinn native config; OpenCode and Copilot config
 are read only by explicit doctor/import adapter commands. OpenCode and Copilot
 exports can preview or write supported fields; exports refuse to overwrite

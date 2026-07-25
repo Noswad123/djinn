@@ -2894,11 +2894,25 @@ struct ConfigImportWriteReport {
     path: String,
     overwritten: bool,
     merged: bool,
+    summary: ConfigImportWriteSummary,
     config: DjinnConfig,
     unsupported: Vec<ConfigDoctorFinding>,
     unknown: Vec<ConfigDoctorFinding>,
     secrets: Vec<ConfigDoctorFinding>,
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+struct ConfigImportWriteSummary {
+    applied_default_profile: Option<String>,
+    preserved_default_profile: Option<String>,
+    skipped_import_default_profile: Option<String>,
+    added_providers: Vec<String>,
+    skipped_providers: Vec<String>,
+    added_profiles: Vec<String>,
+    skipped_profiles: Vec<String>,
+    added_shared_permissions: usize,
+    skipped_shared_permissions: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -3499,15 +3513,22 @@ fn write_config_import_preview(
         );
     }
     let imported = djinn_config_from_import_patch(&preview.patch);
-    let (config, overwritten, merged, warnings) = if output.exists() && !force {
+    let (config, overwritten, merged, summary, warnings) = if output.exists() && !force {
         let existing = read_djinn_config_file(output)?;
-        let mut warnings = preview.warnings.clone();
-        let config = merge_import_patch_into_djinn_config(existing, &preview.patch, &mut warnings);
+        let warnings = preview.warnings.clone();
+        let (config, summary) = merge_import_patch_into_djinn_config(existing, &preview.patch);
         let _ = write_djinn_config_file(&config, output, true)?;
-        (config, false, true, warnings)
+        (config, false, true, summary, warnings)
     } else {
         let overwritten = write_djinn_config_file(&imported, output, force)?;
-        (imported, overwritten, false, preview.warnings.clone())
+        let summary = import_write_summary_from_patch(&preview.patch);
+        (
+            imported,
+            overwritten,
+            false,
+            summary,
+            preview.warnings.clone(),
+        )
     };
     Ok(ConfigImportWriteReport {
         source: preview.source.clone(),
@@ -3515,6 +3536,7 @@ fn write_config_import_preview(
         path: output.display().to_string(),
         overwritten,
         merged,
+        summary,
         config,
         unsupported: preview.unsupported.clone(),
         unknown: preview.unknown.clone(),
@@ -3538,30 +3560,22 @@ fn write_djinn_config_file(config: &DjinnConfig, output: &Path, force: bool) -> 
 fn merge_import_patch_into_djinn_config(
     mut existing: DjinnConfig,
     patch: &DjinnConfigPatchPreview,
-    warnings: &mut Vec<String>,
-) -> DjinnConfig {
-    let mut added_providers = 0usize;
-    let mut skipped_providers = 0usize;
-    let mut added_profiles = 0usize;
-    let mut skipped_profiles = 0usize;
-    let mut added_permissions = 0usize;
-    let mut skipped_permissions = 0usize;
+) -> (DjinnConfig, ConfigImportWriteSummary) {
+    let mut summary = ConfigImportWriteSummary::default();
 
     if existing.default_profile.is_none() {
         existing.default_profile = patch.default_profile.clone();
+        summary.applied_default_profile = patch.default_profile.clone();
     } else if patch.default_profile.is_some()
         && existing.default_profile.as_ref() != patch.default_profile.as_ref()
     {
-        warnings.push(format!(
-            "preserved existing default_profile `{}`; imported default_profile `{}` was not applied",
-            existing.default_profile.as_deref().unwrap_or_default(),
-            patch.default_profile.as_deref().unwrap_or_default()
-        ));
+        summary.preserved_default_profile = existing.default_profile.clone();
+        summary.skipped_import_default_profile = patch.default_profile.clone();
     }
 
     for (name, provider) in &patch.providers {
-        if existing.providers.contains_key(name) {
-            skipped_providers += 1;
+        if djinn_provider_exists_with_alias(&existing.providers, name) {
+            summary.skipped_providers.push(name.clone());
             continue;
         }
         existing.providers.insert(
@@ -3572,12 +3586,12 @@ fn merge_import_patch_into_djinn_config(
                 endpoint: None,
             },
         );
-        added_providers += 1;
+        summary.added_providers.push(name.clone());
     }
 
     for (name, profile) in &patch.profiles {
         if existing.profiles.contains_key(name) {
-            skipped_profiles += 1;
+            summary.skipped_profiles.push(name.clone());
             continue;
         }
         existing.profiles.insert(
@@ -3594,23 +3608,48 @@ fn merge_import_patch_into_djinn_config(
                 agent: None,
             },
         );
-        added_profiles += 1;
+        summary.added_profiles.push(name.clone());
     }
 
     for permission in &patch.permissions {
         let permission = djinn_config_permission_from_patch(permission);
         if existing.permissions.contains(&permission) {
-            skipped_permissions += 1;
+            summary.skipped_shared_permissions += 1;
             continue;
         }
         existing.permissions.push(permission);
-        added_permissions += 1;
+        summary.added_shared_permissions += 1;
     }
 
-    warnings.push(format!(
-        "merged import into existing Djinn config without overwriting same-name entries: added {added_providers} provider(s), {added_profiles} profile(s), {added_permissions} shared permission(s); skipped {skipped_providers} provider(s), {skipped_profiles} profile(s), {skipped_permissions} shared permission(s)"
-    ));
-    existing
+    (existing, summary)
+}
+
+fn import_write_summary_from_patch(patch: &DjinnConfigPatchPreview) -> ConfigImportWriteSummary {
+    ConfigImportWriteSummary {
+        applied_default_profile: patch.default_profile.clone(),
+        added_providers: patch.providers.keys().cloned().collect(),
+        added_profiles: patch.profiles.keys().cloned().collect(),
+        added_shared_permissions: patch.permissions.len(),
+        ..ConfigImportWriteSummary::default()
+    }
+}
+
+fn djinn_provider_exists_with_alias(
+    providers: &BTreeMap<String, DjinnConfigProvider>,
+    imported_name: &str,
+) -> bool {
+    providers
+        .keys()
+        .any(|existing| djinn_provider_names_match(existing, imported_name))
+}
+
+fn djinn_provider_names_match(existing: &str, imported: &str) -> bool {
+    existing == imported
+        || (is_copilot_provider_name(existing) && is_copilot_provider_name(imported))
+}
+
+fn is_copilot_provider_name(name: &str) -> bool {
+    matches!(name, "copilot" | "github-copilot")
 }
 
 fn djinn_config_from_import_patch(patch: &DjinnConfigPatchPreview) -> DjinnConfig {
@@ -4647,9 +4686,14 @@ fn format_config_import_write_report(
         format!("Overwritten: {}", report.overwritten),
         format!("Merged: {}", report.merged),
         String::new(),
+        "Import summary:".to_string(),
+    ];
+    push_import_write_summary_lines(&mut lines, &report.summary);
+    lines.extend([
+        String::new(),
         "Written config:".to_string(),
         format!("  version: {}", report.config.version),
-    ];
+    ]);
     if let Some(profile) = &report.config.default_profile {
         lines.push(format!("  default_profile: {profile}"));
     }
@@ -4678,6 +4722,47 @@ fn format_config_import_write_report(
     }
     lines.push(String::new());
     Ok(lines.join("\n"))
+}
+
+fn push_import_write_summary_lines(lines: &mut Vec<String>, summary: &ConfigImportWriteSummary) {
+    if let Some(profile) = &summary.applied_default_profile {
+        lines.push(format!("  default_profile: applied {profile}"));
+    }
+    if let Some(profile) = &summary.preserved_default_profile {
+        if let Some(imported) = &summary.skipped_import_default_profile {
+            lines.push(format!(
+                "  default_profile: preserved {profile} (skipped imported {imported})"
+            ));
+        } else {
+            lines.push(format!("  default_profile: preserved {profile}"));
+        }
+    }
+    lines.push(format!(
+        "  providers: added {}{}; skipped {}{}",
+        summary.added_providers.len(),
+        format_named_summary(&summary.added_providers),
+        summary.skipped_providers.len(),
+        format_named_summary(&summary.skipped_providers),
+    ));
+    lines.push(format!(
+        "  profiles: added {}{}; skipped {}{}",
+        summary.added_profiles.len(),
+        format_named_summary(&summary.added_profiles),
+        summary.skipped_profiles.len(),
+        format_named_summary(&summary.skipped_profiles),
+    ));
+    lines.push(format!(
+        "  shared permissions: added {}; skipped {}",
+        summary.added_shared_permissions, summary.skipped_shared_permissions
+    ));
+}
+
+fn format_named_summary(names: &[String]) -> String {
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", names.join(", "))
+    }
 }
 
 fn format_config_export_preview(
@@ -13408,6 +13493,7 @@ mod tests {
               "version": 1,
               "default_profile": "🧠",
               "providers": {
+                "github-copilot": {"type": "github-copilot", "auth": "auto"},
                 "openai": {"type": "openai", "auth": "env:OPENAI_API_KEY"}
               },
               "profiles": {
@@ -13440,11 +13526,23 @@ mod tests {
             Some("copilot/claude-sonnet-4")
         );
         assert!(written.providers.contains_key("openai"));
-        assert!(written.providers.contains_key("copilot"));
-        assert!(report
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("skipped 0 provider(s), 1 profile(s)")));
+        assert!(written.providers.contains_key("github-copilot"));
+        assert!(!written.providers.contains_key("copilot"));
+        assert_eq!(report.summary.added_providers, Vec::<String>::new());
+        assert_eq!(report.summary.skipped_providers, vec!["copilot"]);
+        assert_eq!(report.summary.added_profiles, vec!["sonnet"]);
+        assert_eq!(report.summary.skipped_profiles, vec!["default"]);
+        assert_eq!(
+            report.summary.preserved_default_profile.as_deref(),
+            Some("🧠")
+        );
+        assert_eq!(
+            report.summary.skipped_import_default_profile.as_deref(),
+            Some("default")
+        );
+        let rendered = format_config_import_write_report(&report, OutputFormat::Text).unwrap();
+        assert!(rendered.contains("providers: added 0; skipped 1 (copilot)"));
+        assert!(rendered.contains("profiles: added 1 (sonnet); skipped 1 (default)"));
         let _ = fs::remove_file(path);
     }
 

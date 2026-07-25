@@ -142,6 +142,8 @@ Write safety rules:
   unless `--output` is set.
 - Import writes merge into existing Djinn config by default, preserving same-name
   providers and profiles from the existing file.
+- `copilot` and `github-copilot` provider names are aliases for merge conflict
+  detection; either existing name prevents adding the other as a duplicate.
 - `--force` is required to replace an existing import destination.
 - Export writes never overwrite existing target config files by default.
 - `--force` is required to replace an existing export destination.
@@ -262,7 +264,10 @@ permissions while still avoiding raw secret export. The Copilot import flow is
 model/provider focused and converts auth presence to `auth = "auto"`. Write mode
 creates the destination file when absent; when the Djinn config already exists it
 adds missing providers/profiles/shared permissions and preserves same-name
-entries. `--force` replaces the destination instead.
+entries. Copilot provider aliases are not duplicated. The write report includes
+an import summary showing added and skipped providers, profiles, shared
+permissions, and default-profile preservation. `--force` replaces the destination
+instead.
 
 ## Current export slice
 
