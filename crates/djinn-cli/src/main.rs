@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -24,9 +24,9 @@ use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore}
 use djinn_memory::{
     ActionRecord, ActionStore, AgentSession, AgentSessionEvent, AgentSessionEventKind,
     AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionStore, AgentSessionSummary,
-    FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore,
-    JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource,
-    SuggestionInput, SuggestionRecord, SuggestionStore,
+    AgentSessionTokenUsage, FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions,
+    IdeaRecord, IdeaStore, JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryInput,
+    MemoryRecord, MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -718,6 +718,8 @@ enum AgentSessionCommand {
     List(AgentSessionListArgs),
     /// Show one agent session.
     Show(AgentSessionShowArgs),
+    /// Summarize model/tool/error accounting for one agent session.
+    Stats(AgentSessionStatsArgs),
     /// Rename an agent session by appending a title metadata event.
     Rename(AgentSessionRenameArgs),
     /// Delete an agent session JSONL file.
@@ -933,6 +935,15 @@ struct AgentSessionListArgs {
 
 #[derive(Debug, Args)]
 struct AgentSessionShowArgs {
+    /// Agent session id.
+    id: String,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionStatsArgs {
     /// Agent session id.
     id: String,
     /// Output JSON instead of text.
@@ -2006,6 +2017,7 @@ fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
         AgentSessionCommand::New(args) => agent_session_new(args),
         AgentSessionCommand::List(args) => agent_session_list(args),
         AgentSessionCommand::Show(args) => agent_session_show(args),
+        AgentSessionCommand::Stats(args) => agent_session_stats(args),
         AgentSessionCommand::Rename(args) => agent_session_rename(args),
         AgentSessionCommand::Delete(args) => agent_session_delete(args),
     }
@@ -2189,6 +2201,261 @@ fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn agent_session_stats(args: AgentSessionStatsArgs) -> Result<()> {
+    let id = AgentSessionId::new(args.id);
+    let session = agent_session_store().load_session(&id)?;
+    let stats = summarize_agent_session_stats(&session);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&stats)?);
+    } else {
+        print!("{}", format_agent_session_stats(&stats));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+struct AgentSessionStats {
+    id: String,
+    title: String,
+    event_count: usize,
+    user_messages: usize,
+    assistant_messages: usize,
+    tool_calls: usize,
+    tool_results: usize,
+    model_turns: usize,
+    model_elapsed_ms: u64,
+    tool_executions: usize,
+    tool_successes: usize,
+    tool_failures: usize,
+    tool_elapsed_ms: u64,
+    token_usage: AgentSessionTokenUsage,
+    models: Vec<AgentModelStats>,
+    tools: Vec<AgentToolStats>,
+    errors: Vec<AgentErrorStats>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+struct AgentModelStats {
+    model: String,
+    provider: Option<String>,
+    turns: usize,
+    elapsed_ms: u64,
+    tool_calls: usize,
+    message_turns: usize,
+    token_usage: AgentSessionTokenUsage,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+struct AgentToolStats {
+    name: String,
+    calls: usize,
+    successes: usize,
+    failures: usize,
+    elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+struct AgentErrorStats {
+    phase: String,
+    count: usize,
+}
+
+fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
+    let mut stats = AgentSessionStats {
+        id: session.id.to_string(),
+        title: if session.meta.title.trim().is_empty() {
+            "Untitled agent session".to_string()
+        } else {
+            session.meta.title.clone()
+        },
+        event_count: session.events.len(),
+        ..AgentSessionStats::default()
+    };
+    let mut models = BTreeMap::<String, AgentModelStats>::new();
+    let mut tools = BTreeMap::<String, AgentToolStats>::new();
+    let mut errors = BTreeMap::<String, usize>::new();
+
+    for event in &session.events {
+        match &event.kind {
+            AgentSessionEventKind::UserMessage { .. } => stats.user_messages += 1,
+            AgentSessionEventKind::AssistantMessage { .. } => stats.assistant_messages += 1,
+            AgentSessionEventKind::ToolCall { .. } => stats.tool_calls += 1,
+            AgentSessionEventKind::ToolResult { .. } => stats.tool_results += 1,
+            AgentSessionEventKind::ModelResponseMetadata {
+                model,
+                provider,
+                elapsed_ms,
+                tool_calls,
+                has_message,
+                usage,
+                ..
+            } => {
+                stats.model_turns += 1;
+                stats.model_elapsed_ms = stats.model_elapsed_ms.saturating_add(*elapsed_ms);
+                if let Some(usage) = usage {
+                    merge_token_usage(&mut stats.token_usage, usage);
+                }
+                let model_key =
+                    format!("{}\u{1f}{}", provider.as_deref().unwrap_or_default(), model);
+                let entry = models.entry(model_key).or_insert_with(|| AgentModelStats {
+                    model: model.clone(),
+                    provider: provider.clone(),
+                    ..AgentModelStats::default()
+                });
+                entry.turns += 1;
+                entry.elapsed_ms = entry.elapsed_ms.saturating_add(*elapsed_ms);
+                entry.tool_calls = entry.tool_calls.saturating_add(*tool_calls);
+                if *has_message {
+                    entry.message_turns += 1;
+                }
+                if let Some(usage) = usage {
+                    merge_token_usage(&mut entry.token_usage, usage);
+                }
+            }
+            AgentSessionEventKind::ToolExecutionMetadata {
+                name,
+                elapsed_ms,
+                success,
+                ..
+            } => {
+                stats.tool_executions += 1;
+                stats.tool_elapsed_ms = stats.tool_elapsed_ms.saturating_add(*elapsed_ms);
+                if *success {
+                    stats.tool_successes += 1;
+                } else {
+                    stats.tool_failures += 1;
+                }
+                let entry = tools.entry(name.clone()).or_insert_with(|| AgentToolStats {
+                    name: name.clone(),
+                    ..AgentToolStats::default()
+                });
+                entry.calls += 1;
+                entry.elapsed_ms = entry.elapsed_ms.saturating_add(*elapsed_ms);
+                if *success {
+                    entry.successes += 1;
+                } else {
+                    entry.failures += 1;
+                }
+            }
+            AgentSessionEventKind::Error { phase, .. } => {
+                *errors.entry(phase.clone()).or_default() += 1;
+            }
+            AgentSessionEventKind::SessionCreated { .. }
+            | AgentSessionEventKind::SessionTitleUpdated { .. }
+            | AgentSessionEventKind::SessionProfileUpdated { .. }
+            | AgentSessionEventKind::SessionModelUpdated { .. }
+            | AgentSessionEventKind::Summary { .. }
+            | AgentSessionEventKind::Checkpoint { .. } => {}
+        }
+    }
+
+    stats.models = models.into_values().collect();
+    stats.tools = tools.into_values().collect();
+    stats.errors = errors
+        .into_iter()
+        .map(|(phase, count)| AgentErrorStats { phase, count })
+        .collect();
+    stats
+}
+
+fn merge_token_usage(target: &mut AgentSessionTokenUsage, source: &AgentSessionTokenUsage) {
+    target.input_tokens = merge_optional_u64(target.input_tokens, source.input_tokens);
+    target.output_tokens = merge_optional_u64(target.output_tokens, source.output_tokens);
+    target.total_tokens = merge_optional_u64(target.total_tokens, source.total_tokens);
+}
+
+fn merge_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
+    let mut out = String::new();
+    out.push_str("# Agent Session Stats\n\n");
+    out.push_str(&format!("ID: {}\n", stats.id));
+    out.push_str(&format!("Title: {}\n", stats.title));
+    out.push_str(&format!("Events: {}\n", stats.event_count));
+    out.push_str(&format!(
+        "Messages: {} user / {} assistant\n",
+        stats.user_messages, stats.assistant_messages
+    ));
+    out.push_str(&format!(
+        "Model: {} turn{} · {}\n",
+        stats.model_turns,
+        plural_suffix(stats.model_turns),
+        format_elapsed_ms(stats.model_elapsed_ms as u128)
+    ));
+    if let Some(usage) = format_agent_token_usage(&stats.token_usage) {
+        out.push_str(&format!(
+            "Tokens: {}\n",
+            usage.trim_start_matches("tokens ")
+        ));
+    }
+    if !stats.models.is_empty() {
+        out.push_str("\nModel breakdown:\n");
+        for model in &stats.models {
+            let provider = model
+                .provider
+                .as_deref()
+                .filter(|provider| !provider.trim().is_empty())
+                .map(|provider| format!(" · provider {provider}"))
+                .unwrap_or_default();
+            let usage = format_agent_token_usage(&model.token_usage)
+                .map(|usage| format!(" · {}", usage))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "- {}{}: {} turn{} · {} · {} tool call{} · {} message turn{}{}\n",
+                model.model,
+                provider,
+                model.turns,
+                plural_suffix(model.turns),
+                format_elapsed_ms(model.elapsed_ms as u128),
+                model.tool_calls,
+                plural_suffix(model.tool_calls),
+                model.message_turns,
+                plural_suffix(model.message_turns),
+                usage
+            ));
+        }
+    }
+    out.push_str(&format!(
+        "Tools: {} call{} / {} result{} / {} execution{} · {} ok / {} failed · {}\n",
+        stats.tool_calls,
+        plural_suffix(stats.tool_calls),
+        stats.tool_results,
+        plural_suffix(stats.tool_results),
+        stats.tool_executions,
+        plural_suffix(stats.tool_executions),
+        stats.tool_successes,
+        stats.tool_failures,
+        format_elapsed_ms(stats.tool_elapsed_ms as u128)
+    ));
+    if !stats.tools.is_empty() {
+        out.push_str("\nTool breakdown:\n");
+        for tool in &stats.tools {
+            out.push_str(&format!(
+                "- {}: {} call{} · {} ok / {} failed · {}\n",
+                tool.name,
+                tool.calls,
+                plural_suffix(tool.calls),
+                tool.successes,
+                tool.failures,
+                format_elapsed_ms(tool.elapsed_ms as u128)
+            ));
+        }
+    }
+    if !stats.errors.is_empty() {
+        out.push_str("\nErrors:\n");
+        for error in &stats.errors {
+            out.push_str(&format!("- {}: {}\n", error.phase, error.count));
+        }
+    }
+    out
 }
 
 fn agent_session_rename(args: AgentSessionRenameArgs) -> Result<()> {
@@ -4005,6 +4272,23 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
         AgentSessionEventKind::AssistantMessage { content } => {
             format!("assistant: {}", prompt_title(content, "(empty)"))
         }
+        AgentSessionEventKind::ModelResponseMetadata {
+            model,
+            provider,
+            round,
+            elapsed_ms,
+            tool_calls,
+            has_message,
+            usage,
+        } => format_agent_model_metadata_event(
+            model,
+            provider.as_deref(),
+            *round,
+            *elapsed_ms,
+            *tool_calls,
+            *has_message,
+            usage.as_ref(),
+        ),
         AgentSessionEventKind::ToolCall { id, name, .. } => format!("tool call {id}: {name}"),
         AgentSessionEventKind::ToolResult { id, success, .. } => {
             format!(
@@ -4012,11 +4296,85 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
                 if *success { "ok" } else { "failed" }
             )
         }
+        AgentSessionEventKind::ToolExecutionMetadata {
+            id,
+            name,
+            round,
+            elapsed_ms,
+            success,
+        } => format_agent_tool_metadata_event(id, name, *round, *elapsed_ms, *success),
+        AgentSessionEventKind::Error { phase, message, .. } => {
+            format!("error [{phase}]: {}", prompt_title(message, "(empty)"))
+        }
         AgentSessionEventKind::Summary { content } => {
             format!("summary: {}", prompt_title(content, "(empty)"))
         }
         AgentSessionEventKind::Checkpoint { label } => format!("checkpoint: {label}"),
     }
+}
+
+fn format_agent_model_metadata_event(
+    model: &str,
+    provider: Option<&str>,
+    round: Option<usize>,
+    elapsed_ms: u64,
+    tool_calls: usize,
+    has_message: bool,
+    usage: Option<&AgentSessionTokenUsage>,
+) -> String {
+    let mut parts = vec![format!("model response: {model}")];
+    if let Some(provider) = provider.filter(|value| !value.trim().is_empty()) {
+        parts.push(format!("provider {provider}"));
+    }
+    if let Some(round) = round {
+        parts.push(format!("round {}", round + 1));
+    }
+    parts.push(format_elapsed_ms(elapsed_ms as u128));
+    parts.push(format!(
+        "{tool_calls} tool call{}",
+        plural_suffix(tool_calls)
+    ));
+    if has_message {
+        parts.push("message".to_string());
+    }
+    if let Some(usage) = usage.and_then(format_agent_token_usage) {
+        parts.push(usage);
+    }
+    parts.join(" · ")
+}
+
+fn format_agent_token_usage(usage: &AgentSessionTokenUsage) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(input) = usage.input_tokens {
+        parts.push(format!("in {input}"));
+    }
+    if let Some(output) = usage.output_tokens {
+        parts.push(format!("out {output}"));
+    }
+    if let Some(total) = usage.total_tokens {
+        parts.push(format!("total {total}"));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("tokens {}", parts.join("/")))
+    }
+}
+
+fn format_agent_tool_metadata_event(
+    id: &str,
+    name: &str,
+    round: Option<usize>,
+    elapsed_ms: u64,
+    success: bool,
+) -> String {
+    let mut parts = vec![format!("tool execution {id}: {name}")];
+    if let Some(round) = round {
+        parts.push(format!("round {}", round + 1));
+    }
+    parts.push(format_elapsed_ms(elapsed_ms as u128));
+    parts.push(if success { "ok" } else { "failed" }.to_string());
+    parts.join(" · ")
 }
 
 fn agent_system_message(workspace: &str) -> ModelMessage {
@@ -4101,6 +4459,16 @@ fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessag
                     content: summarize_agent_tool_result(id, call, output, *success),
                 });
             }
+            AgentSessionEventKind::Error {
+                phase,
+                message,
+                details,
+            } => {
+                messages.push(djinn_tui::AgentChatMessage {
+                    role: djinn_tui::AgentChatRole::Notice,
+                    content: format_agent_error_message(phase, message, details.as_ref()),
+                });
+            }
             AgentSessionEventKind::Summary { content } => {
                 messages.push(djinn_tui::AgentChatMessage {
                     role: djinn_tui::AgentChatRole::Notice,
@@ -4117,6 +4485,8 @@ fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessag
             | AgentSessionEventKind::SessionTitleUpdated { .. }
             | AgentSessionEventKind::SessionProfileUpdated { .. }
             | AgentSessionEventKind::SessionModelUpdated { .. }
+            | AgentSessionEventKind::ModelResponseMetadata { .. }
+            | AgentSessionEventKind::ToolExecutionMetadata { .. }
             | AgentSessionEventKind::AssistantMessage { .. } => {}
         }
     }
@@ -4134,6 +4504,14 @@ fn agent_thought_message(content: impl Into<String>) -> djinn_tui::AgentChatMess
         role: djinn_tui::AgentChatRole::Thought,
         content: content.into(),
     }
+}
+
+fn format_agent_error_message(phase: &str, message: &str, details: Option<&Value>) -> String {
+    let mut lines = vec![format!("error [{phase}]: {message}")];
+    if let Some(details) = details.filter(|value| !value.is_null()) {
+        lines.push(format!("details: {}", compact_json_value(details)));
+    }
+    lines.join("\n")
 }
 
 fn agent_progress_message(event: &AgentProgressEvent) -> Option<djinn_tui::AgentChatMessage> {
@@ -8936,6 +9314,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_agent_session_stats_command() {
+        let cli = Cli::try_parse_from(["djinn", "agent", "session", "stats", "agt_test", "--json"])
+            .unwrap();
+
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Session(session_args) = agent_args.command else {
+            panic!("expected agent session command");
+        };
+        let AgentSessionCommand::Stats(stats_args) = session_args.command else {
+            panic!("expected agent session stats command");
+        };
+
+        assert_eq!(stats_args.id, "agt_test");
+        assert!(stats_args.json);
+    }
+
+    #[test]
     fn parses_archive_chats_selection_command() {
         let cli = Cli::try_parse_from([
             "djinn", "archive", "chats", "--source", "opencode", "--limit", "25", "--force",
@@ -9174,6 +9571,191 @@ mod tests {
     }
 
     #[test]
+    fn agent_chat_messages_render_structured_errors() {
+        let event = AgentSessionEvent::new(AgentSessionEventKind::Error {
+            phase: "model_request".to_string(),
+            message: "OpenAI request failed".to_string(),
+            details: Some(serde_json::json!({"model": "gpt-test", "round": 0})),
+        });
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_test"),
+            meta: AgentSessionMeta::default(),
+            events: vec![event.clone()],
+        };
+
+        let messages = agent_chat_messages(&session);
+
+        assert_eq!(
+            format_agent_event(&event),
+            "error [model_request]: OpenAI request failed"
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, djinn_tui::AgentChatRole::Notice);
+        assert!(messages[0]
+            .content
+            .contains("error [model_request]: OpenAI request failed"));
+        assert!(messages[0].content.contains("gpt-test"));
+        assert!(!messages[0].content.contains("{\n"));
+    }
+
+    #[test]
+    fn agent_session_show_formats_model_response_metadata() {
+        let event = AgentSessionEvent::new(AgentSessionEventKind::ModelResponseMetadata {
+            model: "openai/gpt-test".to_string(),
+            provider: Some("openai".to_string()),
+            round: Some(1),
+            elapsed_ms: 1250,
+            tool_calls: 2,
+            has_message: true,
+            usage: Some(AgentSessionTokenUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(5),
+                total_tokens: Some(15),
+            }),
+        });
+
+        let rendered = format_agent_event(&event);
+
+        assert!(rendered.contains("model response: openai/gpt-test"));
+        assert!(rendered.contains("provider openai"));
+        assert!(rendered.contains("round 2"));
+        assert!(rendered.contains("1.2s"));
+        assert!(rendered.contains("2 tool calls"));
+        assert!(rendered.contains("message"));
+        assert!(rendered.contains("tokens in 10/out 5/total 15"));
+    }
+
+    #[test]
+    fn agent_session_show_formats_tool_execution_metadata() {
+        let event = AgentSessionEvent::new(AgentSessionEventKind::ToolExecutionMetadata {
+            id: "call-read".to_string(),
+            name: "read_file".to_string(),
+            round: Some(0),
+            elapsed_ms: 42,
+            success: true,
+        });
+
+        let rendered = format_agent_event(&event);
+
+        assert_eq!(
+            rendered,
+            "tool execution call-read: read_file · round 1 · 42ms · ok"
+        );
+    }
+
+    #[test]
+    fn agent_session_stats_summarizes_accounting_events() {
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_stats"),
+            meta: AgentSessionMeta {
+                title: "Stats test".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "hello".to_string(),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ModelResponseMetadata {
+                    model: "openai/gpt-test".to_string(),
+                    provider: Some("openai".to_string()),
+                    round: Some(0),
+                    elapsed_ms: 1200,
+                    tool_calls: 1,
+                    has_message: false,
+                    usage: Some(AgentSessionTokenUsage {
+                        input_tokens: Some(10),
+                        output_tokens: Some(3),
+                        total_tokens: Some(13),
+                    }),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ModelResponseMetadata {
+                    model: "gemini/gemini-test".to_string(),
+                    provider: Some("gemini".to_string()),
+                    round: None,
+                    elapsed_ms: 800,
+                    tool_calls: 0,
+                    has_message: true,
+                    usage: Some(AgentSessionTokenUsage {
+                        input_tokens: Some(5),
+                        output_tokens: Some(2),
+                        total_tokens: Some(7),
+                    }),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ToolCall {
+                    id: "call-read".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "README.md"}),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
+                    id: "call-read".to_string(),
+                    output: serde_json::json!({"content": "hello"}),
+                    success: true,
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ToolExecutionMetadata {
+                    id: "call-read".to_string(),
+                    name: "read_file".to_string(),
+                    round: Some(0),
+                    elapsed_ms: 25,
+                    success: true,
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::Error {
+                    phase: "model_request".to_string(),
+                    message: "boom".to_string(),
+                    details: None,
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "done".to_string(),
+                }),
+            ],
+        };
+
+        let stats = summarize_agent_session_stats(&session);
+        let rendered = format_agent_session_stats(&stats);
+
+        assert_eq!(stats.id, "agt_stats");
+        assert_eq!(stats.event_count, 8);
+        assert_eq!(stats.user_messages, 1);
+        assert_eq!(stats.assistant_messages, 1);
+        assert_eq!(stats.model_turns, 2);
+        assert_eq!(stats.model_elapsed_ms, 2000);
+        assert_eq!(stats.token_usage.total_tokens, Some(20));
+        let openai_model = stats
+            .models
+            .iter()
+            .find(|model| model.model == "openai/gpt-test")
+            .unwrap();
+        assert_eq!(openai_model.provider.as_deref(), Some("openai"));
+        assert_eq!(openai_model.turns, 1);
+        assert_eq!(openai_model.tool_calls, 1);
+        assert_eq!(openai_model.message_turns, 0);
+        assert_eq!(openai_model.token_usage.total_tokens, Some(13));
+        let gemini_model = stats
+            .models
+            .iter()
+            .find(|model| model.model == "gemini/gemini-test")
+            .unwrap();
+        assert_eq!(gemini_model.provider.as_deref(), Some("gemini"));
+        assert_eq!(gemini_model.turns, 1);
+        assert_eq!(gemini_model.message_turns, 1);
+        assert_eq!(stats.tool_calls, 1);
+        assert_eq!(stats.tool_results, 1);
+        assert_eq!(stats.tool_executions, 1);
+        assert_eq!(stats.tool_successes, 1);
+        assert_eq!(stats.tools[0].name, "read_file");
+        assert_eq!(stats.errors[0].phase, "model_request");
+        assert!(rendered.contains("Model: 2 turns · 2.0s"));
+        assert!(rendered.contains("Tokens: in 15/out 5/total 20"));
+        assert!(rendered.contains(
+            "- openai/gpt-test · provider openai: 1 turn · 1.2s · 1 tool call · 0 message turns · tokens in 10/out 3/total 13"
+        ));
+        assert!(rendered.contains(
+            "- gemini/gemini-test · provider gemini: 1 turn · 800ms · 0 tool calls · 1 message turn · tokens in 5/out 2/total 7"
+        ));
+        assert!(rendered.contains("- read_file: 1 call · 1 ok / 0 failed · 25ms"));
+        assert!(rendered.contains("- model_request: 1"));
+    }
+
+    #[test]
     fn format_agent_config_options_marks_current_choices() {
         let rendered = format_agent_config_options(
             "architect",
@@ -9379,9 +9961,29 @@ mod tests {
                 AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
                     content: "hi".to_string(),
                 }),
+                AgentSessionEvent::new(AgentSessionEventKind::ModelResponseMetadata {
+                    model: "openai/gpt-test".to_string(),
+                    provider: Some("openai".to_string()),
+                    round: Some(0),
+                    elapsed_ms: 10,
+                    tool_calls: 0,
+                    has_message: true,
+                    usage: Some(AgentSessionTokenUsage {
+                        input_tokens: Some(1),
+                        output_tokens: Some(2),
+                        total_tokens: Some(3),
+                    }),
+                }),
                 AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
                     id: "call-1".to_string(),
                     output: serde_json::json!({"stdout": "ignored"}),
+                    success: true,
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::ToolExecutionMetadata {
+                    id: "call-1".to_string(),
+                    name: "shell".to_string(),
+                    round: Some(0),
+                    elapsed_ms: 10,
                     success: true,
                 }),
             ],

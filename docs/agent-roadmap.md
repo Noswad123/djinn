@@ -87,9 +87,13 @@ The baseline event envelope is now decided and implemented in
 `created_at`, and typed payload fields. Remaining schema work should focus on
 provider/runtime payload details:
 
-- Decide model/provider metadata placement for model request/response events.
-- Add token/cost usage once providers consistently report it.
-- Add structured error records instead of storing errors only in text/tool output.
+- Extend the implemented `model_response_metadata` token usage with cost
+  accounting once providers consistently expose enough usage/pricing data.
+- Extend the implemented `tool_execution_metadata` event only when there is a
+  concrete need for richer machine-readable fields such as byte counts,
+  approval scope, or retry attempts.
+- Extend structured error records if additional phases need machine-readable
+  fields beyond the implemented `phase`, `message`, and optional JSON `details`.
 - Decide whether branch/session-tree behavior needs more than `parent_event_id`.
 - Decide if session listing/search needs a lightweight index file or SQLite after
   JSONL scanning shows real limits.
@@ -189,6 +193,40 @@ provider/runtime payload details:
   - richer searchable model/profile picker behavior;
   - permission prompt;
   - file picker.
+
+### Neovim harness backend
+
+Dotfiles Neovim config now treats `lua/plugins/harness.lua` as a thin entrypoint
+that routes `DEFAULT_HARNESS` to explicit backend modules under
+`lua/util/harness/`. Unsupported or unset harnesses intentionally route to a
+noop backend; there is no generic/minimal Djinn behavior. Before adding
+`util/harness/djinn.lua`, decide which Djinn CLI/runtime capabilities should back
+the shared harness action map:
+
+- `open_chat` / `toggle_chat`: open or focus an interactive `djinn agent chat`
+  session for the current working directory.
+- `ask_buffer`: send the current buffer path/content reference into a Djinn
+  session or one-shot ask flow.
+- `append_clipboard` / `append_selection` / `send_context`: define whether Djinn
+  supports appending text to an existing prompt composer, or whether Neovim should
+  launch a new one-shot/session turn with that context.
+- `submit_prompt`: expose a stable command/API only if Djinn has an addressable
+  prompt composer or running session control surface.
+- `scroll_up` / `scroll_down`: only implement if Djinn exposes terminal/session
+  control that Neovim can call reliably; otherwise keep these noops.
+- `select_profile`: map to the same profile/model option builders used by
+  `djinn agent config list`, `djinn agent config show`, and the TUI command
+  palette.
+- `connect_session`: provide a scriptable way to list/resume existing JSONL agent
+  sessions, preferably sorted by workspace affinity and recency.
+- `select_command` / `select_agent`: decide how custom commands and sub-agents are
+  discovered from Djinn/OpenCode-compatible config and how selected items are
+  inserted into the next prompt.
+
+Implementation target: once the CLI/runtime seams exist, add an explicit
+`util/harness/djinn.lua` Neovim backend in dotfiles and keep unsupported actions
+registered through the shared noop/action map rather than falling back to generic
+`default-harness` behavior.
 
 ### TUI refactor checkpoint
 

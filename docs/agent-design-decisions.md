@@ -82,6 +82,23 @@ Implications:
   - `created_at`: RFC3339 timestamp;
   - `type`: snake_case event payload discriminator;
   - payload fields specific to the event type.
+- Persist runtime failures as structured `error` events with a `phase`, human
+  `message`, and optional JSON `details`. The first persisted phases are
+  `model_request` for provider/client failures and `tool_round_limit` when a
+  model continues requesting tools after the configured round limit.
+- Persist model turn metadata as a separate non-conversation
+  `model_response_metadata` event. It records the requested model, optional
+  provider inferred from provider-prefixed model names, optional tool-loop round,
+  elapsed milliseconds, tool-call count, whether the response contained
+  assistant text, and optional token usage (`input_tokens`, `output_tokens`,
+  `total_tokens`) when providers report it. Keep this metadata out of model
+  replay so resumed sessions do not feed accounting/progress records back to
+  providers.
+- Persist tool execution accounting as a separate non-conversation
+  `tool_execution_metadata` event keyed by tool-call id. It records tool name,
+  optional tool-loop round, elapsed milliseconds, and success. Keep tool output
+  in `tool_result`; use metadata for accounting/session inspection without
+  feeding progress records back to providers or cluttering chat transcripts.
 - Keep legacy JSONL readable. Events without the envelope fields are normalized
   in memory with `schema_version = 1`, `session_id` from the filename, and
   deterministic `legacy-<session-id>-<line>` event ids.
@@ -90,8 +107,8 @@ Open questions:
 
 - Whether search, high-volume transcripts, or external indexing will eventually
   justify a lightweight index file or SQLite.
-- How to add token/cost usage and structured error payloads once provider/tool
-  adapters consistently expose those values.
+- How to add cost accounting to model metadata once provider adapters
+  consistently expose enough usage/pricing data.
 - Whether branch/session-tree semantics need more than `parent_event_id`.
 
 ### D4. MCP support: defer until there is a concrete need
@@ -343,12 +360,15 @@ The first non-interactive agent slice is implemented as:
     built-in runtime tool set using the same registry construction as agent runs.
     Text output lists names/summaries or a single tool description/schema; JSON
     output includes full tool specs and input schemas.
-16. CLI commands for session creation/list/show/rename/delete and one-shot prompting:
+16. CLI commands for session creation/list/show/stats/rename/delete and one-shot prompting:
     `djinn agent session new`, `djinn agent session list`,
-    `djinn agent session show`, `djinn agent session rename`,
-    `djinn agent session delete`, and `djinn agent ask`. Rename appends a
-    `SessionTitleUpdated` metadata event and skips no-op updates. Delete requires
-    `--force` and removes the session JSONL file.
+    `djinn agent session show`, `djinn agent session stats`,
+    `djinn agent session rename`, `djinn agent session delete`, and
+    `djinn agent ask`. Stats summarizes model/tool timing, token usage,
+    per-model/provider breakdowns, tool outcomes, and error phases from the
+    existing JSONL metadata events without changing the session log. Rename
+    appends a `SessionTitleUpdated` metadata event and skips no-op updates.
+    Delete requires `--force` and removes the session JSONL file.
 17. A dashboard pane that only browses JSONL agent sessions overlaps with the
     saved Chats pane and should not be treated as the Agent UI. The Agent UI must
     be an interactive chat/composer/runtime surface, with history/session picking

@@ -50,6 +50,16 @@ pub struct AgentSessionMeta {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSessionTokenUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSessionEvent {
     #[serde(default = "agent_session_event_schema_version")]
@@ -107,6 +117,18 @@ pub enum AgentSessionEventKind {
     AssistantMessage {
         content: String,
     },
+    ModelResponseMetadata {
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        round: Option<usize>,
+        elapsed_ms: u64,
+        tool_calls: usize,
+        has_message: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<AgentSessionTokenUsage>,
+    },
     ToolCall {
         id: String,
         name: String,
@@ -116,6 +138,20 @@ pub enum AgentSessionEventKind {
         id: String,
         output: serde_json::Value,
         success: bool,
+    },
+    ToolExecutionMetadata {
+        id: String,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        round: Option<usize>,
+        elapsed_ms: u64,
+        success: bool,
+    },
+    Error {
+        phase: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
     },
     Summary {
         content: String,

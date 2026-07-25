@@ -10,7 +10,8 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 pub use djinn_memory::{
     AgentSessionEvent, AgentSessionEventKind, AgentSessionFilter, AgentSessionId, AgentSessionMeta,
-    AgentSessionStore, AgentSessionSummary, FileHistoryInput, FileHistoryStore,
+    AgentSessionStore, AgentSessionSummary, AgentSessionTokenUsage, FileHistoryInput,
+    FileHistoryStore,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,18 @@ pub struct ModelResponse {
     pub message: ModelMessage,
     #[serde(default)]
     pub tool_calls: Vec<ModelToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ModelTokenUsage>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelTokenUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -226,6 +239,7 @@ impl OpenAiClient {
                 .into_iter()
                 .map(model_tool_call)
                 .collect::<Result<Vec<_>>>()?,
+            usage: response.usage.map(ModelTokenUsage::from),
         })
     }
 
@@ -285,6 +299,28 @@ impl OpenAiClient {
 #[derive(Debug, Deserialize)]
 struct OpenAiChatResponse {
     choices: Vec<OpenAiChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiChatUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChatUsage {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+    #[serde(default)]
+    total_tokens: Option<u64>,
+}
+
+impl From<OpenAiChatUsage> for ModelTokenUsage {
+    fn from(value: OpenAiChatUsage) -> Self {
+        Self {
+            input_tokens: value.prompt_tokens,
+            output_tokens: value.completion_tokens,
+            total_tokens: value.total_tokens,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -417,6 +453,7 @@ fn parse_openai_responses_response(text: &str) -> Result<ModelResponse> {
 fn parse_openai_responses_stream_response(text: &str) -> Result<ModelResponse> {
     let mut content = String::new();
     let mut tool_calls = Vec::new();
+    let mut usage = None;
 
     for line in text.lines() {
         let line = line.trim_start();
@@ -434,10 +471,14 @@ fn parse_openai_responses_stream_response(text: &str) -> Result<ModelResponse> {
                     let final_response = parse_openai_responses_value(response)?;
                     if !final_response.message.content.is_empty()
                         || !final_response.tool_calls.is_empty()
+                        || final_response.usage.is_some()
                     {
                         return Ok(final_response);
                     }
                 }
+            }
+            Some("response.usage") => {
+                usage = parse_openai_responses_usage(&event);
             }
             Some("response.output_text.delta") => {
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
@@ -475,6 +516,7 @@ fn parse_openai_responses_stream_response(text: &str) -> Result<ModelResponse> {
             tool_calls: Vec::new(),
         },
         tool_calls,
+        usage,
     })
 }
 
@@ -505,6 +547,31 @@ fn parse_openai_responses_value(value: &Value) -> Result<ModelResponse> {
             tool_calls: Vec::new(),
         },
         tool_calls,
+        usage: parse_openai_responses_usage(value),
+    })
+}
+
+fn parse_openai_responses_usage(value: &Value) -> Option<ModelTokenUsage> {
+    let usage = value
+        .get("usage")
+        .or_else(|| value.pointer("/response/usage"))
+        .unwrap_or(value);
+    let input_tokens = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(Value::as_u64);
+    let output_tokens = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(Value::as_u64);
+    let total_tokens = usage.get("total_tokens").and_then(Value::as_u64);
+    if input_tokens.is_none() && output_tokens.is_none() && total_tokens.is_none() {
+        return None;
+    }
+    Some(ModelTokenUsage {
+        input_tokens,
+        output_tokens,
+        total_tokens,
     })
 }
 
@@ -2900,8 +2967,29 @@ where
         session: &AgentSessionId,
         mut request: ModelRequest,
     ) -> Result<ModelResponse> {
+        let model = request.model.clone();
         request.tools = self.tool_specs();
-        let response = self.model.complete(request).await?;
+        let model_started = Instant::now();
+        let response = match self.model.complete(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                let message = error.to_string();
+                self.persist_error_event(
+                    session,
+                    "model_request",
+                    &message,
+                    Some(json!({"model": model})),
+                )?;
+                return Err(error);
+            }
+        };
+        self.persist_model_response_metadata(
+            session,
+            &model,
+            None,
+            model_started.elapsed().as_millis(),
+            &response,
+        )?;
         self.persist_model_response(session, &response)?;
         Ok(response)
     }
@@ -2933,18 +3021,39 @@ where
         for round in 0..=max_tool_rounds {
             on_progress(AgentProgressEvent::ModelRequestStarted { round })?;
             let model_started = Instant::now();
-            let response = self
+            let response = match self
                 .model
                 .complete(ModelRequest {
                     model: model.clone(),
                     messages: messages.clone(),
                     tools: tools.clone(),
                 })
-                .await?;
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    let message = error.to_string();
+                    self.persist_error_event(
+                        session,
+                        "model_request",
+                        &message,
+                        Some(json!({"model": model, "round": round})),
+                    )?;
+                    return Err(error);
+                }
+            };
+            let elapsed_ms = model_started.elapsed().as_millis();
+            self.persist_model_response_metadata(
+                session,
+                &model,
+                Some(round),
+                elapsed_ms,
+                &response,
+            )?;
             self.persist_model_response(session, &response)?;
             on_progress(AgentProgressEvent::ModelResponseCompleted {
                 round,
-                elapsed_ms: model_started.elapsed().as_millis(),
+                elapsed_ms,
                 tool_calls: response.tool_calls.len(),
                 has_message: !response.message.content.trim().is_empty(),
             })?;
@@ -2953,7 +3062,19 @@ where
                 return Ok(response);
             }
             if round == max_tool_rounds {
-                bail!("model requested tool calls after max tool rounds ({max_tool_rounds})");
+                let message =
+                    format!("model requested tool calls after max tool rounds ({max_tool_rounds})");
+                self.persist_error_event(
+                    session,
+                    "tool_round_limit",
+                    &message,
+                    Some(json!({
+                        "max_tool_rounds": max_tool_rounds,
+                        "round": round,
+                        "pending_tool_calls": response.tool_calls.len(),
+                    })),
+                )?;
+                bail!(message);
             }
 
             messages.push(ModelMessage {
@@ -2970,6 +3091,7 @@ where
                 })?;
                 let tool_started = Instant::now();
                 let result = self.invoke_tool_call(&call).await;
+                let elapsed_ms = tool_started.elapsed().as_millis();
                 self.sessions.append_event(
                     session,
                     AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
@@ -2978,11 +3100,18 @@ where
                         success: result.success,
                     }),
                 )?;
+                self.persist_tool_execution_metadata(
+                    session,
+                    &call,
+                    Some(round),
+                    elapsed_ms,
+                    &result,
+                )?;
                 on_progress(AgentProgressEvent::ToolCallCompleted {
                     round,
                     call: call.clone(),
                     result: result.clone(),
-                    elapsed_ms: tool_started.elapsed().as_millis(),
+                    elapsed_ms,
                 })?;
                 messages.push(ModelMessage {
                     role: ModelRole::Tool,
@@ -3035,11 +3164,89 @@ where
         }
         Ok(())
     }
+
+    fn persist_model_response_metadata(
+        &self,
+        session: &AgentSessionId,
+        model: &str,
+        round: Option<usize>,
+        elapsed_ms: u128,
+        response: &ModelResponse,
+    ) -> Result<()> {
+        self.sessions.append_event(
+            session,
+            AgentSessionEvent::new(AgentSessionEventKind::ModelResponseMetadata {
+                model: model.to_string(),
+                provider: provider_from_model(model),
+                round,
+                elapsed_ms: elapsed_ms.min(u64::MAX as u128) as u64,
+                tool_calls: response.tool_calls.len(),
+                has_message: !response.message.content.trim().is_empty(),
+                usage: response.usage.clone().map(AgentSessionTokenUsage::from),
+            }),
+        )
+    }
+
+    fn persist_tool_execution_metadata(
+        &self,
+        session: &AgentSessionId,
+        call: &ModelToolCall,
+        round: Option<usize>,
+        elapsed_ms: u128,
+        result: &ToolResult,
+    ) -> Result<()> {
+        self.sessions.append_event(
+            session,
+            AgentSessionEvent::new(AgentSessionEventKind::ToolExecutionMetadata {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                round,
+                elapsed_ms: elapsed_ms.min(u64::MAX as u128) as u64,
+                success: result.success,
+            }),
+        )
+    }
+
+    fn persist_error_event(
+        &self,
+        session: &AgentSessionId,
+        phase: impl Into<String>,
+        message: impl Into<String>,
+        details: Option<Value>,
+    ) -> Result<()> {
+        self.sessions.append_event(
+            session,
+            AgentSessionEvent::new(AgentSessionEventKind::Error {
+                phase: phase.into(),
+                message: message.into(),
+                details,
+            }),
+        )
+    }
+}
+
+fn provider_from_model(model: &str) -> Option<String> {
+    model
+        .split_once('/')
+        .map(|(provider, _)| provider.trim())
+        .filter(|provider| !provider.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+impl From<ModelTokenUsage> for AgentSessionTokenUsage {
+    fn from(value: ModelTokenUsage) -> Self {
+        Self {
+            input_tokens: value.input_tokens,
+            output_tokens: value.output_tokens,
+            total_tokens: value.total_tokens,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use djinn_memory::JsonlAgentSessionStore;
 
     struct StaticPermissionGate(PermissionDecision);
 
@@ -3048,6 +3255,120 @@ mod tests {
         async fn approve(&self, _request: PermissionRequest) -> Result<PermissionDecision> {
             Ok(self.0)
         }
+    }
+
+    struct FailingModel;
+
+    #[async_trait]
+    impl ModelClient for FailingModel {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            bail!("model boom")
+        }
+    }
+
+    struct ToolHungryModel;
+
+    #[async_trait]
+    impl ModelClient for ToolHungryModel {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            Ok(ModelResponse {
+                message: ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: String::new(),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                },
+                tool_calls: vec![ModelToolCall {
+                    id: "call-never-run".to_string(),
+                    name: "read_file".to_string(),
+                    input: json!({"path": "README.md"}),
+                }],
+                usage: None,
+            })
+        }
+    }
+
+    struct SingleResponseModel;
+
+    #[async_trait]
+    impl ModelClient for SingleResponseModel {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            Ok(ModelResponse {
+                message: ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: "hello from model".to_string(),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                },
+                tool_calls: Vec::new(),
+                usage: Some(ModelTokenUsage {
+                    input_tokens: Some(11),
+                    output_tokens: Some(7),
+                    total_tokens: Some(18),
+                }),
+            })
+        }
+    }
+
+    struct OneToolThenDoneModel(std::sync::atomic::AtomicUsize);
+
+    impl OneToolThenDoneModel {
+        fn new() -> Self {
+            Self(std::sync::atomic::AtomicUsize::new(0))
+        }
+    }
+
+    #[async_trait]
+    impl ModelClient for OneToolThenDoneModel {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            let call_count = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if call_count == 0 {
+                return Ok(ModelResponse {
+                    message: ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: String::new(),
+                        tool_call_id: None,
+                        tool_calls: Vec::new(),
+                    },
+                    tool_calls: vec![ModelToolCall {
+                        id: "call-read".to_string(),
+                        name: "read_file".to_string(),
+                        input: json!({"path": "README.md"}),
+                    }],
+                    usage: None,
+                });
+            }
+            Ok(ModelResponse {
+                message: ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: "done".to_string(),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            })
+        }
+    }
+
+    fn temp_session_store(name: &str) -> JsonlAgentSessionStore {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-agent-runtime-test-{name}-{}",
+            chrono_like_test_suffix()
+        ));
+        JsonlAgentSessionStore::default_in(&dir)
+    }
+
+    fn create_test_session(store: &JsonlAgentSessionStore) -> AgentSessionId {
+        store
+            .create_session(AgentSessionMeta {
+                title: "runtime test".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap()
     }
 
     #[test]
@@ -3181,6 +3502,173 @@ mod tests {
                 "write_file"
             ]
         );
+    }
+
+    #[test]
+    fn provider_from_model_reads_prefixed_model_names() {
+        assert_eq!(
+            provider_from_model("openai/gpt-5.5"),
+            Some("openai".to_string())
+        );
+        assert_eq!(provider_from_model("gpt-5.5"), None);
+        assert_eq!(provider_from_model("/gpt-5.5"), None);
+    }
+
+    #[test]
+    fn runtime_persists_model_response_metadata_for_successful_turns() {
+        let store = temp_session_store("model-metadata");
+        let id = create_test_session(&store);
+        let runtime = AgentRuntime::new(SingleResponseModel, store.clone(), ToolRegistry::new());
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let response = async_runtime
+            .block_on(runtime.complete_once(
+                &id,
+                ModelRequest {
+                    model: "openai/gpt-test".to_string(),
+                    messages: Vec::new(),
+                    tools: Vec::new(),
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(response.message.content, "hello from model");
+        let loaded = store.load_session(&id).unwrap();
+        assert!(matches!(
+            &loaded.events[0].kind,
+            AgentSessionEventKind::ModelResponseMetadata {
+                model,
+                provider,
+                round,
+                tool_calls,
+                has_message,
+                usage,
+                ..
+            } if model == "openai/gpt-test"
+                && provider.as_deref() == Some("openai")
+                && round.is_none()
+                && *tool_calls == 0
+                && *has_message
+                && usage.as_ref().and_then(|usage| usage.input_tokens) == Some(11)
+                && usage.as_ref().and_then(|usage| usage.output_tokens) == Some(7)
+                && usage.as_ref().and_then(|usage| usage.total_tokens) == Some(18)
+        ));
+        assert!(matches!(
+            &loaded.events[1].kind,
+            AgentSessionEventKind::AssistantMessage { content } if content == "hello from model"
+        ));
+    }
+
+    #[test]
+    fn runtime_persists_tool_execution_metadata_for_tool_calls() {
+        let store = temp_session_store("tool-metadata");
+        let id = create_test_session(&store);
+        let workspace = std::env::temp_dir().join(format!(
+            "djinn-agent-runtime-tool-metadata-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("README.md"), "hello tool").unwrap();
+        let tools = read_only_tools(&workspace).unwrap();
+        let runtime = AgentRuntime::new(OneToolThenDoneModel::new(), store.clone(), tools);
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let response = async_runtime
+            .block_on(runtime.complete_with_tools(
+                &id,
+                ModelRequest {
+                    model: "openai/gpt-test".to_string(),
+                    messages: Vec::new(),
+                    tools: Vec::new(),
+                },
+                2,
+            ))
+            .unwrap();
+
+        assert_eq!(response.message.content, "done");
+        let loaded = store.load_session(&id).unwrap();
+        assert!(loaded.events.iter().any(|event| matches!(
+            &event.kind,
+            AgentSessionEventKind::ToolExecutionMetadata {
+                id,
+                name,
+                round,
+                success,
+                ..
+            } if id == "call-read"
+                && name == "read_file"
+                && *round == Some(0)
+                && *success
+        )));
+    }
+
+    #[test]
+    fn runtime_persists_structured_error_for_model_failures() {
+        let store = temp_session_store("model-error");
+        let id = create_test_session(&store);
+        let runtime = AgentRuntime::new(FailingModel, store.clone(), ToolRegistry::new());
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let error = async_runtime
+            .block_on(runtime.complete_once(
+                &id,
+                ModelRequest {
+                    model: "test-model".to_string(),
+                    messages: Vec::new(),
+                    tools: Vec::new(),
+                },
+            ))
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "model boom");
+        let loaded = store.load_session(&id).unwrap();
+        assert!(loaded.events.iter().any(|event| matches!(
+            &event.kind,
+            AgentSessionEventKind::Error { phase, message, details }
+                if phase == "model_request"
+                    && message == "model boom"
+                    && details.as_ref().and_then(|value| value.get("model")).and_then(Value::as_str) == Some("test-model")
+        )));
+    }
+
+    #[test]
+    fn runtime_persists_structured_error_for_tool_round_limit() {
+        let store = temp_session_store("round-limit-error");
+        let id = create_test_session(&store);
+        let runtime = AgentRuntime::new(ToolHungryModel, store.clone(), ToolRegistry::new());
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let error = async_runtime
+            .block_on(runtime.complete_with_tools(
+                &id,
+                ModelRequest {
+                    model: "test-model".to_string(),
+                    messages: Vec::new(),
+                    tools: Vec::new(),
+                },
+                0,
+            ))
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("model requested tool calls after max tool rounds"));
+        let loaded = store.load_session(&id).unwrap();
+        assert!(loaded.events.iter().any(|event| matches!(
+            &event.kind,
+            AgentSessionEventKind::Error { phase, details, .. }
+                if phase == "tool_round_limit"
+                    && details.as_ref().and_then(|value| value.get("max_tool_rounds")).and_then(Value::as_u64) == Some(0)
+                    && details.as_ref().and_then(|value| value.get("pending_tool_calls")).and_then(Value::as_u64) == Some(1)
+        )));
     }
 
     #[test]
@@ -3817,6 +4305,48 @@ mod tests {
         assert_eq!(response.tool_calls[0].id, "call-1");
         assert_eq!(response.tool_calls[0].name, "list_dir");
         assert_eq!(response.tool_calls[0].input, json!({"path": "."}));
+    }
+
+    #[test]
+    fn parse_responses_response_reads_usage() {
+        let response = parse_openai_responses_response(
+            r#"{
+              "output_text": "hello",
+              "usage": {
+                "input_tokens": 12,
+                "output_tokens": 6,
+                "total_tokens": 18
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let usage = response.usage.unwrap();
+        assert_eq!(usage.input_tokens, Some(12));
+        assert_eq!(usage.output_tokens, Some(6));
+        assert_eq!(usage.total_tokens, Some(18));
+    }
+
+    #[test]
+    fn openai_chat_usage_maps_to_model_usage() {
+        let response: OpenAiChatResponse = serde_json::from_str(
+            r#"{
+              "choices": [
+                {"message": {"content": "hello"}}
+              ],
+              "usage": {
+                "prompt_tokens": 8,
+                "completion_tokens": 5,
+                "total_tokens": 13
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let usage = ModelTokenUsage::from(response.usage.unwrap());
+        assert_eq!(usage.input_tokens, Some(8));
+        assert_eq!(usage.output_tokens, Some(5));
+        assert_eq!(usage.total_tokens, Some(13));
     }
 
     #[test]
