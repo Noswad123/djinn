@@ -141,8 +141,8 @@ provider/runtime payload details:
   permanent source of truth.
 - Build on the initial native JSON config schema and read-only inspection
   commands (`djinn config show`, `djinn config doctor --source djinn`).
-- Keep native config writes safe: import writes require `--write` and do not
-  overwrite existing files without `--force`.
+- Keep native config writes safe: import writes require `--write`, merge into
+  existing files by default, and replace existing files only with `--force`.
 - Treat OpenCode, Copilot CLI, and future harness formats as import/export
   adapters.
 - Prioritize read-only/dry-run commands before writeback:
@@ -150,6 +150,15 @@ provider/runtime payload details:
   - `djinn config import opencode --dry-run`;
   - `djinn config export opencode --dry-run`;
   - `djinn config export copilot --dry-run`.
+- OpenCode export dry-run exists for providers, default profile, profile models,
+  and compatible permissions. Continue adding target mappings only when the
+  Djinn-native field semantics are stable.
+- OpenCode export write mode is explicit and no-overwrite-by-default.
+- Copilot CLI doctor/import/export exists as a conservative model/provider
+  adapter. Keep richer mapping deferred until the target CLI schema is confirmed.
+- Import writeback now merges into existing Djinn config without replacing
+  same-name profiles/providers; consider whether to expose an explicit `--merge`
+  alias for discoverability.
 
 ### Sub-agent model
 

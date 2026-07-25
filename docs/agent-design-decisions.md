@@ -233,10 +233,22 @@ Implications:
   `~/.config/djinn/config.json` and project-local `.djinn.json`, with read-only
   `djinn config show` and `djinn config doctor --source djinn` inspection. The
   first writeback path is `djinn config import opencode --write`, which creates a
-  native config file but refuses to overwrite existing config unless `--force` is
-  explicit.
+  native config file when absent and merge-writes when present unless `--force`
+  is explicit.
 - Treat OpenCode and Copilot CLI configs as import/export adapters around the
   Djinn-native model.
+- OpenCode export starts as a dry-run projection from Djinn native config. It can
+  emit provider hints, default profile, profile models, and compatible
+  permissions, while reporting native-only fields and secret references instead
+  of exporting them raw. Write mode is explicit and refuses to overwrite existing
+  OpenCode config without `--force`.
+- Copilot CLI import/export is supported as a conservative model/provider adapter.
+  It imports model choices and auth presence into Djinn native config, exports
+  Copilot-prefixed Djinn models as Copilot model ids, and keeps permissions,
+  commands, instructions, tools, and agents native-only for now.
+- Import `--write` is merge-by-default when the Djinn destination already exists:
+  it adds missing providers, profiles, and shared permissions while preserving
+  same-name existing providers/profiles. `--force` remains the replacement path.
 
 ### D7. Sub-agent support: support the concept for OpenCode compatibility
 

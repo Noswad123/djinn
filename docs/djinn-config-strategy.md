@@ -6,7 +6,7 @@ not Djinn's source of truth.
 
 ## Goals
 
-- Make Djinn usable now by reading existing OpenCode configuration.
+- Make Djinn usable now by importing existing OpenCode/Copilot configuration.
 - Learn which OpenCode/Copilot CLI concepts are worth keeping long-term.
 - Converge on a Djinn-native config that reflects Djinn's runtime model.
 - Support import/export to other harnesses where the mapping is meaningful.
@@ -95,11 +95,23 @@ djinn config show
 djinn config show --json
 djinn config doctor --source djinn
 
+djinn config doctor --source copilot
+djinn config doctor --source copilot --json
+
 djinn config doctor --source opencode
 djinn config doctor --source opencode --json
 
+djinn config import copilot --dry-run
+djinn config import copilot --dry-run --json
+
 djinn config import opencode --dry-run
 djinn config import opencode --dry-run --json
+
+djinn config export copilot --dry-run
+djinn config export copilot --dry-run --json
+
+djinn config export opencode --dry-run
+djinn config export opencode --dry-run --json
 ```
 
 Currently implemented write path:
@@ -108,16 +120,35 @@ Currently implemented write path:
 djinn config import opencode --write
 djinn config import opencode --write --output ./.djinn.json
 djinn config import opencode --write --output ./.djinn.json --force
+
+djinn config import copilot --write
+djinn config import copilot --write --output ./.djinn.json
+djinn config import copilot --write --output ./.djinn.json --force
+
+djinn config export opencode --write --output ./opencode.json
+djinn config export opencode --write --output ./opencode.json --force
+
+djinn config export copilot --write --output ./copilot.json
+djinn config export copilot --write --output ./copilot.json --force
 ```
 
 Write safety rules:
 
-- `--write` defaults to `~/.config/djinn/config.json` unless `--output` is set.
-- Existing config files are never overwritten by default.
-- `--force` is required to replace an existing destination.
+- import `--write` defaults to `~/.config/djinn/config.json` unless `--output`
+  is set.
+- OpenCode export `--write` defaults to `~/.config/opencode/opencode.json`
+  unless `--output` is set.
+- Copilot export `--write` defaults to `~/.config/github-copilot/config.json`
+  unless `--output` is set.
+- Import writes merge into existing Djinn config by default, preserving same-name
+  providers and profiles from the existing file.
+- `--force` is required to replace an existing import destination.
+- Export writes never overwrite existing target config files by default.
+- `--force` is required to replace an existing export destination.
 - Secret-like values are still represented as references, not copied raw.
 - Runtime resolution reads Djinn native config, not OpenCode config. OpenCode is
-  only read by explicit doctor/import adapter commands.
+  only read by explicit doctor/import adapter commands. Copilot CLI config is
+  likewise only read by explicit doctor/import/model-discovery paths.
 
 The dry-run output should be structured enough for scripts and readable enough
 for product discovery:
@@ -140,14 +171,16 @@ An import adapter should:
 3. Convert mapped fields into Djinn-native config patches.
 4. Show a dry-run preview by default.
 5. Write only with an explicit `--write` flag.
-6. Refuse to overwrite an existing Djinn config unless `--force` is passed or the
-   user chooses a different `--output` path.
-7. Preserve existing Djinn config unless the user selects an overwrite/merge mode.
+6. Merge into an existing Djinn config by default, adding missing providers,
+   profiles, and shared permissions without overwriting same-name providers or
+   profiles.
+7. Replace an existing Djinn config only when `--force` is passed, or create a
+   separate config when the user chooses a different `--output` path.
 
 Merge modes to consider:
 
-- `--merge`: add or update compatible fields while preserving local Djinn-only
-  settings;
+- `--merge`: explicit synonym for the current default merge behavior, if the CLI
+  needs more discoverability;
 - `--replace-profile <name>`: replace one profile from the imported source;
 - `--replace-all`: rebuild Djinn config from the import source, still preserving
   secrets by reference.
@@ -161,6 +194,11 @@ An export adapter should:
 3. Report fields that cannot be exported cleanly.
 4. Avoid writing secrets unless a secure secret-reference mechanism exists.
 5. Prefer dry-run output and explicit `--write` for file changes.
+6. The implemented OpenCode export dry-run projects providers, default profile,
+   profile models, and compatible permissions; unsupported native-only fields are
+   reported separately.
+7. OpenCode export write mode is no-overwrite-by-default; import write mode is
+   merge-by-default for existing Djinn config.
 
 Round-trip expectation:
 
@@ -186,40 +224,74 @@ Round-trip expectation:
 
 ## Current inspector slice
 
-Before writing a full schema, Djinn has a read-only inspector:
+Before expanding the schema, Djinn has read-only inspectors:
 
 ```bash
+djinn config doctor --source copilot
+djinn config doctor --source copilot --json
+djinn config doctor --source copilot --path ~/.config/github-copilot/config.json
+
 djinn config doctor --source opencode
 djinn config doctor --source opencode --json
 djinn config doctor --source opencode --path ~/.config/opencode/opencode.json
 ```
 
 It uses the compatibility matrix to report what Djinn already understands from
-the current OpenCode config, classifies unsupported and unknown fields, and
-redacts secret-like fields. That gives immediate value and informs the first
-canonical Djinn config schema without prematurely locking it down.
+external harness config, classifies unsupported and unknown fields, and redacts
+secret-like fields. That gives immediate value and informs the first canonical
+Djinn config schema without prematurely locking it down.
 
 ## Current import slice
 
-Djinn can preview or write an OpenCode import as Djinn-native config:
+Djinn can preview or write OpenCode/Copilot imports as Djinn-native config:
 
 ```bash
+djinn config import copilot --dry-run
+djinn config import copilot --dry-run --json
+djinn config import copilot --write
+djinn config import copilot --write --output ./.djinn.json
+
 djinn config import opencode --dry-run
 djinn config import opencode --dry-run --json
 djinn config import opencode --write
 djinn config import opencode --write --output ./.djinn.json
 ```
 
-The import flow handles providers, profiles, models, and compatible permissions
-while still avoiding raw secret export. Write mode creates the destination file
-and refuses to overwrite existing config unless `--force` is explicit.
+The OpenCode import flow handles providers, profiles, models, and compatible
+permissions while still avoiding raw secret export. The Copilot import flow is
+model/provider focused and converts auth presence to `auth = "auto"`. Write mode
+creates the destination file when absent; when the Djinn config already exists it
+adds missing providers/profiles/shared permissions and preserves same-name
+entries. `--force` replaces the destination instead.
 
-## Recommended next slice
+## Current export slice
 
-Use the doctor/import preview output to harden the first Djinn-native config
-schema. After that, add export dry-runs:
+Djinn can preview or write OpenCode/Copilot exports from native config:
 
 ```bash
 djinn config export opencode --dry-run
+djinn config export opencode --dry-run --json
+djinn config export opencode --write --output ./opencode.json
+
 djinn config export copilot --dry-run
+djinn config export copilot --dry-run --json
+djinn config export copilot --write --output ./copilot.json
 ```
+
+The export dry-run projects `model`, `default_agent`, `enabled_providers`, an
+OpenCode `agent` map, and compatible permission arrays. It reports native-only
+fields such as instructions, commands, tools, provider endpoints, and future
+agents as unsupported for now. Provider auth is never exported raw. Export write
+mode creates the destination file and refuses to overwrite existing config unless
+`--force` is explicit.
+
+The Copilot adapter is intentionally model/provider focused. It can import model
+choices and auth presence into `providers.copilot.auth = "auto"`, and export
+Copilot-prefixed Djinn models as Copilot model ids. Permissions, commands,
+instructions, tools, and agents remain Djinn-native for this adapter.
+
+## Recommended next slice
+
+Use the doctor/import/export previews to harden the first Djinn-native config
+schema and decide whether explicit merge controls should come before more harness
+adapters.

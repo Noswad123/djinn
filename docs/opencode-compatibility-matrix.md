@@ -76,8 +76,10 @@ Recommended default behavior:
   from mapped fields and report unsupported/unknown fields without secrets;
 - `djinn config doctor --source opencode`: explain compatibility gaps and
   suggested Djinn-native equivalents without writing files;
-- write/export commands: require explicit `--write`; import writes refuse to
-  overwrite existing config unless `--force` is passed.
+- write/export commands: require explicit `--write`; import writes merge into an
+  existing Djinn config without overwriting same-name providers/profiles, while
+  export writes refuse to overwrite existing target config unless `--force` is
+  passed.
 
 ## Near-term implementation order
 
@@ -89,5 +91,7 @@ Recommended default behavior:
    shape.
 4. Define the Djinn-native config schema for providers, profiles, instructions,
    permissions, and command templates.
-5. Add export adapters after the Djinn-native schema is stable enough to avoid
-   round-trip churn.
+5. Extend the implemented OpenCode export dry-run as additional Djinn-native
+   fields receive stable target-harness mappings.
+6. Keep the implemented Copilot adapter model/provider focused until a stable
+   Copilot CLI schema for richer concepts is confirmed.

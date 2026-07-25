@@ -118,28 +118,42 @@ djinn agent config list
 djinn agent config list --json
 ```
 
-Inspect how OpenCode config maps into Djinn concepts without writing anything:
+Inspect Djinn-native config and external config adapters:
 
 ```bash
 djinn config show
 djinn config show --json
 djinn config doctor --source djinn
+djinn config doctor --source copilot
+djinn config doctor --source copilot --json
+djinn config doctor --source copilot --path ~/.config/github-copilot/config.json
 djinn config doctor --source opencode
 djinn config doctor --source opencode --json
 djinn config doctor --source opencode --path ~/.config/opencode/opencode.json
+djinn config import copilot --dry-run
+djinn config import copilot --dry-run --json
+djinn config import copilot --write --output ./.djinn.json
 djinn config import opencode --dry-run
 djinn config import opencode --dry-run --json
 djinn config import opencode --write
 djinn config import opencode --write --output ./.djinn.json
+djinn config export copilot --dry-run
+djinn config export copilot --write --output ./copilot.json
+djinn config export opencode --dry-run
+djinn config export opencode --dry-run --json
+djinn config export opencode --write --output ./opencode.json
 ```
 
 Djinn's native config is currently a versioned JSON document discovered from
 `~/.config/djinn/config.json` and project-local `.djinn.json`, with project-local
 values layered last. Version 1 includes canonical sections for providers,
 profiles, shared permissions, instructions, command templates, tools, and future
-agents. Import writes refuse to overwrite an existing destination unless
-`--force` is passed. Agent runtime resolution reads Djinn native config; OpenCode
-config is read only by explicit doctor/import adapter commands.
+agents. Import writes merge into an existing Djinn config without overwriting
+same-name providers or profiles; `--force` replaces the destination instead.
+Agent runtime resolution reads Djinn native config; OpenCode and Copilot config
+are read only by explicit doctor/import adapter commands. OpenCode and Copilot
+exports can preview or write supported fields; exports refuse to overwrite
+existing files unless `--force` is passed.
 
 Save and review chats:
 
