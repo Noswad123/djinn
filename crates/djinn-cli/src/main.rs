@@ -14,10 +14,10 @@ use async_trait::async_trait;
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use djinn_agent::{
-    tools_with_policies_file_history_and_gate, AgentProgressEvent, AgentRuntime, ModelMessage,
-    ModelRequest, ModelRole, OpenAiAuth, OpenAiClient, OpenAiOAuth, PermissionDecision,
-    PermissionEffect, PermissionGate, PermissionPolicy, PermissionRequest, PermissionRule,
-    ReadAccessEffect, ReadAccessPolicy, ReadAccessRule, ToolSpec,
+    tools_with_policies_file_history_and_gate, AgentProgressEvent, AgentRuntime, CopilotClient,
+    ModelClient, ModelMessage, ModelRequest, ModelRole, OpenAiAuth, OpenAiClient, OpenAiOAuth,
+    PermissionDecision, PermissionEffect, PermissionGate, PermissionPolicy, PermissionRequest,
+    PermissionRule, ReadAccessEffect, ReadAccessPolicy, ReadAccessRule, ToolSpec,
 };
 use djinn_chats::{ChatRecord, ChatRestoreReport};
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
@@ -90,6 +90,8 @@ enum Command {
     Switch(SwitchArgs),
     /// Open an item in the user's editor.
     Open(OpenArgs),
+    /// Inspect Djinn configuration and external harness config adapters.
+    Config(ConfigArgs),
     /// Run or inspect Djinn-native agent sessions.
     Agent(AgentArgs),
     /// Open the unified terminal dashboard.
@@ -573,6 +575,94 @@ struct OpenArgs {
     noun: OpenNoun,
 }
 
+#[derive(Debug, Args)]
+struct ConfigArgs {
+    #[command(subcommand)]
+    command: ConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Show Djinn's native config, merged from discovered config files.
+    Show(ConfigShowArgs),
+    /// Diagnose how an external harness config maps into Djinn concepts.
+    Doctor(ConfigDoctorArgs),
+    /// Preview importing an external harness config into Djinn-native config.
+    Import(ConfigImportArgs),
+}
+
+#[derive(Debug, Args)]
+struct ConfigShowArgs {
+    /// Djinn config file path to load. Defaults to discovered native config paths.
+    #[arg(long)]
+    path: Option<PathBuf>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ConfigImportArgs {
+    #[command(subcommand)]
+    source: ConfigImportSource,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigImportSource {
+    /// Preview importing OpenCode config.
+    Opencode(ConfigImportOpencodeArgs),
+}
+
+#[derive(Debug, Args)]
+struct ConfigImportOpencodeArgs {
+    /// OpenCode config file path to inspect. Defaults to Djinn's discovered source paths.
+    #[arg(long)]
+    path: Option<PathBuf>,
+    /// Preview the import without writing files.
+    #[arg(long)]
+    dry_run: bool,
+    /// Write the imported Djinn-native config.
+    #[arg(long)]
+    write: bool,
+    /// Destination Djinn config file. Defaults to ~/.config/djinn/config.json.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Allow --write to replace an existing destination file.
+    #[arg(long)]
+    force: bool,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ConfigDoctorArgs {
+    /// External config source to inspect.
+    #[arg(long, value_enum, default_value_t = ConfigSource::Djinn)]
+    source: ConfigSource,
+    /// Config file path to inspect. Defaults to Djinn's discovered source paths.
+    #[arg(long)]
+    path: Option<PathBuf>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ConfigSource {
+    Djinn,
+    Opencode,
+}
+
 #[derive(Debug, Subcommand)]
 enum OpenNoun {
     /// Open a local tool source by name.
@@ -1010,7 +1100,7 @@ struct AgentFileHistoryRestoreArgs {
 
 #[derive(Debug, Args)]
 struct AgentAskArgs {
-    /// Prompt to send to OpenAI.
+    /// Prompt to send to the configured agent provider.
     prompt: String,
     /// Human-friendly session title. Defaults to a trimmed prompt preview.
     #[arg(long)]
@@ -1021,13 +1111,13 @@ struct AgentAskArgs {
     /// Agent profile name.
     #[arg(long, default_value = "default")]
     profile: String,
-    /// OpenAI model to use. Defaults to DJINN_OPENAI_MODEL or gpt-4o-mini.
+    /// Model to use. Prefix with copilot/ to use GitHub Copilot.
     #[arg(long)]
     model: Option<String>,
-    /// OpenAI API key. Defaults to OPENAI_API_KEY.
+    /// Provider API token. For copilot/* models, this is a Copilot API token.
     #[arg(long = "api-key")]
     api_key: Option<String>,
-    /// OpenAI-compatible base URL. Defaults to OPENAI_BASE_URL or https://api.openai.com/v1.
+    /// Provider endpoint/base URL. For copilot/* models, this is the chat completions endpoint.
     #[arg(long = "base-url")]
     base_url: Option<String>,
     /// Maximum model/tool-call rounds before stopping.
@@ -1052,13 +1142,13 @@ struct AgentChatArgs {
     /// Agent profile name.
     #[arg(long, default_value = "default")]
     profile: String,
-    /// OpenAI model to use. Defaults to OpenCode config, DJINN_OPENAI_MODEL, or gpt-4o-mini.
+    /// Model to use. Prefix with copilot/ to use GitHub Copilot.
     #[arg(long)]
     model: Option<String>,
-    /// OpenAI API key. Defaults to OpenCode config/auth or OPENAI_API_KEY.
+    /// Provider API token. For copilot/* models, this is a Copilot API token.
     #[arg(long = "api-key")]
     api_key: Option<String>,
-    /// OpenAI-compatible base URL. Defaults to OPENAI_BASE_URL or https://api.openai.com/v1.
+    /// Provider endpoint/base URL. For copilot/* models, this is the chat completions endpoint.
     #[arg(long = "base-url")]
     base_url: Option<String>,
     /// Maximum model/tool-call rounds before stopping.
@@ -1389,13 +1479,13 @@ struct ShareMergeArgs {
     /// Agent profile name.
     #[arg(long, default_value = "default")]
     profile: String,
-    /// OpenAI model to use. Defaults to OpenCode config, DJINN_OPENAI_MODEL, or gpt-4o-mini.
+    /// Model to use. Prefix with copilot/ to use GitHub Copilot.
     #[arg(long)]
     model: Option<String>,
-    /// OpenAI API key. Defaults to OpenCode config/auth or OPENAI_API_KEY.
+    /// Provider API token. For copilot/* models, this is a Copilot API token.
     #[arg(long = "api-key")]
     api_key: Option<String>,
-    /// OpenAI-compatible base URL. Defaults to OPENAI_BASE_URL or https://api.openai.com/v1.
+    /// Provider endpoint/base URL. For copilot/* models, this is the chat completions endpoint.
     #[arg(long = "base-url")]
     base_url: Option<String>,
 }
@@ -1753,6 +1843,7 @@ fn main() -> Result<()> {
         Command::Status(args) => run_status(args),
         Command::Switch(args) => run_switch(args),
         Command::Open(args) => run_open(args),
+        Command::Config(args) => run_config(args),
         Command::Agent(args) => run_agent(args),
         Command::Tui(args) => {
             if let Some(args) = run_tui(args)? {
@@ -1987,6 +2078,1729 @@ fn run_open(args: OpenArgs) -> Result<()> {
     }
 }
 
+fn run_config(args: ConfigArgs) -> Result<()> {
+    match args.command {
+        ConfigCommand::Show(args) => config_show(args),
+        ConfigCommand::Doctor(args) => config_doctor(args),
+        ConfigCommand::Import(args) => config_import(args),
+    }
+}
+
+fn config_show(args: ConfigShowArgs) -> Result<()> {
+    let report = load_djinn_config(args.path)?;
+    print!(
+        "{}",
+        format_djinn_config_load_report(&report, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+fn config_import(args: ConfigImportArgs) -> Result<()> {
+    match args.source {
+        ConfigImportSource::Opencode(args) => config_import_opencode(args),
+    }
+}
+
+fn config_import_opencode(args: ConfigImportOpencodeArgs) -> Result<()> {
+    match (args.dry_run, args.write) {
+        (true, true) => bail!("choose either --dry-run or --write, not both"),
+        (false, false) => bail!("config import is safe by default; pass --dry-run to preview or --write to create a Djinn config file"),
+        (true, false) => {
+            let preview = opencode_config_import_preview(args.path)?;
+            print!(
+                "{}",
+                format_config_import_preview(&preview, output_format(args.format, args.json))?
+            );
+        }
+        (false, true) => {
+            let preview = opencode_config_import_preview(args.path)?;
+            let output = args.output.unwrap_or_else(default_djinn_config_path);
+            let report = write_config_import_preview(&preview, &output, args.force)?;
+            print!(
+                "{}",
+                format_config_import_write_report(&report, output_format(args.format, args.json))?
+            );
+        }
+    }
+    Ok(())
+}
+
+fn config_doctor(args: ConfigDoctorArgs) -> Result<()> {
+    let report = match args.source {
+        ConfigSource::Djinn => djinn_config_doctor(args.path)?,
+        ConfigSource::Opencode => opencode_config_doctor(args.path)?,
+    };
+    print!(
+        "{}",
+        format_config_doctor_report(&report, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ConfigDoctorReport {
+    source: String,
+    checked_paths: Vec<String>,
+    files: Vec<ConfigDoctorFileReport>,
+    summary: ConfigDoctorSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+struct ConfigDoctorSummary {
+    checked_path_count: usize,
+    readable_file_count: usize,
+    mapped_count: usize,
+    unsupported_count: usize,
+    unknown_count: usize,
+    secret_count: usize,
+    error_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ConfigDoctorFileReport {
+    path: String,
+    exists: bool,
+    readable: bool,
+    mapped: Vec<ConfigDoctorFinding>,
+    unsupported: Vec<ConfigDoctorFinding>,
+    unknown: Vec<ConfigDoctorFinding>,
+    secrets: Vec<ConfigDoctorFinding>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ConfigDoctorFinding {
+    pointer: String,
+    concept: String,
+    djinn_mapping: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DjinnConfig {
+    #[serde(default = "default_djinn_config_version")]
+    version: u16,
+    #[serde(default)]
+    default_profile: Option<String>,
+    #[serde(default)]
+    providers: BTreeMap<String, DjinnConfigProvider>,
+    #[serde(default)]
+    profiles: BTreeMap<String, DjinnConfigProfile>,
+    #[serde(default)]
+    permissions: Vec<DjinnConfigPermission>,
+    #[serde(default)]
+    instructions: BTreeMap<String, DjinnConfigInstruction>,
+    #[serde(default)]
+    commands: BTreeMap<String, DjinnConfigCommandTemplate>,
+    #[serde(default)]
+    tools: BTreeMap<String, DjinnConfigTool>,
+    #[serde(default)]
+    agents: BTreeMap<String, DjinnConfigAgent>,
+}
+
+impl Default for DjinnConfig {
+    fn default() -> Self {
+        Self {
+            version: default_djinn_config_version(),
+            default_profile: None,
+            providers: BTreeMap::new(),
+            profiles: BTreeMap::new(),
+            permissions: Vec::new(),
+            instructions: BTreeMap::new(),
+            commands: BTreeMap::new(),
+            tools: BTreeMap::new(),
+            agents: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+struct DjinnConfigProvider {
+    #[serde(rename = "type")]
+    provider_type: String,
+    #[serde(default)]
+    auth: Option<String>,
+    #[serde(default)]
+    endpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+struct DjinnConfigProfile {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    instructions: Vec<String>,
+    #[serde(default)]
+    permissions: Vec<DjinnConfigPermission>,
+    #[serde(default)]
+    tools: Vec<String>,
+    #[serde(default)]
+    agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DjinnConfigPermission {
+    action: String,
+    #[serde(default = "default_permission_resource")]
+    resource: String,
+    effect: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+struct DjinnConfigInstruction {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+struct DjinnConfigCommandTemplate {
+    #[serde(default)]
+    prompt: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+struct DjinnConfigTool {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    permission: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+struct DjinnConfigAgent {
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    instructions: Vec<String>,
+    #[serde(default)]
+    tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct DjinnConfigLoadReport {
+    checked_paths: Vec<String>,
+    files: Vec<DjinnConfigFileReport>,
+    effective: DjinnConfig,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct DjinnConfigFileReport {
+    path: String,
+    exists: bool,
+    readable: bool,
+    errors: Vec<String>,
+}
+
+fn default_djinn_config_version() -> u16 {
+    1
+}
+
+fn default_permission_resource() -> String {
+    "*".to_string()
+}
+
+fn default_djinn_config_path() -> PathBuf {
+    djinn_config_dir().join("config.json")
+}
+
+fn djinn_config_dir() -> PathBuf {
+    env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| djinn_core::home_dir().join(".config"))
+        .join("djinn")
+}
+
+fn djinn_config_paths(cwd: &Path) -> Vec<PathBuf> {
+    clean_unique_paths(vec![default_djinn_config_path(), cwd.join(".djinn.json")])
+}
+
+fn load_djinn_config(path: Option<PathBuf>) -> Result<DjinnConfigLoadReport> {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let paths = clean_unique_paths(
+        path.map(|path| vec![path])
+            .unwrap_or_else(|| djinn_config_paths(&cwd)),
+    );
+    let checked_paths = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    let mut files = Vec::new();
+    let mut configs = Vec::new();
+    let mut warnings = Vec::new();
+
+    for path in paths {
+        if !path.exists() {
+            files.push(DjinnConfigFileReport {
+                path: path.display().to_string(),
+                exists: false,
+                readable: false,
+                errors: Vec::new(),
+            });
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) => {
+                files.push(DjinnConfigFileReport {
+                    path: path.display().to_string(),
+                    exists: true,
+                    readable: false,
+                    errors: vec![format!("read failed: {error}")],
+                });
+                continue;
+            }
+        };
+        match parse_djinn_config(&content) {
+            Ok(config) => {
+                files.push(DjinnConfigFileReport {
+                    path: path.display().to_string(),
+                    exists: true,
+                    readable: true,
+                    errors: Vec::new(),
+                });
+                configs.push(config);
+            }
+            Err(error) => files.push(DjinnConfigFileReport {
+                path: path.display().to_string(),
+                exists: true,
+                readable: true,
+                errors: vec![format!("parse failed: {error}")],
+            }),
+        }
+    }
+
+    if configs.is_empty() {
+        warnings.push(
+            "no readable Djinn config files found; using built-in empty defaults".to_string(),
+        );
+    }
+
+    Ok(DjinnConfigLoadReport {
+        checked_paths,
+        files,
+        effective: merge_djinn_configs(configs),
+        warnings,
+    })
+}
+
+fn effective_djinn_config() -> Result<DjinnConfig> {
+    Ok(load_djinn_config(None)?.effective)
+}
+
+fn parse_djinn_config(content: &str) -> Result<DjinnConfig> {
+    let config: DjinnConfig = serde_json::from_str(content)?;
+    validate_djinn_config(&config)?;
+    Ok(config)
+}
+
+fn validate_djinn_config(config: &DjinnConfig) -> Result<()> {
+    if config.version != 1 {
+        bail!(
+            "unsupported Djinn config version {}; expected 1",
+            config.version
+        );
+    }
+    Ok(())
+}
+
+fn merge_djinn_configs(configs: Vec<DjinnConfig>) -> DjinnConfig {
+    let mut effective = DjinnConfig::default();
+    for config in configs {
+        if config.default_profile.is_some() {
+            effective.default_profile = config.default_profile;
+        }
+        effective.providers.extend(config.providers);
+        effective.profiles.extend(config.profiles);
+        effective.permissions.extend(config.permissions);
+        effective.instructions.extend(config.instructions);
+        effective.commands.extend(config.commands);
+        effective.tools.extend(config.tools);
+        effective.agents.extend(config.agents);
+    }
+    effective
+}
+
+fn djinn_config_doctor(path: Option<PathBuf>) -> Result<ConfigDoctorReport> {
+    let load = load_djinn_config(path)?;
+    let mut files = Vec::new();
+    for file in &load.files {
+        let mut report = ConfigDoctorFileReport {
+            path: file.path.clone(),
+            exists: file.exists,
+            readable: file.readable,
+            mapped: Vec::new(),
+            unsupported: Vec::new(),
+            unknown: Vec::new(),
+            secrets: Vec::new(),
+            errors: file.errors.clone(),
+        };
+        if file.readable && file.errors.is_empty() {
+            let content = fs::read_to_string(&file.path).unwrap_or_default();
+            if let Ok(value) = serde_json::from_str::<Value>(&content) {
+                report = djinn_config_doctor_from_value(Path::new(&file.path), &value);
+            }
+        }
+        files.push(report);
+    }
+    Ok(ConfigDoctorReport {
+        source: "djinn".to_string(),
+        checked_paths: load.checked_paths,
+        summary: config_doctor_summary(&files),
+        files,
+    })
+}
+
+fn djinn_config_doctor_from_value(path: &Path, value: &Value) -> ConfigDoctorFileReport {
+    let mut file = ConfigDoctorFileReport {
+        path: path.display().to_string(),
+        exists: true,
+        readable: true,
+        mapped: Vec::new(),
+        unsupported: Vec::new(),
+        unknown: Vec::new(),
+        secrets: Vec::new(),
+        errors: Vec::new(),
+    };
+
+    collect_config_secrets(value, "", &mut file.secrets);
+    let Some(object) = value.as_object() else {
+        file.errors
+            .push("Djinn config root must be a JSON object".to_string());
+        return file;
+    };
+    for key in object.keys() {
+        let pointer = format!("/{}", json_pointer_escape(key));
+        match key.as_str() {
+            "version" => push_mapped(
+                &mut file,
+                &pointer,
+                "Djinn config schema version",
+                "native schema migration guard",
+                "Version 1 is the current native config schema.",
+            ),
+            "default_profile" => push_mapped(
+                &mut file,
+                &pointer,
+                "Djinn default profile",
+                "native default profile",
+                "Used when no command/session profile is specified.",
+            ),
+            "providers" => push_mapped(
+                &mut file,
+                &pointer,
+                "Djinn providers",
+                "native provider registry",
+                "Defines provider types, endpoints, and secret references.",
+            ),
+            "profiles" => push_mapped(
+                &mut file,
+                &pointer,
+                "Djinn profiles",
+                "native profile registry",
+                "Defines profile model, instructions, tools, and permissions.",
+            ),
+            "permissions" => push_mapped(
+                &mut file,
+                &pointer,
+                "Djinn shared permissions",
+                "native permission defaults",
+                "Defines shared read/write/shell policy before profile overrides.",
+            ),
+            "instructions" => push_mapped(
+                &mut file,
+                &pointer,
+                "Djinn instruction sources",
+                "native context/instruction registry",
+                "Defines reusable instruction sources by path or inline text.",
+            ),
+            "commands" => push_mapped(
+                &mut file,
+                &pointer,
+                "Djinn command templates",
+                "native prompt template registry",
+                "Defines reusable prompt templates for future command palette flows.",
+            ),
+            "tools" => push_mapped(
+                &mut file,
+                &pointer,
+                "Djinn tool policy",
+                "native tool registry settings",
+                "Defines tool enablement and permission hints.",
+            ),
+            "agents" => push_mapped(
+                &mut file,
+                &pointer,
+                "Djinn agents",
+                "native sub-agent registry",
+                "Reserved for future constrained agent definitions.",
+            ),
+            _ if is_secret_key(key) => push_secret(
+                &mut file.secrets,
+                &pointer,
+                "Secret-like Djinn config field",
+                "secret reference only",
+                "Value intentionally redacted; native config should prefer secret references.",
+            ),
+            _ => push_unknown(
+                &mut file,
+                &pointer,
+                "Unknown Djinn config field",
+                "no native mapping",
+                "Field is not part of Djinn config schema version 1.",
+            ),
+        }
+    }
+    dedupe_config_findings(&mut file.secrets);
+    file
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ConfigImportPreview {
+    source: String,
+    mode: String,
+    checked_paths: Vec<String>,
+    readable_files: Vec<String>,
+    patch: DjinnConfigPatchPreview,
+    unsupported: Vec<ConfigDoctorFinding>,
+    unknown: Vec<ConfigDoctorFinding>,
+    secrets: Vec<ConfigDoctorFinding>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ConfigImportWriteReport {
+    source: String,
+    mode: String,
+    path: String,
+    overwritten: bool,
+    config: DjinnConfig,
+    unsupported: Vec<ConfigDoctorFinding>,
+    unknown: Vec<ConfigDoctorFinding>,
+    secrets: Vec<ConfigDoctorFinding>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct DjinnConfigPatchPreview {
+    version: u16,
+    default_profile: Option<String>,
+    providers: BTreeMap<String, DjinnProviderPatchPreview>,
+    profiles: BTreeMap<String, DjinnProfilePatchPreview>,
+    permissions: Vec<DjinnPermissionPatchPreview>,
+}
+
+impl Default for DjinnConfigPatchPreview {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            default_profile: None,
+            providers: BTreeMap::new(),
+            profiles: BTreeMap::new(),
+            permissions: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+struct DjinnProviderPatchPreview {
+    #[serde(rename = "type")]
+    provider_type: String,
+    auth: Option<String>,
+    source_pointers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+struct DjinnProfilePatchPreview {
+    model: Option<String>,
+    instructions: Vec<String>,
+    permissions: Vec<DjinnPermissionPatchPreview>,
+    source_pointers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct DjinnPermissionPatchPreview {
+    action: String,
+    resource: String,
+    effect: String,
+    source_pointer: String,
+}
+
+fn opencode_config_import_preview(path: Option<PathBuf>) -> Result<ConfigImportPreview> {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let paths = clean_unique_paths(
+        path.map(|path| vec![path])
+            .unwrap_or_else(|| opencode_model_config_paths(&cwd)),
+    );
+    let checked_paths = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    let mut sources = Vec::new();
+    let mut warnings = Vec::new();
+
+    for path in &paths {
+        if !path.exists() {
+            continue;
+        }
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) => {
+                warnings.push(format!("{}: read failed: {error}", path.display()));
+                continue;
+            }
+        };
+        match serde_json::from_str::<Value>(&content) {
+            Ok(value) => sources.push((path.clone(), value)),
+            Err(error) => warnings.push(format!("{}: parse failed: {error}", path.display())),
+        }
+    }
+
+    Ok(opencode_config_import_preview_from_values(
+        checked_paths,
+        sources,
+        warnings,
+    ))
+}
+
+fn write_config_import_preview(
+    preview: &ConfigImportPreview,
+    output: &Path,
+    force: bool,
+) -> Result<ConfigImportWriteReport> {
+    if preview.readable_files.is_empty() {
+        bail!(
+            "no readable {} config files found; nothing to write",
+            preview.source
+        );
+    }
+    let config = djinn_config_from_import_patch(&preview.patch);
+    let overwritten = write_djinn_config_file(&config, output, force)?;
+    Ok(ConfigImportWriteReport {
+        source: preview.source.clone(),
+        mode: "write".to_string(),
+        path: output.display().to_string(),
+        overwritten,
+        config,
+        unsupported: preview.unsupported.clone(),
+        unknown: preview.unknown.clone(),
+        secrets: preview.secrets.clone(),
+        warnings: preview.warnings.clone(),
+    })
+}
+
+fn write_djinn_config_file(config: &DjinnConfig, output: &Path, force: bool) -> Result<bool> {
+    let exists = output.exists();
+    if exists && !force {
+        bail!(
+            "refusing to overwrite existing Djinn config {}; pass --force to replace it or choose --output",
+            output.display()
+        );
+    }
+    if let Some(parent) = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating Djinn config directory {}", parent.display()))?;
+    }
+    let mut rendered = serde_json::to_string_pretty(config)?;
+    rendered.push('\n');
+    fs::write(output, rendered)
+        .with_context(|| format!("writing Djinn config {}", output.display()))?;
+    Ok(exists)
+}
+
+fn djinn_config_from_import_patch(patch: &DjinnConfigPatchPreview) -> DjinnConfig {
+    DjinnConfig {
+        version: patch.version,
+        default_profile: patch.default_profile.clone(),
+        providers: patch
+            .providers
+            .iter()
+            .map(|(name, provider)| {
+                (
+                    name.clone(),
+                    DjinnConfigProvider {
+                        provider_type: provider.provider_type.clone(),
+                        auth: provider.auth.clone(),
+                        endpoint: None,
+                    },
+                )
+            })
+            .collect(),
+        profiles: patch
+            .profiles
+            .iter()
+            .map(|(name, profile)| {
+                (
+                    name.clone(),
+                    DjinnConfigProfile {
+                        model: profile.model.clone(),
+                        instructions: profile.instructions.clone(),
+                        permissions: profile
+                            .permissions
+                            .iter()
+                            .map(djinn_config_permission_from_patch)
+                            .collect(),
+                        tools: Vec::new(),
+                        agent: None,
+                    },
+                )
+            })
+            .collect(),
+        permissions: patch
+            .permissions
+            .iter()
+            .map(djinn_config_permission_from_patch)
+            .collect(),
+        instructions: BTreeMap::new(),
+        commands: BTreeMap::new(),
+        tools: BTreeMap::new(),
+        agents: BTreeMap::new(),
+    }
+}
+
+fn djinn_config_permission_from_patch(
+    permission: &DjinnPermissionPatchPreview,
+) -> DjinnConfigPermission {
+    DjinnConfigPermission {
+        action: permission.action.clone(),
+        resource: permission.resource.clone(),
+        effect: permission.effect.clone(),
+    }
+}
+
+fn opencode_config_import_preview_from_values(
+    checked_paths: Vec<String>,
+    sources: Vec<(PathBuf, Value)>,
+    mut warnings: Vec<String>,
+) -> ConfigImportPreview {
+    let mut patch = DjinnConfigPatchPreview::default();
+    let mut unsupported = Vec::new();
+    let mut unknown = Vec::new();
+    let mut secrets = Vec::new();
+    let readable_files = sources
+        .iter()
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+
+    if sources.is_empty() {
+        warnings.push("no readable OpenCode config files found".to_string());
+    }
+
+    for (path, value) in &sources {
+        let doctor = opencode_config_doctor_from_value(path, value);
+        unsupported.extend(doctor.unsupported);
+        unknown.extend(doctor.unknown);
+        secrets.extend(doctor.secrets);
+        apply_opencode_config_to_patch(value, &mut patch);
+    }
+
+    dedupe_config_findings(&mut unsupported);
+    dedupe_config_findings(&mut unknown);
+    dedupe_config_findings(&mut secrets);
+
+    ConfigImportPreview {
+        source: "opencode".to_string(),
+        mode: "dry-run".to_string(),
+        checked_paths,
+        readable_files,
+        patch,
+        unsupported,
+        unknown,
+        secrets,
+        warnings,
+    }
+}
+
+fn apply_opencode_config_to_patch(value: &Value, patch: &mut DjinnConfigPatchPreview) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+
+    let default_profile = object
+        .get("default_agent")
+        .or_else(|| object.get("defaultAgent"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .map(ToOwned::to_owned);
+    if patch.default_profile.is_none() {
+        patch.default_profile = default_profile.clone();
+    }
+    let fallback_profile = default_profile
+        .clone()
+        .or_else(|| patch.default_profile.clone())
+        .unwrap_or_else(|| "default".to_string());
+
+    if let Some(model) = object
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        let profile = patch.profiles.entry(fallback_profile.clone()).or_default();
+        if profile.model.is_none() {
+            profile.model = Some(model.to_string());
+        }
+        push_unique_string(&mut profile.source_pointers, "/model");
+        add_provider_from_model(model, patch);
+    }
+
+    collect_import_permissions_from_value(value, "", &mut patch.permissions);
+    collect_import_providers(value, patch);
+    collect_import_enabled_providers(value, patch);
+    collect_import_agents(value, patch);
+}
+
+fn collect_import_agents(value: &Value, patch: &mut DjinnConfigPatchPreview) {
+    for container in ["agent", "agents"] {
+        let Some(agents) = value.get(container).and_then(Value::as_object) else {
+            continue;
+        };
+        for (name, agent) in agents {
+            let profile_pointer = format!("/{}/{}", container, json_pointer_escape(name));
+            let mut model_to_add_provider = None;
+            {
+                let profile = patch.profiles.entry(name.to_string()).or_default();
+                push_unique_string(&mut profile.source_pointers, &profile_pointer);
+                if let Some(model) = agent
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                {
+                    profile.model = Some(model.to_string());
+                    push_unique_string(
+                        &mut profile.source_pointers,
+                        &format!("{profile_pointer}/model"),
+                    );
+                    model_to_add_provider = Some(model.to_string());
+                }
+                collect_import_permissions_from_value(
+                    agent,
+                    &profile_pointer,
+                    &mut profile.permissions,
+                );
+            }
+            if let Some(model) = model_to_add_provider {
+                add_provider_from_model(&model, patch);
+            }
+        }
+    }
+}
+
+fn collect_import_providers(value: &Value, patch: &mut DjinnConfigPatchPreview) {
+    let Some(providers) = value.get("providers").and_then(Value::as_object) else {
+        return;
+    };
+    for (name, provider) in providers {
+        let pointer = format!("/providers/{}", json_pointer_escape(name));
+        let entry = patch.providers.entry(name.to_string()).or_default();
+        if entry.provider_type.is_empty() {
+            entry.provider_type = name.to_string();
+        }
+        push_unique_string(&mut entry.source_pointers, &pointer);
+        if provider
+            .get("apiKey")
+            .or_else(|| provider.get("api_key"))
+            .is_some()
+        {
+            entry.auth = Some(format!("opencode:{pointer}/apiKey"));
+        }
+    }
+}
+
+fn collect_import_enabled_providers(value: &Value, patch: &mut DjinnConfigPatchPreview) {
+    let Some(providers) = value
+        .get("enabled_providers")
+        .or_else(|| value.get("enabledProviders"))
+    else {
+        return;
+    };
+    let values: Vec<String> = match providers {
+        Value::Array(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|provider| !provider.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        Value::String(value) => value
+            .split([',', ';', '\n'])
+            .map(str::trim)
+            .filter(|provider| !provider.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    };
+    for provider in values {
+        let entry = patch.providers.entry(provider.clone()).or_default();
+        if entry.provider_type.is_empty() {
+            entry.provider_type = provider;
+        }
+        push_unique_string(&mut entry.source_pointers, "/enabled_providers");
+    }
+}
+
+fn add_provider_from_model(model: &str, patch: &mut DjinnConfigPatchPreview) {
+    let Some((provider, _)) = model.split_once('/') else {
+        return;
+    };
+    if provider.trim().is_empty() {
+        return;
+    }
+    let entry = patch.providers.entry(provider.to_string()).or_default();
+    if entry.provider_type.is_empty() {
+        entry.provider_type = provider.to_string();
+    }
+    push_unique_string(&mut entry.source_pointers, "model-prefix");
+}
+
+fn collect_import_permissions_from_value(
+    value: &Value,
+    base_pointer: &str,
+    out: &mut Vec<DjinnPermissionPatchPreview>,
+) {
+    if let Some(permission) = value.get("permission") {
+        collect_import_v1_permissions(permission, &format_pointer(base_pointer, "permission"), out);
+    }
+    if let Some(permissions) = value.get("permissions") {
+        collect_import_v2_permissions(
+            permissions,
+            &format_pointer(base_pointer, "permissions"),
+            out,
+        );
+    }
+}
+
+fn collect_import_v1_permissions(
+    permission: &Value,
+    base_pointer: &str,
+    out: &mut Vec<DjinnPermissionPatchPreview>,
+) {
+    let Some(permission) = permission.as_object() else {
+        return;
+    };
+    for (action, value) in permission {
+        let normalized_action = opencode_permission_action(action);
+        let action_pointer = format!("{base_pointer}/{}", json_pointer_escape(action));
+        if let Some(effect) = value.as_str().and_then(normalized_permission_effect_string) {
+            out.push(DjinnPermissionPatchPreview {
+                action: normalized_action,
+                resource: "*".to_string(),
+                effect,
+                source_pointer: action_pointer,
+            });
+            continue;
+        }
+        let Some(patterns) = value.as_object() else {
+            continue;
+        };
+        for (pattern, effect) in patterns {
+            if let Some(effect) = effect
+                .as_str()
+                .and_then(normalized_permission_effect_string)
+            {
+                out.push(DjinnPermissionPatchPreview {
+                    action: normalized_action.clone(),
+                    resource: pattern.to_string(),
+                    effect,
+                    source_pointer: format!("{action_pointer}/{}", json_pointer_escape(pattern)),
+                });
+            }
+        }
+    }
+}
+
+fn collect_import_v2_permissions(
+    permissions: &Value,
+    base_pointer: &str,
+    out: &mut Vec<DjinnPermissionPatchPreview>,
+) {
+    let Some(permissions) = permissions.as_array() else {
+        return;
+    };
+    for (index, rule) in permissions.iter().enumerate() {
+        let source_pointer = format!("{base_pointer}/{index}");
+        let action = rule
+            .get("action")
+            .and_then(Value::as_str)
+            .map(opencode_permission_action)
+            .unwrap_or_else(|| "*".to_string());
+        let Some(effect) = rule
+            .get("effect")
+            .and_then(Value::as_str)
+            .and_then(normalized_permission_effect_string)
+        else {
+            continue;
+        };
+        let resource = rule
+            .get("resource")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|resource| !resource.is_empty())
+            .unwrap_or("*");
+        out.push(DjinnPermissionPatchPreview {
+            action,
+            resource: resource.to_string(),
+            effect,
+            source_pointer,
+        });
+    }
+}
+
+fn normalized_permission_effect_string(effect: &str) -> Option<String> {
+    match effect.trim() {
+        "allow" => Some("allow".to_string()),
+        "ask" => Some("ask".to_string()),
+        "deny" => Some("deny".to_string()),
+        _ => None,
+    }
+}
+
+fn format_pointer(base: &str, child: &str) -> String {
+    if base.is_empty() {
+        format!("/{}", json_pointer_escape(child))
+    } else {
+        format!("{}/{}", base, json_pointer_escape(child))
+    }
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
+}
+
+fn opencode_config_doctor(path: Option<PathBuf>) -> Result<ConfigDoctorReport> {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let paths = clean_unique_paths(
+        path.map(|path| vec![path])
+            .unwrap_or_else(|| opencode_model_config_paths(&cwd)),
+    );
+    let checked_paths = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    let mut files = Vec::new();
+
+    for path in paths {
+        if !path.exists() {
+            files.push(ConfigDoctorFileReport {
+                path: path.display().to_string(),
+                exists: false,
+                readable: false,
+                mapped: Vec::new(),
+                unsupported: Vec::new(),
+                unknown: Vec::new(),
+                secrets: Vec::new(),
+                errors: Vec::new(),
+            });
+            continue;
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) => {
+                files.push(ConfigDoctorFileReport {
+                    path: path.display().to_string(),
+                    exists: true,
+                    readable: false,
+                    mapped: Vec::new(),
+                    unsupported: Vec::new(),
+                    unknown: Vec::new(),
+                    secrets: Vec::new(),
+                    errors: vec![format!("read failed: {error}")],
+                });
+                continue;
+            }
+        };
+
+        match serde_json::from_str::<Value>(&content) {
+            Ok(value) => files.push(opencode_config_doctor_from_value(&path, &value)),
+            Err(error) => files.push(ConfigDoctorFileReport {
+                path: path.display().to_string(),
+                exists: true,
+                readable: true,
+                mapped: Vec::new(),
+                unsupported: Vec::new(),
+                unknown: Vec::new(),
+                secrets: Vec::new(),
+                errors: vec![format!("parse failed: {error}")],
+            }),
+        }
+    }
+
+    Ok(ConfigDoctorReport {
+        source: "opencode".to_string(),
+        checked_paths,
+        summary: config_doctor_summary(&files),
+        files,
+    })
+}
+
+fn config_doctor_summary(files: &[ConfigDoctorFileReport]) -> ConfigDoctorSummary {
+    ConfigDoctorSummary {
+        checked_path_count: files.len(),
+        readable_file_count: files.iter().filter(|file| file.readable).count(),
+        mapped_count: files.iter().map(|file| file.mapped.len()).sum(),
+        unsupported_count: files.iter().map(|file| file.unsupported.len()).sum(),
+        unknown_count: files.iter().map(|file| file.unknown.len()).sum(),
+        secret_count: files.iter().map(|file| file.secrets.len()).sum(),
+        error_count: files.iter().map(|file| file.errors.len()).sum(),
+    }
+}
+
+fn opencode_config_doctor_from_value(path: &Path, value: &Value) -> ConfigDoctorFileReport {
+    let mut file = ConfigDoctorFileReport {
+        path: path.display().to_string(),
+        exists: true,
+        readable: true,
+        mapped: Vec::new(),
+        unsupported: Vec::new(),
+        unknown: Vec::new(),
+        secrets: Vec::new(),
+        errors: Vec::new(),
+    };
+
+    collect_config_secrets(value, "", &mut file.secrets);
+
+    let Some(object) = value.as_object() else {
+        file.errors
+            .push("OpenCode config root must be a JSON object".to_string());
+        return file;
+    };
+
+    for (key, nested) in object {
+        let pointer = format!("/{}", json_pointer_escape(key));
+        match key.as_str() {
+            "$schema" | "schema" => push_unsupported(
+                &mut file,
+                &pointer,
+                "OpenCode schema metadata",
+                "not imported",
+                "Useful to OpenCode editors/validation, but not a Djinn runtime concept.",
+            ),
+            "model" => push_mapped(
+                &mut file,
+                &pointer,
+                "OpenCode default model",
+                "Djinn default model fallback",
+                "Used when no selected/default agent model is available.",
+            ),
+            "small_model" | "smallModel" => push_mapped(
+                &mut file,
+                &pointer,
+                "OpenCode small model",
+                "Djinn model option only",
+                "Discovered for model selection; secondary-model semantics are not canonical yet.",
+            ),
+            "default_agent" | "defaultAgent" => push_mapped(
+                &mut file,
+                &pointer,
+                "OpenCode default agent",
+                "Djinn default profile/agent selector",
+                "Used to select agent-scoped model and permissions.",
+            ),
+            "agent" | "agents" => {
+                push_mapped(
+                    &mut file,
+                    &pointer,
+                    "OpenCode agent map",
+                    "Djinn profiles / future agents",
+                    "Djinn reads agent model and permission fields where they map cleanly.",
+                );
+                collect_opencode_agent_findings(nested, &pointer, &mut file);
+            }
+            "providers" => {
+                push_mapped(
+                    &mut file,
+                    &pointer,
+                    "OpenCode providers",
+                    "Djinn provider/auth discovery",
+                    "Djinn currently reuses OpenAI API-key configuration and model/provider ids.",
+                );
+                collect_opencode_provider_findings(nested, &pointer, &mut file);
+            }
+            "provider" | "enabled_providers" | "enabledProviders" => push_mapped(
+                &mut file,
+                &pointer,
+                "OpenCode provider selection",
+                "Djinn provider selection hint",
+                "Recognized as provider-related config; canonical provider schema is still pending.",
+            ),
+            "permission" | "permissions" => push_mapped(
+                &mut file,
+                &pointer,
+                "OpenCode permission policy",
+                "Djinn read/mutation/shell permission policy",
+                "Mapped to allow/ask/deny policy where actions and resources are compatible.",
+            ),
+            "instructions" | "instruction" | "instructionFiles" | "instruction_files" => {
+                push_unsupported(
+                    &mut file,
+                    &pointer,
+                    "OpenCode instructions",
+                    "future Djinn instruction/context sources",
+                    "Recognized but not imported yet; needs precedence and workspace-scope rules.",
+                )
+            }
+            "command" | "commands" => push_unsupported(
+                &mut file,
+                &pointer,
+                "OpenCode custom commands",
+                "future Djinn prompt templates / command palette entries",
+                "Recognized but not imported yet; needs a Djinn-native command-template model.",
+            ),
+            "mcp" | "mcpServers" | "mcp_servers" => push_unsupported(
+                &mut file,
+                &pointer,
+                "OpenCode MCP config",
+                "future external tool bridge",
+                "MCP is intentionally deferred until there is a concrete need.",
+            ),
+            "theme" | "themes" | "ui" | "layout" => push_unsupported(
+                &mut file,
+                &pointer,
+                "OpenCode UI settings",
+                "possible Djinn TUI preferences",
+                "Low-priority unless the setting maps directly to Djinn UI behavior.",
+            ),
+            "experimental" => push_unsupported(
+                &mut file,
+                &pointer,
+                "OpenCode experimental settings",
+                "not imported",
+                "Experimental harness-specific behavior is recognized but not mapped into Djinn config.",
+            ),
+            "plugin" | "plugins" => push_unsupported(
+                &mut file,
+                &pointer,
+                "OpenCode plugin entries",
+                "Djinn integration metadata",
+                "Djinn installs an OpenCode watcher plugin, but does not import plugin config.",
+            ),
+            _ if is_secret_key(key) => push_secret(
+                &mut file.secrets,
+                &pointer,
+                "Secret-like OpenCode field",
+                "secret reference only",
+                "Value intentionally redacted and not imported/exported raw.",
+            ),
+            _ => push_unknown(
+                &mut file,
+                &pointer,
+                "Unknown OpenCode field",
+                "no Djinn mapping yet",
+                "Not recognized by the current OpenCode adapter.",
+            ),
+        }
+    }
+
+    dedupe_config_findings(&mut file.secrets);
+    file
+}
+
+fn collect_opencode_agent_findings(
+    value: &Value,
+    base_pointer: &str,
+    file: &mut ConfigDoctorFileReport,
+) {
+    let Some(agents) = value.as_object() else {
+        return;
+    };
+    for (agent_name, agent) in agents {
+        let agent_pointer = format!("{}/{}", base_pointer, json_pointer_escape(agent_name));
+        push_mapped(
+            file,
+            &agent_pointer,
+            "OpenCode agent profile",
+            "Djinn profile / future agent",
+            "Profile name can be selected by Djinn when resolving model and permissions.",
+        );
+        if agent.get("model").and_then(Value::as_str).is_some() {
+            push_mapped(
+                file,
+                &format!("{agent_pointer}/model"),
+                "OpenCode agent model",
+                "Djinn profile model",
+                "Used when the requested/default Djinn profile matches this agent.",
+            );
+        }
+        if agent.get("permission").is_some() || agent.get("permissions").is_some() {
+            push_mapped(
+                file,
+                &format!("{agent_pointer}/permissions"),
+                "OpenCode agent permissions",
+                "Djinn profile permission policy",
+                "Mapped into read/mutation/shell policy where compatible.",
+            );
+        }
+    }
+}
+
+fn collect_opencode_provider_findings(
+    value: &Value,
+    base_pointer: &str,
+    file: &mut ConfigDoctorFileReport,
+) {
+    let Some(providers) = value.as_object() else {
+        return;
+    };
+    for (provider_name, provider) in providers {
+        let provider_pointer = format!("{}/{}", base_pointer, json_pointer_escape(provider_name));
+        push_mapped(
+            file,
+            &provider_pointer,
+            "OpenCode provider entry",
+            "Djinn provider discovery",
+            "Provider entry is recognized; only compatible auth/model fields are used today.",
+        );
+        if provider
+            .get("apiKey")
+            .or_else(|| provider.get("api_key"))
+            .is_some()
+        {
+            push_secret(
+                &mut file.secrets,
+                &format!("{provider_pointer}/apiKey"),
+                "Provider API key",
+                "secret reference only",
+                "Value intentionally redacted; Djinn may read it locally but should not export it raw.",
+            );
+        }
+    }
+}
+
+fn collect_config_secrets(value: &Value, pointer: &str, out: &mut Vec<ConfigDoctorFinding>) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                let child = format!("{}/{}", pointer, json_pointer_escape(key));
+                if is_secret_key(key) {
+                    push_secret(
+                        out,
+                        &child,
+                        "Secret-like config field",
+                        "secret reference only",
+                        "Value intentionally redacted and excluded from import/export previews.",
+                    );
+                }
+                collect_config_secrets(value, &child, out);
+            }
+        }
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                collect_config_secrets(value, &format!("{pointer}/{index}"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.contains("apikey")
+        || key.contains("api_key")
+        || key.contains("token")
+        || key.contains("secret")
+        || key == "access"
+        || key == "refresh"
+        || key == "password"
+}
+
+fn push_mapped(
+    file: &mut ConfigDoctorFileReport,
+    pointer: &str,
+    concept: &str,
+    djinn_mapping: &str,
+    detail: &str,
+) {
+    file.mapped
+        .push(config_finding(pointer, concept, djinn_mapping, detail));
+}
+
+fn push_unsupported(
+    file: &mut ConfigDoctorFileReport,
+    pointer: &str,
+    concept: &str,
+    djinn_mapping: &str,
+    detail: &str,
+) {
+    file.unsupported
+        .push(config_finding(pointer, concept, djinn_mapping, detail));
+}
+
+fn push_unknown(
+    file: &mut ConfigDoctorFileReport,
+    pointer: &str,
+    concept: &str,
+    djinn_mapping: &str,
+    detail: &str,
+) {
+    file.unknown
+        .push(config_finding(pointer, concept, djinn_mapping, detail));
+}
+
+fn push_secret(
+    findings: &mut Vec<ConfigDoctorFinding>,
+    pointer: &str,
+    concept: &str,
+    djinn_mapping: &str,
+    detail: &str,
+) {
+    findings.push(config_finding(pointer, concept, djinn_mapping, detail));
+}
+
+fn config_finding(
+    pointer: &str,
+    concept: &str,
+    djinn_mapping: &str,
+    detail: &str,
+) -> ConfigDoctorFinding {
+    ConfigDoctorFinding {
+        pointer: if pointer.is_empty() {
+            "/".to_string()
+        } else {
+            pointer.to_string()
+        },
+        concept: concept.to_string(),
+        djinn_mapping: djinn_mapping.to_string(),
+        detail: detail.to_string(),
+    }
+}
+
+fn dedupe_config_findings(findings: &mut Vec<ConfigDoctorFinding>) {
+    let mut seen = HashSet::new();
+    findings.retain(|finding| seen.insert(finding.pointer.clone()));
+}
+
+fn json_pointer_escape(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
+fn format_config_doctor_report(
+    report: &ConfigDoctorReport,
+    format: OutputFormat,
+) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(report)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+
+    let mut lines = vec![
+        "Djinn config doctor".to_string(),
+        format!("Source: {}", report.source),
+        format!(
+            "Summary: {} readable file(s), {} mapped, {} unsupported, {} unknown, {} secret reference(s), {} error(s)",
+            report.summary.readable_file_count,
+            report.summary.mapped_count,
+            report.summary.unsupported_count,
+            report.summary.unknown_count,
+            report.summary.secret_count,
+            report.summary.error_count,
+        ),
+        String::new(),
+        "Checked paths:".to_string(),
+    ];
+    for path in &report.checked_paths {
+        lines.push(format!("  - {path}"));
+    }
+
+    if report.files.iter().all(|file| !file.readable) {
+        lines.push(String::new());
+        lines.push("No readable config files found.".to_string());
+    }
+
+    for file in &report.files {
+        lines.push(String::new());
+        lines.push(format!("File: {}", file.path));
+        lines.push(format!("  exists: {}", file.exists));
+        lines.push(format!("  readable: {}", file.readable));
+        push_config_finding_lines(&mut lines, "mapped", &file.mapped);
+        push_config_finding_lines(&mut lines, "unsupported", &file.unsupported);
+        push_config_finding_lines(&mut lines, "unknown", &file.unknown);
+        push_config_finding_lines(&mut lines, "secrets", &file.secrets);
+        if !file.errors.is_empty() {
+            lines.push("  errors:".to_string());
+            for error in &file.errors {
+                lines.push(format!("    - {error}"));
+            }
+        }
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn format_djinn_config_load_report(
+    report: &DjinnConfigLoadReport,
+    format: OutputFormat,
+) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(report)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+
+    let mut lines = vec!["Djinn native config".to_string(), String::new()];
+    lines.push("Checked paths:".to_string());
+    for path in &report.checked_paths {
+        lines.push(format!("  - {path}"));
+    }
+    lines.push(String::new());
+    lines.push("Files:".to_string());
+    for file in &report.files {
+        lines.push(format!(
+            "  - {} · exists: {} · readable: {}",
+            file.path, file.exists, file.readable
+        ));
+        for error in &file.errors {
+            lines.push(format!("    error: {error}"));
+        }
+    }
+    if !report.warnings.is_empty() {
+        lines.push(String::new());
+        lines.push("Warnings:".to_string());
+        for warning in &report.warnings {
+            lines.push(format!("  - {warning}"));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Effective config:".to_string());
+    lines.push(format!("  version: {}", report.effective.version));
+    if let Some(profile) = &report.effective.default_profile {
+        lines.push(format!("  default_profile: {profile}"));
+    }
+    lines.push(format!("  providers: {}", report.effective.providers.len()));
+    for (name, provider) in &report.effective.providers {
+        lines.push(format!("    - {name} ({})", provider.provider_type));
+        if let Some(auth) = &provider.auth {
+            lines.push(format!("      auth: {auth}"));
+        }
+        if let Some(endpoint) = &provider.endpoint {
+            lines.push(format!("      endpoint: {endpoint}"));
+        }
+    }
+    lines.push(format!("  profiles: {}", report.effective.profiles.len()));
+    for (name, profile) in &report.effective.profiles {
+        lines.push(format!("    - {name}"));
+        if let Some(model) = &profile.model {
+            lines.push(format!("      model: {model}"));
+        }
+        if !profile.instructions.is_empty() {
+            lines.push(format!(
+                "      instructions: {}",
+                profile.instructions.join(", ")
+            ));
+        }
+        if !profile.permissions.is_empty() {
+            lines.push("      permissions:".to_string());
+            for permission in &profile.permissions {
+                lines.push(format!(
+                    "        - {} {} -> {}",
+                    permission.action, permission.resource, permission.effect
+                ));
+            }
+        }
+    }
+    if !report.effective.permissions.is_empty() {
+        lines.push("  shared permissions:".to_string());
+        for permission in &report.effective.permissions {
+            lines.push(format!(
+                "    - {} {} -> {}",
+                permission.action, permission.resource, permission.effect
+            ));
+        }
+    }
+    lines.push(format!(
+        "  instructions: {}",
+        report.effective.instructions.len()
+    ));
+    lines.push(format!("  commands: {}", report.effective.commands.len()));
+    lines.push(format!("  tools: {}", report.effective.tools.len()));
+    lines.push(format!("  agents: {}", report.effective.agents.len()));
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn format_config_import_preview(
+    preview: &ConfigImportPreview,
+    format: OutputFormat,
+) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(preview)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+
+    let mut lines = vec![
+        "Djinn config import preview".to_string(),
+        format!("Source: {}", preview.source),
+        format!("Mode: {}", preview.mode),
+        String::new(),
+        "Checked paths:".to_string(),
+    ];
+    for path in &preview.checked_paths {
+        lines.push(format!("  - {path}"));
+    }
+
+    lines.push(String::new());
+    lines.push("Readable files:".to_string());
+    if preview.readable_files.is_empty() {
+        lines.push("  - none".to_string());
+    } else {
+        for path in &preview.readable_files {
+            lines.push(format!("  - {path}"));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Djinn config patch:".to_string());
+    lines.push(format!("  version: {}", preview.patch.version));
+    if let Some(profile) = &preview.patch.default_profile {
+        lines.push(format!("  default_profile: {profile}"));
+    }
+
+    lines.push("  providers:".to_string());
+    if preview.patch.providers.is_empty() {
+        lines.push("    - none".to_string());
+    } else {
+        for (name, provider) in &preview.patch.providers {
+            lines.push(format!("    - {name} ({})", provider.provider_type));
+            if let Some(auth) = &provider.auth {
+                lines.push(format!("      auth: {auth}"));
+            }
+        }
+    }
+
+    lines.push("  profiles:".to_string());
+    if preview.patch.profiles.is_empty() {
+        lines.push("    - none".to_string());
+    } else {
+        for (name, profile) in &preview.patch.profiles {
+            lines.push(format!("    - {name}"));
+            if let Some(model) = &profile.model {
+                lines.push(format!("      model: {model}"));
+            }
+            if !profile.permissions.is_empty() {
+                lines.push("      permissions:".to_string());
+                for permission in &profile.permissions {
+                    lines.push(format!(
+                        "        - {} {} -> {} ({})",
+                        permission.action,
+                        permission.resource,
+                        permission.effect,
+                        permission.source_pointer
+                    ));
+                }
+            }
+        }
+    }
+
+    if !preview.patch.permissions.is_empty() {
+        lines.push("  global permissions:".to_string());
+        for permission in &preview.patch.permissions {
+            lines.push(format!(
+                "    - {} {} -> {} ({})",
+                permission.action,
+                permission.resource,
+                permission.effect,
+                permission.source_pointer
+            ));
+        }
+    }
+
+    push_config_finding_lines(&mut lines, "unsupported", &preview.unsupported);
+    push_config_finding_lines(&mut lines, "unknown", &preview.unknown);
+    push_config_finding_lines(&mut lines, "secrets", &preview.secrets);
+    if !preview.warnings.is_empty() {
+        lines.push("warnings:".to_string());
+        for warning in &preview.warnings {
+            lines.push(format!("  - {warning}"));
+        }
+    }
+
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn format_config_import_write_report(
+    report: &ConfigImportWriteReport,
+    format: OutputFormat,
+) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(report)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+
+    let mut lines = vec![
+        "Djinn config import write".to_string(),
+        format!("Source: {}", report.source),
+        format!("Wrote: {}", report.path),
+        format!("Overwritten: {}", report.overwritten),
+        String::new(),
+        "Written config:".to_string(),
+        format!("  version: {}", report.config.version),
+    ];
+    if let Some(profile) = &report.config.default_profile {
+        lines.push(format!("  default_profile: {profile}"));
+    }
+    lines.push(format!("  providers: {}", report.config.providers.len()));
+    for (name, provider) in &report.config.providers {
+        lines.push(format!("    - {name} ({})", provider.provider_type));
+        if let Some(auth) = &provider.auth {
+            lines.push(format!("      auth: {auth}"));
+        }
+    }
+    lines.push(format!("  profiles: {}", report.config.profiles.len()));
+    for (name, profile) in &report.config.profiles {
+        lines.push(format!("    - {name}"));
+        if let Some(model) = &profile.model {
+            lines.push(format!("      model: {model}"));
+        }
+    }
+    push_config_finding_lines(&mut lines, "unsupported", &report.unsupported);
+    push_config_finding_lines(&mut lines, "unknown", &report.unknown);
+    push_config_finding_lines(&mut lines, "secrets", &report.secrets);
+    if !report.warnings.is_empty() {
+        lines.push("warnings:".to_string());
+        for warning in &report.warnings {
+            lines.push(format!("  - {warning}"));
+        }
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn push_config_finding_lines(
+    lines: &mut Vec<String>,
+    label: &str,
+    findings: &[ConfigDoctorFinding],
+) {
+    if findings.is_empty() {
+        return;
+    }
+    lines.push(format!("  {label}:"));
+    for finding in findings {
+        lines.push(format!(
+            "    - {} · {} -> {}",
+            finding.pointer, finding.concept, finding.djinn_mapping
+        ));
+        lines.push(format!("      {}", finding.detail));
+    }
+}
+
 fn run_agent(args: AgentArgs) -> Result<()> {
     match args.command {
         AgentCommand::Config(args) => run_agent_config(args),
@@ -2031,7 +3845,7 @@ fn run_agent_file_history(args: AgentFileHistoryArgs) -> Result<()> {
 }
 
 fn agent_config_list(args: AgentConfigListArgs) -> Result<()> {
-    let current_profile = args.profile.trim().to_string();
+    let current_profile = resolve_agent_profile(&args.profile)?;
     let current_model = resolve_agent_model(args.model, &current_profile)?;
     let profiles = agent_profile_options(&current_profile)?;
     let models = agent_model_options(&current_model)?;
@@ -2071,7 +3885,7 @@ fn resolve_agent_effective_config(
     profile: String,
     model: Option<String>,
 ) -> Result<AgentEffectiveConfig> {
-    let profile = profile.trim().to_string();
+    let profile = resolve_agent_profile(&profile)?;
     let workspace = resolve_agent_workspace(workspace)?;
     let workspace_path = Path::new(&workspace);
     Ok(AgentEffectiveConfig {
@@ -2593,7 +4407,7 @@ fn agent_file_history_restore(args: AgentFileHistoryRestoreArgs) -> Result<()> {
 
 fn agent_ask(args: AgentAskArgs) -> Result<()> {
     let prompt = args.prompt;
-    let profile = args.profile;
+    let profile = resolve_agent_profile(&args.profile)?;
     let model = resolve_agent_model(args.model, &profile)?;
     let title = args
         .title
@@ -2774,12 +4588,13 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
 
 fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<AgentChatOutcome> {
     let store = agent_session_store();
+    let profile = resolve_agent_profile(&args.profile)?;
     let chat_session = prepare_agent_chat_session(
         &store,
         args.resume.as_deref(),
         args.title,
         args.workspace,
-        &args.profile,
+        &profile,
     )?;
     let id = chat_session.id;
     let workspace = chat_session.workspace;
@@ -3107,38 +4922,37 @@ fn same_agent_option(left: &str, right: &str) -> bool {
 
 fn agent_profile_options(current: &str) -> Result<Vec<String>> {
     let mut profiles = vec!["default".to_string(), current.trim().to_string()];
-    for value in opencode_config_values()? {
-        for container in ["agent", "agents"] {
-            if let Some(agents) = value.get(container).and_then(Value::as_object) {
-                profiles.extend(agents.keys().cloned());
-            }
-        }
-        if let Some(default_agent) = value.get("default_agent").and_then(Value::as_str) {
-            profiles.push(default_agent.to_string());
-        }
+    let config = effective_djinn_config()?;
+    if let Some(default_profile) = config.default_profile {
+        profiles.push(default_profile);
     }
+    profiles.extend(config.profiles.keys().cloned());
+    profiles.extend(config.agents.keys().cloned());
     Ok(clean_unique_options(profiles))
 }
 
 fn agent_model_options(current: &str) -> Result<Vec<String>> {
-    let mut models = vec![current.trim().to_string(), "gpt-4o-mini".to_string()];
+    let mut models = vec![
+        current.trim().to_string(),
+        "gpt-4o-mini".to_string(),
+        "copilot/gpt-4.1".to_string(),
+    ];
     if let Ok(model) = env::var("DJINN_OPENAI_MODEL") {
         models.push(model);
     }
-    for value in opencode_config_values()? {
-        for pointer in ["/model", "/small_model", "/agent/model"] {
-            if let Some(model) = json_string_pointer(&value, pointer) {
-                models.push(model);
-            }
+    if let Ok(model) = env::var("DJINN_COPILOT_MODEL") {
+        models.push(model);
+    }
+    models.extend(copilot_model_options()?);
+    let config = effective_djinn_config()?;
+    for profile in config.profiles.values() {
+        if let Some(model) = &profile.model {
+            models.push(model.clone());
         }
-        for container in ["agent", "agents"] {
-            if let Some(agents) = value.get(container).and_then(Value::as_object) {
-                for agent in agents.values() {
-                    if let Some(model) = agent.get("model").and_then(Value::as_str) {
-                        models.push(model.to_string());
-                    }
-                }
-            }
+    }
+    for agent in config.agents.values() {
+        if let Some(model) = &agent.model {
+            models.push(model.clone());
         }
     }
     Ok(clean_unique_options(models))
@@ -3321,23 +5135,6 @@ fn format_agent_tool_spec(spec: &ToolSpec, format: OutputFormat) -> Result<Strin
     Ok(lines.join("\n"))
 }
 
-fn opencode_config_values() -> Result<Vec<Value>> {
-    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut values = Vec::new();
-    for path in opencode_model_config_paths(&cwd) {
-        if !path.exists() {
-            continue;
-        }
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("reading OpenCode config {}", path.display()))?;
-        values.push(
-            serde_json::from_str(&content)
-                .with_context(|| format!("parsing OpenCode config {}", path.display()))?,
-        );
-    }
-    Ok(values)
-}
-
 fn clean_unique_options(values: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -3348,6 +5145,212 @@ fn clean_unique_options(values: Vec<String>) -> Vec<String> {
         out.push(value);
     }
     out
+}
+
+fn copilot_model_options() -> Result<Vec<String>> {
+    let mut models = Vec::new();
+    for name in [
+        "DJINN_COPILOT_MODEL",
+        "GITHUB_COPILOT_MODEL",
+        "COPILOT_MODEL",
+    ] {
+        if let Ok(model) = env::var(name) {
+            if let Some(model) = copilot_model_option_from_str(&model) {
+                models.push(model);
+            }
+        }
+    }
+    for name in [
+        "DJINN_COPILOT_MODELS",
+        "GITHUB_COPILOT_MODELS",
+        "COPILOT_MODELS",
+    ] {
+        if let Ok(value) = env::var(name) {
+            models.extend(copilot_model_options_from_list(&value));
+        }
+    }
+    models.extend(copilot_model_options_from_local_config()?);
+    Ok(clean_unique_options(models))
+}
+
+fn copilot_model_options_from_local_config() -> Result<Vec<String>> {
+    let mut models = Vec::new();
+    for path in copilot_model_config_paths() {
+        if !path.exists() {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("reading GitHub Copilot config {}", path.display()))?;
+        models.extend(
+            copilot_model_options_from_content(&content)
+                .with_context(|| format!("parsing GitHub Copilot config {}", path.display()))?,
+        );
+    }
+    Ok(clean_unique_options(models))
+}
+
+fn copilot_model_config_paths() -> Vec<PathBuf> {
+    let mut paths = copilot_auth_paths();
+    for root in copilot_config_roots() {
+        paths.push(root.join("models.json"));
+        paths.push(root.join("config.json"));
+    }
+    clean_unique_paths(paths)
+}
+
+fn copilot_config_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(xdg_config) = env::var_os("XDG_CONFIG_HOME") {
+        roots.push(PathBuf::from(xdg_config).join("github-copilot"));
+    }
+    roots.push(
+        djinn_core::home_dir()
+            .join(".config")
+            .join("github-copilot"),
+    );
+    clean_unique_paths(roots)
+}
+
+fn clean_unique_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for path in paths {
+        if seen.insert(path.clone()) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+fn copilot_model_options_from_content(content: &str) -> Result<Vec<String>> {
+    let value: Value = serde_json::from_str(content)?;
+    let mut models = Vec::new();
+    collect_copilot_model_options(&value, false, &mut models);
+    Ok(clean_unique_options(models))
+}
+
+fn copilot_model_options_from_list(value: &str) -> Vec<String> {
+    clean_unique_options(
+        value
+            .split([',', ';', '\n'])
+            .filter_map(copilot_model_option_from_str)
+            .collect(),
+    )
+}
+
+fn collect_copilot_model_options(value: &Value, model_context: bool, out: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            for key in [
+                "model",
+                "model_id",
+                "modelId",
+                "selected_model",
+                "selectedModel",
+                "default_model",
+                "defaultModel",
+            ] {
+                if let Some(model) = object
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .and_then(copilot_model_option_from_str)
+                {
+                    out.push(model);
+                }
+            }
+
+            for key in [
+                "models",
+                "available_models",
+                "availableModels",
+                "chat_models",
+                "chatModels",
+                "model_choices",
+                "modelChoices",
+                "custom_models",
+                "customModels",
+            ] {
+                if let Some(value) = object.get(key) {
+                    collect_copilot_model_options(value, true, out);
+                }
+            }
+
+            if model_context {
+                for key in ["id", "name", "slug"] {
+                    if let Some(model) = object
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .and_then(copilot_model_option_from_str)
+                    {
+                        out.push(model);
+                    }
+                }
+                for (key, value) in object {
+                    if let Some(model) = copilot_model_option_from_str(key) {
+                        out.push(model);
+                    }
+                    collect_copilot_model_options(value, true, out);
+                }
+            } else {
+                for value in object.values() {
+                    collect_copilot_model_options(value, false, out);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_copilot_model_options(value, model_context, out);
+            }
+        }
+        Value::String(value) if model_context => {
+            if let Some(model) = copilot_model_option_from_str(value) {
+                out.push(model);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn copilot_model_option_from_str(model: &str) -> Option<String> {
+    let model = model.trim().trim_matches('"').trim_matches('\'').trim();
+    if !looks_like_copilot_model_id(model) {
+        return None;
+    }
+    if is_copilot_model(model) {
+        Some(model.to_string())
+    } else {
+        Some(format!("copilot/{model}"))
+    }
+}
+
+fn looks_like_copilot_model_id(model: &str) -> bool {
+    if model.is_empty() || model.len() > 120 {
+        return false;
+    }
+    let lower = model.to_ascii_lowercase();
+    if lower.contains("gemini")
+        || lower.contains("token")
+        || lower.starts_with("gho_")
+        || lower.starts_with("ghu_")
+        || lower.starts_with("github_pat_")
+        || lower.starts_with("sk-")
+        || lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.contains('@')
+        || lower.chars().any(char::is_whitespace)
+    {
+        return false;
+    }
+    lower.contains("gpt")
+        || lower.contains("claude")
+        || lower.starts_with("o1")
+        || lower.starts_with("o3")
+        || lower.starts_with("o4")
+        || lower.starts_with("o5")
+        || lower.contains("/o1")
+        || lower.contains("/o3")
+        || lower.contains("/o4")
+        || lower.contains("/o5")
 }
 
 fn complete_openai_prompt(
@@ -3418,21 +5421,59 @@ fn complete_openai_messages_with_progress<F>(
     max_tool_rounds: usize,
     profile: &str,
     interactive_permissions: bool,
-    mut on_progress: F,
+    on_progress: F,
 ) -> Result<djinn_agent::ModelResponse>
 where
     F: FnMut(AgentProgressEvent) -> Result<()>,
 {
-    let auth = resolve_openai_auth(api_key)?;
-    let client = match auth {
-        OpenAiAuth::ApiKey(api_key) => {
-            let base_url = base_url
-                .or_else(|| env::var("OPENAI_BASE_URL").ok())
-                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-            OpenAiClient::with_base_url(api_key, base_url)
-        }
-        OpenAiAuth::OAuth(oauth) => OpenAiClient::with_oauth(oauth),
-    };
+    if is_copilot_model(&model) {
+        let token = resolve_copilot_token(api_key)?;
+        let endpoint = base_url
+            .or_else(|| env::var("GITHUB_COPILOT_CHAT_COMPLETIONS_URL").ok())
+            .unwrap_or_else(|| "https://api.githubcopilot.com/chat/completions".to_string());
+        let client = CopilotClient::with_endpoint(token, endpoint);
+        return complete_messages_with_client(
+            store,
+            id,
+            messages,
+            model,
+            max_tool_rounds,
+            profile,
+            interactive_permissions,
+            client,
+            on_progress,
+        );
+    }
+
+    let client = resolve_openai_client(api_key, base_url)?;
+    complete_messages_with_client(
+        store,
+        id,
+        messages,
+        model,
+        max_tool_rounds,
+        profile,
+        interactive_permissions,
+        client,
+        on_progress,
+    )
+}
+
+fn complete_messages_with_client<M, F>(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    messages: Vec<ModelMessage>,
+    model: String,
+    max_tool_rounds: usize,
+    profile: &str,
+    interactive_permissions: bool,
+    client: M,
+    mut on_progress: F,
+) -> Result<djinn_agent::ModelResponse>
+where
+    M: ModelClient + 'static,
+    F: FnMut(AgentProgressEvent) -> Result<()>,
+{
     let workspace = store.load_session(id)?.meta.workspace;
     let read_access = resolve_agent_read_access_policy(profile, Path::new(&workspace))?;
     let permissions = resolve_agent_permission_policy(profile, Path::new(&workspace))?;
@@ -3461,7 +5502,7 @@ where
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .with_context(|| "creating Tokio runtime for OpenAI request")?;
+        .with_context(|| "creating Tokio runtime for agent request")?;
     tokio.block_on(runtime.complete_with_tools_and_progress(
         id,
         ModelRequest {
@@ -3474,8 +5515,184 @@ where
     ))
 }
 
+fn resolve_openai_client(
+    api_key: Option<String>,
+    base_url: Option<String>,
+) -> Result<OpenAiClient> {
+    let auth = resolve_openai_auth(api_key)?;
+    Ok(match auth {
+        OpenAiAuth::ApiKey(api_key) => {
+            let base_url = base_url
+                .or_else(|| env::var("OPENAI_BASE_URL").ok())
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+            OpenAiClient::with_base_url(api_key, base_url)
+        }
+        OpenAiAuth::OAuth(oauth) => OpenAiClient::with_oauth(oauth),
+    })
+}
+
+fn is_copilot_model(model: &str) -> bool {
+    let model = model.trim();
+    model.starts_with("copilot/") || model.starts_with("github-copilot/")
+}
+
+#[derive(Debug, Deserialize)]
+struct CopilotInternalTokenResponse {
+    token: String,
+}
+
+fn resolve_copilot_token(explicit: Option<String>) -> Result<String> {
+    if let Some(token) = explicit
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+    {
+        return Ok(token);
+    }
+    for name in [
+        "DJINN_COPILOT_TOKEN",
+        "GITHUB_COPILOT_TOKEN",
+        "COPILOT_TOKEN",
+    ] {
+        if let Ok(token) = env::var(name) {
+            let token = token.trim().to_string();
+            if !token.is_empty() {
+                return Ok(token);
+            }
+        }
+    }
+    for name in ["DJINN_COPILOT_OAUTH_TOKEN", "GITHUB_COPILOT_OAUTH_TOKEN"] {
+        if let Ok(token) = env::var(name) {
+            let token = token.trim().to_string();
+            if !token.is_empty() {
+                return exchange_copilot_oauth_token(&token);
+            }
+        }
+    }
+    if let Some(oauth_token) = copilot_oauth_token_from_local_config()? {
+        return exchange_copilot_oauth_token(&oauth_token);
+    }
+    if let Some(oauth_token) = github_cli_auth_token()? {
+        return exchange_copilot_oauth_token(&oauth_token);
+    }
+    Err(anyhow::anyhow!(
+        "GitHub Copilot auth is required for copilot/* models; pass --api-key with a Copilot API token, set GITHUB_COPILOT_TOKEN, connect GitHub Copilot so ~/.config/github-copilot/hosts.json or apps.json contains an OAuth token, or authenticate the GitHub CLI so `gh auth token` works"
+    ))
+}
+
+fn exchange_copilot_oauth_token(oauth_token: &str) -> Result<String> {
+    let url = env::var("GITHUB_COPILOT_TOKEN_URL")
+        .unwrap_or_else(|_| "https://api.github.com/copilot_internal/v2/token".to_string());
+    let response = reqwest::blocking::Client::new()
+        .get(url)
+        .bearer_auth(oauth_token)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::USER_AGENT, "djinn-agent")
+        .send()
+        .with_context(|| "exchanging GitHub Copilot OAuth token")?;
+    let status = response.status();
+    let text = response
+        .text()
+        .with_context(|| "reading GitHub Copilot token response")?;
+    if !status.is_success() {
+        bail!("GitHub Copilot token exchange failed ({status})");
+    }
+    let token: CopilotInternalTokenResponse =
+        serde_json::from_str(&text).with_context(|| "parsing GitHub Copilot token response")?;
+    let token = token.token.trim().to_string();
+    if token.is_empty() {
+        bail!("GitHub Copilot token response did not include a token");
+    }
+    Ok(token)
+}
+
+fn copilot_oauth_token_from_local_config() -> Result<Option<String>> {
+    for path in copilot_auth_paths() {
+        if !path.exists() {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("reading GitHub Copilot auth file {}", path.display()))?;
+        if let Some(token) = copilot_oauth_token_from_content(&content)
+            .with_context(|| format!("parsing GitHub Copilot auth file {}", path.display()))?
+        {
+            return Ok(Some(token));
+        }
+    }
+    Ok(None)
+}
+
+fn github_cli_auth_token() -> Result<Option<String>> {
+    let gh = env::var_os("DJINN_GH_BIN").unwrap_or_else(|| "gh".into());
+    let output = match ProcessCommand::new(gh)
+        .arg("auth")
+        .arg("token")
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| "running `gh auth token`"),
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(github_cli_auth_token_from_stdout(&output.stdout))
+}
+
+fn github_cli_auth_token_from_stdout(stdout: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn copilot_auth_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for root in copilot_config_roots() {
+        paths.push(root.join("hosts.json"));
+        paths.push(root.join("apps.json"));
+    }
+    clean_unique_paths(paths)
+}
+
+fn copilot_oauth_token_from_content(content: &str) -> Result<Option<String>> {
+    let value: Value = serde_json::from_str(content)?;
+    Ok(find_json_string_by_keys(
+        &value,
+        &["oauth_token", "oauthToken"],
+    ))
+}
+
+fn find_json_string_by_keys(value: &Value, keys: &[&str]) -> Option<String> {
+    match value {
+        Value::Object(object) => {
+            for key in keys {
+                if let Some(value) = object
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    return Some(value.to_string());
+                }
+            }
+            object
+                .values()
+                .find_map(|value| find_json_string_by_keys(value, keys))
+        }
+        Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_json_string_by_keys(value, keys)),
+        _ => None,
+    }
+}
+
+#[allow(dead_code)]
 const OPENCODE_OPENAI_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+#[allow(dead_code)]
 const OPENCODE_OPENAI_OAUTH_ISSUER: &str = "https://auth.openai.com";
+#[allow(dead_code)]
 const OPENCODE_OPENAI_CODEX_API_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3493,6 +5710,7 @@ enum OpenCodeOpenAiAuthCredential {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct OpenCodeOpenAiTokenResponse {
     #[serde(default)]
     id_token: Option<String>,
@@ -3514,17 +5732,51 @@ fn resolve_openai_auth(explicit: Option<String>) -> Result<OpenAiAuth> {
             return Ok(OpenAiAuth::ApiKey(api_key));
         }
     }
-    if let Some(api_key) = opencode_openai_api_key()? {
-        return Ok(OpenAiAuth::ApiKey(api_key));
-    }
-    if let Some(auth) = opencode_auth_openai_auth()? {
+    if let Some(auth) = djinn_config_openai_auth()? {
         return Ok(auth);
     }
     Err(anyhow::anyhow!(
-        "OpenAI auth is required; pass --api-key, set OPENAI_API_KEY, configure providers.openai.apiKey in OpenCode config, or connect an OpenCode OpenAI API/OAuth credential"
+        "OpenAI auth is required; pass --api-key, set OPENAI_API_KEY, or configure providers.openai.auth in Djinn config"
     ))
 }
 
+fn djinn_config_openai_auth() -> Result<Option<OpenAiAuth>> {
+    let config = effective_djinn_config()?;
+    let Some(provider) = config.providers.get("openai") else {
+        return Ok(None);
+    };
+    let Some(auth) = provider
+        .auth
+        .as_deref()
+        .map(str::trim)
+        .filter(|auth| !auth.is_empty())
+    else {
+        return Ok(None);
+    };
+    if let Some(name) = auth.strip_prefix("env:") {
+        let name = name.trim();
+        if !name.is_empty() {
+            if let Ok(api_key) = env::var(name) {
+                let api_key = api_key.trim().to_string();
+                if !api_key.is_empty() {
+                    return Ok(Some(OpenAiAuth::ApiKey(api_key)));
+                }
+            }
+        }
+        return Ok(None);
+    }
+    if auth == "auto" {
+        return Ok(None);
+    }
+    if auth.starts_with("opencode:") {
+        bail!(
+            "providers.openai.auth references OpenCode config; run import to migrate to a Djinn-owned env: reference instead"
+        );
+    }
+    Ok(Some(OpenAiAuth::ApiKey(auth.to_string())))
+}
+
+#[allow(dead_code)]
 fn opencode_openai_api_key() -> Result<Option<String>> {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     opencode_openai_api_key_from_paths(&opencode_model_config_paths(&cwd))
@@ -3556,6 +5808,7 @@ fn opencode_openai_api_key_from_content(content: &str) -> Result<Option<String>>
         .map(ToOwned::to_owned))
 }
 
+#[allow(dead_code)]
 fn opencode_auth_openai_auth() -> Result<Option<OpenAiAuth>> {
     if let Ok(content) = env::var("OPENCODE_AUTH_CONTENT") {
         if let Some(auth) = opencode_auth_openai_auth_from_content(&content)
@@ -3579,6 +5832,7 @@ fn opencode_auth_openai_auth() -> Result<Option<OpenAiAuth>> {
     opencode_auth_credential_to_openai_auth(auth, Some((&path, &content))).map(Some)
 }
 
+#[allow(dead_code)]
 fn opencode_auth_path() -> PathBuf {
     env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -3653,6 +5907,7 @@ fn opencode_auth_openai_auth_from_content(
     }
 }
 
+#[allow(dead_code)]
 fn opencode_auth_credential_to_openai_auth(
     auth: OpenCodeOpenAiAuthCredential,
     source: Option<(&Path, &str)>,
@@ -3679,10 +5934,12 @@ fn opencode_auth_credential_to_openai_auth(
     }
 }
 
+#[allow(dead_code)]
 fn oauth_access_token_is_current(oauth: &OpenCodeOpenAiOAuthCredential) -> bool {
     !oauth.access.is_empty() && oauth.expires > current_time_millis()
 }
 
+#[allow(dead_code)]
 fn refresh_opencode_openai_oauth(
     path: &Path,
     content: &str,
@@ -3704,6 +5961,7 @@ fn refresh_opencode_openai_oauth(
     Ok(refreshed)
 }
 
+#[allow(dead_code)]
 fn refresh_openai_oauth_token(refresh_token: &str) -> Result<OpenCodeOpenAiTokenResponse> {
     let response = reqwest::blocking::Client::new()
         .post(format!("{OPENCODE_OPENAI_OAUTH_ISSUER}/oauth/token"))
@@ -3766,6 +6024,7 @@ fn write_refreshed_opencode_openai_oauth(
         .with_context(|| format!("writing OpenCode auth file {}", path.display()))
 }
 
+#[allow(dead_code)]
 fn extract_account_id_from_tokens(tokens: &OpenCodeOpenAiTokenResponse) -> Option<String> {
     tokens
         .id_token
@@ -3808,18 +6067,80 @@ fn resolve_agent_model(explicit: Option<String>, profile: &str) -> Result<String
     {
         return Ok(model);
     }
-    if let Ok(model) = env::var("DJINN_OPENAI_MODEL") {
+    if let Some(model) = djinn_config_profile_model(profile)? {
+        return Ok(model);
+    }
+    for name in [
+        "DJINN_AGENT_MODEL",
+        "DJINN_COPILOT_MODEL",
+        "DJINN_OPENAI_MODEL",
+    ] {
+        let Ok(model) = env::var(name) else {
+            continue;
+        };
         let model = model.trim().to_string();
         if !model.is_empty() {
             return Ok(model);
         }
     }
-    if let Some(model) = opencode_default_model(profile)? {
-        return Ok(model);
-    }
     Ok("gpt-4o-mini".to_string())
 }
 
+fn resolve_agent_profile(requested: &str) -> Result<String> {
+    let requested = requested.trim();
+    if !requested.is_empty() && requested != "default" {
+        return Ok(requested.to_string());
+    }
+    let config = effective_djinn_config()?;
+    Ok(config
+        .default_profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .unwrap_or(if requested.is_empty() {
+            "default"
+        } else {
+            requested
+        })
+        .to_string())
+}
+
+fn djinn_config_profile_model(profile: &str) -> Result<Option<String>> {
+    let config = effective_djinn_config()?;
+    let profile = profile.trim();
+    if let Some(model) = profile_model_from_config(&config, profile) {
+        return Ok(Some(model));
+    }
+    if let Some(default_profile) = config
+        .default_profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+    {
+        if let Some(model) = profile_model_from_config(&config, default_profile) {
+            return Ok(Some(model));
+        }
+    }
+    Ok(None)
+}
+
+fn profile_model_from_config(config: &DjinnConfig, profile: &str) -> Option<String> {
+    config
+        .profiles
+        .get(profile)
+        .and_then(|profile| profile.model.as_deref())
+        .or_else(|| {
+            config
+                .agents
+                .get(profile)
+                .and_then(|agent| agent.model.as_deref())
+        })
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+#[allow(dead_code)]
 fn opencode_default_model(profile: &str) -> Result<Option<String>> {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     opencode_default_model_from_paths(&opencode_model_config_paths(&cwd), profile)
@@ -3922,20 +6243,127 @@ fn json_string_pointer(value: &Value, pointer: &str) -> Option<String> {
 
 fn resolve_agent_read_access_policy(profile: &str, workspace: &Path) -> Result<ReadAccessPolicy> {
     let mut policy = ReadAccessPolicy::lax(workspace);
-    if let Some(rules) = opencode_read_access_rules(profile, workspace)? {
-        policy.rules.extend(rules);
-    }
+    policy
+        .rules
+        .extend(djinn_config_read_access_rules(profile, workspace)?);
     Ok(policy)
 }
 
 fn resolve_agent_permission_policy(profile: &str, workspace: &Path) -> Result<PermissionPolicy> {
     let mut policy = PermissionPolicy::allow_by_default();
-    if let Some(rules) = opencode_permission_policy_rules(profile, workspace)? {
-        policy.rules.extend(rules);
-    }
+    policy
+        .rules
+        .extend(djinn_config_permission_rules(profile, workspace)?);
     Ok(policy)
 }
 
+fn djinn_config_read_access_rules(profile: &str, workspace: &Path) -> Result<Vec<ReadAccessRule>> {
+    let config = effective_djinn_config()?;
+    let mut rules = Vec::new();
+    extend_read_access_rules_from_permissions(&config.permissions, workspace, &mut rules);
+    if let Some(profile) = config.profiles.get(profile) {
+        extend_read_access_rules_from_permissions(&profile.permissions, workspace, &mut rules);
+    }
+    Ok(rules)
+}
+
+fn djinn_config_permission_rules(profile: &str, workspace: &Path) -> Result<Vec<PermissionRule>> {
+    let config = effective_djinn_config()?;
+    let mut rules = Vec::new();
+    extend_permission_rules_from_config(&config.permissions, workspace, &mut rules);
+    if let Some(profile) = config.profiles.get(profile) {
+        extend_permission_rules_from_config(&profile.permissions, workspace, &mut rules);
+    }
+    Ok(rules)
+}
+
+fn extend_read_access_rules_from_permissions(
+    permissions: &[DjinnConfigPermission],
+    workspace: &Path,
+    out: &mut Vec<ReadAccessRule>,
+) {
+    for permission in permissions {
+        let action = permission.action.trim();
+        if action != "read" && action != "*" && action != "external_directory" {
+            continue;
+        }
+        if let Some(effect) = djinn_config_read_access_effect(&permission.effect) {
+            out.push(ReadAccessRule {
+                pattern: config_permission_pattern(&permission.resource, workspace),
+                effect,
+            });
+        }
+    }
+}
+
+fn extend_permission_rules_from_config(
+    permissions: &[DjinnConfigPermission],
+    workspace: &Path,
+    out: &mut Vec<PermissionRule>,
+) {
+    for permission in permissions {
+        if let Some(effect) = djinn_config_permission_effect(&permission.effect) {
+            out.push(PermissionRule {
+                action: config_permission_action(&permission.action),
+                resource: config_permission_pattern(&permission.resource, workspace),
+                effect,
+            });
+        }
+    }
+}
+
+fn djinn_config_read_access_effect(effect: &str) -> Option<ReadAccessEffect> {
+    match effect.trim() {
+        "allow" => Some(ReadAccessEffect::Allow),
+        "ask" => Some(ReadAccessEffect::Ask),
+        "deny" => Some(ReadAccessEffect::Deny),
+        _ => None,
+    }
+}
+
+fn djinn_config_permission_effect(effect: &str) -> Option<PermissionEffect> {
+    match effect.trim() {
+        "allow" => Some(PermissionEffect::Allow),
+        "ask" => Some(PermissionEffect::Ask),
+        "deny" => Some(PermissionEffect::Deny),
+        _ => None,
+    }
+}
+
+fn config_permission_action(action: &str) -> String {
+    match action.trim() {
+        "bash" => "shell".to_string(),
+        other if other.is_empty() => "*".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn config_permission_pattern(pattern: &str, workspace: &Path) -> String {
+    let pattern = pattern.trim();
+    if pattern == "*" || pattern.is_empty() {
+        return "*".to_string();
+    }
+    let home = djinn_core::home_dir();
+    let expanded = if pattern == "~" {
+        home.to_string_lossy().to_string()
+    } else if let Some(rest) = pattern.strip_prefix("~/") {
+        home.join(rest).to_string_lossy().to_string()
+    } else if pattern == "$HOME" {
+        home.to_string_lossy().to_string()
+    } else if let Some(rest) = pattern.strip_prefix("$HOME/") {
+        home.join(rest).to_string_lossy().to_string()
+    } else {
+        pattern.to_string()
+    };
+
+    if expanded.starts_with('/') || !expanded.contains('/') {
+        expanded
+    } else {
+        workspace.join(expanded).to_string_lossy().to_string()
+    }
+}
+
+#[allow(dead_code)]
 fn opencode_permission_policy_rules(
     profile: &str,
     workspace: &Path,
@@ -3972,6 +6400,7 @@ fn opencode_permission_policy_rules_from_content(
     Ok(rules)
 }
 
+#[allow(dead_code)]
 fn opencode_read_access_rules(
     profile: &str,
     workspace: &Path,
@@ -9330,6 +11759,542 @@ mod tests {
 
         assert_eq!(stats_args.id, "agt_test");
         assert!(stats_args.json);
+    }
+
+    #[test]
+    fn parses_config_doctor_opencode_command() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "config",
+            "doctor",
+            "--source",
+            "opencode",
+            "--path",
+            "/tmp/opencode.json",
+            "--json",
+        ])
+        .unwrap();
+
+        let Some(Command::Config(args)) = cli.command else {
+            panic!("expected config command");
+        };
+        let ConfigCommand::Doctor(args) = args.command else {
+            panic!("expected config doctor command");
+        };
+
+        assert_eq!(args.source, ConfigSource::Opencode);
+        assert_eq!(args.path.as_deref(), Some(Path::new("/tmp/opencode.json")));
+        assert!(args.json);
+    }
+
+    #[test]
+    fn parses_config_show_command() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "config",
+            "show",
+            "--path",
+            "/tmp/djinn.json",
+            "--json",
+        ])
+        .unwrap();
+
+        let Some(Command::Config(args)) = cli.command else {
+            panic!("expected config command");
+        };
+        let ConfigCommand::Show(args) = args.command else {
+            panic!("expected config show command");
+        };
+
+        assert_eq!(args.path.as_deref(), Some(Path::new("/tmp/djinn.json")));
+        assert!(args.json);
+    }
+
+    #[test]
+    fn native_djinn_config_parses_merges_and_renders_without_raw_secrets() {
+        let base = parse_djinn_config(
+            r#"{
+              "version": 1,
+              "default_profile": "default",
+              "providers": {
+                "openai": {"type": "openai", "auth": "env:OPENAI_API_KEY"}
+              },
+              "profiles": {
+                "default": {"model": "openai/gpt-4.1-mini"}
+              }
+            }"#,
+        )
+        .unwrap();
+        let project = parse_djinn_config(
+            r#"{
+              "version": 1,
+              "default_profile": "work",
+              "providers": {
+                "copilot": {"type": "copilot", "auth": "auto"}
+              },
+              "profiles": {
+                "work": {
+                  "model": "copilot/gpt-4.1",
+                  "instructions": ["AGENTS.md"],
+                  "permissions": [{"action": "shell", "resource": "cargo test", "effect": "ask"}]
+                }
+              },
+              "permissions": [{"action": "read", "resource": "src/**", "effect": "allow"}]
+            }"#,
+        )
+        .unwrap();
+
+        let effective = merge_djinn_configs(vec![base, project]);
+
+        assert_eq!(effective.default_profile.as_deref(), Some("work"));
+        assert!(effective.providers.contains_key("openai"));
+        assert!(effective.providers.contains_key("copilot"));
+        assert_eq!(
+            effective
+                .profiles
+                .get("work")
+                .and_then(|profile| profile.model.as_deref()),
+            Some("copilot/gpt-4.1")
+        );
+
+        let rendered = format_djinn_config_load_report(
+            &DjinnConfigLoadReport {
+                checked_paths: vec![
+                    "/tmp/config.json".to_string(),
+                    "/tmp/.djinn.json".to_string(),
+                ],
+                files: Vec::new(),
+                effective,
+                warnings: Vec::new(),
+            },
+            OutputFormat::Text,
+        )
+        .unwrap();
+        assert!(rendered.contains("default_profile: work"));
+        assert!(rendered.contains("copilot/gpt-4.1"));
+        assert!(!rendered.contains("sk-"));
+    }
+
+    #[test]
+    fn native_djinn_config_doctor_classifies_unknown_and_secret_like_fields() {
+        let value: Value = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "profiles": {},
+              "api_key": "sk-secret",
+              "surprise": true
+            }"#,
+        )
+        .unwrap();
+
+        let report = djinn_config_doctor_from_value(Path::new("/tmp/config.json"), &value);
+
+        assert!(report
+            .mapped
+            .iter()
+            .any(|finding| finding.pointer == "/version"));
+        assert!(report
+            .mapped
+            .iter()
+            .any(|finding| finding.pointer == "/profiles"));
+        assert!(report
+            .secrets
+            .iter()
+            .any(|finding| finding.pointer == "/api_key"));
+        assert!(report
+            .unknown
+            .iter()
+            .any(|finding| finding.pointer == "/surprise"));
+    }
+
+    #[test]
+    fn native_djinn_config_supplies_profile_model_and_permission_rules() {
+        let config = parse_djinn_config(
+            r#"{
+              "version": 1,
+              "default_profile": "work",
+              "profiles": {
+                "work": {
+                  "model": "copilot/gpt-4.1",
+                  "permissions": [
+                    {"action": "shell", "resource": "cargo test", "effect": "ask"}
+                  ]
+                }
+              },
+              "permissions": [
+                {"action": "read", "resource": "src/**", "effect": "allow"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        let workspace = PathBuf::from("/tmp/djinn-native-config-test");
+        let mut read_rules = Vec::new();
+        let mut permission_rules = Vec::new();
+
+        assert_eq!(
+            profile_model_from_config(&config, "work").as_deref(),
+            Some("copilot/gpt-4.1")
+        );
+        extend_read_access_rules_from_permissions(&config.permissions, &workspace, &mut read_rules);
+        extend_permission_rules_from_config(
+            &config.profiles["work"].permissions,
+            &workspace,
+            &mut permission_rules,
+        );
+
+        assert_eq!(read_rules.len(), 1);
+        assert_eq!(
+            read_rules[0].pattern,
+            "/tmp/djinn-native-config-test/src/**"
+        );
+        assert_eq!(read_rules[0].effect, ReadAccessEffect::Allow);
+        assert_eq!(permission_rules.len(), 1);
+        assert_eq!(permission_rules[0].action, "shell");
+        assert_eq!(permission_rules[0].resource, "cargo test");
+        assert_eq!(permission_rules[0].effect, PermissionEffect::Ask);
+    }
+
+    #[test]
+    fn parses_config_import_opencode_dry_run_command() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "config",
+            "import",
+            "opencode",
+            "--dry-run",
+            "--path",
+            "/tmp/opencode.json",
+            "--json",
+        ])
+        .unwrap();
+
+        let Some(Command::Config(args)) = cli.command else {
+            panic!("expected config command");
+        };
+        let ConfigCommand::Import(args) = args.command else {
+            panic!("expected config import command");
+        };
+        let ConfigImportSource::Opencode(args) = args.source;
+
+        assert!(args.dry_run);
+        assert_eq!(args.path.as_deref(), Some(Path::new("/tmp/opencode.json")));
+        assert!(args.json);
+    }
+
+    #[test]
+    fn parses_config_import_opencode_write_command() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "config",
+            "import",
+            "opencode",
+            "--write",
+            "--output",
+            "/tmp/djinn.json",
+            "--force",
+            "--json",
+        ])
+        .unwrap();
+
+        let Some(Command::Config(args)) = cli.command else {
+            panic!("expected config command");
+        };
+        let ConfigCommand::Import(args) = args.command else {
+            panic!("expected config import command");
+        };
+        let ConfigImportSource::Opencode(args) = args.source;
+
+        assert!(args.write);
+        assert!(args.force);
+        assert_eq!(args.output.as_deref(), Some(Path::new("/tmp/djinn.json")));
+        assert!(args.json);
+    }
+
+    #[test]
+    fn opencode_config_doctor_classifies_mapped_unsupported_unknown_and_secrets() {
+        let value: Value = serde_json::from_str(
+            r#"{
+              "model": "openai/gpt-4.1",
+              "default_agent": "coder",
+              "agent": {
+                "coder": {
+                  "model": "copilot/gpt-4.1",
+                  "permissions": [{"action": "read", "resource": "src/**", "effect": "allow"}]
+                }
+              },
+              "providers": {
+                "openai": {"apiKey": "sk-secret"}
+              },
+              "commands": {"test": "cargo test"},
+              "mcpServers": {},
+              "surprise": true
+            }"#,
+        )
+        .unwrap();
+
+        let report = opencode_config_doctor_from_value(Path::new("/tmp/opencode.json"), &value);
+
+        assert!(report
+            .mapped
+            .iter()
+            .any(|finding| finding.pointer == "/model"));
+        assert!(report
+            .mapped
+            .iter()
+            .any(|finding| finding.pointer == "/agent/coder/model"));
+        assert!(report
+            .unsupported
+            .iter()
+            .any(|finding| finding.pointer == "/commands"));
+        assert!(report
+            .unsupported
+            .iter()
+            .any(|finding| finding.pointer == "/mcpServers"));
+        assert!(report
+            .unknown
+            .iter()
+            .any(|finding| finding.pointer == "/surprise"));
+        assert!(report
+            .secrets
+            .iter()
+            .any(|finding| finding.pointer == "/providers/openai/apiKey"));
+
+        let rendered = format_config_doctor_report(
+            &ConfigDoctorReport {
+                source: "opencode".to_string(),
+                checked_paths: vec!["/tmp/opencode.json".to_string()],
+                summary: config_doctor_summary(&[report.clone()]),
+                files: vec![report],
+            },
+            OutputFormat::Text,
+        )
+        .unwrap();
+        assert!(rendered.contains("/providers/openai/apiKey"));
+        assert!(!rendered.contains("sk-secret"));
+    }
+
+    #[test]
+    fn opencode_config_import_preview_maps_patch_without_secret_values() {
+        let value: Value = serde_json::from_str(
+            r#"{
+              "model": "openai/gpt-4.1-mini",
+              "default_agent": "coder",
+              "enabled_providers": ["openai", "github-copilot"],
+              "agent": {
+                "coder": {
+                  "model": "copilot/gpt-4.1",
+                  "permissions": [
+                    {"action": "bash", "resource": "cargo test", "effect": "ask"}
+                  ]
+                }
+              },
+              "permission": {
+                "read": {"src/**": "allow"}
+              },
+              "providers": {
+                "openai": {"apiKey": "sk-secret"}
+              },
+              "commands": {"test": "cargo test"}
+            }"#,
+        )
+        .unwrap();
+
+        let preview = opencode_config_import_preview_from_values(
+            vec!["/tmp/opencode.json".to_string()],
+            vec![(PathBuf::from("/tmp/opencode.json"), value)],
+            Vec::new(),
+        );
+
+        assert_eq!(preview.patch.default_profile.as_deref(), Some("coder"));
+        assert_eq!(
+            preview
+                .patch
+                .profiles
+                .get("coder")
+                .and_then(|profile| profile.model.as_deref()),
+            Some("copilot/gpt-4.1")
+        );
+        assert!(preview.patch.providers.contains_key("openai"));
+        assert!(preview.patch.providers.contains_key("github-copilot"));
+        assert!(preview.patch.providers.contains_key("copilot"));
+        assert_eq!(
+            preview
+                .patch
+                .providers
+                .get("openai")
+                .and_then(|provider| provider.auth.as_deref()),
+            Some("opencode:/providers/openai/apiKey")
+        );
+        assert!(preview
+            .patch
+            .permissions
+            .iter()
+            .any(|permission| permission.action == "read"
+                && permission.resource == "src/**"
+                && permission.effect == "allow"));
+        assert!(preview
+            .patch
+            .profiles
+            .get("coder")
+            .unwrap()
+            .permissions
+            .iter()
+            .any(|permission| permission.action == "shell"
+                && permission.resource == "cargo test"
+                && permission.effect == "ask"));
+        assert!(preview
+            .unsupported
+            .iter()
+            .any(|finding| finding.pointer == "/commands"));
+        assert!(preview
+            .secrets
+            .iter()
+            .any(|finding| finding.pointer == "/providers/openai/apiKey"));
+
+        let rendered = format_config_import_preview(&preview, OutputFormat::Text).unwrap();
+        assert!(rendered.contains("default_profile: coder"));
+        assert!(rendered.contains("model: copilot/gpt-4.1"));
+        assert!(rendered.contains("opencode:/providers/openai/apiKey"));
+        assert!(!rendered.contains("sk-secret"));
+    }
+
+    #[test]
+    fn config_import_write_refuses_overwrite_without_force() {
+        let mut config = DjinnConfig::default();
+        config.default_profile = Some("default".to_string());
+        let path = std::env::temp_dir().join(format!(
+            "djinn-config-overwrite-test-{}.json",
+            current_time_millis()
+        ));
+        fs::write(&path, "existing\n").unwrap();
+
+        let error = write_djinn_config_file(&config, &path, false).unwrap_err();
+        assert!(error.to_string().contains("refusing to overwrite"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "existing\n");
+
+        let overwritten = write_djinn_config_file(&config, &path, true).unwrap();
+        assert!(overwritten);
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("\"version\": 1"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn config_import_write_report_serializes_native_config_without_secret_values() {
+        let value: Value = serde_json::from_str(
+            r#"{
+              "default_agent": "coder",
+              "agent": {"coder": {"model": "copilot/gpt-4.1"}},
+              "providers": {"openai": {"apiKey": "sk-secret"}}
+            }"#,
+        )
+        .unwrap();
+        let preview = opencode_config_import_preview_from_values(
+            vec!["/tmp/opencode.json".to_string()],
+            vec![(PathBuf::from("/tmp/opencode.json"), value)],
+            Vec::new(),
+        );
+        let path = std::env::temp_dir().join(format!(
+            "djinn-config-write-report-test-{}.json",
+            current_time_millis()
+        ));
+
+        let report = write_config_import_preview(&preview, &path, false).unwrap();
+        let rendered = format_config_import_write_report(&report, OutputFormat::Json).unwrap();
+
+        assert!(rendered.contains("copilot/gpt-4.1"));
+        assert!(rendered.contains("opencode:/providers/openai/apiKey"));
+        assert!(!rendered.contains("sk-secret"));
+        assert!(path.exists());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn copilot_model_prefixes_route_to_copilot_provider() {
+        assert!(is_copilot_model("copilot/gpt-4.1"));
+        assert!(is_copilot_model("github-copilot/claude-sonnet-4"));
+        assert!(!is_copilot_model("openai/gpt-4o-mini"));
+        assert!(!is_copilot_model("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn copilot_oauth_token_reads_hosts_and_apps_json_shapes() {
+        let hosts = r#"{
+          "github.com": {
+            "oauth_token": "ghu-host-token",
+            "user": "octo"
+          }
+        }"#;
+        let apps = r#"{
+          "apps": [
+            {"github": {"oauthToken": "ghu-app-token"}}
+          ]
+        }"#;
+
+        assert_eq!(
+            copilot_oauth_token_from_content(hosts).unwrap().as_deref(),
+            Some("ghu-host-token")
+        );
+        assert_eq!(
+            copilot_oauth_token_from_content(apps).unwrap().as_deref(),
+            Some("ghu-app-token")
+        );
+    }
+
+    #[test]
+    fn copilot_model_options_read_models_without_leaking_auth_strings() {
+        let content = r#"{
+          "github.com": {
+            "oauth_token": "ghu-host-token",
+            "user": "octo"
+          },
+          "defaultModel": "gpt-4.1",
+          "availableModels": [
+            { "id": "gpt-4.1", "name": "GPT 4.1" },
+            { "modelId": "claude-sonnet-4" },
+            "o4-mini",
+            "gemini-2.5-pro"
+          ],
+          "models": {
+            "gpt-4o": { "label": "GPT 4o" },
+            "not-a-model": { "label": "ignored" }
+          }
+        }"#;
+
+        let models = copilot_model_options_from_content(content).unwrap();
+
+        assert_eq!(
+            models,
+            vec![
+                "copilot/gpt-4.1",
+                "copilot/gpt-4o",
+                "copilot/claude-sonnet-4",
+                "copilot/o4-mini"
+            ]
+        );
+        assert!(!models.iter().any(|model| model.contains("ghu-host-token")));
+        assert!(!models.iter().any(|model| model.contains("gemini")));
+    }
+
+    #[test]
+    fn copilot_model_list_parser_normalizes_and_deduplicates() {
+        let models = copilot_model_options_from_list(
+            "gpt-4.1, copilot/gpt-4.1;github-copilot/claude-sonnet-4\n sk-secret",
+        );
+
+        assert_eq!(
+            models,
+            vec!["copilot/gpt-4.1", "github-copilot/claude-sonnet-4"]
+        );
+    }
+
+    #[test]
+    fn github_cli_auth_token_parser_reads_first_nonempty_line() {
+        assert_eq!(
+            github_cli_auth_token_from_stdout(b"\n  gho-cli-token  \nignored\n").as_deref(),
+            Some("gho-cli-token")
+        );
+        assert_eq!(github_cli_auth_token_from_stdout(b"\n  \n"), None);
     }
 
     #[test]

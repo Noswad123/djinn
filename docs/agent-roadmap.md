@@ -5,6 +5,8 @@ terminal assistant. It follows the feature inventory and design decisions in:
 
 - [`agent-feature-inventory.md`](./agent-feature-inventory.md)
 - [`agent-design-decisions.md`](./agent-design-decisions.md)
+- [`opencode-compatibility-matrix.md`](./opencode-compatibility-matrix.md)
+- [`djinn-config-strategy.md`](./djinn-config-strategy.md)
 
 ## Current direction
 
@@ -13,10 +15,14 @@ terminal assistant. It follows the feature inventory and design decisions in:
   inspiration.
 - Agent sessions should use **JSONL** as the first durable storage format.
 - MCP is deferred until there is a concrete need.
-- Initial provider families are Google Gemini, OpenAI, and Codex.
-- OpenAI is the first provider implementation target.
+- Initial provider families are OpenAI and GitHub Copilot.
+- OpenAI is the first provider implementation target; GitHub Copilot is the next
+  local provider target. Google Gemini is not allowed on this machine, and Codex
+  is intentionally out of scope for this roadmap slice.
 - OpenCode configuration compatibility should be semantic: Djinn may interpret
   compatible concepts without cloning OpenCode internals.
+- Long term, Djinn should have its own canonical config. OpenCode and Copilot CLI
+  config should be import/export adapters around that Djinn-native model.
 
 ## Why non-interactive work comes first
 
@@ -100,15 +106,21 @@ provider/runtime payload details:
 
 ### Provider order and scope
 
-- Decide the next provider implementation order:
-  - Google Gemini;
-  - GitHub Copilot;
-  - Codex.
-- Decide whether Codex is its own adapter or an OpenAI-compatible profile with
-  different auth/default behavior.
+- GitHub Copilot is the selected next provider after OpenAI.
+- Google Gemini is out of scope for this local environment because that provider
+  is not allowed on this machine.
+- Codex is intentionally out of scope for this roadmap slice.
+- Remaining Copilot follow-up work after the first adapter slice:
+  - validate against a live local Copilot account without printing tokens;
+  - expand supported Copilot model discovery further only if live/local config
+    exposes additional shapes beyond the current safe local discovery pass;
+  - keep the documented auth/model discovery contract in the README and design
+    decisions aligned with implementation as new shapes are added.
 
 ### OpenCode compatibility matrix
 
+- Track this in
+  [`opencode-compatibility-matrix.md`](./opencode-compatibility-matrix.md).
 - Define which OpenCode config concepts Djinn will read and how they map:
   - providers/models;
   - agents/sub-agents;
@@ -121,6 +133,23 @@ provider/runtime payload details:
   - ignore silently;
   - warn;
   - fail validation.
+
+### Djinn-native config and harness adapters
+
+- Track this in [`djinn-config-strategy.md`](./djinn-config-strategy.md).
+- Design Djinn's canonical config model before making OpenCode compatibility a
+  permanent source of truth.
+- Build on the initial native JSON config schema and read-only inspection
+  commands (`djinn config show`, `djinn config doctor --source djinn`).
+- Keep native config writes safe: import writes require `--write` and do not
+  overwrite existing files without `--force`.
+- Treat OpenCode, Copilot CLI, and future harness formats as import/export
+  adapters.
+- Prioritize read-only/dry-run commands before writeback:
+  - `djinn config doctor --source opencode`;
+  - `djinn config import opencode --dry-run`;
+  - `djinn config export opencode --dry-run`;
+  - `djinn config export copilot --dry-run`.
 
 ### Sub-agent model
 

@@ -69,6 +69,78 @@ djinn tui suggestions
 djinn tui skills
 ```
 
+Run the agent with GitHub Copilot by selecting a `copilot/` model. Djinn can use
+`--api-key`, `GITHUB_COPILOT_TOKEN`/`DJINN_COPILOT_TOKEN`, or local Copilot OAuth
+files under `~/.config/github-copilot/`. If those are missing, Djinn falls back
+to `gh auth token` and exchanges that GitHub token for a Copilot token:
+
+```bash
+djinn agent ask "Summarize this repo" --model copilot/gpt-4.1
+djinn agent chat --model copilot/gpt-4.1
+```
+
+`djinn agent config list` and the TUI command palette include Copilot model
+options from `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`, comma/semicolon-list
+variants such as `DJINN_COPILOT_MODELS`, and local GitHub Copilot config files
+such as `hosts.json`, `apps.json`, `models.json`, or `config.json`. Discovered
+bare model ids are shown with a `copilot/` prefix so selecting them routes to the
+Copilot adapter; token-like and Gemini model strings are ignored.
+
+Supported Copilot auth inputs, in resolution order:
+
+- `--api-key` for `djinn agent ask` / `djinn agent chat`;
+- direct Copilot API token env vars: `DJINN_COPILOT_TOKEN`,
+  `GITHUB_COPILOT_TOKEN`, `COPILOT_TOKEN`;
+- OAuth/GitHub token env vars exchanged for a Copilot token:
+  `DJINN_COPILOT_OAUTH_TOKEN`, `GITHUB_COPILOT_OAUTH_TOKEN`;
+- local OAuth files: `~/.config/github-copilot/hosts.json` and
+  `~/.config/github-copilot/apps.json`;
+- `gh auth token`, or another binary named by `DJINN_GH_BIN`.
+
+Overrides for Copilot endpoints:
+
+- `GITHUB_COPILOT_TOKEN_URL` changes the OAuth/GitHub-token exchange endpoint;
+- `GITHUB_COPILOT_CHAT_COMPLETIONS_URL` changes the chat-completions endpoint.
+
+Supported Copilot model discovery inputs:
+
+- single model env vars: `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`,
+  `COPILOT_MODEL`;
+- comma/semicolon/newline list env vars: `DJINN_COPILOT_MODELS`,
+  `GITHUB_COPILOT_MODELS`, `COPILOT_MODELS`;
+- local files under `~/.config/github-copilot/`: `hosts.json`, `apps.json`,
+  `models.json`, and `config.json`.
+
+Inspect the discovered profiles/models without making a provider request:
+
+```bash
+djinn agent config list
+djinn agent config list --json
+```
+
+Inspect how OpenCode config maps into Djinn concepts without writing anything:
+
+```bash
+djinn config show
+djinn config show --json
+djinn config doctor --source djinn
+djinn config doctor --source opencode
+djinn config doctor --source opencode --json
+djinn config doctor --source opencode --path ~/.config/opencode/opencode.json
+djinn config import opencode --dry-run
+djinn config import opencode --dry-run --json
+djinn config import opencode --write
+djinn config import opencode --write --output ./.djinn.json
+```
+
+Djinn's native config is currently a versioned JSON document discovered from
+`~/.config/djinn/config.json` and project-local `.djinn.json`, with project-local
+values layered last. Version 1 includes canonical sections for providers,
+profiles, shared permissions, instructions, command templates, tools, and future
+agents. Import writes refuse to overwrite an existing destination unless
+`--force` is passed. Agent runtime resolution reads Djinn native config; OpenCode
+config is read only by explicit doctor/import adapter commands.
+
 Save and review chats:
 
 ```bash

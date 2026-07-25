@@ -129,60 +129,89 @@ Implications:
 - Do not shape the initial architecture around MCP.
 - Keep the tool abstraction generic enough that an MCP bridge can be added later.
 
-### D5. Initial model/provider support: Gemini, OpenAI, and Codex
+### D5. Initial model/provider support: OpenAI and GitHub Copilot first
 
 **Status:** Decided
 
-Djinn should support these model/provider families:
+Djinn should support these model/provider families in the local implementation path:
 
-- Google Gemini;
 - OpenAI;
-- Codex.
+- GitHub Copilot.
 
 Implications:
 
 - Define a provider-neutral `ModelClient` interface first.
 - Keep provider-specific auth, request shaping, streaming, tool-call parsing, and
   model capabilities behind adapter boundaries.
-- Avoid broad provider support until these three are reliable.
+- Avoid broad provider support until OpenAI and GitHub Copilot are reliable.
 
 Implemented compatibility decisions:
 
 - OpenAI is the first provider implementation target.
-- When no model is specified directly, Djinn derives the default from OpenCode
-  config when possible. Newer OpenCode `agent` maps are honored through
-  `default_agent` and the requested Djinn profile name, with older
-  `agents.coder.model`/`agents.default.model` retained as compatibility
-  fallbacks.
-- When no OpenAI API key is specified directly, Djinn reuses OpenCode config
-  `providers.openai.apiKey` if present.
-- Djinn reads newer OpenCode auth state from
-  `~/.local/share/opencode/auth.json` for OpenAI API-key credentials and
-  OpenAI OAuth credentials. OAuth mode uses OpenCode's ChatGPT/Codex endpoint
-  (`https://chatgpt.com/backend-api/codex/responses`), bearer token header,
-  optional `ChatGPT-Account-Id`, token refresh flow, and streaming Responses
-  parsing because the Codex endpoint requires streaming.
+- GitHub Copilot is the next provider target. Models prefixed with `copilot/` or
+  `github-copilot/` route to a Copilot chat-completions adapter. Copilot auth can
+  be passed explicitly, read from Copilot token environment variables, derived
+  from local GitHub Copilot OAuth files under `~/.config/github-copilot/`, or
+  discovered via `gh auth token`. OAuth/GitHub tokens are exchanged via the GitHub
+  Copilot internal token endpoint; tokens must never be printed.
+- The supported Copilot auth contract is:
+  - explicit `--api-key` for `djinn agent ask` / `djinn agent chat`;
+  - direct Copilot API token env vars: `DJINN_COPILOT_TOKEN`,
+    `GITHUB_COPILOT_TOKEN`, `COPILOT_TOKEN`;
+  - OAuth/GitHub token env vars exchanged for a Copilot token:
+    `DJINN_COPILOT_OAUTH_TOKEN`, `GITHUB_COPILOT_OAUTH_TOKEN`;
+  - local OAuth files: `~/.config/github-copilot/hosts.json` and
+    `~/.config/github-copilot/apps.json`;
+  - `gh auth token`, with `DJINN_GH_BIN` available to select another `gh` binary;
+  - endpoint overrides: `GITHUB_COPILOT_TOKEN_URL` for token exchange and
+    `GITHUB_COPILOT_CHAT_COMPLETIONS_URL` for chat completions.
+- Copilot model selection surfaces include a safe local discovery pass for
+  model-like entries in `~/.config/github-copilot/hosts.json`, `apps.json`,
+  `models.json`, and `config.json`, plus Copilot model environment variables.
+  Discovered bare model ids are rendered with a `copilot/` prefix so they route
+  through the Copilot adapter. Token-like strings and Gemini entries are ignored.
+- The supported Copilot model-discovery contract is:
+  - single model env vars: `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`,
+    `COPILOT_MODEL`;
+  - comma/semicolon/newline list env vars: `DJINN_COPILOT_MODELS`,
+    `GITHUB_COPILOT_MODELS`, `COPILOT_MODELS`;
+  - local files under `~/.config/github-copilot/`: `hosts.json`, `apps.json`,
+    `models.json`, and `config.json`;
+  - `djinn agent config list` and the TUI command palette use the same option
+    builder, so scripted and interactive model choices stay aligned.
+- Runtime config resolution uses Djinn native config, CLI args, environment
+  variables, and built-in defaults. Djinn no longer reads OpenCode config as a
+  runtime fallback; OpenCode config is supported through explicit
+  `djinn config doctor --source opencode` and `djinn config import opencode ...`
+  adapter commands.
+- OpenAI auth can be passed directly, read from `OPENAI_API_KEY`, or referenced
+  through Djinn native `providers.openai.auth` values such as
+  `env:OPENAI_API_KEY`. Imported `opencode:` secret references are diagnostic
+  placeholders and should be replaced with Djinn-owned env/keychain references
+  before runtime use.
 - Djinn permissions are allow-by-default for local assistant workflows. Built-in
   guardrails block clearly destructive shell commands and sensitive/system path
-  mutations; OpenCode `permission`/`permissions` rules from the selected/default
-  agent provide additional deny/ask/allow policy in Djinn's local tool layer.
+  mutations; Djinn native shared/profile permissions provide additional
+  deny/ask/allow policy in the local tool layer.
 - The shell tool is available by default for non-interactive agent sessions. It
   executes local commands with a bounded timeout and uses the allow-by-default
   permission policy plus destructive-action guardrails.
 
 Open questions:
 
-- Whether Codex is treated as a distinct provider or as an OpenAI-compatible
-  profile with different auth/defaults.
-- Which provider should follow OpenAI: Google Gemini, GitHub Copilot, or a
-  distinct Codex profile.
+- Whether future provider support is needed after OpenAI and GitHub Copilot.
+- Google Gemini is not a local target on this machine because that provider is not
+  allowed here.
+- Codex is intentionally not a target for this roadmap slice.
 
 ### D6. OpenCode configuration compatibility: interpret, do not clone
 
 **Status:** Tentative
 
-Djinn should aim for useful compatibility with OpenCode configuration, but it can
-interpret that configuration through Djinn's own model.
+Djinn should aim for useful compatibility with OpenCode configuration, but it
+should interpret that configuration through Djinn's own model. Long term, Djinn
+will have its own canonical config. OpenCode config is a bridge for
+interoperability and product discovery, not the permanent source of truth.
 
 Rationale:
 
@@ -196,6 +225,18 @@ Implications:
   Djinn concepts.
 - Prefer semantic compatibility over byte-for-byte behavioral compatibility.
 - Document any unsupported or reinterpreted OpenCode fields.
+- Track import/export mapping decisions in
+  [`opencode-compatibility-matrix.md`](./opencode-compatibility-matrix.md).
+- Use [`djinn-config-strategy.md`](./djinn-config-strategy.md) for the canonical
+  config model and adapter command design.
+- Djinn native config is a versioned JSON schema discovered from
+  `~/.config/djinn/config.json` and project-local `.djinn.json`, with read-only
+  `djinn config show` and `djinn config doctor --source djinn` inspection. The
+  first writeback path is `djinn config import opencode --write`, which creates a
+  native config file but refuses to overwrite existing config unless `--force` is
+  explicit.
+- Treat OpenCode and Copilot CLI configs as import/export adapters around the
+  Djinn-native model.
 
 ### D7. Sub-agent support: support the concept for OpenCode compatibility
 

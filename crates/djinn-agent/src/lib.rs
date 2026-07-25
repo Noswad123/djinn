@@ -122,6 +122,13 @@ pub struct OpenAiClient {
 }
 
 #[derive(Debug, Clone)]
+pub struct CopilotClient {
+    token: String,
+    endpoint: String,
+    http: reqwest::Client,
+}
+
+#[derive(Debug, Clone)]
 pub enum OpenAiAuth {
     ApiKey(String),
     OAuth(OpenAiOAuth),
@@ -164,6 +171,23 @@ impl OpenAiClient {
     }
 }
 
+impl CopilotClient {
+    pub fn new(token: impl Into<String>) -> Self {
+        Self::with_endpoint(
+            token,
+            "https://api.githubcopilot.com/chat/completions".to_string(),
+        )
+    }
+
+    pub fn with_endpoint(token: impl Into<String>, endpoint: impl Into<String>) -> Self {
+        Self {
+            token: token.into(),
+            endpoint: endpoint.into(),
+            http: reqwest::Client::new(),
+        }
+    }
+}
+
 #[async_trait]
 impl ModelClient for OpenAiClient {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
@@ -171,6 +195,53 @@ impl ModelClient for OpenAiClient {
             OpenAiAuth::ApiKey(api_key) => self.complete_chat_completions(request, api_key).await,
             OpenAiAuth::OAuth(oauth) => self.complete_oauth_responses(request, oauth).await,
         }
+    }
+}
+
+#[async_trait]
+impl ModelClient for CopilotClient {
+    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
+        let mut body = json!({
+            "model": normalize_copilot_model(&request.model),
+            "messages": request
+                .messages
+                .into_iter()
+                .map(openai_message)
+                .collect::<Vec<_>>(),
+        });
+
+        if !request.tools.is_empty() {
+            body["tools"] = Value::Array(
+                request
+                    .tools
+                    .into_iter()
+                    .map(openai_tool)
+                    .collect::<Vec<_>>(),
+            );
+        }
+
+        let response = self
+            .http
+            .post(&self.endpoint)
+            .bearer_auth(&self.token)
+            .header(reqwest::header::USER_AGENT, "djinn-agent")
+            .header("Copilot-Integration-Id", "djinn-agent")
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| "sending GitHub Copilot chat completion request")?;
+
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .with_context(|| "reading GitHub Copilot response body")?;
+        if !status.is_success() {
+            bail!("GitHub Copilot request failed ({status}): {text}");
+        }
+
+        parse_openai_chat_response(&text)
+            .with_context(|| format!("parsing GitHub Copilot response: {text}"))
     }
 }
 
@@ -217,32 +288,38 @@ impl OpenAiClient {
             bail!("OpenAI request failed ({status}): {text}");
         }
 
-        let response: OpenAiChatResponse = serde_json::from_str(&text)
-            .with_context(|| format!("parsing OpenAI response: {text}"))?;
-        let choice = response
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("OpenAI response did not include choices"))?;
-
-        Ok(ModelResponse {
-            message: ModelMessage {
-                role: ModelRole::Assistant,
-                content: choice.message.content.unwrap_or_default(),
-                tool_call_id: None,
-                tool_calls: Vec::new(),
-            },
-            tool_calls: choice
-                .message
-                .tool_calls
-                .unwrap_or_default()
-                .into_iter()
-                .map(model_tool_call)
-                .collect::<Result<Vec<_>>>()?,
-            usage: response.usage.map(ModelTokenUsage::from),
-        })
+        parse_openai_chat_response(&text)
+            .with_context(|| format!("parsing OpenAI response: {text}"))
     }
+}
 
+fn parse_openai_chat_response(text: &str) -> Result<ModelResponse> {
+    let response: OpenAiChatResponse = serde_json::from_str(text)?;
+    let choice = response
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("OpenAI-compatible response did not include choices"))?;
+
+    Ok(ModelResponse {
+        message: ModelMessage {
+            role: ModelRole::Assistant,
+            content: choice.message.content.unwrap_or_default(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        },
+        tool_calls: choice
+            .message
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .map(model_tool_call)
+            .collect::<Result<Vec<_>>>()?,
+        usage: response.usage.map(ModelTokenUsage::from),
+    })
+}
+
+impl OpenAiClient {
     async fn complete_oauth_responses(
         &self,
         request: ModelRequest,
@@ -626,6 +703,14 @@ fn openai_responses_tool_call(item: &Value) -> Result<ModelToolCall> {
 
 fn normalize_openai_model(model: &str) -> String {
     model.strip_prefix("openai/").unwrap_or(model).to_string()
+}
+
+fn normalize_copilot_model(model: &str) -> String {
+    model
+        .strip_prefix("copilot/")
+        .or_else(|| model.strip_prefix("github-copilot/"))
+        .unwrap_or(model)
+        .to_string()
 }
 
 fn oauth_user_agent() -> String {
@@ -3378,6 +3463,16 @@ mod tests {
     }
 
     #[test]
+    fn normalize_copilot_model_strips_provider_prefix() {
+        assert_eq!(normalize_copilot_model("copilot/gpt-4.1"), "gpt-4.1");
+        assert_eq!(
+            normalize_copilot_model("github-copilot/claude-sonnet-4"),
+            "claude-sonnet-4"
+        );
+        assert_eq!(normalize_copilot_model("gpt-4.1"), "gpt-4.1");
+    }
+
+    #[test]
     fn oauth_user_agent_identifies_djinn() {
         assert!(oauth_user_agent().starts_with("djinn/"));
     }
@@ -4347,6 +4442,39 @@ mod tests {
         assert_eq!(usage.input_tokens, Some(8));
         assert_eq!(usage.output_tokens, Some(5));
         assert_eq!(usage.total_tokens, Some(13));
+    }
+
+    #[test]
+    fn openai_compatible_chat_response_reads_text_tools_and_usage() {
+        let response = parse_openai_chat_response(
+            r#"{
+              "choices": [
+                {
+                  "message": {
+                    "content": "hello",
+                    "tool_calls": [
+                      {
+                        "id": "call-1",
+                        "function": {
+                          "name": "read_file",
+                          "arguments": "{\"path\":\"README.md\"}"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.message.content, "hello");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "call-1");
+        assert_eq!(response.tool_calls[0].name, "read_file");
+        assert_eq!(response.tool_calls[0].input, json!({"path": "README.md"}));
+        assert_eq!(response.usage.unwrap().total_tokens, Some(7));
     }
 
     #[test]
