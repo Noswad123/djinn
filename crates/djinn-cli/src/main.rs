@@ -94,6 +94,8 @@ enum Command {
     Config(ConfigArgs),
     /// Run or inspect Djinn-native agent sessions.
     Agent(AgentArgs),
+    /// Inspect configured Djinn agent roles.
+    Agents(AgentsArgs),
     /// Open the unified terminal dashboard.
     Tui(TuiArgs),
 }
@@ -769,6 +771,42 @@ struct AgentArgs {
     command: AgentCommand,
 }
 
+#[derive(Debug, Args)]
+struct AgentsArgs {
+    #[command(subcommand)]
+    command: AgentsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentsCommand {
+    /// List configured Djinn agent roles.
+    List(AgentsListArgs),
+    /// Show one configured Djinn agent role.
+    Show(AgentsShowArgs),
+}
+
+#[derive(Debug, Args)]
+struct AgentsListArgs {
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentsShowArgs {
+    /// Agent role name, case-insensitive. Falls back to substring matching.
+    name: String,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
     /// Inspect discovered agent profiles and models.
@@ -1090,6 +1128,12 @@ struct AgentSessionNewArgs {
     /// Agent profile name.
     #[arg(long, default_value = "default")]
     profile: String,
+    /// Configured agent role name.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Parent agent session id for explicit related-session workflows.
+    #[arg(long = "parent-session")]
+    parent_session: Option<String>,
     /// Session source label.
     #[arg(long, default_value = "djinn-agent")]
     source: String,
@@ -1205,6 +1249,12 @@ struct AgentAskArgs {
     /// Agent profile name.
     #[arg(long, default_value = "default")]
     profile: String,
+    /// Configured agent role name.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Parent agent session id for explicit related-session workflows.
+    #[arg(long = "parent-session")]
+    parent_session: Option<String>,
     /// Model to use. Prefix with copilot/ to use GitHub Copilot.
     #[arg(long)]
     model: Option<String>,
@@ -1236,6 +1286,12 @@ struct AgentChatArgs {
     /// Agent profile name.
     #[arg(long, default_value = "default")]
     profile: String,
+    /// Configured agent role name.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Parent agent session id for explicit related-session workflows.
+    #[arg(long = "parent-session")]
+    parent_session: Option<String>,
     /// Model to use. Prefix with copilot/ to use GitHub Copilot.
     #[arg(long)]
     model: Option<String>,
@@ -1904,6 +1960,8 @@ fn main() -> Result<()> {
                 title: None,
                 workspace: None,
                 profile: "default".to_string(),
+                agent: None,
+                parent_session: None,
                 model: None,
                 api_key: None,
                 base_url: None,
@@ -1939,6 +1997,7 @@ fn main() -> Result<()> {
         Command::Open(args) => run_open(args),
         Command::Config(args) => run_config(args),
         Command::Agent(args) => run_agent(args),
+        Command::Agents(args) => run_agents(args),
         Command::Tui(args) => {
             if let Some(args) = run_tui(args)? {
                 run_interactive_app(args)
@@ -2448,6 +2507,8 @@ struct DjinnConfigTool {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 struct DjinnConfigAgent {
+    #[serde(default)]
+    description: Option<String>,
     #[serde(default)]
     profile: Option<String>,
     #[serde(default)]
@@ -4892,6 +4953,244 @@ fn run_agent(args: AgentArgs) -> Result<()> {
     }
 }
 
+fn run_agents(args: AgentsArgs) -> Result<()> {
+    match args.command {
+        AgentsCommand::List(args) => agents_list(args),
+        AgentsCommand::Show(args) => agents_show(args),
+    }
+}
+
+fn agents_list(args: AgentsListArgs) -> Result<()> {
+    let config = effective_djinn_config()?;
+    let roles = configured_agent_roles(&config);
+    print!(
+        "{}",
+        format_agent_role_list(&roles, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+fn agents_show(args: AgentsShowArgs) -> Result<()> {
+    let config = effective_djinn_config()?;
+    let roles = configured_agent_roles(&config);
+    let role = resolve_agent_role(&roles, &args.name)?;
+    print!(
+        "{}",
+        format_agent_role(role, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentRoleView {
+    name: String,
+    description: Option<String>,
+    profile: Option<String>,
+    model: Option<String>,
+    effective_model: Option<String>,
+    instructions: Vec<String>,
+    tools: Vec<String>,
+}
+
+fn configured_agent_roles(config: &DjinnConfig) -> Vec<AgentRoleView> {
+    config
+        .agents
+        .iter()
+        .map(|(name, agent)| {
+            let profile = agent
+                .profile
+                .as_deref()
+                .map(str::trim)
+                .filter(|profile| !profile.is_empty())
+                .map(ToOwned::to_owned);
+            let model = agent
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(ToOwned::to_owned);
+            let effective_model = model.clone().or_else(|| {
+                profile
+                    .as_deref()
+                    .and_then(|profile| profile_model_from_config(config, profile))
+            });
+            AgentRoleView {
+                name: name.clone(),
+                description: agent
+                    .description
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|description| !description.is_empty())
+                    .map(ToOwned::to_owned),
+                profile,
+                model,
+                effective_model,
+                instructions: agent.instructions.clone(),
+                tools: agent.tools.clone(),
+            }
+        })
+        .collect()
+}
+
+fn resolve_agent_role<'a>(roles: &'a [AgentRoleView], name: &str) -> Result<&'a AgentRoleView> {
+    let requested = name.trim();
+    if let Some(role) = roles.iter().find(|role| role.name == requested) {
+        return Ok(role);
+    }
+    if let Some(role) = roles
+        .iter()
+        .find(|role| role.name.eq_ignore_ascii_case(requested))
+    {
+        return Ok(role);
+    }
+    let needle = requested.to_lowercase();
+    let matches = roles
+        .iter()
+        .filter(|role| {
+            role.name.to_lowercase().contains(&needle)
+                || role
+                    .description
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&needle)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [role] => Ok(role),
+        [] => bail!("no agent role named {requested:?} found"),
+        many => {
+            eprintln!("multiple agent roles match {requested:?}:");
+            for role in many {
+                eprintln!("  - {}", role.name);
+            }
+            bail!("agent role name is ambiguous")
+        }
+    }
+}
+
+fn format_agent_role_list(roles: &[AgentRoleView], format: OutputFormat) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(roles)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+    if roles.is_empty() {
+        return Ok("No configured Djinn agent roles.\n".to_string());
+    }
+    let mut lines = vec!["Djinn agent roles".to_string(), String::new()];
+    for role in roles {
+        lines.push(format!("  - {}", role.name));
+        if let Some(description) = &role.description {
+            lines.push(format!("    {description}"));
+        }
+        if let Some(profile) = &role.profile {
+            lines.push(format!("    profile: {profile}"));
+        }
+        if let Some(model) = &role.effective_model {
+            lines.push(format!("    model: {model}"));
+        }
+        if !role.tools.is_empty() {
+            lines.push(format!("    tools: {}", role.tools.join(", ")));
+        }
+    }
+    lines.push(String::new());
+    lines.push(format!("Total: {} agent roles", roles.len()));
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn format_agent_role(role: &AgentRoleView, format: OutputFormat) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(role)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+    let mut lines = vec![
+        "Djinn agent role".to_string(),
+        format!("Name: {}", role.name),
+    ];
+    if let Some(description) = &role.description {
+        lines.push(format!("Description: {description}"));
+    }
+    if let Some(profile) = &role.profile {
+        lines.push(format!("Profile: {profile}"));
+    }
+    if let Some(model) = &role.model {
+        lines.push(format!("Model override: {model}"));
+    }
+    if let Some(model) = &role.effective_model {
+        lines.push(format!("Effective model: {model}"));
+    }
+    lines.push("Instructions:".to_string());
+    if role.instructions.is_empty() {
+        lines.push("  - none".to_string());
+    } else {
+        for instruction in &role.instructions {
+            lines.push(format!("  - {instruction}"));
+        }
+    }
+    lines.push("Tools:".to_string());
+    if role.tools.is_empty() {
+        lines.push("  - inherited/default".to_string());
+    } else {
+        for tool in &role.tools {
+            lines.push(format!("  - {tool}"));
+        }
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentRoleSelection {
+    agent_name: Option<String>,
+    profile: String,
+    model: Option<String>,
+}
+
+fn resolve_agent_role_selection(
+    agent: Option<String>,
+    requested_profile: &str,
+    requested_model: Option<String>,
+) -> Result<AgentRoleSelection> {
+    let Some(agent_name) = agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|agent| !agent.is_empty())
+    else {
+        return Ok(AgentRoleSelection {
+            agent_name: None,
+            profile: resolve_agent_profile(requested_profile)?,
+            model: requested_model,
+        });
+    };
+
+    let config = effective_djinn_config()?;
+    let roles = configured_agent_roles(&config);
+    let role = resolve_agent_role(&roles, agent_name)?;
+    let profile = role
+        .profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| requested_profile.trim().to_string());
+    let profile = resolve_agent_profile(&profile)?;
+    Ok(AgentRoleSelection {
+        agent_name: Some(role.name.clone()),
+        profile,
+        model: requested_model.or_else(|| role.model.clone()),
+    })
+}
+
+fn parent_session_id_from_arg(parent_session: Option<String>) -> Option<AgentSessionId> {
+    parent_session
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .map(AgentSessionId::new)
+}
+
 fn run_agent_config(args: AgentConfigArgs) -> Result<()> {
     match args.command {
         AgentConfigCommand::List(args) => agent_config_list(args),
@@ -5012,12 +5311,15 @@ fn agent_tool_specs(workspace: Option<PathBuf>, profile: &str) -> Result<Vec<Too
 }
 
 fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
+    let selection = resolve_agent_role_selection(args.agent, &args.profile, None)?;
     let meta = AgentSessionMeta {
         title: args
             .title
             .unwrap_or_else(|| "Untitled agent session".to_string()),
         workspace: resolve_agent_workspace(args.workspace)?,
-        profile: args.profile,
+        profile: selection.profile,
+        agent_name: selection.agent_name,
+        parent_session_id: parent_session_id_from_arg(args.parent_session),
         source: args.source,
         ..AgentSessionMeta::default()
     };
@@ -5029,6 +5331,12 @@ fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
     } else {
         println!("Agent session created [{}]: {}", id, session.meta.title);
         println!("Workspace: {}", session.meta.workspace);
+        if let Some(agent_name) = &session.meta.agent_name {
+            println!("Agent: {agent_name}");
+        }
+        if let Some(parent_session_id) = &session.meta.parent_session_id {
+            println!("Parent session: {parent_session_id}");
+        }
         println!("Path: {}", store.session_file_path(&id).display());
     }
     Ok(())
@@ -5048,7 +5356,7 @@ fn agent_session_list(args: AgentSessionListArgs) -> Result<()> {
     } else {
         for (idx, session) in sessions.iter().enumerate() {
             println!(
-                "  {}. [{}] {} — {} events — {}",
+                "  {}. [{}] {}{} — {} events — {}",
                 idx + 1,
                 session.id,
                 if session.title.is_empty() {
@@ -5056,6 +5364,7 @@ fn agent_session_list(args: AgentSessionListArgs) -> Result<()> {
                 } else {
                     &session.title
                 },
+                format_agent_session_summary_suffix(session),
                 session.event_count,
                 session.workspace
             );
@@ -5084,6 +5393,12 @@ fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
     println!("ID: {}", session.id);
     println!("Workspace: {}", session.meta.workspace);
     println!("Profile: {}", session.meta.profile);
+    if let Some(agent_name) = &session.meta.agent_name {
+        println!("Agent: {agent_name}");
+    }
+    if let Some(parent_session_id) = &session.meta.parent_session_id {
+        println!("Parent session: {parent_session_id}");
+    }
     println!("Source: {}", session.meta.source);
     println!("Created: {}", session.meta.created_at);
     if session.events.is_empty() {
@@ -5095,6 +5410,21 @@ fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn format_agent_session_summary_suffix(session: &AgentSessionSummary) -> String {
+    let mut parts = Vec::new();
+    if let Some(agent_name) = &session.agent_name {
+        parts.push(format!("agent: {agent_name}"));
+    }
+    if let Some(parent_session_id) = &session.parent_session_id {
+        parts.push(format!("parent: {parent_session_id}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
+    }
 }
 
 fn agent_session_stats(args: AgentSessionStatsArgs) -> Result<()> {
@@ -5487,8 +5817,9 @@ fn agent_file_history_restore(args: AgentFileHistoryRestoreArgs) -> Result<()> {
 
 fn agent_ask(args: AgentAskArgs) -> Result<()> {
     let prompt = args.prompt;
-    let profile = resolve_agent_profile(&args.profile)?;
-    let model = resolve_agent_model(args.model, &profile)?;
+    let selection = resolve_agent_role_selection(args.agent, &args.profile, args.model)?;
+    let profile = selection.profile;
+    let model = resolve_agent_model(selection.model, &profile)?;
     let title = args
         .title
         .unwrap_or_else(|| prompt_title(&prompt, "Agent prompt"));
@@ -5496,6 +5827,8 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
         title,
         workspace: resolve_agent_workspace(args.workspace)?,
         profile: profile.clone(),
+        agent_name: selection.agent_name,
+        parent_session_id: parent_session_id_from_arg(args.parent_session),
         source: "djinn-agent".to_string(),
         ..AgentSessionMeta::default()
     };
@@ -5602,6 +5935,8 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                         let session = store.load_session(&id)?;
                         args.model = args.model.or_else(|| latest_session_model(&session));
                         args.profile = session.meta.profile;
+                        args.agent = session.meta.agent_name.clone();
+                        args.parent_session = Some(session.id.to_string());
                         args.resume = None;
                         args.title = None;
                         args.workspace = None;
@@ -5668,20 +6003,23 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
 
 fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<AgentChatOutcome> {
     let store = agent_session_store();
-    let profile = resolve_agent_profile(&args.profile)?;
+    let selection = resolve_agent_role_selection(args.agent, &args.profile, args.model)?;
+    let profile = selection.profile;
     let chat_session = prepare_agent_chat_session(
         &store,
         args.resume.as_deref(),
         args.title,
         args.workspace,
         &profile,
+        selection.agent_name,
+        parent_session_id_from_arg(args.parent_session),
     )?;
     let id = chat_session.id;
     let workspace = chat_session.workspace;
     let profile = chat_session.profile;
     let session = store.load_session(&id)?;
     let model = resolve_agent_model(
-        args.model.or_else(|| latest_session_model(&session)),
+        selection.model.or_else(|| latest_session_model(&session)),
         &profile,
     )?;
     let api_key = args.api_key;
@@ -5772,6 +6110,8 @@ fn prepare_agent_chat_session(
     title: Option<String>,
     workspace: Option<PathBuf>,
     profile: &str,
+    agent_name: Option<String>,
+    parent_session_id: Option<AgentSessionId>,
 ) -> Result<PreparedAgentChatSession> {
     if let Some(resume) = resume.map(str::trim).filter(|value| !value.is_empty()) {
         let id = AgentSessionId::new(resume.to_string());
@@ -5798,6 +6138,8 @@ fn prepare_agent_chat_session(
         title: title.unwrap_or_else(|| "Agent chat".to_string()),
         workspace: workspace.clone(),
         profile: profile.to_string(),
+        agent_name,
+        parent_session_id,
         source: "djinn-agent".to_string(),
         ..AgentSessionMeta::default()
     };
@@ -8887,6 +9229,8 @@ fn default_agent_chat_args() -> AgentChatArgs {
         title: None,
         workspace: None,
         profile: "default".to_string(),
+        agent: None,
+        parent_session: None,
         model: None,
         api_key: None,
         base_url: None,
@@ -12858,6 +13202,78 @@ mod tests {
     }
 
     #[test]
+    fn parses_agent_role_selection_flags_for_runtime_commands() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "ask",
+            "hello",
+            "--agent",
+            "reviewer",
+            "--parent-session",
+            "agt_parent",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Ask(args) = agent_args.command else {
+            panic!("expected agent ask command");
+        };
+        assert_eq!(args.agent.as_deref(), Some("reviewer"));
+        assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "chat",
+            "--agent",
+            "planner",
+            "--parent-session",
+            "agt_parent",
+        ])
+        .unwrap();
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Chat(args) = agent_args.command else {
+            panic!("expected agent chat command");
+        };
+        assert_eq!(args.agent.as_deref(), Some("planner"));
+        assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
+    }
+
+    #[test]
+    fn parses_agent_session_new_agent_metadata_flags() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "session",
+            "new",
+            "--agent",
+            "reviewer",
+            "--parent-session",
+            "agt_parent",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Session(session_args) = agent_args.command else {
+            panic!("expected agent session command");
+        };
+        let AgentSessionCommand::New(args) = session_args.command else {
+            panic!("expected agent session new command");
+        };
+        assert_eq!(args.agent.as_deref(), Some("reviewer"));
+        assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
+        assert!(args.json);
+    }
+
+    #[test]
     fn parses_config_doctor_opencode_command() {
         let cli = Cli::try_parse_from([
             "djinn",
@@ -12930,6 +13346,72 @@ mod tests {
 
         assert_eq!(args.path.as_deref(), Some(Path::new("/tmp/djinn.json")));
         assert!(args.json);
+    }
+
+    #[test]
+    fn parses_agents_list_and_show_commands() {
+        let cli = Cli::try_parse_from(["djinn", "agents", "list", "--json"]).unwrap();
+        let Some(Command::Agents(args)) = cli.command else {
+            panic!("expected agents command");
+        };
+        let AgentsCommand::List(args) = args.command else {
+            panic!("expected agents list command");
+        };
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from(["djinn", "agents", "show", "reviewer", "--json"]).unwrap();
+        let Some(Command::Agents(args)) = cli.command else {
+            panic!("expected agents command");
+        };
+        let AgentsCommand::Show(args) = args.command else {
+            panic!("expected agents show command");
+        };
+        assert_eq!(args.name, "reviewer");
+        assert!(args.json);
+    }
+
+    #[test]
+    fn configured_agent_roles_render_effective_model_and_resolve_names() {
+        let config = parse_djinn_config(
+            r#"{
+              "version": 1,
+              "profiles": {
+                "review": {"model": "openai/gpt-5.5"}
+              },
+              "agents": {
+                "reviewer": {
+                  "description": "Review code diffs",
+                  "profile": "review",
+                  "instructions": ["docs/review.md"],
+                  "tools": ["read_file", "search_files"]
+                },
+                "planner": {
+                  "model": "copilot/gpt-4.1"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let roles = configured_agent_roles(&config);
+        assert_eq!(roles.len(), 2);
+        let reviewer = resolve_agent_role(&roles, "review").unwrap();
+        assert_eq!(reviewer.name, "reviewer");
+        assert_eq!(reviewer.effective_model.as_deref(), Some("openai/gpt-5.5"));
+        assert_eq!(reviewer.tools, vec!["read_file", "search_files"]);
+        let rendered = format_agent_role_list(&roles, OutputFormat::Text).unwrap();
+        assert!(rendered.contains("Djinn agent roles"));
+        assert!(rendered.contains("reviewer"));
+        assert!(rendered.contains("model: openai/gpt-5.5"));
+        let show = format_agent_role(reviewer, OutputFormat::Text).unwrap();
+        assert!(show.contains("Name: reviewer"));
+        assert!(show.contains("Effective model: openai/gpt-5.5"));
+        assert!(show.contains("docs/review.md"));
+
+        let json = format_agent_role(reviewer, OutputFormat::Json).unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["name"], "reviewer");
+        assert_eq!(value["effective_model"], "openai/gpt-5.5");
     }
 
     #[test]
@@ -14566,6 +15048,8 @@ mod tests {
             Some("Pairing session".to_string()),
             Some(workspace.clone()),
             "review",
+            Some("reviewer".to_string()),
+            Some(AgentSessionId::new("agt_parent")),
         )
         .unwrap();
         let loaded = store.load_session(&prepared.id).unwrap();
@@ -14574,6 +15058,15 @@ mod tests {
         assert_eq!(prepared.profile, "review");
         assert_eq!(loaded.meta.title, "Pairing session");
         assert_eq!(loaded.meta.profile, "review");
+        assert_eq!(loaded.meta.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(
+            loaded
+                .meta
+                .parent_session_id
+                .as_ref()
+                .map(AgentSessionId::as_str),
+            Some("agt_parent")
+        );
         assert_eq!(
             loaded.meta.workspace,
             canonical_workspace.display().to_string()
@@ -14599,6 +15092,8 @@ mod tests {
             Some("Ignored title".to_string()),
             Some(PathBuf::from("/tmp/ignored-workspace")),
             "ignored-profile",
+            Some("ignored-agent".to_string()),
+            Some(AgentSessionId::new("agt_ignored_parent")),
         )
         .unwrap();
 
@@ -14929,6 +15424,8 @@ mod tests {
             title: "Converted title".to_string(),
             workspace: "/tmp/project".to_string(),
             profile: "default".to_string(),
+            agent_name: None,
+            parent_session_id: None,
             source: "opencode".to_string(),
             created_at: "2026-07-24T00:00:00Z".to_string(),
             updated_at: "2026-07-24T01:00:00Z".to_string(),

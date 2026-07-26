@@ -174,6 +174,13 @@ provider/runtime payload details:
   - session relationship to parent agent.
 - Decide whether sub-agents are in-process, separate `djinn` processes, or a
   later task-runner concept.
+- First inspection slice is top-level `djinn agents list/show <name>`, where
+  `agents` are configured named roles and `agent` remains the runtime/session
+  command family. Next slices can add explicit `--agent <name>` selection and
+  `parent_session_id` metadata without enabling autonomous delegation.
+- Explicit role selection now exists on `djinn agent ask`, `djinn agent chat`, and
+  `djinn agent session new`; sessions persist `agent_name` and optional
+  `parent_session_id`. Keep autonomous delegation deferred.
 
 ### Permission and safety policy
 

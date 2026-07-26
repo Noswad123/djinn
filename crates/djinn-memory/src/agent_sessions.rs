@@ -44,6 +44,10 @@ pub struct AgentSessionMeta {
     pub workspace: String,
     #[serde(default)]
     pub profile: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<AgentSessionId>,
     #[serde(default)]
     pub source: String,
     #[serde(default = "now_rfc3339")]
@@ -188,6 +192,8 @@ pub struct AgentSessionSummary {
     pub title: String,
     pub workspace: String,
     pub profile: String,
+    pub agent_name: Option<String>,
+    pub parent_session_id: Option<AgentSessionId>,
     pub source: String,
     pub created_at: String,
     pub updated_at: String,
@@ -420,6 +426,8 @@ fn summary_for(session: &AgentSession) -> AgentSessionSummary {
         title: session.meta.title.clone(),
         workspace: session.meta.workspace.clone(),
         profile: session.meta.profile.clone(),
+        agent_name: session.meta.agent_name.clone(),
+        parent_session_id: session.meta.parent_session_id.clone(),
         source: session.meta.source.clone(),
         created_at: session.meta.created_at.clone(),
         updated_at,
@@ -537,6 +545,8 @@ mod tests {
                 title: "test agent run".to_string(),
                 workspace: "/tmp/project".to_string(),
                 profile: "code".to_string(),
+                agent_name: Some("reviewer".to_string()),
+                parent_session_id: Some(AgentSessionId::new("agt_parent")),
                 source: "djinn-agent".to_string(),
                 ..AgentSessionMeta::default()
             })
@@ -553,6 +563,15 @@ mod tests {
 
         let loaded = store.load_session(&id).unwrap();
         assert_eq!(loaded.id, id);
+        assert_eq!(loaded.meta.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(
+            loaded
+                .meta
+                .parent_session_id
+                .as_ref()
+                .map(AgentSessionId::as_str),
+            Some("agt_parent")
+        );
         assert_eq!(loaded.events.len(), 1);
         assert_eq!(
             loaded.events[0].schema_version,
@@ -570,6 +589,14 @@ mod tests {
             .unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].event_count, 1);
+        assert_eq!(summaries[0].agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(
+            summaries[0]
+                .parent_session_id
+                .as_ref()
+                .map(AgentSessionId::as_str),
+            Some("agt_parent")
+        );
     }
 
     #[test]

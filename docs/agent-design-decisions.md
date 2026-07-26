@@ -267,6 +267,15 @@ Working interpretation:
 - Djinn may interpret OpenCode sub-agent/task-agent config into this internal
   model.
 - Djinn does not need to duplicate OpenCode's implementation mechanics.
+- The command vocabulary uses top-level plural `djinn agents ...` for configured
+  named roles, while singular `djinn agent ...` remains the runtime/session
+  command family. The first slice is read-only inspection:
+  `djinn agents list` and `djinn agents show <name>`.
+- Explicit role selection is supported with `--agent <name>` on `djinn agent ask`,
+  `djinn agent chat`, and `djinn agent session new`. A selected role supplies the
+  profile/model defaults for that invocation, and the session metadata records
+  `agent_name` plus optional `parent_session_id` for related-session workflows.
+- Automatic model-driven delegation remains out of scope.
 
 Open questions:
 

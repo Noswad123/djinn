@@ -118,6 +118,17 @@ djinn agent config list
 djinn agent config list --json
 ```
 
+Inspect configured Djinn agent roles (planner/reviewer/etc.) from native config:
+
+```bash
+djinn agents list
+djinn agents show reviewer
+djinn agents show reviewer --json
+djinn agent ask --agent reviewer "Review this diff"
+djinn agent chat --agent planner
+djinn agent session new --agent reviewer --parent-session <session-id>
+```
+
 Inspect Djinn-native config and external config adapters:
 
 ```bash
