@@ -64,6 +64,13 @@ pub struct AgentSessionTokenUsage {
     pub total_tokens: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSessionCostEstimate {
+    pub currency: String,
+    pub total_micros: u64,
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSessionEvent {
     #[serde(default = "agent_session_event_schema_version")]
@@ -136,6 +143,8 @@ pub enum AgentSessionEventKind {
         response_chars: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<AgentSessionTokenUsage>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        estimated_cost: Option<AgentSessionCostEstimate>,
     },
     ToolCall {
         id: String,

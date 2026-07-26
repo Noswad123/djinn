@@ -9,9 +9,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 pub use djinn_memory::{
-    AgentSessionEvent, AgentSessionEventKind, AgentSessionFilter, AgentSessionId, AgentSessionMeta,
-    AgentSessionStore, AgentSessionSummary, AgentSessionTokenUsage, FileHistoryInput,
-    FileHistoryStore,
+    AgentSessionCostEstimate, AgentSessionEvent, AgentSessionEventKind, AgentSessionFilter,
+    AgentSessionId, AgentSessionMeta, AgentSessionStore, AgentSessionSummary,
+    AgentSessionTokenUsage, FileHistoryInput, FileHistoryStore,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -3363,6 +3363,7 @@ where
                 request_chars: Some(request_chars),
                 response_chars: Some(model_response_chars(response)),
                 usage: response.usage.clone().map(AgentSessionTokenUsage::from),
+                estimated_cost: estimate_model_response_cost(model, response.usage.as_ref()),
             }),
         )
     }
@@ -3424,6 +3425,72 @@ fn provider_from_model(model: &str) -> Option<String> {
         .map(|(provider, _)| provider.trim())
         .filter(|provider| !provider.is_empty())
         .map(ToOwned::to_owned)
+}
+
+const OPENAI_PRICING_SOURCE: &str = "openai_static_pricing_2026_07";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ModelTokenPricing {
+    input_micros_per_million_tokens: u64,
+    output_micros_per_million_tokens: u64,
+}
+
+fn estimate_model_response_cost(
+    model: &str,
+    usage: Option<&ModelTokenUsage>,
+) -> Option<AgentSessionCostEstimate> {
+    let usage = usage?;
+    let input_tokens = usage.input_tokens?;
+    let output_tokens = usage.output_tokens?;
+    let pricing = openai_model_pricing(model)?;
+    let input_cost = cost_micros_for_tokens(input_tokens, pricing.input_micros_per_million_tokens);
+    let output_cost =
+        cost_micros_for_tokens(output_tokens, pricing.output_micros_per_million_tokens);
+    Some(AgentSessionCostEstimate {
+        currency: "USD".to_string(),
+        total_micros: input_cost.saturating_add(output_cost),
+        source: OPENAI_PRICING_SOURCE.to_string(),
+    })
+}
+
+fn openai_model_pricing(model: &str) -> Option<ModelTokenPricing> {
+    let normalized = model.trim().to_ascii_lowercase();
+    let model = if let Some((provider, model)) = normalized.split_once('/') {
+        if provider != "openai" {
+            return None;
+        }
+        model
+    } else {
+        normalized.as_str()
+    };
+    match model {
+        "gpt-4.1" => Some(ModelTokenPricing {
+            input_micros_per_million_tokens: 2_000_000,
+            output_micros_per_million_tokens: 8_000_000,
+        }),
+        "gpt-4.1-mini" => Some(ModelTokenPricing {
+            input_micros_per_million_tokens: 400_000,
+            output_micros_per_million_tokens: 1_600_000,
+        }),
+        "gpt-4.1-nano" => Some(ModelTokenPricing {
+            input_micros_per_million_tokens: 100_000,
+            output_micros_per_million_tokens: 400_000,
+        }),
+        "gpt-4o" => Some(ModelTokenPricing {
+            input_micros_per_million_tokens: 2_500_000,
+            output_micros_per_million_tokens: 10_000_000,
+        }),
+        "gpt-4o-mini" => Some(ModelTokenPricing {
+            input_micros_per_million_tokens: 150_000,
+            output_micros_per_million_tokens: 600_000,
+        }),
+        _ => None,
+    }
+}
+
+fn cost_micros_for_tokens(tokens: u64, micros_per_million_tokens: u64) -> u64 {
+    let cost = (tokens as u128).saturating_mul(micros_per_million_tokens as u128);
+    ((cost.saturating_add(500_000)) / 1_000_000).min(u64::MAX as u128) as u64
 }
 
 fn model_request_chars(request: &ModelRequest) -> u64 {
@@ -3760,6 +3827,31 @@ mod tests {
     }
 
     #[test]
+    fn model_response_cost_estimate_requires_known_openai_pricing_and_usage_parts() {
+        let usage = ModelTokenUsage {
+            input_tokens: Some(11),
+            output_tokens: Some(7),
+            total_tokens: Some(18),
+        };
+
+        let cost = estimate_model_response_cost("openai/gpt-4.1", Some(&usage)).unwrap();
+
+        assert_eq!(cost.currency, "USD");
+        assert_eq!(cost.total_micros, 78);
+        assert_eq!(cost.source, OPENAI_PRICING_SOURCE);
+        assert!(estimate_model_response_cost("copilot/gpt-4.1", Some(&usage)).is_none());
+        assert!(estimate_model_response_cost(
+            "openai/gpt-4.1",
+            Some(&ModelTokenUsage {
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: Some(18),
+            }),
+        )
+        .is_none());
+    }
+
+    #[test]
     fn runtime_persists_model_response_metadata_for_successful_turns() {
         let store = temp_session_store("model-metadata");
         let id = create_test_session(&store);
@@ -3772,7 +3864,7 @@ mod tests {
             .block_on(runtime.complete_once(
                 &id,
                 ModelRequest {
-                    model: "openai/gpt-test".to_string(),
+                    model: "openai/gpt-4.1".to_string(),
                     messages: Vec::new(),
                     tools: Vec::new(),
                 },
@@ -3792,8 +3884,9 @@ mod tests {
                 request_chars,
                 response_chars,
                 usage,
+                estimated_cost,
                 ..
-            } if model == "openai/gpt-test"
+            } if model == "openai/gpt-4.1"
                 && provider.as_deref() == Some("openai")
                 && round.is_none()
                 && *tool_calls == 0
@@ -3803,6 +3896,7 @@ mod tests {
                 && usage.as_ref().and_then(|usage| usage.input_tokens) == Some(11)
                 && usage.as_ref().and_then(|usage| usage.output_tokens) == Some(7)
                 && usage.as_ref().and_then(|usage| usage.total_tokens) == Some(18)
+                && estimated_cost.as_ref().map(|cost| cost.total_micros) == Some(78)
         ));
         assert!(matches!(
             &loaded.events[1].kind,

@@ -31,8 +31,6 @@ product-design pass.
 
 ### Runtime/accounting metadata
 
-- Add cost accounting to `model_response_metadata` only after provider adapters
-  expose reliable usage/pricing data.
 - Add retry-attempt accounting only when provider/tool adapters expose concrete
   retry behavior that needs inspection.
 

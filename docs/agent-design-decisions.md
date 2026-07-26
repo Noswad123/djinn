@@ -92,6 +92,9 @@ Implications:
   elapsed milliseconds, tool-call count, whether the response contained
   assistant text, request/response character counts, and optional token usage
   (`input_tokens`, `output_tokens`, `total_tokens`) when providers report it.
+  When both token usage and known model-specific OpenAI pricing are available, it
+  also records an optional USD `estimated_cost` in micros with a source marker;
+  subscription/unknown-price models omit cost rather than guessing.
   Keep this metadata out of model replay so resumed sessions do not feed
   accounting/progress records back to providers.
 - Persist tool execution accounting as a separate non-conversation
@@ -109,8 +112,8 @@ Open questions:
 
 - Whether search, high-volume transcripts, or external indexing will eventually
   justify a lightweight index file or SQLite.
-- How to add cost accounting to model metadata once provider adapters
-  consistently expose enough usage/pricing data.
+- Whether future provider/config pricing sources should supplement the current
+  conservative OpenAI static-pricing estimate table.
 - Whether branch/session-tree semantics need more than `parent_event_id`.
 
 ### D4. MCP support: defer until there is a concrete need

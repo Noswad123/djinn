@@ -22,11 +22,12 @@ use djinn_agent::{
 use djinn_chats::{ChatRecord, ChatRestoreReport};
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
-    ActionRecord, ActionStore, AgentSession, AgentSessionEvent, AgentSessionEventKind,
-    AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionStore, AgentSessionSummary,
-    AgentSessionTokenUsage, FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions,
-    IdeaRecord, IdeaStore, JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryInput,
-    MemoryRecord, MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
+    ActionRecord, ActionStore, AgentSession, AgentSessionCostEstimate, AgentSessionEvent,
+    AgentSessionEventKind, AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionStore,
+    AgentSessionSummary, AgentSessionTokenUsage, FileHistoryEntryId, FileHistoryFilter,
+    FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
+    JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource, SuggestionInput,
+    SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -5682,6 +5683,7 @@ struct AgentSessionStats {
     approval_scoped: usize,
     skipped_operations: u64,
     token_usage: AgentSessionTokenUsage,
+    estimated_cost_micros_usd: Option<u64>,
     models: Vec<AgentModelStats>,
     tools: Vec<AgentToolStats>,
     errors: Vec<AgentErrorStats>,
@@ -5698,6 +5700,7 @@ struct AgentModelStats {
     request_chars: u64,
     response_chars: u64,
     token_usage: AgentSessionTokenUsage,
+    estimated_cost_micros_usd: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -5750,6 +5753,7 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
                 request_chars,
                 response_chars,
                 usage,
+                estimated_cost,
                 ..
             } => {
                 stats.model_turns += 1;
@@ -5763,6 +5767,10 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
                 if let Some(usage) = usage {
                     merge_token_usage(&mut stats.token_usage, usage);
                 }
+                merge_usd_cost(
+                    &mut stats.estimated_cost_micros_usd,
+                    estimated_cost.as_ref(),
+                );
                 let model_key =
                     format!("{}\u{1f}{}", provider.as_deref().unwrap_or_default(), model);
                 let entry = models.entry(model_key).or_insert_with(|| AgentModelStats {
@@ -5785,6 +5793,10 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
                 if let Some(usage) = usage {
                     merge_token_usage(&mut entry.token_usage, usage);
                 }
+                merge_usd_cost(
+                    &mut entry.estimated_cost_micros_usd,
+                    estimated_cost.as_ref(),
+                );
             }
             AgentSessionEventKind::ToolExecutionMetadata {
                 name,
@@ -5873,6 +5885,15 @@ fn merge_token_usage(target: &mut AgentSessionTokenUsage, source: &AgentSessionT
     target.total_tokens = merge_optional_u64(target.total_tokens, source.total_tokens);
 }
 
+fn merge_usd_cost(target: &mut Option<u64>, source: Option<&AgentSessionCostEstimate>) {
+    let Some(source) = source else {
+        return;
+    };
+    if source.currency.eq_ignore_ascii_case("USD") {
+        *target = merge_optional_u64(*target, Some(source.total_micros));
+    }
+}
+
 fn merge_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     match (left, right) {
         (Some(left), Some(right)) => Some(left.saturating_add(right)),
@@ -5903,6 +5924,9 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
             usage.trim_start_matches("tokens ")
         ));
     }
+    if let Some(cost) = stats.estimated_cost_micros_usd {
+        out.push_str(&format!("Estimated cost: {}\n", format_usd_micros(cost)));
+    }
     if stats.model_request_chars > 0 || stats.model_response_chars > 0 {
         out.push_str(&format!(
             "Model chars: {} request / {} response\n",
@@ -5921,6 +5945,10 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
             let usage = format_agent_token_usage(&model.token_usage)
                 .map(|usage| format!(" · {}", usage))
                 .unwrap_or_default();
+            let cost = model
+                .estimated_cost_micros_usd
+                .map(|cost| format!(" · estimated cost {}", format_usd_micros(cost)))
+                .unwrap_or_default();
             let chars = if model.request_chars > 0 || model.response_chars > 0 {
                 format!(
                     " · {} request chars / {} response chars",
@@ -5930,7 +5958,7 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
                 String::new()
             };
             out.push_str(&format!(
-                "- {}{}: {} turn{} · {} · {} tool call{} · {} message turn{}{}{}\n",
+                "- {}{}: {} turn{} · {} · {} tool call{} · {} message turn{}{}{}{}\n",
                 model.model,
                 provider,
                 model.turns,
@@ -5941,7 +5969,8 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
                 model.message_turns,
                 plural_suffix(model.message_turns),
                 chars,
-                usage
+                usage,
+                cost
             ));
         }
     }
@@ -8518,6 +8547,7 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
             request_chars,
             response_chars,
             usage,
+            estimated_cost,
         } => format_agent_model_metadata_event(
             model,
             provider.as_deref(),
@@ -8528,6 +8558,7 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
             *request_chars,
             *response_chars,
             usage.as_ref(),
+            estimated_cost.as_ref(),
         ),
         AgentSessionEventKind::ToolCall { id, name, .. } => format!("tool call {id}: {name}"),
         AgentSessionEventKind::ToolResult { id, success, .. } => {
@@ -8579,6 +8610,7 @@ fn format_agent_model_metadata_event(
     request_chars: Option<u64>,
     response_chars: Option<u64>,
     usage: Option<&AgentSessionTokenUsage>,
+    estimated_cost: Option<&AgentSessionCostEstimate>,
 ) -> String {
     let mut parts = vec![format!("model response: {model}")];
     if let Some(provider) = provider.filter(|value| !value.trim().is_empty()) {
@@ -8604,6 +8636,12 @@ fn format_agent_model_metadata_event(
     if let Some(usage) = usage.and_then(format_agent_token_usage) {
         parts.push(usage);
     }
+    if let Some(cost) = estimated_cost.filter(|cost| cost.currency.eq_ignore_ascii_case("USD")) {
+        parts.push(format!(
+            "estimated cost {}",
+            format_usd_micros(cost.total_micros)
+        ));
+    }
     parts.join(" · ")
 }
 
@@ -8623,6 +8661,12 @@ fn format_agent_token_usage(usage: &AgentSessionTokenUsage) -> Option<String> {
     } else {
         Some(format!("tokens {}", parts.join("/")))
     }
+}
+
+fn format_usd_micros(micros: u64) -> String {
+    let dollars = micros / 1_000_000;
+    let fractional = micros % 1_000_000;
+    format!("${dollars}.{fractional:06}")
 }
 
 fn format_agent_tool_metadata_event(
@@ -15085,6 +15129,11 @@ mod tests {
                 output_tokens: Some(5),
                 total_tokens: Some(15),
             }),
+            estimated_cost: Some(AgentSessionCostEstimate {
+                currency: "USD".to_string(),
+                total_micros: 60,
+                source: "test".to_string(),
+            }),
         });
 
         let rendered = format_agent_event(&event);
@@ -15098,6 +15147,7 @@ mod tests {
         assert!(rendered.contains("request 100 chars"));
         assert!(rendered.contains("response 25 chars"));
         assert!(rendered.contains("tokens in 10/out 5/total 15"));
+        assert!(rendered.contains("estimated cost $0.000060"));
     }
 
     #[test]
@@ -15149,6 +15199,11 @@ mod tests {
                         output_tokens: Some(3),
                         total_tokens: Some(13),
                     }),
+                    estimated_cost: Some(AgentSessionCostEstimate {
+                        currency: "USD".to_string(),
+                        total_micros: 44,
+                        source: "test".to_string(),
+                    }),
                 }),
                 AgentSessionEvent::new(AgentSessionEventKind::ModelResponseMetadata {
                     model: "copilot/gpt-test".to_string(),
@@ -15164,6 +15219,7 @@ mod tests {
                         output_tokens: Some(2),
                         total_tokens: Some(7),
                     }),
+                    estimated_cost: None,
                 }),
                 AgentSessionEvent::new(AgentSessionEventKind::ToolCall {
                     id: "call-read".to_string(),
@@ -15210,6 +15266,7 @@ mod tests {
         assert_eq!(stats.model_request_chars, 60);
         assert_eq!(stats.model_response_chars, 15);
         assert_eq!(stats.token_usage.total_tokens, Some(20));
+        assert_eq!(stats.estimated_cost_micros_usd, Some(44));
         let openai_model = stats
             .models
             .iter()
@@ -15222,6 +15279,7 @@ mod tests {
         assert_eq!(openai_model.request_chars, 40);
         assert_eq!(openai_model.response_chars, 10);
         assert_eq!(openai_model.token_usage.total_tokens, Some(13));
+        assert_eq!(openai_model.estimated_cost_micros_usd, Some(44));
         let copilot_model = stats
             .models
             .iter()
@@ -15248,9 +15306,10 @@ mod tests {
         assert_eq!(stats.errors[0].phase, "model_request");
         assert!(rendered.contains("Model: 2 turns · 2.0s"));
         assert!(rendered.contains("Tokens: in 15/out 5/total 20"));
+        assert!(rendered.contains("Estimated cost: $0.000044"));
         assert!(rendered.contains("Model chars: 60 request / 15 response"));
         assert!(rendered.contains(
-            "- openai/gpt-test · provider openai: 1 turn · 1.2s · 1 tool call · 0 message turns · 40 request chars / 10 response chars · tokens in 10/out 3/total 13"
+            "- openai/gpt-test · provider openai: 1 turn · 1.2s · 1 tool call · 0 message turns · 40 request chars / 10 response chars · tokens in 10/out 3/total 13 · estimated cost $0.000044"
         ));
         assert!(rendered.contains(
             "- copilot/gpt-test · provider copilot: 1 turn · 800ms · 0 tool calls · 1 message turn · 20 request chars / 5 response chars · tokens in 5/out 2/total 7"
@@ -15509,6 +15568,7 @@ mod tests {
                         output_tokens: Some(2),
                         total_tokens: Some(3),
                     }),
+                    estimated_cost: None,
                 }),
                 AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
                     id: "call-1".to_string(),
