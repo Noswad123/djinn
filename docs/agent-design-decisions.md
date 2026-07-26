@@ -506,7 +506,10 @@ The first non-interactive agent slice is implemented as:
    destructive shell commands and sensitive/system path mutations. Shell
    guardrails also block common content-reading/copying commands such as `cat`,
    `grep`/`rg`, `head`/`tail`, `base64`, `cp`, and `pbcopy` when they reference
-   known secret paths.
+   known secret paths. Destructive shell detection covers high-risk git actions
+   such as hard resets, aggressive cleans, force pushes, history rewrites,
+   branch/tag/ref deletion, credential config changes, and publication/release
+   commands such as package publishes, Docker pushes, and GitHub releases.
 6. A default-on shell tool for local inspection/build/test commands, bounded by
    timeout and destructive-action guardrails.
 7. A default-on `apply_patch` tool for workspace-scoped file additions, updates,
@@ -531,6 +534,10 @@ The first non-interactive agent slice is implemented as:
     line-oriented exact block replacement in existing UTF-8 files. They use
     `write`/`edit` permission rules while reusing approval previews and
     file-history accounting.
+    The same terminal-backed permission gate now covers `ask`-gated shell
+    commands. Shell approvals are action-, workspace-, and command-resource
+    scoped; approving for the session caches only the covered command resources
+    in the current agent process and never writes durable config.
 15. `djinn agent tools list` and `djinn agent tools show <name>` inspect the
     built-in runtime tool set using the same registry construction as agent runs.
     Text output lists names/summaries or a single tool description/schema; JSON

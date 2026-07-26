@@ -44,11 +44,6 @@ network/external effects, and durable policy changes get explicit attention.
 
 Ready implementation slices:
 
-- Broaden destructive shell/git detection for history rewrites, branch/tag
-  deletion, force pushes, aggressive cleans, credential changes, and publication
-  commands as concrete gaps appear.
-- Make interactive approvals session-scoped by default: action-, workspace-, and
-  resource/path-scoped grants that never silently write durable config.
 - Ensure profile/role policy is visible in `djinn agent config show` and runtime
   session metadata so users can inspect why a request was allowed, asked, denied,
   or skipped.

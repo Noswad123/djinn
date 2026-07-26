@@ -821,6 +821,7 @@ pub struct PermissionRequest {
 pub enum PermissionDecision {
     Allow,
     AllowPaths { paths: Vec<String> },
+    AllowResources { resources: Vec<String> },
     Deny,
 }
 
@@ -828,6 +829,7 @@ pub enum PermissionDecision {
 enum PermissionApprovalScope {
     All,
     Paths(HashSet<String>),
+    Resources(HashSet<String>),
 }
 
 impl PermissionApprovalScope {
@@ -841,6 +843,13 @@ impl PermissionApprovalScope {
                     .filter(|path| !path.is_empty())
                     .collect(),
             )),
+            PermissionDecision::AllowResources { resources } => Some(Self::Resources(
+                resources
+                    .into_iter()
+                    .map(|resource| resource.trim().to_string())
+                    .filter(|resource| !resource.is_empty())
+                    .collect(),
+            )),
             PermissionDecision::Deny => None,
         }
     }
@@ -848,7 +857,7 @@ impl PermissionApprovalScope {
     fn allows_resource(&self, resource: &str) -> bool {
         match self {
             Self::All => true,
-            Self::Paths(paths) => paths.contains(resource),
+            Self::Paths(paths) | Self::Resources(paths) => paths.contains(resource),
         }
     }
 
@@ -856,6 +865,7 @@ impl PermissionApprovalScope {
         match self {
             Self::All => "all",
             Self::Paths(_) => "paths",
+            Self::Resources(_) => "resources",
         }
     }
 }
@@ -953,26 +963,146 @@ fn destructive_shell_denial(command: &str) -> Option<String> {
     if let Some(reason) = secret_shell_read_denial(&lower) {
         return Some(reason);
     }
+    if let Some(reason) = destructive_git_denial(&lower) {
+        return Some(reason);
+    }
+    if let Some(reason) = publication_denial(&lower) {
+        return Some(reason);
+    }
     let destructive_patterns = [
         ("rm -rf /", "recursive removal of root"),
         ("rm -rf ~", "recursive removal of home"),
         ("rm -rf $home", "recursive removal of home"),
         ("rm -rf .", "recursive removal of current directory"),
-        ("git reset --hard", "destructive git reset"),
-        ("git clean -fd", "destructive git clean"),
-        ("git clean -df", "destructive git clean"),
-        ("git push --force", "force push"),
-        ("git push -f", "force push"),
         ("chmod -r", "recursive chmod"),
         ("chown -r", "recursive chown"),
         ("docker system prune", "docker system prune"),
-        ("npm publish", "package publication"),
-        ("cargo publish", "package publication"),
     ];
     destructive_patterns
         .iter()
         .find(|(pattern, _)| lower.contains(pattern))
         .map(|(_, reason)| (*reason).to_string())
+}
+
+fn destructive_git_denial(command: &str) -> Option<String> {
+    for segment in shell_segments(command) {
+        let words = shell_words(segment);
+        let Some(git_index) = shell_command_verb_index(&words)
+            .filter(|index| words.get(*index).map(|word| word == "git").unwrap_or(false))
+        else {
+            continue;
+        };
+        let args = &words[git_index + 1..];
+        let Some(subcommand) = args.first().map(String::as_str) else {
+            continue;
+        };
+        let reason = match subcommand {
+            "reset" if args.iter().any(|arg| arg == "--hard") => Some("destructive git reset"),
+            "clean" if git_clean_is_destructive(args) => Some("destructive git clean"),
+            "push" if git_push_is_destructive(args) => Some("destructive git push"),
+            "rebase" => Some("git history rewrite"),
+            "filter-branch" | "filter-repo" => Some("git history rewrite"),
+            "commit" if args.iter().any(|arg| arg == "--amend") => Some("git commit amend"),
+            "branch" if git_branch_delete(args) => Some("git branch deletion"),
+            "tag" if git_tag_delete(args) => Some("git tag deletion"),
+            "update-ref" if args.iter().any(|arg| arg == "-d" || arg == "--delete") => {
+                Some("git ref deletion")
+            }
+            "reflog" if args.iter().any(|arg| arg == "expire") => Some("git reflog expiry"),
+            "config" if git_config_changes_credentials(args) => {
+                Some("git credential config change")
+            }
+            "credential"
+                if args
+                    .iter()
+                    .any(|arg| matches!(arg.as_str(), "approve" | "reject")) =>
+            {
+                Some("git credential mutation")
+            }
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            return Some(reason.to_string());
+        }
+    }
+    None
+}
+
+fn shell_command_verb_index(words: &[String]) -> Option<usize> {
+    let mut index = 0;
+    while matches!(
+        words.get(index).map(String::as_str),
+        Some("sudo" | "command" | "env")
+    ) {
+        index += 1;
+        while words
+            .get(index)
+            .map(|word| word.contains('=') && !word.starts_with('-'))
+            .unwrap_or(false)
+        {
+            index += 1;
+        }
+    }
+    words.get(index).map(|_| index)
+}
+
+fn git_clean_is_destructive(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .filter(|arg| arg.starts_with('-') && !arg.starts_with("--"))
+        .any(|arg| arg.contains('f') && arg.contains('d'))
+}
+
+fn git_push_is_destructive(args: &[String]) -> bool {
+    args.iter().skip(1).any(|arg| {
+        matches!(
+            arg.as_str(),
+            "-f" | "--force" | "--force-with-lease" | "--mirror" | "--delete"
+        ) || arg.starts_with('+')
+            || arg.starts_with(':')
+    })
+}
+
+fn git_branch_delete(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "-d" | "-D" | "--delete" | "--delete-force"))
+}
+
+fn git_tag_delete(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "-d" | "--delete"))
+}
+
+fn git_config_changes_credentials(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| arg.contains("credential.") || arg == "credential.helper")
+}
+
+fn publication_denial(command: &str) -> Option<String> {
+    for segment in shell_segments(command) {
+        let words = shell_words(segment);
+        let Some(index) = shell_command_verb_index(&words) else {
+            continue;
+        };
+        let verb = words[index].as_str();
+        let args = &words[index + 1..];
+        let publishes = match verb {
+            "npm" | "pnpm" | "yarn" | "bun" | "cargo" => args.iter().any(|arg| arg == "publish"),
+            "twine" => args.iter().any(|arg| arg == "upload"),
+            "docker" => args.iter().any(|arg| arg == "push"),
+            "gh" => args
+                .windows(2)
+                .any(|window| window[0] == "release" && window[1] == "create"),
+            _ => false,
+        };
+        if publishes {
+            return Some("publication or release command".to_string());
+        }
+    }
+    None
 }
 
 fn secret_shell_read_denial(command: &str) -> Option<String> {
@@ -1021,7 +1151,7 @@ fn shell_words(command: &str) -> Vec<String> {
         })
         .map(|part| {
             part.trim_matches(|ch: char| {
-                matches!(ch, '\'' | '"' | '`' | ',' | ':' | '[' | ']' | '{' | '}')
+                matches!(ch, '\'' | '"' | '`' | ',' | '[' | ']' | '{' | '}')
             })
         })
         .filter(|part| !part.is_empty())
@@ -1612,10 +1742,11 @@ impl AgentTool for SearchFilesTool {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ShellTool {
     workspace: PathBuf,
     permissions: PermissionPolicy,
+    permission_gate: Option<Arc<dyn PermissionGate>>,
 }
 
 #[derive(Clone)]
@@ -1651,7 +1782,13 @@ impl ShellTool {
         Self {
             workspace: workspace.into(),
             permissions,
+            permission_gate: None,
         }
+    }
+
+    pub fn with_permission_gate(mut self, gate: Arc<dyn PermissionGate>) -> Self {
+        self.permission_gate = Some(gate);
+        self
     }
 }
 
@@ -1755,8 +1892,14 @@ impl AgentTool for ShellTool {
         if command.is_empty() {
             bail!("shell command cannot be empty");
         }
-        self.permissions.assert_allowed("shell", command)?;
         let workdir = resolve_shell_workdir(&self.workspace, input.workdir.as_deref())?;
+        let approval_scope = approve_shell_command_if_needed(
+            command,
+            &workdir,
+            &self.permissions,
+            self.permission_gate.as_ref(),
+        )
+        .await?;
         let timeout = Duration::from_millis(input.timeout_ms.unwrap_or(120_000).clamp(1, 600_000));
         let output = run_shell_command(command, &workdir, timeout)?;
         Ok(ToolResult {
@@ -1764,6 +1907,8 @@ impl AgentTool for ShellTool {
             output: json!({
                 "command": command,
                 "workdir": workdir.display().to_string(),
+                "approval_required": approval_scope.is_some(),
+                "approval_scope": approval_scope.as_ref().map(PermissionApprovalScope::label),
                 "stdout": output.stdout,
                 "stderr": output.stderr,
                 "exit_code": output.exit_code,
@@ -2006,6 +2151,7 @@ pub fn tools_with_policies_file_history_and_gate(
     let mut edit_file = EditFileTool::with_permissions(workspace.clone(), permissions.clone());
     let mut apply_patch = ApplyPatchTool::with_permissions(workspace.clone(), permissions.clone());
     let mut write_file = WriteFileTool::with_permissions(workspace.clone(), permissions.clone());
+    let mut shell = ShellTool::with_permissions(workspace.clone(), permissions.clone());
     if let Some(history) = history.clone() {
         edit_file = edit_file.with_file_history(history.clone());
         apply_patch = apply_patch.with_file_history(history.clone());
@@ -2014,12 +2160,13 @@ pub fn tools_with_policies_file_history_and_gate(
     if let Some(gate) = permission_gate.clone() {
         edit_file = edit_file.with_permission_gate(gate.clone());
         apply_patch = apply_patch.with_permission_gate(gate.clone());
-        write_file = write_file.with_permission_gate(gate);
+        write_file = write_file.with_permission_gate(gate.clone());
+        shell = shell.with_permission_gate(gate);
     }
     registry.register(apply_patch)?;
     registry.register(edit_file)?;
     registry.register(write_file)?;
-    registry.register(ShellTool::with_permissions(workspace, permissions))?;
+    registry.register(shell)?;
     Ok(registry)
 }
 
@@ -2458,6 +2605,48 @@ async fn invoke_mutation_operations(
             "skipped": skipped,
         }),
     })
+}
+
+async fn approve_shell_command_if_needed(
+    command: &str,
+    workdir: &Path,
+    permissions: &PermissionPolicy,
+    permission_gate: Option<&Arc<dyn PermissionGate>>,
+) -> Result<Option<PermissionApprovalScope>> {
+    match permissions.evaluate("shell", command) {
+        PermissionEffect::Allow => Ok(None),
+        PermissionEffect::Deny => {
+            permissions.assert_allowed("shell", command)?;
+            unreachable!("permission assert should fail for denied shell command")
+        }
+        PermissionEffect::Ask => {
+            let approval_payload = json!({
+                "workspace": workdir.display().to_string(),
+                "approval_required": true,
+                "reason": "permission requires approval",
+                "kind": "shell",
+                "resource": command,
+                "resources": [command],
+            });
+            let Some(gate) = permission_gate else {
+                bail!("permission requires approval in non-interactive mode: shell {command}");
+            };
+            let decision = gate
+                .approve(PermissionRequest {
+                    action: "shell".to_string(),
+                    description: format!("Run shell command: {command}"),
+                    metadata: approval_payload,
+                })
+                .await?;
+            let Some(scope) = PermissionApprovalScope::from_decision(decision) else {
+                bail!("permission approval denied: shell {command}");
+            };
+            if !scope.allows_resource(command) {
+                bail!("permission approval did not cover shell command: {command}");
+            }
+            Ok(Some(scope))
+        }
+    }
 }
 
 fn mutation_requires_approval(
@@ -3885,11 +4074,56 @@ mod tests {
     fn permission_policy_blocks_destructive_shell_even_without_rules() {
         let policy = PermissionPolicy::allow_by_default();
         assert!(policy.assert_allowed("shell", "git status").is_ok());
+        assert!(policy
+            .assert_allowed("shell", "git config user.name 'Djinn'")
+            .is_ok());
         let error = policy
             .assert_allowed("shell", "git reset --hard HEAD")
             .unwrap_err()
             .to_string();
         assert!(error.contains("destructive-action guardrail"));
+    }
+
+    #[test]
+    fn permission_policy_blocks_expanded_destructive_shell_patterns() {
+        let policy = PermissionPolicy::allow_by_default();
+        let commands = [
+            ("git clean -fdx", "destructive git clean"),
+            ("git push --force-with-lease", "destructive git push"),
+            ("git push origin :main", "destructive git push"),
+            ("git push origin --delete v1", "destructive git push"),
+            ("git rebase -i main", "git history rewrite"),
+            (
+                "git filter-branch --tree-filter true",
+                "git history rewrite",
+            ),
+            ("git commit --amend", "git commit amend"),
+            ("git branch -D old-work", "git branch deletion"),
+            ("git tag -d v1.0.0", "git tag deletion"),
+            ("git update-ref -d refs/heads/main", "git ref deletion"),
+            (
+                "git config credential.helper store",
+                "git credential config change",
+            ),
+            ("cargo publish", "publication or release command"),
+            ("pnpm publish", "publication or release command"),
+            (
+                "docker push example/image:latest",
+                "publication or release command",
+            ),
+            ("gh release create v1.0.0", "publication or release command"),
+        ];
+
+        for (command, reason) in commands {
+            let error = policy
+                .assert_allowed("shell", command)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(reason),
+                "expected {command:?} error {error:?} to contain {reason:?}"
+            );
+        }
     }
 
     #[test]
@@ -4276,6 +4510,66 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("destructive-action guardrail"));
+    }
+
+    #[test]
+    fn shell_tool_returns_approval_metadata_when_gate_allows_ask_policy() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-shell-tool-approval-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mut permissions = PermissionPolicy::allow_by_default();
+        permissions.rules.push(PermissionRule {
+            action: "shell".to_string(),
+            resource: "*".to_string(),
+            effect: PermissionEffect::Ask,
+        });
+        let tool = ShellTool::with_permissions(&root, permissions).with_permission_gate(Arc::new(
+            StaticPermissionGate(PermissionDecision::AllowResources {
+                resources: vec!["printf gated".to_string()],
+            }),
+        ));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let result = runtime
+            .block_on(tool.invoke(json!({"command": "printf gated", "timeout_ms": 1000})))
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["approval_required"], true);
+        assert_eq!(result.output["approval_scope"], "resources");
+        assert_eq!(result.output["stdout"], "gated");
+    }
+
+    #[test]
+    fn shell_tool_requires_matching_approval_scope() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-shell-tool-approval-scope-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mut permissions = PermissionPolicy::allow_by_default();
+        permissions.rules.push(PermissionRule {
+            action: "shell".to_string(),
+            resource: "*".to_string(),
+            effect: PermissionEffect::Ask,
+        });
+        let tool = ShellTool::with_permissions(&root, permissions).with_permission_gate(Arc::new(
+            StaticPermissionGate(PermissionDecision::AllowResources {
+                resources: vec!["printf other".to_string()],
+            }),
+        ));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(tool.invoke(json!({"command": "printf gated", "timeout_ms": 1000})))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("approval did not cover shell command"));
     }
 
     #[test]

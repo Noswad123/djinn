@@ -1309,7 +1309,7 @@ struct TerminalPermissionGate {
 struct TerminalApprovalScope {
     action: String,
     workspace: String,
-    paths: HashSet<String>,
+    resources: HashSet<String>,
 }
 
 impl TerminalPermissionGate {
@@ -1318,8 +1318,8 @@ impl TerminalPermissionGate {
     }
 
     fn cached_decision(&self, request: &PermissionRequest) -> Option<PermissionDecision> {
-        let request_paths = approval_paths_from_metadata(&request.metadata);
-        if request_paths.is_empty() {
+        let request_resources = approval_resources_from_metadata(&request.metadata);
+        if request_resources.is_empty() {
             return None;
         }
         let workspace = request
@@ -1329,27 +1329,38 @@ impl TerminalPermissionGate {
             .unwrap_or_default();
         let scopes = self.session_scopes.lock().ok()?;
         let mut approved = Vec::new();
-        for path in &request_paths {
+        for resource in &request_resources {
             let covered = scopes.iter().any(|scope| {
                 scope.action == request.action
                     && scope.workspace == workspace
-                    && scope.paths.contains(path)
+                    && scope.resources.contains(resource)
             });
             if !covered {
                 return None;
             }
-            approved.push(path.clone());
+            approved.push(resource.clone());
         }
-        Some(PermissionDecision::AllowPaths { paths: approved })
+        if request
+            .metadata
+            .get("preview")
+            .and_then(Value::as_array)
+            .is_some()
+        {
+            Some(PermissionDecision::AllowPaths { paths: approved })
+        } else {
+            Some(PermissionDecision::AllowResources {
+                resources: approved,
+            })
+        }
     }
 
-    fn remember_paths_for_session(&self, request: &PermissionRequest, paths: Vec<String>) {
-        let paths = paths
+    fn remember_resources_for_session(&self, request: &PermissionRequest, resources: Vec<String>) {
+        let resources = resources
             .into_iter()
-            .map(|path| path.trim().to_string())
-            .filter(|path| !path.is_empty())
+            .map(|resource| resource.trim().to_string())
+            .filter(|resource| !resource.is_empty())
             .collect::<HashSet<_>>();
-        if paths.is_empty() {
+        if resources.is_empty() {
             return;
         }
         let workspace = request
@@ -1365,12 +1376,12 @@ impl TerminalPermissionGate {
             .iter_mut()
             .find(|scope| scope.action == request.action && scope.workspace == workspace)
         {
-            existing.paths.extend(paths);
+            existing.resources.extend(resources);
         } else {
             scopes.push(TerminalApprovalScope {
                 action: request.action.clone(),
                 workspace,
-                paths,
+                resources,
             });
         }
     }
@@ -1382,7 +1393,14 @@ impl PermissionGate for TerminalPermissionGate {
         if let Some(decision) = self.cached_decision(&request) {
             return Ok(decision);
         }
-        if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        if request
+            .metadata
+            .get("preview")
+            .and_then(Value::as_array)
+            .is_some()
+            && io::stdin().is_terminal()
+            && io::stdout().is_terminal()
+        {
             return match djinn_tui::run_approval_dialog(request.metadata.clone())? {
                 djinn_tui::ApprovalDecision::ApproveAll => Ok(PermissionDecision::Allow),
                 djinn_tui::ApprovalDecision::ApprovePaths(paths) => {
@@ -1390,7 +1408,7 @@ impl PermissionGate for TerminalPermissionGate {
                 }
                 djinn_tui::ApprovalDecision::ApproveAllForSession(paths)
                 | djinn_tui::ApprovalDecision::ApprovePathsForSession(paths) => {
-                    self.remember_paths_for_session(&request, paths.clone());
+                    self.remember_resources_for_session(&request, paths.clone());
                     Ok(PermissionDecision::AllowPaths { paths })
                 }
                 djinn_tui::ApprovalDecision::Deny => Ok(PermissionDecision::Deny),
@@ -1398,41 +1416,70 @@ impl PermissionGate for TerminalPermissionGate {
         }
         eprintln!("\nPermission approval required: {}", request.description);
         eprint!("{}", format_permission_preview(&request.metadata)?);
-        eprint!("Approve this patch? [y/N] ");
+        eprint!("Approve this request? [y]es once, [s]ession, [N]o: ");
         io::stderr().flush()?;
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
         let answer = answer.trim().to_ascii_lowercase();
         if answer == "y" || answer == "yes" {
             Ok(PermissionDecision::Allow)
+        } else if answer == "s" || answer == "session" {
+            let resources = approval_resources_from_metadata(&request.metadata);
+            self.remember_resources_for_session(&request, resources.clone());
+            if request
+                .metadata
+                .get("preview")
+                .and_then(Value::as_array)
+                .is_some()
+            {
+                Ok(PermissionDecision::AllowPaths { paths: resources })
+            } else {
+                Ok(PermissionDecision::AllowResources { resources })
+            }
         } else {
             Ok(PermissionDecision::Deny)
         }
     }
 }
 
-fn approval_paths_from_metadata(metadata: &Value) -> Vec<String> {
-    let mut paths = Vec::new();
-    let Some(preview) = metadata.get("preview").and_then(Value::as_array) else {
-        return paths;
-    };
-    for item in preview {
-        if let Some(path) = item
-            .get("path")
-            .and_then(Value::as_str)
-            .filter(|path| !path.trim().is_empty())
-        {
-            push_unique_string(&mut paths, path);
-        }
-        if let Some(path) = item
-            .get("new_path")
-            .and_then(Value::as_str)
-            .filter(|path| !path.trim().is_empty())
-        {
-            push_unique_string(&mut paths, path);
+fn approval_resources_from_metadata(metadata: &Value) -> Vec<String> {
+    let mut resources = Vec::new();
+    if let Some(preview) = metadata.get("preview").and_then(Value::as_array) {
+        for item in preview {
+            if let Some(path) = item
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|path| !path.trim().is_empty())
+            {
+                push_unique_string(&mut resources, path);
+            }
+            if let Some(path) = item
+                .get("new_path")
+                .and_then(Value::as_str)
+                .filter(|path| !path.trim().is_empty())
+            {
+                push_unique_string(&mut resources, path);
+            }
         }
     }
-    paths
+    if let Some(values) = metadata.get("resources").and_then(Value::as_array) {
+        for value in values {
+            if let Some(resource) = value
+                .as_str()
+                .filter(|resource| !resource.trim().is_empty())
+            {
+                push_unique_string(&mut resources, resource);
+            }
+        }
+    }
+    if let Some(resource) = metadata
+        .get("resource")
+        .and_then(Value::as_str)
+        .filter(|resource| !resource.trim().is_empty())
+    {
+        push_unique_string(&mut resources, resource);
+    }
+    resources
 }
 
 fn format_permission_preview(metadata: &Value) -> Result<String> {
@@ -13409,7 +13456,7 @@ mod tests {
         };
 
         assert!(gate.cached_decision(&request).is_none());
-        gate.remember_paths_for_session(
+        gate.remember_resources_for_session(
             &request,
             vec!["/tmp/work/a.txt".to_string(), "/tmp/work/b.txt".to_string()],
         );
@@ -13441,10 +13488,35 @@ mod tests {
             ..request.clone()
         };
 
-        gate.remember_paths_for_session(&request, vec!["/tmp/work/a.txt".to_string()]);
+        gate.remember_resources_for_session(&request, vec!["/tmp/work/a.txt".to_string()]);
 
         assert!(gate.cached_decision(&request).is_none());
         assert!(gate.cached_decision(&other_action).is_none());
+    }
+
+    #[test]
+    fn terminal_permission_gate_reuses_session_resource_scopes() {
+        let gate = TerminalPermissionGate::new();
+        let request = PermissionRequest {
+            action: "shell".to_string(),
+            description: "shell".to_string(),
+            metadata: serde_json::json!({
+                "workspace": "/tmp/work",
+                "kind": "shell",
+                "resource": "printf hello",
+                "resources": ["printf hello"]
+            }),
+        };
+
+        assert!(gate.cached_decision(&request).is_none());
+        gate.remember_resources_for_session(&request, vec!["printf hello".to_string()]);
+
+        assert_eq!(
+            gate.cached_decision(&request),
+            Some(PermissionDecision::AllowResources {
+                resources: vec!["printf hello".to_string()]
+            })
+        );
     }
 
     #[test]
