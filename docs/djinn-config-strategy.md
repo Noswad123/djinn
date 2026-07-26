@@ -119,10 +119,12 @@ Currently implemented write path:
 ```bash
 djinn config import opencode --write
 djinn config import opencode --write --output ./.djinn.json
+djinn config import opencode --write --merge --output ./.djinn.json
 djinn config import opencode --write --output ./.djinn.json --force
 
 djinn config import copilot --write
 djinn config import copilot --write --output ./.djinn.json
+djinn config import copilot --write --merge --output ./.djinn.json
 djinn config import copilot --write --output ./.djinn.json --force
 
 djinn config export opencode --write --output ./opencode.json
@@ -141,10 +143,12 @@ Write safety rules:
 - Copilot export `--write` defaults to `~/.config/github-copilot/config.json`
   unless `--output` is set.
 - Import writes merge into existing Djinn config by default, preserving same-name
-  providers and profiles from the existing file.
+  providers and profiles from the existing file. `--merge` is an explicit alias
+  for this default behavior.
 - `copilot` and `github-copilot` provider names are aliases for merge conflict
   detection; either existing name prevents adding the other as a duplicate.
-- `--force` is required to replace an existing import destination.
+- `--merge` and `--force` are mutually exclusive. `--force` is required to
+  replace an existing import destination.
 - Export writes never overwrite existing target config files by default.
 - `--force` is required to replace an existing export destination.
 - Secret-like values are still represented as references, not copied raw.
@@ -181,8 +185,7 @@ An import adapter should:
 
 Merge modes to consider:
 
-- `--merge`: explicit synonym for the current default merge behavior, if the CLI
-  needs more discoverability;
+- `--merge`: implemented explicit synonym for the current default merge behavior;
 - `--replace-profile <name>`: replace one profile from the imported source;
 - `--replace-all`: rebuild Djinn config from the import source, still preserving
   secrets by reference.
@@ -252,11 +255,13 @@ djinn config import copilot --dry-run
 djinn config import copilot --dry-run --json
 djinn config import copilot --write
 djinn config import copilot --write --output ./.djinn.json
+djinn config import copilot --write --merge --output ./.djinn.json
 
 djinn config import opencode --dry-run
 djinn config import opencode --dry-run --json
 djinn config import opencode --write
 djinn config import opencode --write --output ./.djinn.json
+djinn config import opencode --write --merge --output ./.djinn.json
 ```
 
 The OpenCode import flow handles providers, profiles, models, and compatible
@@ -267,7 +272,8 @@ adds missing providers/profiles/shared permissions and preserves same-name
 entries. Copilot provider aliases are not duplicated. The write report includes
 an import summary showing added and skipped providers, profiles, shared
 permissions, and default-profile preservation. `--force` replaces the destination
-instead.
+instead; `--merge` makes the default merge mode explicit and is mutually
+exclusive with `--force`.
 
 ## Current export slice
 

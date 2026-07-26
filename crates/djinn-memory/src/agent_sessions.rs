@@ -204,6 +204,8 @@ pub struct AgentSessionSummary {
 pub struct AgentSessionFilter {
     pub workspace: Option<String>,
     pub profile: Option<String>,
+    pub agent_name: Option<String>,
+    pub parent_session_id: Option<AgentSessionId>,
     pub source: Option<String>,
     pub limit: Option<usize>,
 }
@@ -447,6 +449,16 @@ fn matches_filter(session: &AgentSession, filter: &AgentSessionFilter) -> bool {
             .map(|value| session.meta.profile == *value)
             .unwrap_or(true)
         && filter
+            .agent_name
+            .as_ref()
+            .map(|value| session.meta.agent_name.as_deref() == Some(value.as_str()))
+            .unwrap_or(true)
+        && filter
+            .parent_session_id
+            .as_ref()
+            .map(|value| session.meta.parent_session_id.as_ref() == Some(value))
+            .unwrap_or(true)
+        && filter
             .source
             .as_ref()
             .map(|value| session.meta.source == *value)
@@ -597,6 +609,30 @@ mod tests {
                 .map(AgentSessionId::as_str),
             Some("agt_parent")
         );
+
+        let agent_filtered = store
+            .list_sessions(AgentSessionFilter {
+                agent_name: Some("reviewer".to_string()),
+                ..AgentSessionFilter::default()
+            })
+            .unwrap();
+        assert_eq!(agent_filtered.len(), 1);
+
+        let parent_filtered = store
+            .list_sessions(AgentSessionFilter {
+                parent_session_id: Some(AgentSessionId::new("agt_parent")),
+                ..AgentSessionFilter::default()
+            })
+            .unwrap();
+        assert_eq!(parent_filtered.len(), 1);
+
+        let unmatched_parent = store
+            .list_sessions(AgentSessionFilter {
+                parent_session_id: Some(AgentSessionId::new("agt_other_parent")),
+                ..AgentSessionFilter::default()
+            })
+            .unwrap();
+        assert!(unmatched_parent.is_empty());
     }
 
     #[test]

@@ -77,9 +77,9 @@ Recommended default behavior:
 - `djinn config doctor --source opencode`: explain compatibility gaps and
   suggested Djinn-native equivalents without writing files;
 - write/export commands: require explicit `--write`; import writes merge into an
-  existing Djinn config without overwriting same-name providers/profiles, while
-  export writes refuse to overwrite existing target config unless `--force` is
-  passed.
+  existing Djinn config without overwriting same-name providers/profiles, with
+  `--merge` available as an explicit alias for that default, while export writes
+  refuse to overwrite existing target config unless `--force` is passed.
 
 ## Near-term implementation order
 

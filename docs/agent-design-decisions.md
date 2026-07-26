@@ -248,7 +248,9 @@ Implications:
   commands, instructions, tools, and agents native-only for now.
 - Import `--write` is merge-by-default when the Djinn destination already exists:
   it adds missing providers, profiles, and shared permissions while preserving
-  same-name existing providers/profiles. `--force` remains the replacement path.
+  same-name existing providers/profiles. `--merge` is an explicit alias for the
+  default merge behavior; `--force` remains the replacement path and is mutually
+  exclusive with `--merge`.
 - `copilot` and `github-copilot` are provider aliases for import merge purposes;
   the write summary should show when an imported alias was skipped because the
   equivalent provider already exists.
@@ -275,6 +277,12 @@ Working interpretation:
   `djinn agent chat`, and `djinn agent session new`. A selected role supplies the
   profile/model defaults for that invocation, and the session metadata records
   `agent_name` plus optional `parent_session_id` for related-session workflows.
+- `djinn agent session list` supports relationship filters with `--agent <name>`
+  and `--parent-session <id>` so explicit related-session workflows can be
+  inspected without adding autonomous delegation.
+- `djinn agent session children <session-id>` is a focused manual inspection
+  shortcut over `parent_session_id`, returning the immediate child sessions for a
+  parent without implying model-driven task delegation.
 - `djinn agent config show --agent <name>` explains the role-resolved effective
   runtime config. `djinn agent tools list/show --agent <name>` applies the role
   tool allowlist, and runtime execution uses the same allowlist when present.

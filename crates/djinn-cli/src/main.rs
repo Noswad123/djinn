@@ -700,6 +700,9 @@ struct ConfigImportCopilotArgs {
     /// Destination Djinn config file. Defaults to ~/.config/djinn/config.json.
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Explicitly merge into an existing destination file. This is the default write behavior.
+    #[arg(long, requires = "write", conflicts_with = "force")]
+    merge: bool,
     /// Allow --write to replace an existing destination file.
     #[arg(long)]
     force: bool,
@@ -725,6 +728,9 @@ struct ConfigImportOpencodeArgs {
     /// Destination Djinn config file. Defaults to ~/.config/djinn/config.json.
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Explicitly merge into an existing destination file. This is the default write behavior.
+    #[arg(long, requires = "write", conflicts_with = "force")]
+    merge: bool,
     /// Allow --write to replace an existing destination file.
     #[arg(long)]
     force: bool,
@@ -947,6 +953,8 @@ enum AgentSessionCommand {
     New(AgentSessionNewArgs),
     /// List agent sessions.
     List(AgentSessionListArgs),
+    /// List child sessions whose parent_session_id matches one session.
+    Children(AgentSessionChildrenArgs),
     /// Show one agent session.
     Show(AgentSessionShowArgs),
     /// Summarize model/tool/error accounting for one agent session.
@@ -1159,10 +1167,28 @@ struct AgentSessionListArgs {
     /// Filter by exact agent profile.
     #[arg(long)]
     profile: Option<String>,
+    /// Filter by configured agent role name.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Filter by exact parent agent session id.
+    #[arg(long = "parent-session")]
+    parent_session: Option<String>,
     /// Filter by exact source label.
     #[arg(long)]
     source: Option<String>,
     /// Maximum sessions to list.
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionChildrenArgs {
+    /// Parent agent session id.
+    id: String,
+    /// Maximum child sessions to list.
     #[arg(long)]
     limit: Option<usize>,
     /// Output JSON instead of text.
@@ -2321,6 +2347,7 @@ fn config_export_opencode(args: ConfigExportOpencodeArgs) -> Result<()> {
 }
 
 fn config_import_opencode(args: ConfigImportOpencodeArgs) -> Result<()> {
+    validate_config_import_mode(args.dry_run, args.write, args.merge, args.force)?;
     match (args.dry_run, args.write) {
         (true, true) => bail!("choose either --dry-run or --write, not both"),
         (false, false) => bail!("config import is safe by default; pass --dry-run to preview or --write to create a Djinn config file"),
@@ -2345,6 +2372,7 @@ fn config_import_opencode(args: ConfigImportOpencodeArgs) -> Result<()> {
 }
 
 fn config_import_copilot(args: ConfigImportCopilotArgs) -> Result<()> {
+    validate_config_import_mode(args.dry_run, args.write, args.merge, args.force)?;
     match (args.dry_run, args.write) {
         (true, true) => bail!("choose either --dry-run or --write, not both"),
         (false, false) => bail!("config import is safe by default; pass --dry-run to preview or --write to create a Djinn config file"),
@@ -2364,6 +2392,22 @@ fn config_import_copilot(args: ConfigImportCopilotArgs) -> Result<()> {
                 format_config_import_write_report(&report, output_format(args.format, args.json))?
             );
         }
+    }
+    Ok(())
+}
+
+fn validate_config_import_mode(dry_run: bool, write: bool, merge: bool, force: bool) -> Result<()> {
+    if dry_run && write {
+        bail!("choose either --dry-run or --write, not both");
+    }
+    if merge && !write {
+        bail!("--merge is only meaningful with --write");
+    }
+    if merge && force {
+        bail!("choose either --merge or --force, not both");
+    }
+    if !dry_run && !write {
+        bail!("config import is safe by default; pass --dry-run to preview or --write to create a Djinn config file");
     }
     Ok(())
 }
@@ -5078,6 +5122,22 @@ fn resolve_agent_role<'a>(roles: &'a [AgentRoleView], name: &str) -> Result<&'a 
     }
 }
 
+fn resolve_agent_role_filter_name(
+    config: &DjinnConfig,
+    agent: Option<String>,
+) -> Result<Option<String>> {
+    let Some(agent_name) = agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|agent| !agent.is_empty())
+    else {
+        return Ok(None);
+    };
+    let roles = configured_agent_roles(config);
+    let role = resolve_agent_role(&roles, agent_name)?;
+    Ok(Some(role.name.clone()))
+}
+
 fn format_agent_role_list(roles: &[AgentRoleView], format: OutputFormat) -> Result<String> {
     if format == OutputFormat::Json {
         let mut rendered = serde_json::to_string_pretty(roles)?;
@@ -5237,6 +5297,7 @@ fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
     match args.command {
         AgentSessionCommand::New(args) => agent_session_new(args),
         AgentSessionCommand::List(args) => agent_session_list(args),
+        AgentSessionCommand::Children(args) => agent_session_children(args),
         AgentSessionCommand::Show(args) => agent_session_show(args),
         AgentSessionCommand::Stats(args) => agent_session_stats(args),
         AgentSessionCommand::Rename(args) => agent_session_rename(args),
@@ -5387,9 +5448,17 @@ fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
 }
 
 fn agent_session_list(args: AgentSessionListArgs) -> Result<()> {
+    let agent_name = if args.agent.is_some() {
+        let config = effective_djinn_config()?;
+        resolve_agent_role_filter_name(&config, args.agent)?
+    } else {
+        None
+    };
     let sessions = agent_session_store().list_sessions(AgentSessionFilter {
         workspace: args.workspace,
         profile: args.profile,
+        agent_name,
+        parent_session_id: parent_session_id_from_arg(args.parent_session),
         source: args.source,
         limit: args.limit,
     })?;
@@ -5398,24 +5467,86 @@ fn agent_session_list(args: AgentSessionListArgs) -> Result<()> {
     } else if sessions.is_empty() {
         println!("Agent sessions are empty.");
     } else {
-        for (idx, session) in sessions.iter().enumerate() {
-            println!(
-                "  {}. [{}] {}{} — {} events — {}",
-                idx + 1,
-                session.id,
-                if session.title.is_empty() {
-                    "Untitled agent session"
-                } else {
-                    &session.title
-                },
-                format_agent_session_summary_suffix(session),
-                session.event_count,
-                session.workspace
-            );
-        }
+        print_agent_session_summary_rows(&sessions);
         println!("\nTotal: {} agent sessions", sessions.len());
     }
     Ok(())
+}
+
+fn agent_session_children(args: AgentSessionChildrenArgs) -> Result<()> {
+    let parent_session_id = AgentSessionId::new(args.id);
+    let children = agent_session_store().list_sessions(AgentSessionFilter {
+        parent_session_id: Some(parent_session_id.clone()),
+        limit: args.limit,
+        ..AgentSessionFilter::default()
+    })?;
+    let report = AgentSessionChildrenReport {
+        parent_session_id: parent_session_id.to_string(),
+        children,
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_agent_session_children_report(&report));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentSessionChildrenReport {
+    parent_session_id: String,
+    children: Vec<AgentSessionSummary>,
+}
+
+fn print_agent_session_summary_rows(sessions: &[AgentSessionSummary]) {
+    for (idx, session) in sessions.iter().enumerate() {
+        println!(
+            "  {}. [{}] {}{} — {} events — {}",
+            idx + 1,
+            session.id,
+            if session.title.is_empty() {
+                "Untitled agent session"
+            } else {
+                &session.title
+            },
+            format_agent_session_summary_suffix(session),
+            session.event_count,
+            session.workspace
+        );
+    }
+}
+
+fn format_agent_session_children_report(report: &AgentSessionChildrenReport) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Child agent sessions for [{}]\n",
+        report.parent_session_id
+    ));
+    if report.children.is_empty() {
+        out.push_str("\nNo child agent sessions found.\n");
+        return out;
+    }
+    out.push('\n');
+    for (idx, session) in report.children.iter().enumerate() {
+        out.push_str(&format!(
+            "  {}. [{}] {}{} — {} events — {}\n",
+            idx + 1,
+            session.id,
+            if session.title.is_empty() {
+                "Untitled agent session"
+            } else {
+                &session.title
+            },
+            format_agent_session_summary_suffix(session),
+            session.event_count,
+            session.workspace
+        ));
+    }
+    out.push_str(&format!(
+        "\nTotal: {} child agent sessions\n",
+        report.children.len()
+    ));
+    out
 }
 
 fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
@@ -13390,6 +13521,95 @@ mod tests {
     }
 
     #[test]
+    fn parses_agent_session_list_relationship_filters() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "session",
+            "list",
+            "--agent",
+            "reviewer",
+            "--parent-session",
+            "agt_parent",
+            "--json",
+        ])
+        .unwrap();
+
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Session(session_args) = agent_args.command else {
+            panic!("expected agent session command");
+        };
+        let AgentSessionCommand::List(args) = session_args.command else {
+            panic!("expected agent session list command");
+        };
+
+        assert_eq!(args.agent.as_deref(), Some("reviewer"));
+        assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
+        assert!(args.json);
+    }
+
+    #[test]
+    fn parses_agent_session_children_command() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "session",
+            "children",
+            "agt_parent",
+            "--limit",
+            "5",
+            "--json",
+        ])
+        .unwrap();
+
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Session(session_args) = agent_args.command else {
+            panic!("expected agent session command");
+        };
+        let AgentSessionCommand::Children(args) = session_args.command else {
+            panic!("expected agent session children command");
+        };
+
+        assert_eq!(args.id, "agt_parent");
+        assert_eq!(args.limit, Some(5));
+        assert!(args.json);
+    }
+
+    #[test]
+    fn format_agent_session_children_report_renders_relationship_summary() {
+        let report = AgentSessionChildrenReport {
+            parent_session_id: "agt_parent".to_string(),
+            children: vec![AgentSessionSummary {
+                id: AgentSessionId::new("agt_child"),
+                title: "Review diff".to_string(),
+                workspace: "/tmp/work".to_string(),
+                profile: "default".to_string(),
+                agent_name: Some("reviewer".to_string()),
+                parent_session_id: Some(AgentSessionId::new("agt_parent")),
+                source: "djinn-agent".to_string(),
+                created_at: "2026-07-25T00:00:00Z".to_string(),
+                updated_at: "2026-07-25T00:00:00Z".to_string(),
+                event_count: 3,
+            }],
+        };
+
+        let rendered = format_agent_session_children_report(&report);
+        assert!(rendered.contains("Child agent sessions for [agt_parent]"));
+        assert!(rendered.contains("[agt_child] Review diff"));
+        assert!(rendered.contains("agent: reviewer"));
+        assert!(rendered.contains("parent: agt_parent"));
+        assert!(rendered.contains("Total: 1 child agent sessions"));
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["parent_session_id"], "agt_parent");
+        assert_eq!(json["children"][0]["id"], "agt_child");
+    }
+
+    #[test]
     fn parses_agent_role_selection_flags_for_runtime_commands() {
         let cli = Cli::try_parse_from([
             "djinn",
@@ -13603,6 +13823,33 @@ mod tests {
     }
 
     #[test]
+    fn agent_session_list_filter_resolves_agent_role_name() {
+        let config = parse_djinn_config(
+            r#"{
+              "version": 1,
+              "agents": {
+                "reviewer": {"description": "Review code diffs"},
+                "planner": {"description": "Plan implementation steps"}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let exact = resolve_agent_role_filter_name(&config, Some("reviewer".to_string())).unwrap();
+        assert_eq!(exact.as_deref(), Some("reviewer"));
+
+        let substring =
+            resolve_agent_role_filter_name(&config, Some("review code".to_string())).unwrap();
+        assert_eq!(substring.as_deref(), Some("reviewer"));
+
+        let empty = resolve_agent_role_filter_name(&config, Some("  ".to_string())).unwrap();
+        assert_eq!(empty, None);
+
+        let unknown = resolve_agent_role_filter_name(&config, Some("missing".to_string()));
+        assert!(unknown.is_err());
+    }
+
+    #[test]
     fn native_djinn_config_parses_merges_and_renders_without_raw_secrets() {
         let base = parse_djinn_config(
             r#"{
@@ -13801,9 +14048,51 @@ mod tests {
         };
 
         assert!(args.write);
+        assert!(!args.merge);
         assert!(args.force);
         assert_eq!(args.output.as_deref(), Some(Path::new("/tmp/djinn.json")));
         assert!(args.json);
+    }
+
+    #[test]
+    fn parses_config_import_merge_alias_and_rejects_force_conflict() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "config",
+            "import",
+            "opencode",
+            "--write",
+            "--merge",
+            "--output",
+            "/tmp/djinn.json",
+            "--json",
+        ])
+        .unwrap();
+
+        let Some(Command::Config(args)) = cli.command else {
+            panic!("expected config command");
+        };
+        let ConfigCommand::Import(args) = args.command else {
+            panic!("expected config import command");
+        };
+        let ConfigImportSource::Opencode(args) = args.source else {
+            panic!("expected opencode import source");
+        };
+
+        assert!(args.write);
+        assert!(args.merge);
+        assert!(!args.force);
+        assert_eq!(args.output.as_deref(), Some(Path::new("/tmp/djinn.json")));
+        assert!(args.json);
+
+        let conflict = Cli::try_parse_from([
+            "djinn", "config", "import", "copilot", "--write", "--merge", "--force",
+        ]);
+        assert!(conflict.is_err());
+
+        assert!(validate_config_import_mode(false, true, true, false).is_ok());
+        assert!(validate_config_import_mode(false, true, true, true).is_err());
+        assert!(validate_config_import_mode(true, false, true, false).is_err());
     }
 
     #[test]
@@ -13832,6 +14121,7 @@ mod tests {
         };
 
         assert!(args.write);
+        assert!(!args.merge);
         assert!(args.force);
         assert_eq!(args.output.as_deref(), Some(Path::new("/tmp/djinn.json")));
         assert!(args.json);

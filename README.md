@@ -129,6 +129,9 @@ djinn agents show reviewer --json
 djinn agent ask --agent reviewer "Review this diff"
 djinn agent chat --agent planner
 djinn agent session new --agent reviewer --parent-session <session-id>
+djinn agent session list --agent reviewer
+djinn agent session list --parent-session <session-id>
+djinn agent session children <session-id>
 ```
 
 Profiles and agent roles can list instruction references. References matching
@@ -151,10 +154,12 @@ djinn config doctor --source opencode --path ~/.config/opencode/opencode.json
 djinn config import copilot --dry-run
 djinn config import copilot --dry-run --json
 djinn config import copilot --write --output ./.djinn.json
+djinn config import copilot --write --merge --output ./.djinn.json
 djinn config import opencode --dry-run
 djinn config import opencode --dry-run --json
 djinn config import opencode --write
 djinn config import opencode --write --output ./.djinn.json
+djinn config import opencode --write --merge --output ./.djinn.json
 djinn config export copilot --dry-run
 djinn config export copilot --write --output ./copilot.json
 djinn config export opencode --dry-run
@@ -167,7 +172,8 @@ Djinn's native config is currently a versioned JSON document discovered from
 values layered last. Version 1 includes canonical sections for providers,
 profiles, shared permissions, instructions, command templates, tools, and future
 agents. Import writes merge into an existing Djinn config without overwriting
-same-name providers or profiles; `--force` replaces the destination instead.
+same-name providers or profiles; `--merge` makes that default explicit and
+`--force` replaces the destination instead.
 `copilot` and `github-copilot` provider names are treated as aliases during
 merge, so importing Copilot config will not create a duplicate provider if either
 name already exists.
