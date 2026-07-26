@@ -505,6 +505,12 @@ The first non-interactive agent slice is implemented as:
     OpenCode-side skills can discover the continuation. Once an OpenCode chat has
     a Djinn bridge, the Sessions picker collapses that row to the Djinn
     continuation instead of showing a separate stale OpenCode launch target.
+    Projected Djinn-agent rows surface agent role and parent-session metadata in
+    the list and preview when the JSONL session summary has those fields.
+    The picker has metadata-backed scope filters for all rows, promotable rows,
+    projected Djinn-agent rows, and child agent rows; these filters are exposed
+    through the command palette and a simple cycle key rather than a raw event
+    browser.
     Promote options live on `s` for promotable session rows.
 29. Djinn agent sessions auto-title from the first user prompt when the session
     still has a default title such as `Agent chat` or `Untitled agent session`.
@@ -530,7 +536,10 @@ The first non-interactive agent slice is implemented as:
 33. The Sessions picker search matches more than titles: title, id,
     source, source id/path, content path, and content are fuzzy-searchable. The
     selected preview shows the available session actions so resume/promote/remove
-    affordances are visible without relying only on the footer.
+    affordances are visible without relying only on the footer. Because projected
+    Djinn-agent role and parent-session metadata are included in the synthetic
+    session content, those fields are searchable without a separate raw JSONL
+    event browser.
 34. The dashboard also uses Ctrl+/ for detailed help. Per-tab keybinding
     guidance belongs in the help overlay, while the dashboard footer stays short
     and points to help.

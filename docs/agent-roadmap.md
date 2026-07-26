@@ -29,13 +29,6 @@ design decisions. Use these documents as the source of truth for those:
 These items are small enough or well-defined enough to implement without another
 product-design pass.
 
-### Sessions picker polish
-
-- Surface agent role and parent-session metadata more clearly in the Sessions tab
-  projection for Djinn agent sessions.
-- Add session picker filters/actions only where they reuse the existing JSONL
-  session list metadata and do not create a separate raw event browser.
-
 ### TUI permission approval ergonomics
 
 - Extend the existing Ratatui approval dialog with feature-driven improvements:

@@ -9271,18 +9271,31 @@ fn agent_session_chat_record(
     } else {
         summary.title.clone()
     };
+    let mut content = format!(
+        "Djinn agent session\n\nID: {id}\nWorkspace: {}\nProfile: {}\nSource: {}\nEvents: {}\nCreated: {}\nUpdated: {}",
+        summary.workspace,
+        summary.profile,
+        summary.source,
+        summary.event_count,
+        summary.created_at,
+        summary.updated_at
+    );
+    if let Some(agent_name) = summary
+        .agent_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        content.push_str(&format!("\nAgent role: {agent_name}"));
+    }
+    if let Some(parent_session_id) = &summary.parent_session_id {
+        content.push_str(&format!("\nParent session: {parent_session_id}"));
+    }
+
     ChatRecord {
         id: format!("agent:{id}"),
         title,
-        content: format!(
-            "Djinn agent session\n\nID: {id}\nWorkspace: {}\nProfile: {}\nSource: {}\nEvents: {}\nCreated: {}\nUpdated: {}",
-            summary.workspace,
-            summary.profile,
-            summary.source,
-            summary.event_count,
-            summary.created_at,
-            summary.updated_at
-        ),
+        content,
         source: "djinn-agent".to_string(),
         source_id: id.clone(),
         source_path: store.session_file_path(&summary.id).display().to_string(),
@@ -15605,6 +15618,30 @@ mod tests {
         assert!(record
             .content
             .contains("Converted from OpenCode session ses_1"));
+    }
+
+    #[test]
+    fn agent_session_chat_record_surfaces_role_and_parent_metadata() {
+        let summary = AgentSessionSummary {
+            id: AgentSessionId::new("agt_child"),
+            title: "Review diff".to_string(),
+            workspace: "/tmp/project".to_string(),
+            profile: "default".to_string(),
+            agent_name: Some("reviewer".to_string()),
+            parent_session_id: Some(AgentSessionId::new("agt_parent")),
+            source: "djinn-agent".to_string(),
+            created_at: "2026-07-25T00:00:00Z".to_string(),
+            updated_at: "2026-07-25T01:00:00Z".to_string(),
+            event_count: 7,
+        };
+        let store = JsonlAgentSessionStore::default_in(&std::env::temp_dir());
+
+        let record = agent_session_chat_record(&summary, &store);
+
+        assert_eq!(record.source, "djinn-agent");
+        assert_eq!(record.source_id, "agt_child");
+        assert!(record.content.contains("Agent role: reviewer"));
+        assert!(record.content.contains("Parent session: agt_parent"));
     }
 
     #[test]

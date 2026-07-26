@@ -258,8 +258,9 @@ Keybindings:
 - `PageUp`/`u`, `PageDown`/`d`: scroll preview.
 - Tools: `Enter` opens the selected tool.
 - Sessions: `Enter`/`r` resumes sessions, `s` opens promote options for
-  promotable session rows, `Space` selects, `a` toggles all, and `x`/`Delete`
-  asks before removing selected sessions.
+  promotable session rows, `f` cycles scope filters, `Space` selects, `a`
+  toggles all visible rows, and `x`/`Delete` asks before removing selected
+  sessions.
 - Memories: `a` reviews the selected memory, `r` rejects/removes it.
 - Suggestions: `r` removes selected suggestions.
 - Skills: `Enter` opens the selected skill.

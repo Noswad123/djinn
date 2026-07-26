@@ -352,11 +352,56 @@ enum DashboardCommand {
     OpenSelected,
     ResumeSelectedChat,
     PromoteSessions,
+    SetSessionScope(SessionFilterScope),
     ToggleSelected,
     ToggleAll,
     AcceptSelected,
     RejectSelected,
     DeleteSelected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionFilterScope {
+    All,
+    Promotable,
+    DjinnAgent,
+    ChildAgent,
+}
+
+impl SessionFilterScope {
+    const ALL: [Self; 4] = [
+        Self::All,
+        Self::Promotable,
+        Self::DjinnAgent,
+        Self::ChildAgent,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Promotable => "promotable",
+            Self::DjinnAgent => "djinn-agent",
+            Self::ChildAgent => "child-agent",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::All => "Show all session rows",
+            Self::Promotable => "Show persisted rows that can be promoted",
+            Self::DjinnAgent => "Show projected Djinn agent sessions",
+            Self::ChildAgent => "Show projected child agent sessions with parent metadata",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::All => Self::Promotable,
+            Self::Promotable => Self::DjinnAgent,
+            Self::DjinnAgent => Self::ChildAgent,
+            Self::ChildAgent => Self::All,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1478,6 +1523,11 @@ fn run_dashboard_loop(
                             }
                         }
                     }
+                    KeyCode::Char('f') => {
+                        if app.active_tab == DashboardTab::Sessions {
+                            app.chats.cycle_scope();
+                        }
+                    }
                     KeyCode::Char('s') => {
                         if app.active_tab == DashboardTab::Sessions {
                             app.chats.open_options();
@@ -1572,6 +1622,7 @@ fn handle_dashboard_command(
             }
         }
         DashboardCommand::PromoteSessions => app.chats.open_options(),
+        DashboardCommand::SetSessionScope(scope) => app.chats.set_scope(scope),
         DashboardCommand::ToggleSelected => app.toggle_selected(),
         DashboardCommand::ToggleAll => app.toggle_all(),
         DashboardCommand::AcceptSelected => {
@@ -1762,44 +1813,55 @@ impl DashboardApp {
                     DashboardCommand::ToggleFilter,
                 ),
             ],
-            DashboardTab::Sessions => vec![
-                dashboard_command_entry(
-                    "Sessions",
-                    "Resume selected session",
-                    "Resume Djinn session or convert+resume OpenCode session",
-                    DashboardCommand::ResumeSelectedChat,
-                ),
-                dashboard_command_entry(
-                    "Sessions",
-                    "Promote selected sessions",
-                    "Open promotion options for selected session rows",
-                    DashboardCommand::PromoteSessions,
-                ),
-                dashboard_command_entry(
-                    "Sessions",
-                    "Toggle selected session",
-                    "Select or unselect the highlighted session",
-                    DashboardCommand::ToggleSelected,
-                ),
-                dashboard_command_entry(
-                    "Sessions",
-                    "Select all visible sessions",
-                    "Toggle all filtered session rows",
-                    DashboardCommand::ToggleAll,
-                ),
-                dashboard_command_entry(
-                    "Sessions",
-                    "Remove selected sessions",
-                    "Remove selected persisted session rows or Djinn sessions",
-                    DashboardCommand::DeleteSelected,
-                ),
-                dashboard_command_entry(
-                    "Sessions",
-                    "Filter sessions",
-                    "Edit the session picker filter",
-                    DashboardCommand::ToggleFilter,
-                ),
-            ],
+            DashboardTab::Sessions => {
+                let mut entries = vec![
+                    dashboard_command_entry(
+                        "Sessions",
+                        "Resume selected session",
+                        "Resume Djinn session or convert+resume OpenCode session",
+                        DashboardCommand::ResumeSelectedChat,
+                    ),
+                    dashboard_command_entry(
+                        "Sessions",
+                        "Promote selected sessions",
+                        "Open promotion options for selected session rows",
+                        DashboardCommand::PromoteSessions,
+                    ),
+                    dashboard_command_entry(
+                        "Sessions",
+                        "Toggle selected session",
+                        "Select or unselect the highlighted session",
+                        DashboardCommand::ToggleSelected,
+                    ),
+                    dashboard_command_entry(
+                        "Sessions",
+                        "Select all visible sessions",
+                        "Toggle all filtered session rows",
+                        DashboardCommand::ToggleAll,
+                    ),
+                    dashboard_command_entry(
+                        "Sessions",
+                        "Remove selected sessions",
+                        "Remove selected persisted session rows or Djinn sessions",
+                        DashboardCommand::DeleteSelected,
+                    ),
+                    dashboard_command_entry(
+                        "Sessions",
+                        "Filter sessions",
+                        "Edit the session picker text filter",
+                        DashboardCommand::ToggleFilter,
+                    ),
+                ];
+                for scope in SessionFilterScope::ALL {
+                    entries.push(dashboard_command_entry(
+                        "Session filters",
+                        &format!("Show {} sessions", scope.label()),
+                        scope.description(),
+                        DashboardCommand::SetSessionScope(scope),
+                    ));
+                }
+                entries
+            }
             DashboardTab::Memories => vec![
                 dashboard_command_entry(
                     "Memories",
@@ -2205,6 +2267,10 @@ impl DashboardApp {
                 Span::raw(" select one / all visible"),
             ]),
             Line::from(vec![
+                Span::styled("f", selected_style()),
+                Span::raw(" cycle session scope: all, promotable, djinn-agent, child-agent"),
+            ]),
+            Line::from(vec![
                 Span::styled("x / Delete", selected_style()),
                 Span::raw(" confirm removal of selected sessions"),
             ]),
@@ -2464,6 +2530,7 @@ struct ChatsApp {
     checked: HashSet<String>,
     mode: ChatUiMode,
     option_selected: usize,
+    scope: SessionFilterScope,
     filter: FilterState,
 }
 
@@ -2476,6 +2543,7 @@ impl ChatsApp {
             checked: HashSet::new(),
             mode: ChatUiMode::Selecting,
             option_selected: 0,
+            scope: SessionFilterScope::All,
             filter: FilterState::default(),
         }
     }
@@ -2527,13 +2595,35 @@ impl ChatsApp {
     }
 
     fn chat_matches(&self, chat: &ChatRecord) -> bool {
-        fuzzy_match(&self.filter.query, &chat.title)
-            || fuzzy_match(&self.filter.query, &chat.id)
-            || fuzzy_match(&self.filter.query, &chat.source)
-            || fuzzy_match(&self.filter.query, &chat.source_id)
-            || fuzzy_match(&self.filter.query, &chat.source_path)
-            || fuzzy_match(&self.filter.query, &chat.content_path)
-            || fuzzy_match(&self.filter.query, &chat.content)
+        self.scope_matches(chat)
+            && (fuzzy_match(&self.filter.query, &chat.title)
+                || fuzzy_match(&self.filter.query, &chat.id)
+                || fuzzy_match(&self.filter.query, &chat.source)
+                || fuzzy_match(&self.filter.query, &chat.source_id)
+                || fuzzy_match(&self.filter.query, &chat.source_path)
+                || fuzzy_match(&self.filter.query, &chat.content_path)
+                || fuzzy_match(&self.filter.query, &chat.content))
+    }
+
+    fn scope_matches(&self, chat: &ChatRecord) -> bool {
+        match self.scope {
+            SessionFilterScope::All => true,
+            SessionFilterScope::Promotable => chat.source.trim() != "djinn-agent",
+            SessionFilterScope::DjinnAgent => chat.source.trim() == "djinn-agent",
+            SessionFilterScope::ChildAgent => {
+                chat.source.trim() == "djinn-agent"
+                    && chat_content_metadata_value(chat, "Parent session").is_some()
+            }
+        }
+    }
+
+    fn set_scope(&mut self, scope: SessionFilterScope) {
+        self.scope = scope;
+        self.ensure_selection_visible();
+    }
+
+    fn cycle_scope(&mut self) {
+        self.set_scope(self.scope.next());
     }
 
     fn ensure_selection_visible(&mut self) {
@@ -2710,7 +2800,7 @@ impl ChatsApp {
         self.draw_body(frame, chunks[0]);
 
         let help = Paragraph::new(
-            "↑/k ↓/j move • Space select • a all visible • Enter promote options • x/Delete confirm removal • PgUp/u PgDn/d scroll • q/Esc quit",
+            "↑/k ↓/j move • Space select • a all visible • f scope • / search • Enter resume/promote • x/Delete remove • q/Esc quit",
         )
         .style(dim_style());
         frame.render_widget(Clear, chunks[1]);
@@ -2745,7 +2835,7 @@ impl ChatsApp {
                     } else {
                         "[ ]"
                     };
-                    let source = chat_source_label(chat);
+                    let metadata = chat_list_metadata(chat);
                     ListItem::new(vec![
                         Line::from(vec![
                             Span::styled(
@@ -2758,10 +2848,7 @@ impl ChatsApp {
                             ),
                             Span::styled(chat.title.clone(), title_style()),
                         ]),
-                        Line::from(Span::styled(
-                            format!("{} chars{}", chat.content.chars().count(), source),
-                            dim_style(),
-                        )),
+                        Line::from(Span::styled(metadata, dim_style())),
                     ])
                 })
                 .collect::<Vec<_>>()
@@ -2772,10 +2859,11 @@ impl ChatsApp {
             state.select(selected_visible_position(self.selected, &visible));
         }
         let title = format!(
-            "Sessions ({} / {} visible, {} selected, {})",
+            "Sessions ({} / {} visible, {} selected, scope: {}, {})",
             visible.len(),
             self.chats.len(),
             self.checked.len(),
+            self.scope.label(),
             self.filter.label()
         );
         let list = List::new(items)
@@ -3613,6 +3701,17 @@ fn chat_preview(chat: &ChatRecord) -> String {
         chat.id, chat.title, chat.created_at
     );
     out.push_str(&format!("Actions: {}\n", chat_picker_action_hint(chat)));
+    if chat.source.trim() == "djinn-agent" {
+        if let Some(role) = chat_content_metadata_value(chat, "Agent role") {
+            out.push_str(&format!("Agent role: {role}\n"));
+        }
+        if let Some(parent) = chat_content_metadata_value(chat, "Parent session") {
+            out.push_str(&format!("Parent session: {parent}\n"));
+        }
+        if let Some(profile) = chat_content_metadata_value(chat, "Profile") {
+            out.push_str(&format!("Profile: {profile}\n"));
+        }
+    }
     if !chat.source.trim().is_empty() {
         out.push_str(&format!("Source: {}\n", chat.source));
     }
@@ -3638,6 +3737,19 @@ fn chat_picker_action_hint(chat: &ChatRecord) -> &'static str {
 }
 
 fn chat_source_label(chat: &ChatRecord) -> String {
+    if chat.source.trim() == "djinn-agent" {
+        let mut parts = vec!["Djinn agent".to_string()];
+        if let Some(role) = chat_content_metadata_value(chat, "Agent role") {
+            parts.push(format!("role: {role}"));
+        }
+        if let Some(parent) = chat_content_metadata_value(chat, "Parent session") {
+            parts.push(format!("parent: {parent}"));
+        }
+        if parts.len() == 1 && !chat.source_id.trim().is_empty() {
+            parts.push(chat.source_id.trim().to_string());
+        }
+        return format!(" • {}", parts.join(" • "));
+    }
     if !chat.source.trim().is_empty() && !chat.source_id.trim().is_empty() {
         format!(" • {}:{}", chat.source, chat.source_id)
     } else if !chat.source.trim().is_empty() {
@@ -3647,6 +3759,50 @@ fn chat_source_label(chat: &ChatRecord) -> String {
     } else {
         String::new()
     }
+}
+
+fn chat_list_metadata(chat: &ChatRecord) -> String {
+    if chat.source.trim() == "djinn-agent" {
+        let mut parts = Vec::new();
+        if let Some(role) = chat_content_metadata_value(chat, "Agent role") {
+            parts.push(format!("role: {role}"));
+        }
+        if let Some(parent) = chat_content_metadata_value(chat, "Parent session") {
+            parts.push(format!("parent: {parent}"));
+        }
+        if let Some(profile) = chat_content_metadata_value(chat, "Profile") {
+            parts.push(format!("profile: {profile}"));
+        }
+        if let Some(events) = chat_content_metadata_value(chat, "Events") {
+            parts.push(format!("{events} events"));
+        }
+        if parts.is_empty() {
+            let id = chat.source_id.trim();
+            if id.is_empty() {
+                "Djinn agent".to_string()
+            } else {
+                format!("Djinn agent • {id}")
+            }
+        } else {
+            format!("Djinn agent • {}", parts.join(" • "))
+        }
+    } else {
+        format!(
+            "{} chars{}",
+            chat.content.chars().count(),
+            chat_source_label(chat)
+        )
+    }
+}
+
+fn chat_content_metadata_value<'a>(chat: &'a ChatRecord, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}:");
+    chat.content.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix(&prefix)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
 }
 
 fn chat_session_request(chat: &ChatRecord) -> Option<ChatSessionRequest> {
@@ -3926,6 +4082,49 @@ mod tests {
     }
 
     #[test]
+    fn sessions_filter_matches_agent_role_and_parent_metadata() {
+        let mut agent =
+            test_chat_record("agent:agt_child", "Review diff", "djinn-agent", "agt_child");
+        agent.content = "Djinn agent session\n\nID: agt_child\nProfile: default\nEvents: 7\nAgent role: reviewer\nParent session: agt_parent".to_string();
+        let mut app = ChatsApp::new(vec![
+            agent,
+            test_chat_record("chat-one", "Manual", "manual", ""),
+        ]);
+
+        app.filter.query = "reviewer".to_string();
+        assert_eq!(app.visible_indices(), vec![0]);
+
+        app.filter.query = "agt_parent".to_string();
+        assert_eq!(app.visible_indices(), vec![0]);
+    }
+
+    #[test]
+    fn sessions_scope_filter_uses_projected_session_metadata() {
+        let mut child_agent =
+            test_chat_record("agent:agt_child", "Child", "djinn-agent", "agt_child");
+        child_agent.content = "Djinn agent session\n\nID: agt_child\nProfile: default\nEvents: 7\nAgent role: reviewer\nParent session: agt_parent".to_string();
+        let parent_agent =
+            test_chat_record("agent:agt_parent", "Parent", "djinn-agent", "agt_parent");
+        let manual = test_chat_record("chat-one", "Manual", "manual", "");
+        let mut app = ChatsApp::new(vec![child_agent, parent_agent, manual]);
+
+        assert_eq!(app.visible_indices(), vec![0, 1, 2]);
+
+        app.set_scope(SessionFilterScope::Promotable);
+        assert_eq!(app.visible_indices(), vec![2]);
+
+        app.set_scope(SessionFilterScope::DjinnAgent);
+        assert_eq!(app.visible_indices(), vec![0, 1]);
+
+        app.set_scope(SessionFilterScope::ChildAgent);
+        assert_eq!(app.visible_indices(), vec![0]);
+
+        app.cycle_scope();
+        assert_eq!(app.scope, SessionFilterScope::All);
+        assert_eq!(app.visible_indices(), vec![0, 1, 2]);
+    }
+
+    #[test]
     fn chats_delete_request_separates_saved_chats_and_agent_sessions() {
         let mut app = ChatsApp::new(vec![
             test_chat_record("chat-one", "Saved", "manual", ""),
@@ -4045,6 +4244,25 @@ mod tests {
         assert!(chat_preview(&djinn)
             .contains("Actions: Enter/r resume session • x delete session (confirm)"));
         assert!(chat_preview(&opencode).contains("Actions: Enter/r convert+resume in Djinn"));
+    }
+
+    #[test]
+    fn chat_preview_and_list_metadata_surface_agent_role_and_parent() {
+        let mut djinn = test_chat_record("agent:agt_child", "Djinn", "djinn-agent", "agt_child");
+        djinn.content = "Djinn agent session\n\nID: agt_child\nProfile: default\nEvents: 7\nAgent role: reviewer\nParent session: agt_parent".to_string();
+
+        let preview = chat_preview(&djinn);
+
+        assert!(preview.contains("Agent role: reviewer"));
+        assert!(preview.contains("Parent session: agt_parent"));
+        assert_eq!(
+            chat_source_label(&djinn),
+            " • Djinn agent • role: reviewer • parent: agt_parent"
+        );
+        assert_eq!(
+            chat_list_metadata(&djinn),
+            "Djinn agent • role: reviewer • parent: agt_parent • profile: default • 7 events"
+        );
     }
 
     #[test]
@@ -4672,6 +4890,11 @@ mod tests {
         }));
         assert!(chat_entries.iter().any(|entry| {
             entry.section == "Sessions" && entry.command == DashboardCommand::ResumeSelectedChat
+        }));
+        assert!(chat_entries.iter().any(|entry| {
+            entry.section == "Session filters"
+                && entry.command
+                    == DashboardCommand::SetSessionScope(SessionFilterScope::ChildAgent)
         }));
         assert!(!chat_entries.iter().any(|entry| {
             entry.section == "Skills" && entry.command == DashboardCommand::OpenSelected
