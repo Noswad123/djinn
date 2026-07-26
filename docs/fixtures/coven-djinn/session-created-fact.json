@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "id": "evt_session_created_01",
+  "ts": "2026-07-26T18:40:02-04:00",
+  "type": "agent.session.created",
+  "source": "djinn",
+  "actor": "djinn",
+  "orchestration_id": "coven-djinn-roadmap-2026-07-26",
+  "task_id": "review-diff",
+  "agent_ref": {
+    "orchestration_id": "coven-djinn-roadmap-2026-07-26",
+    "task_id": "review-diff",
+    "agent_id": "reviewer-1",
+    "harness": "djinn",
+    "provider": "openai",
+    "model": "gpt-5.5",
+    "native_session_id": "agt_child",
+    "transcript_uri": "djinn://sessions/agt_child"
+  },
+  "parent_ref": {
+    "harness": "djinn",
+    "native_session_id": "agt_parent"
+  },
+  "runtime_ref": {
+    "harness": "djinn",
+    "native_session_id": "agt_child",
+    "status": "created"
+  },
+  "correlation_id": "cmd_review_diff_01",
+  "causation_id": "evt_start_request_01",
+  "payload": {
+    "parent_session_id": "agt_parent",
+    "lifecycle_state": "created"
+  },
+  "presentation_ref": {
+    "adapter": "kitsune",
+    "layout": {
+      "kind": "quadrant",
+      "slot": "bottom-right"
+    },
+    "resources": [
+      {
+        "kind": "workspace",
+        "id": "ws_djinn_roadmap"
+      },
+      {
+        "kind": "tab",
+        "id": "tab_reviewer_1"
+      },
+      {
+        "kind": "pane",
+        "id": "pane_42"
+      }
+    ]
+  }
+}

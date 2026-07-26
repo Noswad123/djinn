@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "id": "evt_start_request_01",
+  "ts": "2026-07-26T18:40:00-04:00",
+  "type": "agent.session.start.requested",
+  "source": "coven",
+  "actor": "user",
+  "orchestration_id": "coven-djinn-roadmap-2026-07-26",
+  "task_id": "review-diff",
+  "agent_ref": {
+    "orchestration_id": "coven-djinn-roadmap-2026-07-26",
+    "task_id": "review-diff",
+    "agent_id": "reviewer-1",
+    "harness": "djinn"
+  },
+  "parent_ref": {
+    "harness": "djinn",
+    "native_session_id": "agt_parent"
+  },
+  "correlation_id": "cmd_review_diff_01",
+  "payload": {
+    "prompt": "Review the diff for likely bugs and report priorities.",
+    "profile": "default",
+    "agent_name": "reviewer",
+    "project_root": "/Users/jdawson/Projects/djinn",
+    "mode": "background",
+    "context": [
+      {
+        "kind": "file",
+        "uri": "file://$COVEN_DIR/goal.md"
+      },
+      {
+        "kind": "task",
+        "id": "review-diff"
+      }
+    ],
+    "grants": []
+  },
+  "presentation_ref": {
+    "adapter": "kitsune",
+    "layout": {
+      "kind": "quadrant",
+      "slot": "bottom-right"
+    },
+    "resources": []
+  }
+}

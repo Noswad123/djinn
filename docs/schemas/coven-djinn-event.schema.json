@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noswad123.github.io/djinn/schemas/coven-djinn-event.schema.json",
+  "title": "Coven/Djinn Interop Event",
+  "description": "Version 1 append-only event envelope for file-backed Coven/Djinn orchestration interop.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "version",
+    "id",
+    "ts",
+    "type",
+    "source",
+    "actor",
+    "orchestration_id",
+    "correlation_id",
+    "payload"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Globally unique event id within the interop ledger. Suggested prefix: evt_."
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Event creation timestamp in RFC 3339 format."
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "agent.session.start.requested",
+        "agent.session.pause.requested",
+        "agent.session.resume.requested",
+        "agent.session.cancel.requested",
+        "agent.context.attach.requested",
+        "agent.result.import.requested",
+        "agent.result.continue.requested",
+        "agent.policy.grant.requested",
+        "agent.request.accepted",
+        "agent.request.rejected",
+        "agent.session.created",
+        "agent.session.running",
+        "agent.session.paused",
+        "agent.session.output.available",
+        "agent.session.completed",
+        "agent.session.failed",
+        "agent.session.cancelled",
+        "agent.policy.grant.applied",
+        "agent.policy.grant.rejected",
+        "agent.result.available"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Producer of this event, for example coven, djinn, opencode, herdr, kitsune, tmux, zellij, or a bridge command."
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Principal responsible for the event: user, coven, djinn, an agent id, or an adapter id."
+    },
+    "orchestration_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Neutral Coven orchestration identity. Not a multiplexer workspace/session/tab id."
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent_ref": {
+      "$ref": "#/$defs/agent_ref"
+    },
+    "parent_ref": {
+      "$ref": "#/$defs/agent_ref"
+    },
+    "runtime_ref": {
+      "$ref": "#/$defs/runtime_ref"
+    },
+    "presentation_ref": {
+      "$ref": "#/$defs/presentation_ref"
+    },
+    "correlation_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable id tying a request and its resulting fact events together. Suggested prefix: cmd_."
+    },
+    "causation_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Immediate event id that caused this event, when known."
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "agent_ref": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "orchestration_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "harness": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "native_session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transcript_uri": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result_uri": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "runtime_ref": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "harness": {
+          "type": "string",
+          "minLength": 1
+        },
+        "process_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "native_session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": ["created", "running", "paused", "completed", "failed", "cancelled", "unknown", "detached"]
+        }
+      }
+    },
+    "presentation_ref": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["adapter"],
+      "properties": {
+        "adapter": {
+          "type": "string",
+          "enum": ["herdr", "kitsune", "tmux", "zellij", "none"]
+        },
+        "layout": {
+          "$ref": "#/$defs/layout_hint"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["kind", "id"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Adapter-native resource kind, such as workspace, session, tab, window, pane, or surface."
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "layout_hint": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["headless", "foreground", "quadrant", "tab", "window", "surface_group"]
+        },
+        "slot": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

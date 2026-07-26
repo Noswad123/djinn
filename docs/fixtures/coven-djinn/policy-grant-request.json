@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "id": "evt_policy_grant_request_01",
+  "ts": "2026-07-26T18:41:00-04:00",
+  "type": "agent.policy.grant.requested",
+  "source": "coven",
+  "actor": "user",
+  "orchestration_id": "coven-djinn-roadmap-2026-07-26",
+  "task_id": "review-diff",
+  "agent_ref": {
+    "orchestration_id": "coven-djinn-roadmap-2026-07-26",
+    "task_id": "review-diff",
+    "agent_id": "reviewer-1",
+    "harness": "djinn",
+    "native_session_id": "agt_child"
+  },
+  "correlation_id": "cmd_policy_grant_01",
+  "payload": {
+    "grant_id": "grant_test_reviewer_01",
+    "target": {
+      "harness": "djinn",
+      "native_session_id": "agt_child"
+    },
+    "action": "shell.run",
+    "resource": "project_root:/Users/jdawson/Projects/djinn command:cargo test -p djinn-agent",
+    "effect": "allow",
+    "scope": "session",
+    "expires_at": null,
+    "reason": "Reviewer agent needs to run the package tests for this task."
+  }
+}

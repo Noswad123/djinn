@@ -261,9 +261,9 @@ Implications:
   the write summary should show when an imported alias was skipped because the
   equivalent provider already exists.
 
-### D7. Sub-agent support: support the concept for OpenCode compatibility
+### D7. Sub-agent support: child sessions with explicit policy grants
 
-**Status:** Tentative
+**Status:** Decided
 
 To be compatible with OpenCode-style configuration, Djinn likely needs to support
 sub-agents or task agents in a similar conceptual role.
@@ -272,6 +272,8 @@ Working interpretation:
 
 - A sub-agent is a constrained agent invocation with its own model/profile,
   prompt, tools, and context policy.
+- Product-model-wise, a sub-agent is just an agent session with
+  `parent_session_id` set. It should not require a separate persistence model.
 - Djinn may interpret OpenCode sub-agent/task-agent config into this internal
   model.
 - Djinn does not need to duplicate OpenCode's implementation mechanics.
@@ -295,15 +297,111 @@ Working interpretation:
 - Profile and role instruction references are resolved into the runtime system
   prompt. References first check the native `instructions` registry; otherwise
   existing files are read relative to the workspace, or as absolute/`~/` paths.
-- Automatic model-driven delegation remains out of scope.
+- Child sessions may run in the foreground or in the background. Background work
+  is an execution/lifecycle concern around the same session model, not a new
+  sub-agent storage type. A background child session must be resumable/brought to
+  the foreground through normal session surfaces.
+- Child-session trees should have a conservative default maximum depth, starting
+  around 3 levels below the root session. The limit prevents accidental recursive
+  delegation, confusing ownership, and policy fan-out. A future config override
+  can loosen this only after the UX for inspecting trees and grants is mature.
+- Depth is not the only safety bound. Background orchestration should also have
+  conservative concurrency limits, such as maximum active children per parent and
+  maximum active background children per workspace, before autonomous fan-out is
+  allowed.
+- Parent/child relationships beyond immediate children can be derived from
+  repeated `parent_session_id` links until concrete tree-query pain appears.
+- Child execution should use an explicit lifecycle state machine. The initial
+  states should distinguish at least `created`, `running`, `paused`, `completed`,
+  `failed`, and `cancelled`; notification/review state such as `unread`,
+  `dismissed`, or `imported` should be separate from execution state.
+- Foreground child sessions pause the parent from the UI perspective: the user is
+  simply switching active sessions, and returning to the parent resumes the parent
+  chat.
+- Background child sessions do not make the parent busy. The parent remains
+  interactive while the child writes its own JSONL events. When the child
+  completes, the parent should receive a lightweight child-status notification or
+  event that points at the child session and summarizes completion state.
+- A parent may have multiple child sessions. Multiple background children may run
+  concurrently and report independent status updates. Foregrounding a child means
+  choosing one active child session in the current UI; other children continue in
+  the background or remain paused according to their lifecycle state.
+- Djinn core should not require tmux, herdr, terminal tabs, or any specific
+  multiplexer. Instead, child-session lifecycle should emit structured events
+  such as child started, status changed, output available, completed, failed, and
+  cancelled. Multiplexer-aware adapters may subscribe to those events and choose
+  to open panes/tabs for children when supported. Herdr, tmux, and future
+  Kitsune support should live behind adapters rather than in the core session
+  model.
+- When no multiplexer integration is available, Djinn should fall back to a local
+  family state surface keyed by the root/parent session. That state can live in a
+  small folder/index beside the JSONL sessions and record child ids, statuses,
+  summary pointers, and unread/completed notifications. The parent can poll or
+  watch that family state and tell the user when child status changes.
+- JSONL child session logs remain the transcript/source of truth. The family
+  state folder/index should be treated as a projection for lifecycle,
+  notification, presentation, and unread state. It should be rebuildable from
+  session logs and child lifecycle events where possible.
+- Child results should not automatically merge into or steer the parent
+  transcript. The user should explicitly choose to open the child, insert/import
+  a child summary, continue using the child result, or dismiss the notification.
+- The first import/merge behavior should prefer linking or inserting a short
+  local summary over copying a full child transcript into the parent. Raw child
+  transcript import should remain explicit and deliberate.
+- Permissioning must be explicit. Child sessions do not implicitly inherit the
+  parent's approvals or full tool access. Their effective policy comes from the
+  selected profile/role/config plus explicit grants from the parent/user for that
+  child session. Session-scoped grants remain action-, workspace-, and
+  resource/path-scoped and do not silently become durable config.
+- Parent-to-child grants need an inspectable record shape before background child
+  work becomes common. At minimum, a grant should record the parent session id,
+  child session id, action, resource, effect, grant source, and session scope.
+- External orchestrators such as Coven may act on the user's behalf by passing
+  explicit scoped grants into Djinn child sessions. These grants can loosen normal
+  profile/config policy for that session, but they should not bypass Djinn's hard
+  guardrails for secret exfiltration, destructive commands, or sensitive/system
+  mutations unless a separate dangerous human override is deliberately added.
+- Multi-harness orchestration should use a small event contract rather than
+  assuming every participant is Djinn-native. Coven can own family/workspace
+  state for heterogeneous agents while Djinn-owned agents interpret the subset of
+  Coven events relevant to Djinn sessions, policy grants, lifecycle, and result
+  import.
+- Cross-harness orchestration should use a federated source-of-truth model:
+  Coven owns the orchestration ledger, workspace/task graph, presentation state,
+  and cross-agent lifecycle projection; each harness/provider keeps owning its
+  native transcript and durable session state. Djinn should not try to ingest and
+  normalize every other harness transcript by default.
+- Session references crossing the Coven/Djinn boundary need stable identity fields
+  instead of assuming a bare session id is globally meaningful. A reference should
+  include at least a neutral orchestration id, Coven agent/task id when present,
+  harness kind, provider/model identity when known, native session id, and an
+  optional transcript/result pointer. Multiplexer-specific identifiers such as
+  Herdr workspace ids, tmux sessions/windows, Zellij sessions/tabs, or Kitsune
+  surfaces should live in adapter/presentation refs rather than in core identity
+  fields.
+- The shared event protocol should distinguish command/request events from factual
+  status events. For example, Coven can emit a request to start, pause, cancel, or
+  grant a policy capability to a Djinn session; Djinn should emit factual events
+  for accepted, started, running, output available, completed, failed, cancelled,
+  grant applied, or grant rejected. This keeps restart/replay semantics clear.
+- Event envelopes should be small and inspectable: event id, timestamp, source,
+  actor, orchestration id, task id, agent/session reference, optional parent
+  reference, event type, payload, and correlation/causation ids are enough for an
+  initial protocol.
+- Cancellation is best-effort. Cancelling a child should record a cancelled
+  lifecycle event and stop future work where possible, but it must not silently
+  roll back completed tool effects or erase the child transcript.
+- Automatic model-driven delegation remains out of scope until there is a
+  separate product decision for when the parent agent may launch child sessions
+  without direct user selection.
 
 Open questions:
 
-- Whether sub-agents are part of the first MVP or a compatibility milestone.
-- Whether sub-agents run in-process, as separate `djinn` processes, or through a
-  future task runner.
-- Which tool set sub-agents get by default.
-- How sub-agent sessions are represented in `djinn-memory`.
+- Whether background child-session execution is implemented in-process, as a
+  separate `djinn` process, or through a future task runner. This should not
+  change the persisted session model.
+- The exact UI/CLI surface for starting, listing, foregrounding, and cancelling
+  background child sessions.
 
 ### D8. Mutation safety: patch-first, reversible, and locally enforced
 
