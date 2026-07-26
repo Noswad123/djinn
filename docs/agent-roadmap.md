@@ -33,9 +33,8 @@ product-design pass.
 
 - Add cost accounting to `model_response_metadata` only after provider adapters
   expose reliable usage/pricing data.
-- Add richer `tool_execution_metadata` fields, such as byte counts, approval
-  scope, or retry attempts, only when a concrete inspection or UI feature needs
-  them.
+- Add retry-attempt accounting only when provider/tool adapters expose concrete
+  retry behavior that needs inspection.
 
 ## Needs a decision before implementation
 

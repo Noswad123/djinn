@@ -851,6 +851,13 @@ impl PermissionApprovalScope {
             Self::Paths(paths) => paths.contains(resource),
         }
     }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Paths(_) => "paths",
+        }
+    }
 }
 
 #[async_trait]
@@ -2197,7 +2204,9 @@ async fn invoke_mutation_operations(
         .with_context(|| format!("resolving workspace {}", workspace.display()))?;
     let patch_id = fresh_patch_id();
     let mut approval_scope: Option<PermissionApprovalScope> = None;
+    let mut approval_was_required = false;
     if mutation_requires_approval(permission_action, &operations, &workspace, permissions)? {
+        approval_was_required = true;
         let previews = operations
             .iter()
             .map(|operation| {
@@ -2284,6 +2293,8 @@ async fn invoke_mutation_operations(
         output: json!({
             "patch_id": patch_id,
             "workspace": workspace.display().to_string(),
+            "approval_required": approval_was_required,
+            "approval_scope": approval_scope.as_ref().map(PermissionApprovalScope::label),
             "summary": summaries,
             "skipped": skipped,
         }),
@@ -3134,6 +3145,7 @@ where
     ) -> Result<ModelResponse> {
         let model = request.model.clone();
         request.tools = self.tool_specs();
+        let request_chars = model_request_chars(&request);
         let model_started = Instant::now();
         let response = match self.model.complete(request).await {
             Ok(response) => response,
@@ -3153,6 +3165,7 @@ where
             &model,
             None,
             model_started.elapsed().as_millis(),
+            request_chars,
             &response,
         )?;
         self.persist_model_response(session, &response)?;
@@ -3185,16 +3198,14 @@ where
 
         for round in 0..=max_tool_rounds {
             on_progress(AgentProgressEvent::ModelRequestStarted { round })?;
+            let model_request = ModelRequest {
+                model: model.clone(),
+                messages: messages.clone(),
+                tools: tools.clone(),
+            };
+            let request_chars = model_request_chars(&model_request);
             let model_started = Instant::now();
-            let response = match self
-                .model
-                .complete(ModelRequest {
-                    model: model.clone(),
-                    messages: messages.clone(),
-                    tools: tools.clone(),
-                })
-                .await
-            {
+            let response = match self.model.complete(model_request).await {
                 Ok(response) => response,
                 Err(error) => {
                     let message = error.to_string();
@@ -3213,6 +3224,7 @@ where
                 &model,
                 Some(round),
                 elapsed_ms,
+                request_chars,
                 &response,
             )?;
             self.persist_model_response(session, &response)?;
@@ -3336,6 +3348,7 @@ where
         model: &str,
         round: Option<usize>,
         elapsed_ms: u128,
+        request_chars: u64,
         response: &ModelResponse,
     ) -> Result<()> {
         self.sessions.append_event(
@@ -3347,6 +3360,8 @@ where
                 elapsed_ms: elapsed_ms.min(u64::MAX as u128) as u64,
                 tool_calls: response.tool_calls.len(),
                 has_message: !response.message.content.trim().is_empty(),
+                request_chars: Some(request_chars),
+                response_chars: Some(model_response_chars(response)),
                 usage: response.usage.clone().map(AgentSessionTokenUsage::from),
             }),
         )
@@ -3368,6 +3383,19 @@ where
                 round,
                 elapsed_ms: elapsed_ms.min(u64::MAX as u128) as u64,
                 success: result.success,
+                input_bytes: Some(json_byte_len(&call.input)),
+                output_bytes: Some(json_byte_len(&result.output)),
+                approval_required: tool_result_bool(&result.output, "approval_required"),
+                approval_scope: result
+                    .output
+                    .get("approval_scope")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                skipped_operations: result
+                    .output
+                    .get("skipped")
+                    .and_then(Value::as_array)
+                    .map(|items| items.len().min(u64::MAX as usize) as u64),
             }),
         )
     }
@@ -3396,6 +3424,48 @@ fn provider_from_model(model: &str) -> Option<String> {
         .map(|(provider, _)| provider.trim())
         .filter(|provider| !provider.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn model_request_chars(request: &ModelRequest) -> u64 {
+    let message_chars = request
+        .messages
+        .iter()
+        .map(|message| message.content.chars().count())
+        .sum::<usize>();
+    let tool_schema_chars = request
+        .tools
+        .iter()
+        .map(|tool| {
+            tool.name.chars().count()
+                + tool.description.chars().count()
+                + tool.input_schema.to_string().chars().count()
+        })
+        .sum::<usize>();
+    message_chars
+        .saturating_add(tool_schema_chars)
+        .min(u64::MAX as usize) as u64
+}
+
+fn model_response_chars(response: &ModelResponse) -> u64 {
+    let message_chars = response.message.content.chars().count();
+    let tool_call_chars = response
+        .tool_calls
+        .iter()
+        .map(|call| call.name.chars().count() + call.input.to_string().chars().count())
+        .sum::<usize>();
+    message_chars
+        .saturating_add(tool_call_chars)
+        .min(u64::MAX as usize) as u64
+}
+
+fn json_byte_len(value: &Value) -> u64 {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len().min(u64::MAX as usize) as u64)
+        .unwrap_or_default()
+}
+
+fn tool_result_bool(output: &Value, key: &str) -> Option<bool> {
+    output.get(key).and_then(Value::as_bool)
 }
 
 impl From<ModelTokenUsage> for AgentSessionTokenUsage {
@@ -3719,6 +3789,8 @@ mod tests {
                 round,
                 tool_calls,
                 has_message,
+                request_chars,
+                response_chars,
                 usage,
                 ..
             } if model == "openai/gpt-test"
@@ -3726,6 +3798,8 @@ mod tests {
                 && round.is_none()
                 && *tool_calls == 0
                 && *has_message
+                && *request_chars == Some(0)
+                && *response_chars == Some(16)
                 && usage.as_ref().and_then(|usage| usage.input_tokens) == Some(11)
                 && usage.as_ref().and_then(|usage| usage.output_tokens) == Some(7)
                 && usage.as_ref().and_then(|usage| usage.total_tokens) == Some(18)
@@ -3773,11 +3847,15 @@ mod tests {
                 name,
                 round,
                 success,
+                input_bytes,
+                output_bytes,
                 ..
             } if id == "call-read"
                 && name == "read_file"
                 && *round == Some(0)
                 && *success
+                && input_bytes.unwrap_or_default() > 0
+                && output_bytes.unwrap_or_default() > 0
         )));
     }
 

@@ -131,6 +131,10 @@ pub enum AgentSessionEventKind {
         tool_calls: usize,
         has_message: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_chars: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_chars: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<AgentSessionTokenUsage>,
     },
     ToolCall {
@@ -150,6 +154,16 @@ pub enum AgentSessionEventKind {
         round: Option<usize>,
         elapsed_ms: u64,
         success: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_bytes: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_bytes: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval_required: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval_scope: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skipped_operations: Option<u64>,
     },
     Error {
         phase: String,

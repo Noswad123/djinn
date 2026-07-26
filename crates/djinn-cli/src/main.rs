@@ -5670,10 +5670,17 @@ struct AgentSessionStats {
     tool_results: usize,
     model_turns: usize,
     model_elapsed_ms: u64,
+    model_request_chars: u64,
+    model_response_chars: u64,
     tool_executions: usize,
     tool_successes: usize,
     tool_failures: usize,
     tool_elapsed_ms: u64,
+    tool_input_bytes: u64,
+    tool_output_bytes: u64,
+    approval_required: usize,
+    approval_scoped: usize,
+    skipped_operations: u64,
     token_usage: AgentSessionTokenUsage,
     models: Vec<AgentModelStats>,
     tools: Vec<AgentToolStats>,
@@ -5688,6 +5695,8 @@ struct AgentModelStats {
     elapsed_ms: u64,
     tool_calls: usize,
     message_turns: usize,
+    request_chars: u64,
+    response_chars: u64,
     token_usage: AgentSessionTokenUsage,
 }
 
@@ -5698,6 +5707,11 @@ struct AgentToolStats {
     successes: usize,
     failures: usize,
     elapsed_ms: u64,
+    input_bytes: u64,
+    output_bytes: u64,
+    approval_required: usize,
+    approval_scoped: usize,
+    skipped_operations: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -5733,11 +5747,19 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
                 elapsed_ms,
                 tool_calls,
                 has_message,
+                request_chars,
+                response_chars,
                 usage,
                 ..
             } => {
                 stats.model_turns += 1;
                 stats.model_elapsed_ms = stats.model_elapsed_ms.saturating_add(*elapsed_ms);
+                stats.model_request_chars = stats
+                    .model_request_chars
+                    .saturating_add(request_chars.unwrap_or_default());
+                stats.model_response_chars = stats
+                    .model_response_chars
+                    .saturating_add(response_chars.unwrap_or_default());
                 if let Some(usage) = usage {
                     merge_token_usage(&mut stats.token_usage, usage);
                 }
@@ -5751,6 +5773,12 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
                 entry.turns += 1;
                 entry.elapsed_ms = entry.elapsed_ms.saturating_add(*elapsed_ms);
                 entry.tool_calls = entry.tool_calls.saturating_add(*tool_calls);
+                entry.request_chars = entry
+                    .request_chars
+                    .saturating_add(request_chars.unwrap_or_default());
+                entry.response_chars = entry
+                    .response_chars
+                    .saturating_add(response_chars.unwrap_or_default());
                 if *has_message {
                     entry.message_turns += 1;
                 }
@@ -5762,10 +5790,30 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
                 name,
                 elapsed_ms,
                 success,
+                input_bytes,
+                output_bytes,
+                approval_required,
+                approval_scope,
+                skipped_operations,
                 ..
             } => {
                 stats.tool_executions += 1;
                 stats.tool_elapsed_ms = stats.tool_elapsed_ms.saturating_add(*elapsed_ms);
+                stats.tool_input_bytes = stats
+                    .tool_input_bytes
+                    .saturating_add(input_bytes.unwrap_or_default());
+                stats.tool_output_bytes = stats
+                    .tool_output_bytes
+                    .saturating_add(output_bytes.unwrap_or_default());
+                if approval_required.unwrap_or(false) {
+                    stats.approval_required += 1;
+                }
+                if approval_scope.is_some() {
+                    stats.approval_scoped += 1;
+                }
+                stats.skipped_operations = stats
+                    .skipped_operations
+                    .saturating_add(skipped_operations.unwrap_or_default());
                 if *success {
                     stats.tool_successes += 1;
                 } else {
@@ -5777,6 +5825,21 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
                 });
                 entry.calls += 1;
                 entry.elapsed_ms = entry.elapsed_ms.saturating_add(*elapsed_ms);
+                entry.input_bytes = entry
+                    .input_bytes
+                    .saturating_add(input_bytes.unwrap_or_default());
+                entry.output_bytes = entry
+                    .output_bytes
+                    .saturating_add(output_bytes.unwrap_or_default());
+                if approval_required.unwrap_or(false) {
+                    entry.approval_required += 1;
+                }
+                if approval_scope.is_some() {
+                    entry.approval_scoped += 1;
+                }
+                entry.skipped_operations = entry
+                    .skipped_operations
+                    .saturating_add(skipped_operations.unwrap_or_default());
                 if *success {
                     entry.successes += 1;
                 } else {
@@ -5840,6 +5903,12 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
             usage.trim_start_matches("tokens ")
         ));
     }
+    if stats.model_request_chars > 0 || stats.model_response_chars > 0 {
+        out.push_str(&format!(
+            "Model chars: {} request / {} response\n",
+            stats.model_request_chars, stats.model_response_chars
+        ));
+    }
     if !stats.models.is_empty() {
         out.push_str("\nModel breakdown:\n");
         for model in &stats.models {
@@ -5852,8 +5921,16 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
             let usage = format_agent_token_usage(&model.token_usage)
                 .map(|usage| format!(" · {}", usage))
                 .unwrap_or_default();
+            let chars = if model.request_chars > 0 || model.response_chars > 0 {
+                format!(
+                    " · {} request chars / {} response chars",
+                    model.request_chars, model.response_chars
+                )
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
-                "- {}{}: {} turn{} · {} · {} tool call{} · {} message turn{}{}\n",
+                "- {}{}: {} turn{} · {} · {} tool call{} · {} message turn{}{}{}\n",
                 model.model,
                 provider,
                 model.turns,
@@ -5863,6 +5940,7 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
                 plural_suffix(model.tool_calls),
                 model.message_turns,
                 plural_suffix(model.message_turns),
+                chars,
                 usage
             ));
         }
@@ -5879,17 +5957,52 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
         stats.tool_failures,
         format_elapsed_ms(stats.tool_elapsed_ms as u128)
     ));
+    if stats.tool_input_bytes > 0
+        || stats.tool_output_bytes > 0
+        || stats.approval_required > 0
+        || stats.approval_scoped > 0
+        || stats.skipped_operations > 0
+    {
+        out.push_str(&format!(
+            "Tool accounting: {} input bytes / {} output bytes · {} approval-required / {} scoped · {} skipped operation{}\n",
+            stats.tool_input_bytes,
+            stats.tool_output_bytes,
+            stats.approval_required,
+            stats.approval_scoped,
+            stats.skipped_operations,
+            plural_suffix(stats.skipped_operations as usize)
+        ));
+    }
     if !stats.tools.is_empty() {
         out.push_str("\nTool breakdown:\n");
         for tool in &stats.tools {
+            let accounting = if tool.input_bytes > 0
+                || tool.output_bytes > 0
+                || tool.approval_required > 0
+                || tool.approval_scoped > 0
+                || tool.skipped_operations > 0
+            {
+                format!(
+                    " · {} input bytes / {} output bytes · {} approval-required / {} scoped · {} skipped operation{}",
+                    tool.input_bytes,
+                    tool.output_bytes,
+                    tool.approval_required,
+                    tool.approval_scoped,
+                    tool.skipped_operations,
+                    plural_suffix(tool.skipped_operations as usize)
+                )
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
-                "- {}: {} call{} · {} ok / {} failed · {}\n",
+                "- {}: {} call{} · {} ok / {} failed · {}{}\n",
                 tool.name,
                 tool.calls,
                 plural_suffix(tool.calls),
                 tool.successes,
                 tool.failures,
-                format_elapsed_ms(tool.elapsed_ms as u128)
+                format_elapsed_ms(tool.elapsed_ms as u128),
+                accounting
             ));
         }
     }
@@ -8402,6 +8515,8 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
             elapsed_ms,
             tool_calls,
             has_message,
+            request_chars,
+            response_chars,
             usage,
         } => format_agent_model_metadata_event(
             model,
@@ -8410,6 +8525,8 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
             *elapsed_ms,
             *tool_calls,
             *has_message,
+            *request_chars,
+            *response_chars,
             usage.as_ref(),
         ),
         AgentSessionEventKind::ToolCall { id, name, .. } => format!("tool call {id}: {name}"),
@@ -8425,7 +8542,23 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
             round,
             elapsed_ms,
             success,
-        } => format_agent_tool_metadata_event(id, name, *round, *elapsed_ms, *success),
+            input_bytes,
+            output_bytes,
+            approval_required,
+            approval_scope,
+            skipped_operations,
+        } => format_agent_tool_metadata_event(
+            id,
+            name,
+            *round,
+            *elapsed_ms,
+            *success,
+            *input_bytes,
+            *output_bytes,
+            *approval_required,
+            approval_scope.as_deref(),
+            *skipped_operations,
+        ),
         AgentSessionEventKind::Error { phase, message, .. } => {
             format!("error [{phase}]: {}", prompt_title(message, "(empty)"))
         }
@@ -8443,6 +8576,8 @@ fn format_agent_model_metadata_event(
     elapsed_ms: u64,
     tool_calls: usize,
     has_message: bool,
+    request_chars: Option<u64>,
+    response_chars: Option<u64>,
     usage: Option<&AgentSessionTokenUsage>,
 ) -> String {
     let mut parts = vec![format!("model response: {model}")];
@@ -8459,6 +8594,12 @@ fn format_agent_model_metadata_event(
     ));
     if has_message {
         parts.push("message".to_string());
+    }
+    if let Some(request_chars) = request_chars {
+        parts.push(format!("request {request_chars} chars"));
+    }
+    if let Some(response_chars) = response_chars {
+        parts.push(format!("response {response_chars} chars"));
     }
     if let Some(usage) = usage.and_then(format_agent_token_usage) {
         parts.push(usage);
@@ -8490,12 +8631,35 @@ fn format_agent_tool_metadata_event(
     round: Option<usize>,
     elapsed_ms: u64,
     success: bool,
+    input_bytes: Option<u64>,
+    output_bytes: Option<u64>,
+    approval_required: Option<bool>,
+    approval_scope: Option<&str>,
+    skipped_operations: Option<u64>,
 ) -> String {
     let mut parts = vec![format!("tool execution {id}: {name}")];
     if let Some(round) = round {
         parts.push(format!("round {}", round + 1));
     }
     parts.push(format_elapsed_ms(elapsed_ms as u128));
+    if let Some(input_bytes) = input_bytes {
+        parts.push(format!("input {input_bytes} bytes"));
+    }
+    if let Some(output_bytes) = output_bytes {
+        parts.push(format!("output {output_bytes} bytes"));
+    }
+    if approval_required.unwrap_or(false) {
+        parts.push("approval required".to_string());
+    }
+    if let Some(scope) = approval_scope.filter(|value| !value.trim().is_empty()) {
+        parts.push(format!("approval scope {scope}"));
+    }
+    if let Some(skipped) = skipped_operations.filter(|value| *value > 0) {
+        parts.push(format!(
+            "{skipped} skipped operation{}",
+            plural_suffix(skipped as usize)
+        ));
+    }
     parts.push(if success { "ok" } else { "failed" }.to_string());
     parts.join(" · ")
 }
@@ -14914,6 +15078,8 @@ mod tests {
             elapsed_ms: 1250,
             tool_calls: 2,
             has_message: true,
+            request_chars: Some(100),
+            response_chars: Some(25),
             usage: Some(AgentSessionTokenUsage {
                 input_tokens: Some(10),
                 output_tokens: Some(5),
@@ -14929,6 +15095,8 @@ mod tests {
         assert!(rendered.contains("1.2s"));
         assert!(rendered.contains("2 tool calls"));
         assert!(rendered.contains("message"));
+        assert!(rendered.contains("request 100 chars"));
+        assert!(rendered.contains("response 25 chars"));
         assert!(rendered.contains("tokens in 10/out 5/total 15"));
     }
 
@@ -14940,13 +15108,18 @@ mod tests {
             round: Some(0),
             elapsed_ms: 42,
             success: true,
+            input_bytes: Some(20),
+            output_bytes: Some(30),
+            approval_required: Some(false),
+            approval_scope: None,
+            skipped_operations: Some(0),
         });
 
         let rendered = format_agent_event(&event);
 
         assert_eq!(
             rendered,
-            "tool execution call-read: read_file · round 1 · 42ms · ok"
+            "tool execution call-read: read_file · round 1 · 42ms · input 20 bytes · output 30 bytes · ok"
         );
     }
 
@@ -14969,6 +15142,8 @@ mod tests {
                     elapsed_ms: 1200,
                     tool_calls: 1,
                     has_message: false,
+                    request_chars: Some(40),
+                    response_chars: Some(10),
                     usage: Some(AgentSessionTokenUsage {
                         input_tokens: Some(10),
                         output_tokens: Some(3),
@@ -14976,12 +15151,14 @@ mod tests {
                     }),
                 }),
                 AgentSessionEvent::new(AgentSessionEventKind::ModelResponseMetadata {
-                    model: "gemini/gemini-test".to_string(),
-                    provider: Some("gemini".to_string()),
+                    model: "copilot/gpt-test".to_string(),
+                    provider: Some("copilot".to_string()),
                     round: None,
                     elapsed_ms: 800,
                     tool_calls: 0,
                     has_message: true,
+                    request_chars: Some(20),
+                    response_chars: Some(5),
                     usage: Some(AgentSessionTokenUsage {
                         input_tokens: Some(5),
                         output_tokens: Some(2),
@@ -15004,6 +15181,11 @@ mod tests {
                     round: Some(0),
                     elapsed_ms: 25,
                     success: true,
+                    input_bytes: Some(20),
+                    output_bytes: Some(19),
+                    approval_required: Some(true),
+                    approval_scope: Some("paths".to_string()),
+                    skipped_operations: Some(2),
                 }),
                 AgentSessionEvent::new(AgentSessionEventKind::Error {
                     phase: "model_request".to_string(),
@@ -15025,6 +15207,8 @@ mod tests {
         assert_eq!(stats.assistant_messages, 1);
         assert_eq!(stats.model_turns, 2);
         assert_eq!(stats.model_elapsed_ms, 2000);
+        assert_eq!(stats.model_request_chars, 60);
+        assert_eq!(stats.model_response_chars, 15);
         assert_eq!(stats.token_usage.total_tokens, Some(20));
         let openai_model = stats
             .models
@@ -15035,30 +15219,46 @@ mod tests {
         assert_eq!(openai_model.turns, 1);
         assert_eq!(openai_model.tool_calls, 1);
         assert_eq!(openai_model.message_turns, 0);
+        assert_eq!(openai_model.request_chars, 40);
+        assert_eq!(openai_model.response_chars, 10);
         assert_eq!(openai_model.token_usage.total_tokens, Some(13));
-        let gemini_model = stats
+        let copilot_model = stats
             .models
             .iter()
-            .find(|model| model.model == "gemini/gemini-test")
+            .find(|model| model.model == "copilot/gpt-test")
             .unwrap();
-        assert_eq!(gemini_model.provider.as_deref(), Some("gemini"));
-        assert_eq!(gemini_model.turns, 1);
-        assert_eq!(gemini_model.message_turns, 1);
+        assert_eq!(copilot_model.provider.as_deref(), Some("copilot"));
+        assert_eq!(copilot_model.turns, 1);
+        assert_eq!(copilot_model.message_turns, 1);
         assert_eq!(stats.tool_calls, 1);
         assert_eq!(stats.tool_results, 1);
         assert_eq!(stats.tool_executions, 1);
         assert_eq!(stats.tool_successes, 1);
+        assert_eq!(stats.tool_input_bytes, 20);
+        assert_eq!(stats.tool_output_bytes, 19);
+        assert_eq!(stats.approval_required, 1);
+        assert_eq!(stats.approval_scoped, 1);
+        assert_eq!(stats.skipped_operations, 2);
         assert_eq!(stats.tools[0].name, "read_file");
+        assert_eq!(stats.tools[0].input_bytes, 20);
+        assert_eq!(stats.tools[0].output_bytes, 19);
+        assert_eq!(stats.tools[0].approval_required, 1);
+        assert_eq!(stats.tools[0].approval_scoped, 1);
+        assert_eq!(stats.tools[0].skipped_operations, 2);
         assert_eq!(stats.errors[0].phase, "model_request");
         assert!(rendered.contains("Model: 2 turns · 2.0s"));
         assert!(rendered.contains("Tokens: in 15/out 5/total 20"));
+        assert!(rendered.contains("Model chars: 60 request / 15 response"));
         assert!(rendered.contains(
-            "- openai/gpt-test · provider openai: 1 turn · 1.2s · 1 tool call · 0 message turns · tokens in 10/out 3/total 13"
+            "- openai/gpt-test · provider openai: 1 turn · 1.2s · 1 tool call · 0 message turns · 40 request chars / 10 response chars · tokens in 10/out 3/total 13"
         ));
         assert!(rendered.contains(
-            "- gemini/gemini-test · provider gemini: 1 turn · 800ms · 0 tool calls · 1 message turn · tokens in 5/out 2/total 7"
+            "- copilot/gpt-test · provider copilot: 1 turn · 800ms · 0 tool calls · 1 message turn · 20 request chars / 5 response chars · tokens in 5/out 2/total 7"
         ));
-        assert!(rendered.contains("- read_file: 1 call · 1 ok / 0 failed · 25ms"));
+        assert!(rendered.contains(
+            "Tool accounting: 20 input bytes / 19 output bytes · 1 approval-required / 1 scoped · 2 skipped operations"
+        ));
+        assert!(rendered.contains("- read_file: 1 call · 1 ok / 0 failed · 25ms · 20 input bytes / 19 output bytes · 1 approval-required / 1 scoped · 2 skipped operations"));
         assert!(rendered.contains("- model_request: 1"));
     }
 
@@ -15302,6 +15502,8 @@ mod tests {
                     elapsed_ms: 10,
                     tool_calls: 0,
                     has_message: true,
+                    request_chars: Some(5),
+                    response_chars: Some(2),
                     usage: Some(AgentSessionTokenUsage {
                         input_tokens: Some(1),
                         output_tokens: Some(2),
@@ -15319,6 +15521,11 @@ mod tests {
                     round: Some(0),
                     elapsed_ms: 10,
                     success: true,
+                    input_bytes: Some(10),
+                    output_bytes: Some(20),
+                    approval_required: Some(false),
+                    approval_scope: None,
+                    skipped_operations: Some(0),
                 }),
             ],
         };

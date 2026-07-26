@@ -90,15 +90,17 @@ Implications:
   `model_response_metadata` event. It records the requested model, optional
   provider inferred from provider-prefixed model names, optional tool-loop round,
   elapsed milliseconds, tool-call count, whether the response contained
-  assistant text, and optional token usage (`input_tokens`, `output_tokens`,
-  `total_tokens`) when providers report it. Keep this metadata out of model
-  replay so resumed sessions do not feed accounting/progress records back to
-  providers.
+  assistant text, request/response character counts, and optional token usage
+  (`input_tokens`, `output_tokens`, `total_tokens`) when providers report it.
+  Keep this metadata out of model replay so resumed sessions do not feed
+  accounting/progress records back to providers.
 - Persist tool execution accounting as a separate non-conversation
   `tool_execution_metadata` event keyed by tool-call id. It records tool name,
-  optional tool-loop round, elapsed milliseconds, and success. Keep tool output
-  in `tool_result`; use metadata for accounting/session inspection without
-  feeding progress records back to providers or cluttering chat transcripts.
+  optional tool-loop round, elapsed milliseconds, success, input/output byte
+  counts, approval-required/scope details when available, and skipped operation
+  counts for path-scoped mutation approvals. Keep tool output in `tool_result`;
+  use metadata for accounting/session inspection without feeding progress records
+  back to providers or cluttering chat transcripts.
 - Keep legacy JSONL readable. Events without the envelope fields are normalized
   in memory with `schema_version = 1`, `session_id` from the filename, and
   deterministic `legacy-<session-id>-<line>` event ids.
