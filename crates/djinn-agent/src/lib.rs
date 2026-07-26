@@ -950,6 +950,9 @@ fn destructive_denial(action: &str, resource: &str) -> Option<String> {
 fn destructive_shell_denial(command: &str) -> Option<String> {
     let normalized = command.split_whitespace().collect::<Vec<_>>().join(" ");
     let lower = normalized.to_ascii_lowercase();
+    if let Some(reason) = secret_shell_read_denial(&lower) {
+        return Some(reason);
+    }
     let destructive_patterns = [
         ("rm -rf /", "recursive removal of root"),
         ("rm -rf ~", "recursive removal of home"),
@@ -970,6 +973,70 @@ fn destructive_shell_denial(command: &str) -> Option<String> {
         .iter()
         .find(|(pattern, _)| lower.contains(pattern))
         .map(|(_, reason)| (*reason).to_string())
+}
+
+fn secret_shell_read_denial(command: &str) -> Option<String> {
+    for segment in shell_segments(command) {
+        let words = shell_words(segment);
+        if words.is_empty() {
+            continue;
+        }
+        let verb_index = if matches!(words.first().map(String::as_str), Some("sudo" | "command")) {
+            1
+        } else {
+            0
+        };
+        let Some(verb) = words.get(verb_index).map(String::as_str) else {
+            continue;
+        };
+        let sensitive_arg_start = match verb {
+            "cat" | "less" | "more" | "head" | "tail" | "base64" | "xxd" | "openssl" | "cp"
+            | "pbcopy" => verb_index + 1,
+            "grep" | "rg" | "sed" | "awk" => verb_index + 2,
+            _ => continue,
+        };
+        if let Some(word) = words
+            .iter()
+            .skip(sensitive_arg_start)
+            .find(|word| shell_word_is_sensitive_read_reference(word))
+        {
+            return Some(format!(
+                "secret-read guardrail for shell command path/reference: {word}"
+            ));
+        }
+    }
+    None
+}
+
+fn shell_segments(command: &str) -> Vec<&str> {
+    command
+        .split(|ch: char| matches!(ch, ';' | '&' | '|'))
+        .collect()
+}
+
+fn shell_words(command: &str) -> Vec<String> {
+    command
+        .split(|ch: char| {
+            ch.is_whitespace() || matches!(ch, ';' | '&' | '|' | '<' | '>' | '(' | ')')
+        })
+        .map(|part| {
+            part.trim_matches(|ch: char| {
+                matches!(ch, '\'' | '"' | '`' | ',' | ':' | '[' | ']' | '{' | '}')
+            })
+        })
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn shell_word_is_sensitive_read_reference(word: &str) -> bool {
+    let normalized = normalize_match_path(word.trim_matches('/'));
+    if normalized.is_empty() {
+        return false;
+    }
+    let lower = normalized.to_ascii_lowercase();
+    let path = Path::new(&lower);
+    secret_path_denial(path).is_some()
 }
 
 fn destructive_path_denial(resource: &str) -> Option<String> {
@@ -1054,6 +1121,9 @@ impl ReadAccessPolicy {
 
     pub fn allows(&self, path: &Path) -> Result<()> {
         let path = canonicalize_existing(path)?;
+        if let Some(reason) = secret_path_denial(&path) {
+            bail!("read access denied by secret-read guardrail: {reason}");
+        }
         let path_text = path.to_string_lossy();
         if let Some(rule) = self
             .rules
@@ -1085,6 +1155,95 @@ impl ReadAccessPolicy {
         }
         bail!("path is outside allowed read roots: {}", path.display())
     }
+}
+
+fn secret_path_denial(path: &Path) -> Option<String> {
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => {
+                Some(value.to_string_lossy().to_ascii_lowercase())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let sensitive_dirs = [
+        ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".secrets", "secrets",
+    ];
+    if let Some(component) = components
+        .iter()
+        .find(|component| sensitive_dirs.contains(&component.as_str()))
+    {
+        return Some(format!(
+            "sensitive credential directory component: {component}"
+        ));
+    }
+
+    let sensitive_path_sequences: &[&[&str]] = &[
+        &[".docker", "config.json"],
+        &[".cargo", "credentials"],
+        &[".cargo", "credentials.toml"],
+        &[".config", "gcloud"],
+        &[".config", "gh", "hosts.yml"],
+        &[".config", "github-copilot"],
+        &[".config", "opencode", "auth.json"],
+        &[".local", "share", "opencode", "auth.json"],
+    ];
+    for sequence in sensitive_path_sequences {
+        if components_contain_sequence(&components, sequence) {
+            return Some(format!(
+                "sensitive credential path sequence: {}",
+                sequence.join("/")
+            ));
+        }
+    }
+
+    let file_name = components.last().map(String::as_str).unwrap_or_default();
+    let sensitive_file_names = [
+        ".env",
+        ".envrc",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        "auth.json",
+        "credentials",
+        "credentials.json",
+        "credentials.toml",
+        "secrets.json",
+        "secrets.toml",
+        "secrets.yaml",
+        "secrets.yml",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+    ];
+    if sensitive_file_names.contains(&file_name) || file_name.starts_with(".env.") {
+        return Some(format!("sensitive credential file name: {file_name}"));
+    }
+
+    let sensitive_extensions = [".pem", ".key", ".p12", ".pfx"];
+    if sensitive_extensions
+        .iter()
+        .any(|extension| file_name.ends_with(extension))
+    {
+        return Some(format!("sensitive credential file extension: {file_name}"));
+    }
+
+    None
+}
+
+fn components_contain_sequence(components: &[String], sequence: &[&str]) -> bool {
+    if sequence.is_empty() || sequence.len() > components.len() {
+        return false;
+    }
+    components.windows(sequence.len()).any(|window| {
+        window
+            .iter()
+            .map(String::as_str)
+            .eq(sequence.iter().copied())
+    })
 }
 
 fn wildcard_match(pattern: &str, value: &str) -> bool {
@@ -3734,6 +3893,31 @@ mod tests {
     }
 
     #[test]
+    fn permission_policy_blocks_shell_secret_reads() {
+        let policy = PermissionPolicy::allow_by_default();
+        assert!(policy
+            .assert_allowed("shell", "grep .env README.md")
+            .is_ok());
+        let error = policy
+            .assert_allowed("shell", "cat .env")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("secret-read guardrail"));
+
+        let error = policy
+            .assert_allowed("shell", "grep TOKEN .env")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("secret-read guardrail"));
+
+        let error = policy
+            .assert_allowed("shell", "pbcopy < ~/.ssh/id_ed25519")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("secret-read guardrail"));
+    }
+
+    #[test]
     fn permission_policy_blocks_sensitive_write_paths() {
         let policy = PermissionPolicy::allow_by_default();
         let home = std::env::var("HOME").unwrap();
@@ -3766,6 +3950,45 @@ mod tests {
 
         assert!(policy.allows(&secret).is_ok());
         assert!(policy.allows(&root).is_err());
+    }
+
+    #[test]
+    fn read_access_policy_blocks_secret_paths_by_default() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-read-secret-policy-test-{}",
+            chrono_like_test_suffix()
+        ));
+        let env_file = root.join(".env");
+        let key_file = root.join("config/private.pem");
+        fs::create_dir_all(root.join("config")).unwrap();
+        fs::write(&env_file, "TOKEN=super-secret\n").unwrap();
+        fs::write(&key_file, "private-key\n").unwrap();
+
+        let policy = ReadAccessPolicy::workspace_only(&root);
+        let error = policy.allows(&env_file).unwrap_err().to_string();
+        assert!(error.contains("secret-read guardrail"));
+        let error = policy.allows(&key_file).unwrap_err().to_string();
+        assert!(error.contains("secret-read guardrail"));
+    }
+
+    #[test]
+    fn read_access_policy_secret_guardrail_overrides_explicit_allow() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-read-secret-allow-policy-test-{}",
+            chrono_like_test_suffix()
+        ));
+        let env_file = root.join(".env.local");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&env_file, "TOKEN=super-secret\n").unwrap();
+
+        let mut policy = ReadAccessPolicy::workspace_only(&root);
+        policy.rules.push(ReadAccessRule {
+            pattern: env_file.to_string_lossy().to_string(),
+            effect: ReadAccessEffect::Allow,
+        });
+
+        let error = policy.allows(&env_file).unwrap_err().to_string();
+        assert!(error.contains("secret-read guardrail"));
     }
 
     #[test]
@@ -4604,6 +4827,45 @@ mod tests {
             matches[0]["relative_path"],
             Value::String("public/visible.txt".to_string())
         );
+    }
+
+    #[test]
+    fn read_tools_do_not_surface_secret_guardrail_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-read-tools-secret-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(root.join("public")).unwrap();
+        fs::write(root.join("public/visible.txt"), "visible needle\n").unwrap();
+        fs::write(root.join(".env"), "TOKEN=super-secret-needle\n").unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let read_tool = ReadFileTool::new(&root);
+        let error = runtime
+            .block_on(read_tool.invoke(json!({"path": ".env"})))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("secret-read guardrail"));
+        assert!(!error.contains("super-secret-needle"));
+
+        let find_tool = FindFilesTool::new(&root);
+        let result = runtime
+            .block_on(find_tool.invoke(json!({"pattern": "*", "path": "."})))
+            .unwrap();
+        let serialized = result.output.to_string();
+        assert!(serialized.contains("visible.txt"));
+        assert!(!serialized.contains(".env"));
+
+        let search_tool = SearchFilesTool::new(&root);
+        let result = runtime
+            .block_on(search_tool.invoke(json!({"pattern": "needle", "path": "."})))
+            .unwrap();
+        let serialized = result.output.to_string();
+        assert!(serialized.contains("visible needle"));
+        assert!(!serialized.contains("super-secret-needle"));
     }
 
     #[test]

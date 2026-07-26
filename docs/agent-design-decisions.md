@@ -194,13 +194,14 @@ Implemented compatibility decisions:
   `env:OPENAI_API_KEY`. Imported `opencode:` secret references are diagnostic
   placeholders and should be replaced with Djinn-owned env/keychain references
   before runtime use.
-- Djinn permissions are allow-by-default for local assistant workflows. Built-in
-  guardrails block clearly destructive shell commands and sensitive/system path
-  mutations; Djinn native shared/profile permissions provide additional
-  deny/ask/allow policy in the local tool layer.
+- Djinn is a personal local assistant, not an untrusted-code sandbox. Permission
+  behavior should preserve local workflow ergonomics while treating secret
+  access, token/key copying, network/external effects, destructive shell
+  commands, and destructive git operations as high-attention activity. See D9
+  for the safety policy direction.
 - The shell tool is available by default for non-interactive agent sessions. It
-  executes local commands with a bounded timeout and uses the allow-by-default
-  permission policy plus destructive-action guardrails.
+  executes local commands with a bounded timeout and uses configured permission
+  policy plus destructive-action guardrails.
 
 Open questions:
 
@@ -310,12 +311,14 @@ Open questions:
 
 Djinn should support file mutation, but the first mutation surface should be
 **patch-based** rather than arbitrary direct writes. Mutation tools should keep
-the same allow-by-default philosophy as shell/read tools, while retaining hard
+the same personal-assistant ergonomics as shell/read tools, while retaining hard
 guardrails for destructive or high-blast-radius operations.
 
-Default posture:
+Default mutation posture:
 
-- Normal project file edits are allowed by default.
+- Normal project file edits may be allowed by profile or session approval, but
+  profile/role policy should be able to start conservative and loosen for the
+  current session as the user approves specific paths/actions.
 - OpenCode/Djinn agent permission settings can add `deny` or `ask` rules for
   edit/write/apply-patch actions.
 - Built-in destructive-action guardrails always block sensitive/system path
@@ -411,6 +414,78 @@ Direct write/edit direction:
 - Future edit variants can expand ergonomics, but should continue compiling down
   to the shared patch/mutation application path.
 
+### D9. Permission and safety posture: personal assistant with session-scoped grants
+
+**Status:** Decided
+
+Djinn should remain a **personal local assistant** that runs with the invoking
+user's permissions. It should not present itself as an OS/container sandbox.
+Safety comes from explicit policy evaluation, high-attention prompts, hard
+guardrails, auditability, and reversible mutation workflows.
+
+Default posture:
+
+- Treat ordinary workspace reads as safe by default **except** for known secret,
+  credential, token, key, and auth material. Secret-like paths must be denied or
+  require explicit approval before their contents can enter model context. The
+  product goal is to avoid sending secrets to an LLM, not merely to avoid
+  printing them back to the terminal.
+- Treat token/key copying or movement as high-attention activity even when the
+  source and destination are inside the workspace.
+- Treat shell commands that can mutate state, delete data, publish artifacts,
+  change credentials, or alter git history as high-attention activity. Clearly
+  destructive commands remain hard-denied by guardrails.
+- Destructive git operations such as hard resets, aggressive cleans, force
+  pushes, history rewrites, and branch/tag deletion should be denied or asked
+  before execution. The exact pattern list can grow as concrete misses appear.
+- Network and external-tool actions should not be auto-blessed just because they
+  are convenient. Until there is a richer policy, they should ask by default when
+  they can exfiltrate workspace data, fetch untrusted code, publish data, mutate
+  remote state, or invoke tools outside Djinn's built-in registry.
+
+Session approval model:
+
+- For actions that are not already allowed by hard-coded safe defaults or profile
+  policy, start each agent session from a deny/ask posture.
+- Interactive approvals can loosen access for the current agent process/session.
+  Remembered approvals should be action-, workspace-, and resource/path-scoped,
+  and reused only when a later request is fully covered by the approved scope.
+- Session grants should not silently become durable policy. Durable policy changes
+  must go through explicit config edits or reviewed config patches.
+- Profiles and future agent roles should be able to tighten or predeclare policy
+  guidance, such as read-only reviewer, normal coding assistant, or release mode.
+  Role/profile policy must use the same effective policy resolver inspected by
+  `djinn agent config show`.
+
+Rule precedence:
+
+- Hard guardrails always win. Normal config should not override sensitive path,
+  secret-exfiltration, or destructive-command guardrails.
+- Then apply explicit policy rules with `deny` stronger than `ask`, and `ask`
+  stronger than `allow` when rules conflict.
+- Project/profile/role rules may tighten behavior; loosening a higher-scope deny
+  should require an explicit, inspectable decision rather than an accidental
+  later rule.
+- Imported OpenCode permissions are translated into Djinn-native policy rules and
+  do not remain a separate runtime policy source.
+
+Durable policy surface:
+
+- Djinn should not add a separate durable permission database yet.
+- The durable user-facing policy surface is native config, using reviewed rules
+  such as `{ "action": "write", "resource": "src/**", "effect": "allow" }`.
+- Interactive UI may offer “remember for workspace” later, but it should preview
+  the exact config patch and require confirmation before writing.
+
+Non-interactive behavior and auditability:
+
+- If a non-interactive run reaches an `ask` decision, it must not mutate or leak
+  data. It should fail clearly or emit structured `approval_required` metadata.
+- Tool/session records should include enough policy metadata to explain whether an
+  operation was allowed, denied, asked, skipped, or covered by a session grant.
+- Before durable workspace approvals become common, Djinn needs list/revoke/audit
+  commands for effective permissions and stored policy rules.
+
 ## Implemented first-slice baseline
 
 The first non-interactive agent slice is implemented as:
@@ -423,9 +498,15 @@ The first non-interactive agent slice is implemented as:
    OpenCode-compatible OpenAI OAuth/Codex mode.
 4. Minimal read-only tools for reading files, listing directories, finding files
    by glob-like patterns, and searching UTF-8 text files by regular expression,
-   governed by Djinn's local read access policy.
+   governed by Djinn's local read access policy. The read policy includes
+   built-in secret-read guardrails for known credential, token, key, auth, and
+   environment-file paths so those contents do not enter model context by
+   default; explicit read allow rules do not override this guardrail.
 5. Allow-by-default permission policy primitives, including hard guardrails for
-   destructive shell commands and sensitive/system path mutations.
+   destructive shell commands and sensitive/system path mutations. Shell
+   guardrails also block common content-reading/copying commands such as `cat`,
+   `grep`/`rg`, `head`/`tail`, `base64`, `cp`, and `pbcopy` when they reference
+   known secret paths.
 6. A default-on shell tool for local inspection/build/test commands, bounded by
    timeout and destructive-action guardrails.
 7. A default-on `apply_patch` tool for workspace-scoped file additions, updates,

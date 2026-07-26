@@ -34,6 +34,27 @@ product-design pass.
 - Add retry-attempt accounting only when provider/tool adapters expose concrete
   retry behavior that needs inspection.
 
+### Permission/safety follow-through
+
+The product decision is recorded in
+[`agent-design-decisions.md`](./agent-design-decisions.md#d9-permission-and-safety-posture-personal-assistant-with-session-scoped-grants):
+Djinn is a personal local assistant, not a sandbox; ordinary workspace work stays
+ergonomic, while secret access, token/key movement, destructive git/shell actions,
+network/external effects, and durable policy changes get explicit attention.
+
+Ready implementation slices:
+
+- Broaden destructive shell/git detection for history rewrites, branch/tag
+  deletion, force pushes, aggressive cleans, credential changes, and publication
+  commands as concrete gaps appear.
+- Make interactive approvals session-scoped by default: action-, workspace-, and
+  resource/path-scoped grants that never silently write durable config.
+- Ensure profile/role policy is visible in `djinn agent config show` and runtime
+  session metadata so users can inspect why a request was allowed, asked, denied,
+  or skipped.
+- Add effective-policy list/audit/revoke surfaces before workspace-persistent
+  approvals become common.
+
 ## Needs a decision before implementation
 
 These are useful directions, but implementing them now would risk locking in the
@@ -49,15 +70,6 @@ autonomous delegation or task-agent orchestration, decide:
 - what context policy each role receives;
 - which tools are inherited by default versus explicitly allowed;
 - whether parent/child sessions need tree operations beyond `parent_session_id`.
-
-### Permission and safety policy
-
-The local policy currently combines allow-by-default workflow ergonomics with hard
-guardrails. Before expanding persistent approval behavior, decide:
-
-- when to prompt for write/edit/patch, network, external tools, and future MCP;
-- whether approval scopes are once/session/workspace/persistent;
-- how user-facing policy edits should be represented in native config.
 
 ### OpenCode compatibility expansion
 
