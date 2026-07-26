@@ -11,7 +11,8 @@ pub mod agent_sessions;
 pub mod file_history;
 pub use agent_sessions::{
     AgentSession, AgentSessionCostEstimate, AgentSessionEvent, AgentSessionEventKind,
-    AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionStore, AgentSessionSummary,
+    AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionPolicyRule,
+    AgentSessionPolicySnapshot, AgentSessionRuntimeConfig, AgentSessionStore, AgentSessionSummary,
     AgentSessionTokenUsage, JsonlAgentSessionStore,
 };
 pub use file_history::{

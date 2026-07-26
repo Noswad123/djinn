@@ -50,8 +50,46 @@ pub struct AgentSessionMeta {
     pub parent_session_id: Option<AgentSessionId>,
     #[serde(default)]
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_config: Option<AgentSessionRuntimeConfig>,
     #[serde(default = "now_rfc3339")]
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct AgentSessionRuntimeConfig {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_instructions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_tools: Vec<String>,
+    #[serde(default)]
+    pub read_access: AgentSessionPolicySnapshot,
+    #[serde(default)]
+    pub permissions: AgentSessionPolicySnapshot,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct AgentSessionPolicySnapshot {
+    #[serde(default)]
+    pub default_effect: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<AgentSessionPolicyRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guardrails: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct AgentSessionPolicyRule {
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub resource: String,
+    #[serde(default)]
+    pub effect: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

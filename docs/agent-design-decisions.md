@@ -538,6 +538,17 @@ The first non-interactive agent slice is implemented as:
     commands. Shell approvals are action-, workspace-, and command-resource
     scoped; approving for the session caches only the covered command resources
     in the current agent process and never writes durable config.
+    `djinn agent config show` renders effective policy sources, profile-derived
+    read/permission rules, role context, and built-in guardrails. New agent
+    sessions persist a runtime config snapshot in session metadata with the
+    resolved model, role instruction/tool context, policy rule sources, and
+    guardrails so later inspection can explain the policy context used at
+    creation time.
+    `djinn agent policy list`, `djinn agent policy audit`, and
+    `djinn agent policy revoke` provide the explicit effective-policy inspection
+    surface. Revoke is currently a safe no-op report because durable approval
+    storage does not exist; session grants remain process-local and expire with
+    the agent process.
 15. `djinn agent tools list` and `djinn agent tools show <name>` inspect the
     built-in runtime tool set using the same registry construction as agent runs.
     Text output lists names/summaries or a single tool description/schema; JSON

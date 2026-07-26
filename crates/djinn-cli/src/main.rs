@@ -23,9 +23,10 @@ use djinn_chats::{ChatRecord, ChatRestoreReport};
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
     ActionRecord, ActionStore, AgentSession, AgentSessionCostEstimate, AgentSessionEvent,
-    AgentSessionEventKind, AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionStore,
-    AgentSessionSummary, AgentSessionTokenUsage, FileHistoryEntryId, FileHistoryFilter,
-    FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
+    AgentSessionEventKind, AgentSessionFilter, AgentSessionId, AgentSessionMeta,
+    AgentSessionPolicyRule, AgentSessionPolicySnapshot, AgentSessionRuntimeConfig,
+    AgentSessionStore, AgentSessionSummary, AgentSessionTokenUsage, FileHistoryEntryId,
+    FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
     JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource, SuggestionInput,
     SuggestionRecord, SuggestionStore,
 };
@@ -788,6 +789,8 @@ enum AgentCommand {
     Config(AgentConfigArgs),
     /// Inspect built-in agent runtime tools.
     Tools(AgentToolsArgs),
+    /// Inspect, audit, and revoke effective agent policy grants.
+    Policy(AgentPolicyArgs),
     /// Manage Djinn-native agent sessions.
     Session(AgentSessionArgs),
     /// Inspect or restore apply_patch file-history entries.
@@ -810,6 +813,12 @@ struct AgentToolsArgs {
     command: AgentToolsCommand,
 }
 
+#[derive(Debug, Args)]
+struct AgentPolicyArgs {
+    #[command(subcommand)]
+    command: AgentPolicyCommand,
+}
+
 #[derive(Debug, Subcommand)]
 enum AgentConfigCommand {
     /// List discovered agent profiles and models.
@@ -824,6 +833,76 @@ enum AgentToolsCommand {
     List(AgentToolsListArgs),
     /// Show one built-in agent tool spec.
     Show(AgentToolsShowArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentPolicyCommand {
+    /// List the effective read/permission policy and guardrails.
+    List(AgentPolicyListArgs),
+    /// Audit effective policy for durable grants and high-attention behavior.
+    Audit(AgentPolicyAuditArgs),
+    /// Revoke stored durable approvals. Currently reports no-op until durable approvals exist.
+    Revoke(AgentPolicyRevokeArgs),
+}
+
+#[derive(Debug, Args)]
+struct AgentPolicyListArgs {
+    /// Workspace path to resolve. Defaults to the current directory.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    /// Agent profile name.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// Configured agent role name.
+    #[arg(long)]
+    agent: Option<String>,
+    /// OpenAI model to use. Defaults the same way as agent chat.
+    #[arg(long)]
+    model: Option<String>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentPolicyAuditArgs {
+    /// Workspace path to resolve. Defaults to the current directory.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    /// Agent profile name.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// Configured agent role name.
+    #[arg(long)]
+    agent: Option<String>,
+    /// OpenAI model to use. Defaults the same way as agent chat.
+    #[arg(long)]
+    model: Option<String>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentPolicyRevokeArgs {
+    /// Optional action selector for future durable approvals, such as shell or write.
+    #[arg(long)]
+    action: Option<String>,
+    /// Optional resource/path selector for future durable approvals.
+    #[arg(long)]
+    resource: Option<String>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -5092,6 +5171,7 @@ fn run_agent(args: AgentArgs) -> Result<()> {
     match args.command {
         AgentCommand::Config(args) => run_agent_config(args),
         AgentCommand::Tools(args) => run_agent_tools(args),
+        AgentCommand::Policy(args) => run_agent_policy(args),
         AgentCommand::Session(args) => run_agent_session(args),
         AgentCommand::FileHistory(args) => run_agent_file_history(args),
         AgentCommand::Ask(args) => agent_ask(args),
@@ -5386,6 +5466,14 @@ fn run_agent_tools(args: AgentToolsArgs) -> Result<()> {
     }
 }
 
+fn run_agent_policy(args: AgentPolicyArgs) -> Result<()> {
+    match args.command {
+        AgentPolicyCommand::List(args) => agent_policy_list(args),
+        AgentPolicyCommand::Audit(args) => agent_policy_audit(args),
+        AgentPolicyCommand::Revoke(args) => agent_policy_revoke(args),
+    }
+}
+
 fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
     match args.command {
         AgentSessionCommand::New(args) => agent_session_new(args),
@@ -5443,6 +5531,17 @@ struct AgentEffectiveConfig {
     agent_tools: Vec<String>,
     read_access: ReadAccessPolicy,
     permissions: PermissionPolicy,
+    read_access_rules: Vec<AgentEffectivePolicyRule>,
+    permission_rules: Vec<AgentEffectivePolicyRule>,
+    guardrails: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentEffectivePolicyRule {
+    source: String,
+    action: String,
+    resource: String,
+    effect: String,
 }
 
 fn resolve_agent_effective_config(
@@ -5454,17 +5553,82 @@ fn resolve_agent_effective_config(
     let selection = resolve_agent_role_selection(agent, &profile, model)?;
     let profile = selection.profile;
     let workspace = resolve_agent_workspace(workspace)?;
+    let model = resolve_agent_model(selection.model, &profile)?;
+    agent_effective_config_from_parts(
+        workspace,
+        profile,
+        model,
+        selection.agent_name,
+        selection.instructions,
+        selection.tools,
+    )
+}
+
+fn agent_effective_config_from_parts(
+    workspace: String,
+    profile: String,
+    model: String,
+    agent_name: Option<String>,
+    agent_instructions: Vec<String>,
+    agent_tools: Vec<String>,
+) -> Result<AgentEffectiveConfig> {
     let workspace_path = Path::new(&workspace);
     Ok(AgentEffectiveConfig {
-        model: resolve_agent_model(selection.model, &profile)?,
+        model,
         read_access: resolve_agent_read_access_policy(&profile, workspace_path)?,
         permissions: resolve_agent_permission_policy(&profile, workspace_path)?,
-        agent_name: selection.agent_name,
-        agent_instructions: selection.instructions,
-        agent_tools: selection.tools,
+        read_access_rules: effective_read_access_rules_with_sources(&profile, workspace_path)?,
+        permission_rules: effective_permission_rules_with_sources(&profile, workspace_path)?,
+        guardrails: agent_policy_guardrails(),
+        agent_name,
+        agent_instructions,
+        agent_tools,
         workspace,
         profile,
     })
+}
+
+fn agent_session_runtime_config(config: &AgentEffectiveConfig) -> AgentSessionRuntimeConfig {
+    AgentSessionRuntimeConfig {
+        model: config.model.clone(),
+        agent_instructions: config.agent_instructions.clone(),
+        agent_tools: config.agent_tools.clone(),
+        read_access: AgentSessionPolicySnapshot {
+            default_effect: if config.read_access.allow_roots.is_empty() {
+                "allow".to_string()
+            } else {
+                "allow configured roots".to_string()
+            },
+            rules: config
+                .read_access_rules
+                .iter()
+                .map(agent_session_policy_rule_from_effective)
+                .collect(),
+            guardrails: vec![
+                "secret-read guardrails block known credential/token/key/auth paths".to_string(),
+            ],
+        },
+        permissions: AgentSessionPolicySnapshot {
+            default_effect: "allow with guardrails".to_string(),
+            rules: config
+                .permission_rules
+                .iter()
+                .map(agent_session_policy_rule_from_effective)
+                .collect(),
+            guardrails: config.guardrails.clone(),
+        },
+    }
+}
+
+fn agent_session_policy_rule_from_effective(
+    rule: &AgentEffectivePolicyRule,
+) -> AgentSessionPolicyRule {
+    AgentSessionPolicyRule {
+        source: rule.source.clone(),
+        action: rule.action.clone(),
+        resource: rule.resource.clone(),
+        effect: rule.effect.clone(),
+    }
 }
 
 fn agent_tools_list(args: AgentToolsListArgs) -> Result<()> {
@@ -5486,6 +5650,230 @@ fn agent_tools_show(args: AgentToolsShowArgs) -> Result<()> {
         format_agent_tool_spec(spec, output_format(args.format, args.json))?
     );
     Ok(())
+}
+
+fn agent_policy_list(args: AgentPolicyListArgs) -> Result<()> {
+    let config =
+        resolve_agent_effective_config(args.workspace, args.profile, args.agent, args.model)?;
+    let report = agent_policy_report(&config);
+    print!(
+        "{}",
+        format_agent_policy_report(&report, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+fn agent_policy_audit(args: AgentPolicyAuditArgs) -> Result<()> {
+    let config =
+        resolve_agent_effective_config(args.workspace, args.profile, args.agent, args.model)?;
+    let report = agent_policy_audit_report(&config);
+    print!(
+        "{}",
+        format_agent_policy_audit_report(&report, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+fn agent_policy_revoke(args: AgentPolicyRevokeArgs) -> Result<()> {
+    let report = AgentPolicyRevokeReport {
+        action: args.action,
+        resource: args.resource,
+        durable_approvals_found: 0,
+        revoked: 0,
+        message: "No durable approval store exists yet; session approvals are process-local and expire with the agent process.".to_string(),
+    };
+    print!(
+        "{}",
+        format_agent_policy_revoke_report(&report, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentPolicyReport {
+    workspace: String,
+    agent_name: Option<String>,
+    profile: String,
+    model: String,
+    policy_sources: Vec<String>,
+    read_access_rules: Vec<AgentEffectivePolicyRule>,
+    permission_rules: Vec<AgentEffectivePolicyRule>,
+    guardrails: Vec<String>,
+    session_approvals: String,
+    durable_approvals: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentPolicyAuditReport {
+    policy: AgentPolicyReport,
+    findings: Vec<AgentPolicyAuditFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentPolicyAuditFinding {
+    severity: String,
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentPolicyRevokeReport {
+    action: Option<String>,
+    resource: Option<String>,
+    durable_approvals_found: usize,
+    revoked: usize,
+    message: String,
+}
+
+fn agent_policy_report(config: &AgentEffectiveConfig) -> AgentPolicyReport {
+    AgentPolicyReport {
+        workspace: config.workspace.clone(),
+        agent_name: config.agent_name.clone(),
+        profile: config.profile.clone(),
+        model: config.model.clone(),
+        policy_sources: effective_policy_sources(config),
+        read_access_rules: config.read_access_rules.clone(),
+        permission_rules: config.permission_rules.clone(),
+        guardrails: config.guardrails.clone(),
+        session_approvals: "process-local action/workspace/resource grants".to_string(),
+        durable_approvals: "not implemented; native config is the durable policy surface"
+            .to_string(),
+    }
+}
+
+fn agent_policy_audit_report(config: &AgentEffectiveConfig) -> AgentPolicyAuditReport {
+    let policy = agent_policy_report(config);
+    let mut findings = vec![
+        AgentPolicyAuditFinding {
+            severity: "info".to_string(),
+            code: "hard_guardrails".to_string(),
+            message: "Built-in secret-read, destructive shell/git, and sensitive mutation guardrails are active.".to_string(),
+        },
+        AgentPolicyAuditFinding {
+            severity: "info".to_string(),
+            code: "session_scoped_approvals".to_string(),
+            message: "Interactive approvals are process-local and scoped by action, workspace, and resource/path.".to_string(),
+        },
+        AgentPolicyAuditFinding {
+            severity: "info".to_string(),
+            code: "no_durable_approval_store".to_string(),
+            message: "No durable approval database exists; persistent policy changes must be reviewed native config edits.".to_string(),
+        },
+    ];
+    if policy.permission_rules.is_empty() && policy.read_access_rules.is_empty() {
+        findings.push(AgentPolicyAuditFinding {
+            severity: "notice".to_string(),
+            code: "no_config_policy_rules".to_string(),
+            message: "No native config permission rules are active for this profile; built-in defaults and guardrails apply.".to_string(),
+        });
+    }
+    AgentPolicyAuditReport { policy, findings }
+}
+
+fn format_agent_policy_report(report: &AgentPolicyReport, format: OutputFormat) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(report)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+    let mut lines = vec![
+        "Agent effective policy".to_string(),
+        format!("Workspace: {}", report.workspace),
+        format!(
+            "Agent: {}",
+            report.agent_name.as_deref().unwrap_or("<none>")
+        ),
+        format!("Profile: {}", report.profile),
+        format!("Model: {}", report.model),
+        String::new(),
+        "Policy sources:".to_string(),
+    ];
+    if report.policy_sources.is_empty() {
+        lines.push("  - built-in defaults only".to_string());
+    } else {
+        for source in &report.policy_sources {
+            lines.push(format!("  - {source}"));
+        }
+    }
+    lines.push("Read access rules:".to_string());
+    push_agent_policy_rule_lines(&mut lines, &report.read_access_rules);
+    lines.push("Permission rules:".to_string());
+    push_agent_policy_rule_lines(&mut lines, &report.permission_rules);
+    lines.push("Guardrails:".to_string());
+    for guardrail in &report.guardrails {
+        lines.push(format!("  - {guardrail}"));
+    }
+    lines.push(format!("Session approvals: {}", report.session_approvals));
+    lines.push(format!("Durable approvals: {}", report.durable_approvals));
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn push_agent_policy_rule_lines(lines: &mut Vec<String>, rules: &[AgentEffectivePolicyRule]) {
+    if rules.is_empty() {
+        lines.push("  - none".to_string());
+    } else {
+        for rule in rules {
+            lines.push(format!(
+                "  - {}: {} {} {}",
+                rule.source, rule.effect, rule.action, rule.resource
+            ));
+        }
+    }
+}
+
+fn format_agent_policy_audit_report(
+    report: &AgentPolicyAuditReport,
+    format: OutputFormat,
+) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(report)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+    let mut lines = vec![
+        "Agent policy audit".to_string(),
+        format!("Workspace: {}", report.policy.workspace),
+        format!("Profile: {}", report.policy.profile),
+        String::new(),
+        "Findings:".to_string(),
+    ];
+    for finding in &report.findings {
+        lines.push(format!(
+            "  - [{}] {}: {}",
+            finding.severity, finding.code, finding.message
+        ));
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn format_agent_policy_revoke_report(
+    report: &AgentPolicyRevokeReport,
+    format: OutputFormat,
+) -> Result<String> {
+    if format == OutputFormat::Json {
+        let mut rendered = serde_json::to_string_pretty(report)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+    let mut lines = vec![
+        "Agent policy revoke".to_string(),
+        format!(
+            "Durable approvals found: {}",
+            report.durable_approvals_found
+        ),
+        format!("Revoked: {}", report.revoked),
+        report.message.clone(),
+    ];
+    if let Some(action) = &report.action {
+        lines.push(format!("Action selector: {action}"));
+    }
+    if let Some(resource) = &report.resource {
+        lines.push(format!("Resource selector: {resource}"));
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
 }
 
 fn agent_tool_specs(
@@ -5510,15 +5898,26 @@ fn agent_tool_specs(
 
 fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
     let selection = resolve_agent_role_selection(args.agent, &args.profile, None)?;
+    let workspace = resolve_agent_workspace(args.workspace)?;
+    let model = resolve_agent_model(selection.model.clone(), &selection.profile)?;
+    let effective_config = agent_effective_config_from_parts(
+        workspace.clone(),
+        selection.profile.clone(),
+        model,
+        selection.agent_name.clone(),
+        selection.instructions.clone(),
+        selection.tools.clone(),
+    )?;
     let meta = AgentSessionMeta {
         title: args
             .title
             .unwrap_or_else(|| "Untitled agent session".to_string()),
-        workspace: resolve_agent_workspace(args.workspace)?,
+        workspace,
         profile: selection.profile,
         agent_name: selection.agent_name,
         parent_session_id: parent_session_id_from_arg(args.parent_session),
         source: args.source,
+        runtime_config: Some(agent_session_runtime_config(&effective_config)),
         ..AgentSessionMeta::default()
     };
     let store = agent_session_store();
@@ -6235,6 +6634,14 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
     let workspace = resolve_agent_workspace(args.workspace)?;
     let system_instructions =
         resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
+    let effective_config = agent_effective_config_from_parts(
+        workspace.clone(),
+        profile.clone(),
+        model.clone(),
+        selection.agent_name.clone(),
+        selection.instructions.clone(),
+        selection.tools.clone(),
+    )?;
     let meta = AgentSessionMeta {
         title,
         workspace,
@@ -6242,6 +6649,7 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
         agent_name: selection.agent_name,
         parent_session_id: parent_session_id_from_arg(args.parent_session),
         source: "djinn-agent".to_string(),
+        runtime_config: Some(agent_session_runtime_config(&effective_config)),
         ..AgentSessionMeta::default()
     };
     let store = agent_session_store();
@@ -6425,7 +6833,10 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
         args.title,
         args.workspace,
         &profile,
-        selection.agent_name,
+        selection.agent_name.clone(),
+        selection.model.clone(),
+        selection.instructions.clone(),
+        selection.tools.clone(),
         parent_session_id_from_arg(args.parent_session),
     )?;
     let id = chat_session.id;
@@ -6529,6 +6940,9 @@ fn prepare_agent_chat_session(
     workspace: Option<PathBuf>,
     profile: &str,
     agent_name: Option<String>,
+    model: Option<String>,
+    agent_instructions: Vec<String>,
+    agent_tools: Vec<String>,
     parent_session_id: Option<AgentSessionId>,
 ) -> Result<PreparedAgentChatSession> {
     if let Some(resume) = resume.map(str::trim).filter(|value| !value.is_empty()) {
@@ -6552,6 +6966,15 @@ fn prepare_agent_chat_session(
     }
 
     let workspace = resolve_agent_workspace(workspace)?;
+    let resolved_model = resolve_agent_model(model, profile)?;
+    let effective_config = agent_effective_config_from_parts(
+        workspace.clone(),
+        profile.to_string(),
+        resolved_model,
+        agent_name.clone(),
+        agent_instructions,
+        agent_tools,
+    )?;
     let meta = AgentSessionMeta {
         title: title.unwrap_or_else(|| "Agent chat".to_string()),
         workspace: workspace.clone(),
@@ -6559,6 +6982,7 @@ fn prepare_agent_chat_session(
         agent_name,
         parent_session_id,
         source: "djinn-agent".to_string(),
+        runtime_config: Some(agent_session_runtime_config(&effective_config)),
         ..AgentSessionMeta::default()
     };
     let id = store.create_session(meta)?;
@@ -6882,6 +7306,18 @@ fn format_agent_effective_config(
             lines.push(format!("  - {tool}"));
         }
     }
+    lines.push("Policy sources:".to_string());
+    lines.push("  - built-in guardrails".to_string());
+    if config.agent_name.is_some() {
+        lines.push("  - selected agent role context".to_string());
+    }
+    if config.read_access_rules.is_empty() && config.permission_rules.is_empty() {
+        lines.push("  - no native config permission rules".to_string());
+    } else {
+        for source in effective_policy_sources(config) {
+            lines.push(format!("  - {source}"));
+        }
+    }
     lines.extend([String::new(), "Read access:".to_string()]);
     if config.read_access.allow_roots.is_empty()
         && config.read_access.deny_roots.is_empty()
@@ -6899,6 +7335,15 @@ fn format_agent_effective_config(
             lines.push(format!("  {:?}: {}", rule.effect, rule.pattern));
         }
     }
+    if !config.read_access_rules.is_empty() {
+        lines.push("  Sources:".to_string());
+        for rule in &config.read_access_rules {
+            lines.push(format!(
+                "    {}: {} {} {}",
+                rule.source, rule.effect, rule.action, rule.resource
+            ));
+        }
+    }
     lines.push(String::new());
     lines.push("Permissions:".to_string());
     if config.permissions.rules.is_empty() {
@@ -6912,8 +7357,33 @@ fn format_agent_effective_config(
         }
         lines.push("  destructive-action guardrails always apply".to_string());
     }
+    if !config.permission_rules.is_empty() {
+        lines.push("  Sources:".to_string());
+        for rule in &config.permission_rules {
+            lines.push(format!(
+                "    {}: {} {} {}",
+                rule.source, rule.effect, rule.action, rule.resource
+            ));
+        }
+    }
+    lines.push("Guardrails:".to_string());
+    for guardrail in &config.guardrails {
+        lines.push(format!("  - {guardrail}"));
+    }
     lines.push(String::new());
     Ok(lines.join("\n"))
+}
+
+fn effective_policy_sources(config: &AgentEffectiveConfig) -> Vec<String> {
+    let mut sources = Vec::new();
+    for rule in config
+        .read_access_rules
+        .iter()
+        .chain(config.permission_rules.iter())
+    {
+        push_unique_string(&mut sources, &rule.source);
+    }
+    sources
 }
 
 fn format_agent_tool_specs(specs: &[ToolSpec], format: OutputFormat) -> Result<String> {
@@ -8138,6 +8608,87 @@ fn resolve_agent_permission_policy(profile: &str, workspace: &Path) -> Result<Pe
         .rules
         .extend(djinn_config_permission_rules(profile, workspace)?);
     Ok(policy)
+}
+
+fn effective_read_access_rules_with_sources(
+    profile: &str,
+    workspace: &Path,
+) -> Result<Vec<AgentEffectivePolicyRule>> {
+    let config = effective_djinn_config()?;
+    let mut rules = Vec::new();
+    extend_effective_policy_rules(
+        "shared permissions",
+        &config.permissions,
+        workspace,
+        &mut rules,
+        true,
+    );
+    if let Some(profile_config) = config.profiles.get(profile) {
+        extend_effective_policy_rules(
+            &format!("profile:{profile}"),
+            &profile_config.permissions,
+            workspace,
+            &mut rules,
+            true,
+        );
+    }
+    Ok(rules)
+}
+
+fn effective_permission_rules_with_sources(
+    profile: &str,
+    workspace: &Path,
+) -> Result<Vec<AgentEffectivePolicyRule>> {
+    let config = effective_djinn_config()?;
+    let mut rules = Vec::new();
+    extend_effective_policy_rules(
+        "shared permissions",
+        &config.permissions,
+        workspace,
+        &mut rules,
+        false,
+    );
+    if let Some(profile_config) = config.profiles.get(profile) {
+        extend_effective_policy_rules(
+            &format!("profile:{profile}"),
+            &profile_config.permissions,
+            workspace,
+            &mut rules,
+            false,
+        );
+    }
+    Ok(rules)
+}
+
+fn extend_effective_policy_rules(
+    source: &str,
+    permissions: &[DjinnConfigPermission],
+    workspace: &Path,
+    out: &mut Vec<AgentEffectivePolicyRule>,
+    read_access_only: bool,
+) {
+    for permission in permissions {
+        let action = permission.action.trim();
+        let is_read_access = action == "read" || action == "*" || action == "external_directory";
+        if read_access_only != is_read_access {
+            continue;
+        }
+        out.push(AgentEffectivePolicyRule {
+            source: source.to_string(),
+            action: permission.action.trim().to_string(),
+            resource: config_permission_pattern(&permission.resource, workspace),
+            effect: permission.effect.trim().to_string(),
+        });
+    }
+}
+
+fn agent_policy_guardrails() -> Vec<String> {
+    vec![
+        "secret-read guardrails block known credential/token/key/auth paths".to_string(),
+        "destructive shell/git guardrails always apply before policy rules".to_string(),
+        "sensitive/system path mutation guardrails always apply".to_string(),
+        "session approvals are action-, workspace-, and resource/path-scoped".to_string(),
+    ]
 }
 
 fn djinn_config_read_access_rules(profile: &str, workspace: &Path) -> Result<Vec<ReadAccessRule>> {
@@ -13561,6 +14112,59 @@ mod tests {
     }
 
     #[test]
+    fn parses_agent_policy_commands() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "policy",
+            "list",
+            "--profile",
+            "architect",
+            "--agent",
+            "reviewer",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Policy(policy_args) = agent_args.command else {
+            panic!("expected agent policy command");
+        };
+        let AgentPolicyCommand::List(list_args) = policy_args.command else {
+            panic!("expected agent policy list command");
+        };
+        assert_eq!(list_args.profile, "architect");
+        assert_eq!(list_args.agent.as_deref(), Some("reviewer"));
+        assert!(list_args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "policy",
+            "revoke",
+            "--action",
+            "shell",
+            "--resource",
+            "printf hello",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Policy(policy_args) = agent_args.command else {
+            panic!("expected agent policy command");
+        };
+        let AgentPolicyCommand::Revoke(revoke_args) = policy_args.command else {
+            panic!("expected agent policy revoke command");
+        };
+        assert_eq!(revoke_args.action.as_deref(), Some("shell"));
+        assert_eq!(revoke_args.resource.as_deref(), Some("printf hello"));
+        assert!(revoke_args.json);
+    }
+
+    #[test]
     fn parses_agent_session_list_relationship_filters() {
         let cli = Cli::try_parse_from([
             "djinn",
@@ -15454,6 +16058,19 @@ mod tests {
                     effect: PermissionEffect::Ask,
                 }],
             },
+            read_access_rules: vec![AgentEffectivePolicyRule {
+                source: "profile:architect".to_string(),
+                action: "read".to_string(),
+                resource: "*/docs/*".to_string(),
+                effect: "allow".to_string(),
+            }],
+            permission_rules: vec![AgentEffectivePolicyRule {
+                source: "profile:architect".to_string(),
+                action: "write".to_string(),
+                resource: "*.rs".to_string(),
+                effect: "ask".to_string(),
+            }],
+            guardrails: agent_policy_guardrails(),
         };
 
         let rendered = format_agent_effective_config(&config, OutputFormat::Text).unwrap();
@@ -15469,7 +16086,9 @@ mod tests {
         assert!(rendered.contains("deny root: /tmp/project/secrets"));
         assert!(rendered.contains("Allow: */docs/*"));
         assert!(rendered.contains("Ask: write *.rs"));
+        assert!(rendered.contains("profile:architect"));
         assert!(rendered.contains("destructive-action guardrails always apply"));
+        assert!(rendered.contains("secret-read guardrails"));
     }
 
     #[test]
@@ -15483,6 +16102,9 @@ mod tests {
             agent_tools: Vec::new(),
             read_access: ReadAccessPolicy::allow_by_default(),
             permissions: PermissionPolicy::allow_by_default(),
+            read_access_rules: Vec::new(),
+            permission_rules: Vec::new(),
+            guardrails: agent_policy_guardrails(),
         };
 
         let rendered = format_agent_effective_config(&config, OutputFormat::Json).unwrap();
@@ -15493,6 +16115,59 @@ mod tests {
         assert_eq!(value["profile"], "default");
         assert_eq!(value["model"], "gpt-4o-mini");
         assert_eq!(value["permissions"]["rules"].as_array().unwrap().len(), 0);
+        assert!(value["guardrails"].as_array().unwrap().len() >= 3);
+    }
+
+    #[test]
+    fn format_agent_policy_surfaces_list_audit_and_revoke() {
+        let config = AgentEffectiveConfig {
+            workspace: "/tmp/project".to_string(),
+            agent_name: Some("reviewer".to_string()),
+            profile: "architect".to_string(),
+            model: "openai/gpt-5.5".to_string(),
+            agent_instructions: Vec::new(),
+            agent_tools: Vec::new(),
+            read_access: ReadAccessPolicy::allow_by_default(),
+            permissions: PermissionPolicy::allow_by_default(),
+            read_access_rules: vec![AgentEffectivePolicyRule {
+                source: "shared permissions".to_string(),
+                action: "read".to_string(),
+                resource: "*".to_string(),
+                effect: "allow".to_string(),
+            }],
+            permission_rules: vec![AgentEffectivePolicyRule {
+                source: "profile:architect".to_string(),
+                action: "shell".to_string(),
+                resource: "*".to_string(),
+                effect: "ask".to_string(),
+            }],
+            guardrails: agent_policy_guardrails(),
+        };
+
+        let report = agent_policy_report(&config);
+        let rendered = format_agent_policy_report(&report, OutputFormat::Text).unwrap();
+        assert!(rendered.contains("Agent effective policy"));
+        assert!(rendered.contains("shared permissions"));
+        assert!(rendered.contains("profile:architect: ask shell *"));
+        assert!(rendered.contains("Durable approvals: not implemented"));
+
+        let audit = agent_policy_audit_report(&config);
+        let rendered = format_agent_policy_audit_report(&audit, OutputFormat::Text).unwrap();
+        assert!(rendered.contains("Agent policy audit"));
+        assert!(rendered.contains("hard_guardrails"));
+        assert!(rendered.contains("no_durable_approval_store"));
+
+        let revoke = AgentPolicyRevokeReport {
+            action: Some("shell".to_string()),
+            resource: Some("printf hello".to_string()),
+            durable_approvals_found: 0,
+            revoked: 0,
+            message: "No durable approval store exists yet".to_string(),
+        };
+        let rendered = format_agent_policy_revoke_report(&revoke, OutputFormat::Text).unwrap();
+        assert!(rendered.contains("Agent policy revoke"));
+        assert!(rendered.contains("Revoked: 0"));
+        assert!(rendered.contains("Action selector: shell"));
     }
 
     #[test]
@@ -15727,6 +16402,9 @@ mod tests {
             Some(workspace.clone()),
             "review",
             Some("reviewer".to_string()),
+            Some("openai/gpt-5.5".to_string()),
+            vec!["docs/review.md".to_string()],
+            vec!["read_file".to_string()],
             Some(AgentSessionId::new("agt_parent")),
         )
         .unwrap();
@@ -15749,6 +16427,14 @@ mod tests {
             loaded.meta.workspace,
             canonical_workspace.display().to_string()
         );
+        let runtime_config = loaded.meta.runtime_config.as_ref().unwrap();
+        assert_eq!(runtime_config.model, "openai/gpt-5.5");
+        assert_eq!(runtime_config.agent_tools, vec!["read_file"]);
+        assert!(runtime_config
+            .permissions
+            .guardrails
+            .iter()
+            .any(|guardrail| guardrail.contains("session approvals")));
     }
 
     #[test]
@@ -15771,6 +16457,9 @@ mod tests {
             Some(PathBuf::from("/tmp/ignored-workspace")),
             "ignored-profile",
             Some("ignored-agent".to_string()),
+            Some("ignored-model".to_string()),
+            vec!["ignored.md".to_string()],
+            vec!["shell".to_string()],
             Some(AgentSessionId::new("agt_ignored_parent")),
         )
         .unwrap();

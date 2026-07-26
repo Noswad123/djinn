@@ -34,22 +34,6 @@ product-design pass.
 - Add retry-attempt accounting only when provider/tool adapters expose concrete
   retry behavior that needs inspection.
 
-### Permission/safety follow-through
-
-The product decision is recorded in
-[`agent-design-decisions.md`](./agent-design-decisions.md#d9-permission-and-safety-posture-personal-assistant-with-session-scoped-grants):
-Djinn is a personal local assistant, not a sandbox; ordinary workspace work stays
-ergonomic, while secret access, token/key movement, destructive git/shell actions,
-network/external effects, and durable policy changes get explicit attention.
-
-Ready implementation slices:
-
-- Ensure profile/role policy is visible in `djinn agent config show` and runtime
-  session metadata so users can inspect why a request was allowed, asked, denied,
-  or skipped.
-- Add effective-policy list/audit/revoke surfaces before workspace-persistent
-  approvals become common.
-
 ## Needs a decision before implementation
 
 These are useful directions, but implementing them now would risk locking in the
