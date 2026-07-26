@@ -275,6 +275,9 @@ Working interpretation:
   `djinn agent chat`, and `djinn agent session new`. A selected role supplies the
   profile/model defaults for that invocation, and the session metadata records
   `agent_name` plus optional `parent_session_id` for related-session workflows.
+- `djinn agent config show --agent <name>` explains the role-resolved effective
+  runtime config. `djinn agent tools list/show --agent <name>` applies the role
+  tool allowlist, and runtime execution uses the same allowlist when present.
 - Automatic model-driven delegation remains out of scope.
 
 Open questions:

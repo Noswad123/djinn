@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
@@ -780,6 +780,31 @@ impl ToolRegistry {
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
         self.tools.get(name).cloned()
+    }
+
+    pub fn retain_names(&mut self, names: &[String]) -> Result<()> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let allowed = names
+            .iter()
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+            .collect::<HashSet<_>>();
+        let unknown = allowed
+            .iter()
+            .filter(|name| !self.tools.contains_key(**name))
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            bail!(
+                "unknown agent tool{}: {}",
+                if unknown.len() == 1 { "" } else { "s" },
+                unknown.join(", ")
+            );
+        }
+        self.tools.retain(|name, _| allowed.contains(name.as_str()));
+        Ok(())
     }
 }
 

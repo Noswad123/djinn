@@ -887,6 +887,9 @@ struct AgentConfigShowArgs {
     /// Agent profile name.
     #[arg(long, default_value = "default")]
     profile: String,
+    /// Configured agent role name.
+    #[arg(long)]
+    agent: Option<String>,
     /// OpenAI model to use. Defaults the same way as agent chat.
     #[arg(long)]
     model: Option<String>,
@@ -906,6 +909,9 @@ struct AgentToolsListArgs {
     /// Agent profile name used for read/permission policy resolution.
     #[arg(long, default_value = "default")]
     profile: String,
+    /// Configured agent role name.
+    #[arg(long)]
+    agent: Option<String>,
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
@@ -924,6 +930,9 @@ struct AgentToolsShowArgs {
     /// Agent profile name used for read/permission policy resolution.
     #[arg(long, default_value = "default")]
     profile: String,
+    /// Configured agent role name.
+    #[arg(long)]
+    agent: Option<String>,
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
@@ -5147,6 +5156,8 @@ struct AgentRoleSelection {
     agent_name: Option<String>,
     profile: String,
     model: Option<String>,
+    instructions: Vec<String>,
+    tools: Vec<String>,
 }
 
 fn resolve_agent_role_selection(
@@ -5163,6 +5174,8 @@ fn resolve_agent_role_selection(
             agent_name: None,
             profile: resolve_agent_profile(requested_profile)?,
             model: requested_model,
+            instructions: Vec::new(),
+            tools: Vec::new(),
         });
     };
 
@@ -5181,6 +5194,8 @@ fn resolve_agent_role_selection(
         agent_name: Some(role.name.clone()),
         profile,
         model: requested_model.or_else(|| role.model.clone()),
+        instructions: role.instructions.clone(),
+        tools: role.tools.clone(),
     })
 }
 
@@ -5242,7 +5257,8 @@ fn agent_config_list(args: AgentConfigListArgs) -> Result<()> {
 }
 
 fn agent_config_show(args: AgentConfigShowArgs) -> Result<()> {
-    let config = resolve_agent_effective_config(args.workspace, args.profile, args.model)?;
+    let config =
+        resolve_agent_effective_config(args.workspace, args.profile, args.agent, args.model)?;
     print!(
         "{}",
         format_agent_effective_config(&config, output_format(args.format, args.json))?
@@ -5253,8 +5269,11 @@ fn agent_config_show(args: AgentConfigShowArgs) -> Result<()> {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct AgentEffectiveConfig {
     workspace: String,
+    agent_name: Option<String>,
     profile: String,
     model: String,
+    agent_instructions: Vec<String>,
+    agent_tools: Vec<String>,
     read_access: ReadAccessPolicy,
     permissions: PermissionPolicy,
 }
@@ -5262,22 +5281,28 @@ struct AgentEffectiveConfig {
 fn resolve_agent_effective_config(
     workspace: Option<PathBuf>,
     profile: String,
+    agent: Option<String>,
     model: Option<String>,
 ) -> Result<AgentEffectiveConfig> {
-    let profile = resolve_agent_profile(&profile)?;
+    let selection = resolve_agent_role_selection(agent, &profile, model)?;
+    let profile = selection.profile;
     let workspace = resolve_agent_workspace(workspace)?;
     let workspace_path = Path::new(&workspace);
     Ok(AgentEffectiveConfig {
-        model: resolve_agent_model(model, &profile)?,
+        model: resolve_agent_model(selection.model, &profile)?,
         read_access: resolve_agent_read_access_policy(&profile, workspace_path)?,
         permissions: resolve_agent_permission_policy(&profile, workspace_path)?,
+        agent_name: selection.agent_name,
+        agent_instructions: selection.instructions,
+        agent_tools: selection.tools,
         workspace,
         profile,
     })
 }
 
 fn agent_tools_list(args: AgentToolsListArgs) -> Result<()> {
-    let specs = agent_tool_specs(args.workspace, &args.profile)?;
+    let selection = resolve_agent_role_selection(args.agent, &args.profile, None)?;
+    let specs = agent_tool_specs(args.workspace, &selection.profile, &selection.tools)?;
     print!(
         "{}",
         format_agent_tool_specs(&specs, output_format(args.format, args.json))?
@@ -5286,7 +5311,8 @@ fn agent_tools_list(args: AgentToolsListArgs) -> Result<()> {
 }
 
 fn agent_tools_show(args: AgentToolsShowArgs) -> Result<()> {
-    let specs = agent_tool_specs(args.workspace, &args.profile)?;
+    let selection = resolve_agent_role_selection(args.agent, &args.profile, None)?;
+    let specs = agent_tool_specs(args.workspace, &selection.profile, &selection.tools)?;
     let spec = resolve_agent_tool_spec(&specs, &args.name)?;
     print!(
         "{}",
@@ -5295,18 +5321,23 @@ fn agent_tools_show(args: AgentToolsShowArgs) -> Result<()> {
     Ok(())
 }
 
-fn agent_tool_specs(workspace: Option<PathBuf>, profile: &str) -> Result<Vec<ToolSpec>> {
+fn agent_tool_specs(
+    workspace: Option<PathBuf>,
+    profile: &str,
+    allowed_tools: &[String],
+) -> Result<Vec<ToolSpec>> {
     let workspace = resolve_agent_workspace(workspace)?;
     let workspace_path = Path::new(&workspace);
     let read_access = resolve_agent_read_access_policy(profile, workspace_path)?;
     let permissions = resolve_agent_permission_policy(profile, workspace_path)?;
-    let registry = tools_with_policies_file_history_and_gate(
+    let mut registry = tools_with_policies_file_history_and_gate(
         workspace_path,
         read_access,
         permissions,
         None,
         None,
     )?;
+    registry.retain_names(allowed_tools)?;
     Ok(registry.specs())
 }
 
@@ -5849,6 +5880,7 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
         args.base_url,
         args.max_tool_rounds,
         &profile,
+        selection.tools,
         !args.json,
     )?;
     let session = store.load_session(&id)?;
@@ -6025,6 +6057,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
     let api_key = args.api_key;
     let base_url = args.base_url;
     let max_tool_rounds = args.max_tool_rounds;
+    let allowed_tools = selection.tools;
 
     let exit = tui.run_agent_chat_with_progress_handler(
         agent_chat_messages(&session),
@@ -6061,6 +6094,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                 base_url.clone(),
                 max_tool_rounds,
                 &profile,
+                allowed_tools.clone(),
                 true,
                 |event| {
                     let session = store.load_session(&id)?;
@@ -6440,11 +6474,31 @@ fn format_agent_effective_config(
     let mut lines = vec![
         "Agent effective config".to_string(),
         format!("Workspace: {}", config.workspace),
+        format!(
+            "Agent: {}",
+            config.agent_name.as_deref().unwrap_or("<none>")
+        ),
         format!("Profile: {}", config.profile),
         format!("Model: {}", config.model),
         String::new(),
-        "Read access:".to_string(),
+        "Role instructions:".to_string(),
     ];
+    if config.agent_instructions.is_empty() {
+        lines.push("  - none".to_string());
+    } else {
+        for instruction in &config.agent_instructions {
+            lines.push(format!("  - {instruction}"));
+        }
+    }
+    lines.push("Role tool allowlist:".to_string());
+    if config.agent_tools.is_empty() {
+        lines.push("  - all runtime tools".to_string());
+    } else {
+        for tool in &config.agent_tools {
+            lines.push(format!("  - {tool}"));
+        }
+    }
+    lines.extend([String::new(), "Read access:".to_string()]);
     if config.read_access.allow_roots.is_empty()
         && config.read_access.deny_roots.is_empty()
         && config.read_access.rules.is_empty()
@@ -6800,6 +6854,7 @@ fn complete_openai_prompt(
     base_url: Option<String>,
     max_tool_rounds: usize,
     profile: &str,
+    allowed_tools: Vec<String>,
     interactive_permissions: bool,
 ) -> Result<djinn_agent::ModelResponse> {
     let workspace = store.load_session(id)?.meta.workspace;
@@ -6820,6 +6875,7 @@ fn complete_openai_prompt(
         base_url,
         max_tool_rounds,
         profile,
+        allowed_tools,
         interactive_permissions,
     )
 }
@@ -6833,6 +6889,7 @@ fn complete_openai_messages(
     base_url: Option<String>,
     max_tool_rounds: usize,
     profile: &str,
+    allowed_tools: Vec<String>,
     interactive_permissions: bool,
 ) -> Result<djinn_agent::ModelResponse> {
     complete_openai_messages_with_progress(
@@ -6844,6 +6901,7 @@ fn complete_openai_messages(
         base_url,
         max_tool_rounds,
         profile,
+        allowed_tools,
         interactive_permissions,
         |_| Ok(()),
     )
@@ -6858,6 +6916,7 @@ fn complete_openai_messages_with_progress<F>(
     base_url: Option<String>,
     max_tool_rounds: usize,
     profile: &str,
+    allowed_tools: Vec<String>,
     interactive_permissions: bool,
     on_progress: F,
 ) -> Result<djinn_agent::ModelResponse>
@@ -6877,6 +6936,7 @@ where
             model,
             max_tool_rounds,
             profile,
+            allowed_tools,
             interactive_permissions,
             client,
             on_progress,
@@ -6891,6 +6951,7 @@ where
         model,
         max_tool_rounds,
         profile,
+        allowed_tools,
         interactive_permissions,
         client,
         on_progress,
@@ -6904,6 +6965,7 @@ fn complete_messages_with_client<M, F>(
     model: String,
     max_tool_rounds: usize,
     profile: &str,
+    allowed_tools: Vec<String>,
     interactive_permissions: bool,
     client: M,
     mut on_progress: F,
@@ -6926,17 +6988,15 @@ where
     } else {
         None
     };
-    let runtime = AgentRuntime::new(
-        client,
-        store.clone(),
-        tools_with_policies_file_history_and_gate(
-            workspace.clone(),
-            read_access,
-            permissions,
-            Some(file_history),
-            permission_gate,
-        )?,
-    );
+    let mut registry = tools_with_policies_file_history_and_gate(
+        workspace.clone(),
+        read_access,
+        permissions,
+        Some(file_history),
+        permission_gate,
+    )?;
+    registry.retain_names(&allowed_tools)?;
+    let runtime = AgentRuntime::new(client, store.clone(), registry);
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -11275,6 +11335,7 @@ fn share_merge(args: ShareMergeArgs) -> Result<()> {
         args.base_url,
         0,
         &profile,
+        Vec::new(),
         false,
     )?;
     let merge = parse_chat_merge_response(&response.message.content)?;
@@ -14829,8 +14890,11 @@ mod tests {
     fn format_agent_effective_config_renders_text_summary() {
         let config = AgentEffectiveConfig {
             workspace: "/tmp/project".to_string(),
+            agent_name: Some("reviewer".to_string()),
             profile: "architect".to_string(),
             model: "openai/gpt-5.5".to_string(),
+            agent_instructions: vec!["docs/review.md".to_string()],
+            agent_tools: vec!["read_file".to_string()],
             read_access: ReadAccessPolicy {
                 allow_roots: vec![PathBuf::from("/tmp/project")],
                 deny_roots: vec![PathBuf::from("/tmp/project/secrets")],
@@ -14852,8 +14916,11 @@ mod tests {
 
         assert!(rendered.contains("Agent effective config"));
         assert!(rendered.contains("Workspace: /tmp/project"));
+        assert!(rendered.contains("Agent: reviewer"));
         assert!(rendered.contains("Profile: architect"));
         assert!(rendered.contains("Model: openai/gpt-5.5"));
+        assert!(rendered.contains("docs/review.md"));
+        assert!(rendered.contains("read_file"));
         assert!(rendered.contains("allow root: /tmp/project"));
         assert!(rendered.contains("deny root: /tmp/project/secrets"));
         assert!(rendered.contains("Allow: */docs/*"));
@@ -14865,8 +14932,11 @@ mod tests {
     fn format_agent_effective_config_outputs_json() {
         let config = AgentEffectiveConfig {
             workspace: "/tmp/project".to_string(),
+            agent_name: None,
             profile: "default".to_string(),
             model: "gpt-4o-mini".to_string(),
+            agent_instructions: Vec::new(),
+            agent_tools: Vec::new(),
             read_access: ReadAccessPolicy::allow_by_default(),
             permissions: PermissionPolicy::allow_by_default(),
         };
@@ -14875,6 +14945,7 @@ mod tests {
         let value: Value = serde_json::from_str(&rendered).unwrap();
 
         assert_eq!(value["workspace"], "/tmp/project");
+        assert_eq!(value["agent_name"], Value::Null);
         assert_eq!(value["profile"], "default");
         assert_eq!(value["model"], "gpt-4o-mini");
         assert_eq!(value["permissions"]["rules"].as_array().unwrap().len(), 0);
@@ -14910,6 +14981,23 @@ mod tests {
 
         assert_eq!(value[0]["name"], "write_file");
         assert_eq!(value[0]["input_schema"]["required"][0], "path");
+    }
+
+    #[test]
+    fn agent_tool_specs_apply_role_allowlist() {
+        let workspace = std::env::temp_dir();
+        let specs = agent_tool_specs(
+            Some(workspace),
+            "default",
+            &["read_file".to_string(), "search_files".to_string()],
+        )
+        .unwrap();
+        let names = specs
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["read_file", "search_files"]);
     }
 
     #[test]

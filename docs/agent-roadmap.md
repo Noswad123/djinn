@@ -181,6 +181,9 @@ provider/runtime payload details:
 - Explicit role selection now exists on `djinn agent ask`, `djinn agent chat`, and
   `djinn agent session new`; sessions persist `agent_name` and optional
   `parent_session_id`. Keep autonomous delegation deferred.
+- Role-selected config/tool inspection exists via `djinn agent config show --agent`
+  and `djinn agent tools list/show --agent`; role tool allowlists are applied to
+  both inspection and runtime execution.
 
 ### Permission and safety policy
 

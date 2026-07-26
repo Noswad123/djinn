@@ -116,6 +116,8 @@ Inspect the discovered profiles/models without making a provider request:
 ```bash
 djinn agent config list
 djinn agent config list --json
+djinn agent config show --agent reviewer
+djinn agent tools list --agent reviewer
 ```
 
 Inspect configured Djinn agent roles (planner/reviewer/etc.) from native config:
