@@ -58,7 +58,7 @@ enum Command {
     Reject(RejectArgs),
     /// Route memories into suggestions, skills, ideas, or actions.
     Ingest(IngestArgs),
-    /// Promote raw context into active memories.
+    /// Promote raw context, sessions, memories, or tools into a more useful form.
     Promote(PromoteArgs),
     /// Run an external review to create or activate durable knowledge.
     Review(ReviewArgs),
@@ -74,8 +74,6 @@ enum Command {
     Scan(ScanArgs),
     /// Write a machine-readable cache/index.
     Index(IndexArgs),
-    /// Emit agent-ready context or prompts.
-    Share(ShareArgs),
     /// Search a collection.
     Search(SearchArgs),
     /// Watch an external source for new knowledge.
@@ -118,8 +116,8 @@ enum ListNoun {
     Ideas,
     /// List open user actions.
     Actions,
-    /// List raw or summarized AI interactions.
-    Chats(ListChatsArgs),
+    /// List sessions.
+    Sessions(ListChatsArgs),
     /// List agent skills known to Djinn.
     Skills(ListSkillsArgs),
     /// List available contexts.
@@ -136,8 +134,8 @@ struct ShowArgs {
 
 #[derive(Debug, Subcommand)]
 enum ShowNoun {
-    /// Show a chat/session by id.
-    Chat(ShowChatArgs),
+    /// Show a session by id.
+    Session(ShowChatArgs),
     /// Show an active memory by id or text fragment.
     Memory { id: String },
     /// Show a suggestion by id or text fragment.
@@ -162,8 +160,8 @@ struct AddArgs {
 
 #[derive(Debug, Subcommand)]
 enum AddNoun {
-    /// Add a raw or summarized AI interaction from a file.
-    Chat(AddChatArgs),
+    /// Add a session from a file.
+    Session(AddChatArgs),
     /// Add an active memory.
     Memory(AddMemoryArgs),
     /// Add a suggestion.
@@ -268,13 +266,13 @@ struct ReviewArgs {
 
 #[derive(Debug, Subcommand)]
 enum ReviewSource {
-    /// Ask OpenCode to review recent Djinn chats and add active memories.
-    Chats(ReviewChatsArgs),
+    /// Ask OpenCode to review recent Djinn sessions and add active memories.
+    Sessions(ReviewChatsArgs),
     /// Ask OpenCode to review one or more memories and create suggestions.
     Memories(ReviewMemoriesArgs),
     /// Ask OpenCode to review one memory and create suggestions.
     Memory(ReviewMemoriesArgs),
-    /// Compatibility alias for `djinn review chats --source opencode`.
+    /// Review recent OpenCode sessions.
     Opencode(ReviewOpencodeArgs),
 }
 
@@ -310,10 +308,10 @@ struct ReviewChatsArgs {
     /// Optional chat source filter, for example: opencode.
     #[arg(long)]
     source: Option<String>,
-    /// Maximum recent chats to review.
+    /// Maximum recent sessions to review.
     #[arg(long, default_value_t = 20)]
     limit: usize,
-    /// Review all matching chats instead of applying --limit.
+    /// Review all matching sessions instead of applying --limit.
     #[arg(long)]
     all: bool,
     /// Optional query filter over chat metadata/content.
@@ -335,10 +333,10 @@ struct ReviewChatsArgs {
 
 #[derive(Debug, Args)]
 struct ReviewOpencodeArgs {
-    /// Maximum recent OpenCode chats to review.
+    /// Maximum recent OpenCode sessions to review.
     #[arg(long, default_value_t = 20)]
     limit: usize,
-    /// Review all matching OpenCode chats instead of applying --limit.
+    /// Review all matching OpenCode sessions instead of applying --limit.
     #[arg(long)]
     all: bool,
     /// Optional query filter over chat metadata/content.
@@ -360,10 +358,22 @@ struct ReviewOpencodeArgs {
 
 #[derive(Debug, Subcommand)]
 enum PromoteNoun {
-    /// Emit a memory-extraction prompt for one chat.
-    Chat(ShareChatArgs),
-    /// Emit a memory-extraction prompt for multiple chats.
-    Chats(ShareChatsArgs),
+    /// Emit agent-ready context for local tools.
+    Tools(ToolsScope),
+    /// Emit agent-ready context for memories.
+    Context,
+    /// Emit agent-ready context for open suggestions.
+    Suggestions,
+    /// Emit an agent-ready improvement prompt from Djinn's current knowledge.
+    Ideas,
+    /// Emit agent-ready context for skills.
+    Skills(ShareSkillsArgs),
+    /// Promote one session into context or an extraction prompt.
+    Session(ShareChatArgs),
+    /// Promote multiple sessions into context, summary, patterns, or memory prompts.
+    Sessions(ShareChatsArgs),
+    /// Distill selected sessions into active memories and optionally archive them.
+    Merge(ShareMergeArgs),
     /// Review one or more memories and create suggestions.
     Memory(ReviewMemoriesArgs),
     /// Review one or more memories and create suggestions.
@@ -380,8 +390,8 @@ struct RmArgs {
 enum RmNoun {
     /// Remove a memory matching a keyword.
     Memory { keyword: String },
-    /// Remove a chat matching an id, source id, or title fragment.
-    Chat { id: String },
+    /// Remove a session matching an id, source id, or title fragment.
+    Session { id: String },
     /// Remove or archive a skill.
     Skill(RmSkillArgs),
 }
@@ -406,9 +416,9 @@ enum ClearNoun {
         #[arg(long)]
         no_backup: bool,
     },
-    /// Clear all chats after interactive confirmation.
-    Chats {
-        /// Skip creating chats.backup-*.jsonl before clearing.
+    /// Clear all sessions after interactive confirmation.
+    Sessions {
+        /// Skip creating sessions.backup-*.jsonl before clearing.
         #[arg(long)]
         no_backup: bool,
     },
@@ -416,15 +426,15 @@ enum ClearNoun {
 
 #[derive(Debug, Subcommand)]
 enum ArchiveNoun {
-    /// Archive selected chat rows and remove them from the active chat index.
-    Chats(ArchiveChatsArgs),
-    /// List chat archive files.
+    /// Archive selected session rows and remove them from the active session index.
+    Sessions(ArchiveChatsArgs),
+    /// List session archive files.
     List(ArchiveListArgs),
-    /// Show the contents of one chat archive file.
+    /// Show the contents of one session archive file.
     Show(ArchiveShowArgs),
-    /// Restore chats from an archive file.
+    /// Restore sessions from an archive file.
     Restore(ArchiveRestoreArgs),
-    /// Remove one chat archive file after confirmation.
+    /// Remove one session archive file after confirmation.
     Rm(ArchiveRemoveArgs),
 }
 
@@ -436,8 +446,8 @@ struct PruneArgs {
 
 #[derive(Debug, Subcommand)]
 enum PruneNoun {
-    /// Remove chats older than a duration such as 30d or 12days.
-    Chats(PruneChatsArgs),
+    /// Remove sessions older than a duration such as 30d or 12days.
+    Sessions(PruneChatsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -465,32 +475,6 @@ enum IndexNoun {
 }
 
 #[derive(Debug, Args)]
-struct ShareArgs {
-    #[command(subcommand)]
-    noun: ShareNoun,
-}
-
-#[derive(Debug, Subcommand)]
-enum ShareNoun {
-    /// Emit agent-ready context for local tools.
-    Tools(ToolsScope),
-    /// Emit agent-ready context for memories.
-    Memories,
-    /// Emit agent-ready context for open suggestions.
-    Suggestions,
-    /// Emit an agent-ready improvement prompt from Djinn's current knowledge.
-    Ideas,
-    /// Emit agent-ready context for skills.
-    Skills(ShareSkillsArgs),
-    /// Emit a memory-extraction prompt for a chat/session.
-    Chat(ShareChatArgs),
-    /// Emit an agent prompt from multiple chats/sessions.
-    Chats(ShareChatsArgs),
-    /// Distill selected chats into active memories and optionally archive them.
-    Merge(ShareMergeArgs),
-}
-
-#[derive(Debug, Args)]
 struct SearchArgs {
     #[command(subcommand)]
     noun: SearchNoun,
@@ -498,8 +482,8 @@ struct SearchArgs {
 
 #[derive(Debug, Subcommand)]
 enum SearchNoun {
-    /// Search chats/sessions.
-    Chats { query: String },
+    /// Search sessions.
+    Sessions { query: String },
     /// Search local tools.
     Tools(SearchToolsArgs),
     /// Search memories.
@@ -552,7 +536,7 @@ enum StatusTarget {
 
 #[derive(Debug, Subcommand)]
 enum InstallTarget {
-    /// Install the OpenCode plugin that auto-imports sessions into Djinn chats.
+    /// Install the OpenCode plugin that auto-imports sessions into Djinn.
     Opencode(InstallOpencodeArgs),
 }
 
@@ -1417,7 +1401,7 @@ struct ListChatsArgs {
 
 #[derive(Debug, Args)]
 struct ShowChatArgs {
-    /// Chat id, source id, or unambiguous title fragment.
+    /// Session id, source id, or unambiguous title fragment.
     id: String,
     /// Output JSON instead of text.
     #[arg(long)]
@@ -1426,34 +1410,34 @@ struct ShowChatArgs {
 
 #[derive(Debug, Args)]
 struct PruneChatsArgs {
-    /// Prune chats older than this duration, for example: 30d or 12days.
+    /// Prune sessions older than this duration, for example: 30d or 12days.
     #[arg(long = "older-than")]
     older_than: String,
-    /// Skip creating chats.backup-*.jsonl before pruning.
+    /// Skip creating sessions.backup-*.jsonl before pruning.
     #[arg(long)]
     no_backup: bool,
 }
 
 #[derive(Debug, Args)]
 struct ArchiveChatsArgs {
-    /// Optional chat ids, source ids, or unambiguous title fragments to archive.
+    /// Optional session ids, source ids, or unambiguous title fragments to archive.
     ids: Vec<String>,
     /// Filter by source, for example: opencode.
     #[arg(long)]
     source: Option<String>,
-    /// Filter chats by id, title, source metadata, path, or content.
+    /// Filter sessions by id, title, source metadata, path, or content.
     #[arg(long)]
     query: Option<String>,
-    /// Maximum number of chats to archive unless --all or explicit ids are used.
+    /// Maximum number of sessions to archive unless --all or explicit ids are used.
     #[arg(long, default_value_t = 50)]
     limit: usize,
-    /// Include every matching chat. Use deliberately.
+    /// Include every matching session. Use deliberately.
     #[arg(long)]
     all: bool,
-    /// Print selected chats without writing an archive or removing rows.
+    /// Print selected sessions without writing an archive or removing rows.
     #[arg(long)]
     dry_run: bool,
-    /// Required to actually archive and remove selected chat rows.
+    /// Required to actually archive and remove selected session rows.
     #[arg(long)]
     force: bool,
 }
@@ -1469,10 +1453,10 @@ struct ArchiveListArgs {
 struct ArchiveShowArgs {
     /// Archive path, filename, or basename from ~/.cache/djinn/chat-archives.
     archive: String,
-    /// Include chat content previews.
+    /// Include session content previews.
     #[arg(long)]
     content: bool,
-    /// Maximum characters to show per chat when --content is set.
+    /// Maximum characters to show per session when --content is set.
     #[arg(long, default_value_t = 1200)]
     max_chars_per_chat: usize,
     /// Output JSON instead of text.
@@ -1484,10 +1468,10 @@ struct ArchiveShowArgs {
 struct ArchiveRestoreArgs {
     /// Archive path, filename, or basename from ~/.cache/djinn/chat-archives.
     archive: String,
-    /// Replace existing chat rows with matching id or source/source-id.
+    /// Replace existing session rows with matching id or source/source-id.
     #[arg(long)]
     force: bool,
-    /// Print what would be restored without mutating the active chat index.
+    /// Print what would be restored without mutating the active session index.
     #[arg(long)]
     dry_run: bool,
     /// Output JSON instead of text.
@@ -1513,7 +1497,7 @@ struct ArchiveRemoveArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum TuiView {
     Tools,
-    Chats,
+    Sessions,
     Memories,
     Suggestions,
     Skills,
@@ -1599,7 +1583,7 @@ struct AcceptMemoryArgs {
 
 #[derive(Debug, Args)]
 struct ShareChatArgs {
-    /// Chat id, source id, or unambiguous title fragment.
+    /// Session id, source id, or unambiguous title fragment.
     id: String,
     /// Emit raw context only instead of a memory-extraction prompt.
     #[arg(long)]
@@ -1608,24 +1592,24 @@ struct ShareChatArgs {
 
 #[derive(Debug, Args)]
 struct ShareChatsArgs {
-    /// Optional chat ids, source ids, or unambiguous title fragments to include.
+    /// Optional session ids, source ids, or unambiguous title fragments to include.
     ids: Vec<String>,
     /// Filter by source, for example: opencode.
     #[arg(long)]
     source: Option<String>,
-    /// Filter chats by id, title, source metadata, path, or content.
+    /// Filter sessions by id, title, source metadata, path, or content.
     #[arg(long)]
     query: Option<String>,
-    /// Maximum number of chats to include unless --all or explicit ids are used.
+    /// Maximum number of sessions to include unless --all or explicit ids are used.
     #[arg(long, default_value_t = 10)]
     limit: usize,
     /// Include every matching chat. Use deliberately; this can produce a large prompt.
     #[arg(long)]
     all: bool,
-    /// Prompt style for the grouped chats.
+    /// Prompt style for the grouped sessions.
     #[arg(long, value_enum, default_value_t = ShareChatsMode::Patterns)]
     mode: ShareChatsMode,
-    /// Emit bundled chat context only, without summary/pattern/memory instructions.
+    /// Emit bundled session context only, without summary/pattern/memory instructions.
     #[arg(long)]
     context_only: bool,
     /// Maximum characters to include from each chat body.
@@ -1635,15 +1619,15 @@ struct ShareChatsArgs {
 
 #[derive(Debug, Args)]
 struct ShareMergeArgs {
-    /// Optional chat ids, source ids, or unambiguous title fragments to include.
+    /// Optional session ids, source ids, or unambiguous title fragments to include.
     ids: Vec<String>,
     /// Filter by source, for example: opencode.
     #[arg(long)]
     source: Option<String>,
-    /// Filter chats by id, title, source metadata, path, or content.
+    /// Filter sessions by id, title, source metadata, path, or content.
     #[arg(long)]
     query: Option<String>,
-    /// Maximum number of chats to include unless --all or explicit ids are used.
+    /// Maximum number of sessions to include unless --all or explicit ids are used.
     #[arg(long, default_value_t = 50)]
     limit: usize,
     /// Include every matching chat. Use deliberately; this can produce a large prompt.
@@ -1655,7 +1639,7 @@ struct ShareMergeArgs {
     /// Maximum memories the model should return.
     #[arg(long, default_value_t = 20)]
     max_memories: usize,
-    /// Archive selected chat rows after memories are written successfully.
+    /// Archive selected session rows after memories are written successfully.
     #[arg(long)]
     archive: bool,
     /// Print the merge prompt instead of running the model, writing memories, or archiving.
@@ -1677,9 +1661,9 @@ struct ShareMergeArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ShareChatsMode {
-    /// Ask the agent to summarize the grouped chats.
+    /// Ask the agent to summarize the grouped sessions.
     Summary,
-    /// Ask the agent to find recurring patterns across chats.
+    /// Ask the agent to find recurring patterns across sessions.
     Patterns,
     /// Ask the agent to propose durable memory commands from cross-chat patterns.
     Memories,
@@ -1748,7 +1732,7 @@ const OPENCODE_PLUGIN: &str = r#"/**
  *   DJINN_OPENCODE_IMPORT_COOLDOWN_MS  debounce assistant-message imports
  *   DJINN_OPENCODE_AUTO_REVIEW=1       opt into background memory reviews
  *   DJINN_OPENCODE_REVIEW_COOLDOWN_MS  debounce background reviews
- *   DJINN_OPENCODE_REVIEW_LIMIT        recent OpenCode chats per review
+  *   DJINN_OPENCODE_REVIEW_LIMIT        recent OpenCode sessions per review
  *   DJINN_OPENCODE_REVIEW_AGENT        optional OpenCode review agent
  *   DJINN_BIN=/path/to/djinn           override djinn executable
  */
@@ -1905,7 +1889,7 @@ export const DjinnWatchPlugin = async (input) => {
     }
     lastReviewAt = now
 
-    const args = [DJINN_BIN, "review", "chats", "--source", "opencode", "--limit", reviewLimit()]
+    const args = [DJINN_BIN, "review", "sessions", "--source", "opencode", "--limit", reviewLimit()]
     const agent = process.env.DJINN_OPENCODE_REVIEW_AGENT
     if (agent) args.push("--agent", agent)
 
@@ -2022,7 +2006,6 @@ fn main() -> Result<()> {
         Command::Prune(args) => run_prune(args),
         Command::Scan(args) => run_scan(args),
         Command::Index(args) => run_index(args),
-        Command::Share(args) => run_share(args),
         Command::Search(args) => run_search(args),
         Command::Watch(args) => run_watch(args),
         Command::Install(args) => run_install(args),
@@ -2050,7 +2033,7 @@ fn run_list(args: ListArgs) -> Result<()> {
         ListNoun::Suggestions => list_suggestions(),
         ListNoun::Ideas => list_ideas(),
         ListNoun::Actions => list_actions(),
-        ListNoun::Chats(args) => list_chats(args),
+        ListNoun::Sessions(args) => list_chats(args),
         ListNoun::Skills(args) => list_skills(args),
         ListNoun::Contexts(args) | ListNoun::Ctx(args) => list_contexts(args),
     }
@@ -2058,7 +2041,7 @@ fn run_list(args: ListArgs) -> Result<()> {
 
 fn run_show(args: ShowArgs) -> Result<()> {
     match args.noun {
-        ShowNoun::Chat(args) => show_chat(args),
+        ShowNoun::Session(args) => show_chat(args),
         ShowNoun::Memory { id } => show_memory(&id),
         ShowNoun::Suggestion { id } => show_suggestion(&id),
         ShowNoun::Idea { id } => show_idea(&id),
@@ -2071,7 +2054,7 @@ fn run_show(args: ShowArgs) -> Result<()> {
 
 fn run_add(args: AddArgs) -> Result<()> {
     match args.noun {
-        AddNoun::Chat(args) => add_chat(args),
+        AddNoun::Session(args) => add_chat(args),
         AddNoun::Memory(args) => {
             let record = add_memory(args)?;
             println!("Memory saved [{}]: {}", record.id, record.text);
@@ -2115,15 +2098,30 @@ fn run_ingest(args: IngestArgs) -> Result<()> {
 
 fn run_promote(args: PromoteArgs) -> Result<()> {
     match args.noun {
-        PromoteNoun::Chat(args) => promote_chat(args),
-        PromoteNoun::Chats(args) => promote_chats(args),
+        PromoteNoun::Tools(scope) => {
+            let roots = tool_roots(scope.roots);
+            let entries = scan_tools(&roots)?;
+            println!("{}", format_tools_context(&entries));
+            Ok(())
+        }
+        PromoteNoun::Context => {
+            let records = memory_store().list()?;
+            println!("{}", format_memories_context(&records));
+            Ok(())
+        }
+        PromoteNoun::Suggestions => promote_suggestions(),
+        PromoteNoun::Ideas => promote_ideas(),
+        PromoteNoun::Skills(args) => promote_skills(args),
+        PromoteNoun::Session(args) => promote_session(args),
+        PromoteNoun::Sessions(args) => promote_sessions(args),
+        PromoteNoun::Merge(args) => promote_merge(args),
         PromoteNoun::Memory(args) | PromoteNoun::Memories(args) => review_memories(args),
     }
 }
 
 fn run_review(args: ReviewArgs) -> Result<()> {
     match args.source {
-        ReviewSource::Chats(args) => review_chats(args),
+        ReviewSource::Sessions(args) => review_chats(args),
         ReviewSource::Memory(args) | ReviewSource::Memories(args) => review_memories(args),
         ReviewSource::Opencode(args) => review_opencode(args),
     }
@@ -2132,7 +2130,7 @@ fn run_review(args: ReviewArgs) -> Result<()> {
 fn run_rm(args: RmArgs) -> Result<()> {
     match args.noun {
         RmNoun::Memory { keyword } => rm_memory(&keyword),
-        RmNoun::Chat { id } => rm_chat(&id),
+        RmNoun::Session { id } => rm_chat(&id),
         RmNoun::Skill(args) => rm_skill(args),
     }
 }
@@ -2140,13 +2138,13 @@ fn run_rm(args: RmArgs) -> Result<()> {
 fn run_clear(args: ClearArgs) -> Result<()> {
     match args.noun {
         ClearNoun::Memories { no_backup } => clear_memories(no_backup),
-        ClearNoun::Chats { no_backup } => clear_chats(no_backup),
+        ClearNoun::Sessions { no_backup } => clear_chats(no_backup),
     }
 }
 
 fn run_archive(args: ArchiveArgs) -> Result<()> {
     match args.noun {
-        ArchiveNoun::Chats(args) => archive_chats(args),
+        ArchiveNoun::Sessions(args) => archive_chats(args),
         ArchiveNoun::List(args) => list_archives(args),
         ArchiveNoun::Show(args) => show_archive(args),
         ArchiveNoun::Restore(args) => restore_archive(args),
@@ -2156,7 +2154,7 @@ fn run_archive(args: ArchiveArgs) -> Result<()> {
 
 fn run_prune(args: PruneArgs) -> Result<()> {
     match args.noun {
-        PruneNoun::Chats(args) => prune_chats(args),
+        PruneNoun::Sessions(args) => prune_chats(args),
     }
 }
 
@@ -2199,31 +2197,9 @@ fn run_index(args: IndexArgs) -> Result<()> {
     }
 }
 
-fn run_share(args: ShareArgs) -> Result<()> {
-    match args.noun {
-        ShareNoun::Tools(scope) => {
-            let roots = tool_roots(scope.roots);
-            let entries = scan_tools(&roots)?;
-            println!("{}", format_tools_context(&entries));
-            Ok(())
-        }
-        ShareNoun::Memories => {
-            let records = memory_store().list()?;
-            println!("{}", format_memories_context(&records));
-            Ok(())
-        }
-        ShareNoun::Suggestions => share_suggestions(),
-        ShareNoun::Ideas => share_ideas(),
-        ShareNoun::Skills(args) => share_skills(args),
-        ShareNoun::Chat(args) => share_chat(args),
-        ShareNoun::Chats(args) => share_chats(args),
-        ShareNoun::Merge(args) => share_merge(args),
-    }
-}
-
 fn run_search(args: SearchArgs) -> Result<()> {
     match args.noun {
-        SearchNoun::Chats { query } => search_chats(&query),
+        SearchNoun::Sessions { query } => search_chats(&query),
         SearchNoun::Tools(args) => search_tools(args),
         SearchNoun::Memories { query } => search_memories(&query),
         SearchNoun::Suggestions { query } => search_suggestions(&query),
@@ -6125,7 +6101,7 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                         match run_tui_in_session(
                             &mut tui,
                             &default_tui_args(),
-                            djinn_tui::DashboardTab::Chats,
+                            djinn_tui::DashboardTab::Sessions,
                         )? {
                             TuiRunOutcome::OpenAgentChat { resume } => {
                                 if let Some(resume) = resume {
@@ -6409,13 +6385,13 @@ fn agent_chat_command_palette(
         djinn_tui::AgentChatCommandEntry {
             section: "Session".to_string(),
             label: "Resume session…".to_string(),
-            description: "Open the Chats/session picker".to_string(),
+            description: "Open the Sessions picker".to_string(),
             command: djinn_tui::AgentChatCommand::OpenSessions,
         },
     ];
     for (label, tab) in [
         ("Open Tools", djinn_tui::DashboardTab::Tools),
-        ("Open Chats", djinn_tui::DashboardTab::Chats),
+        ("Open Sessions", djinn_tui::DashboardTab::Sessions),
         ("Open Memories", djinn_tui::DashboardTab::Memories),
         ("Open Suggestions", djinn_tui::DashboardTab::Suggestions),
         ("Open Skills", djinn_tui::DashboardTab::Skills),
@@ -9137,7 +9113,7 @@ fn run_tui_in_session(
             | djinn_tui::TuiAction::OpenChatSession(_)
             | djinn_tui::TuiAction::OpenTool(_)
             | djinn_tui::TuiAction::OpenSkill(_)
-            | djinn_tui::TuiAction::ShareChats(_)
+            | djinn_tui::TuiAction::PromoteSessions(_)
             | djinn_tui::TuiAction::ReviewMemory(_) => Ok(()),
         },
     )?
@@ -9159,8 +9135,8 @@ fn run_tui_in_session(
             resume: Some(resume),
         });
     }
-    if let djinn_tui::TuiAction::ShareChats(request) = &action {
-        if request.mode == djinn_tui::ChatShareMode::Summary && !request.context_only {
+    if let djinn_tui::TuiAction::PromoteSessions(request) = &action {
+        if request.mode == djinn_tui::SessionPromoteMode::Summary && !request.context_only {
             let id = create_chat_summary_agent_session(request)?;
             return Ok(TuiRunOutcome::OpenAgentChat {
                 resume: Some(id.to_string()),
@@ -9181,13 +9157,13 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
         },
         djinn_tui::TuiAction::OpenTool(entry) => open_tool_entry(&entry, editor).map(|_| false),
         djinn_tui::TuiAction::OpenSkill(entry) => open_skill_entry(&entry, editor).map(|_| false),
-        djinn_tui::TuiAction::ShareChats(request) => share_chats(ShareChatsArgs {
+        djinn_tui::TuiAction::PromoteSessions(request) => promote_sessions(ShareChatsArgs {
             ids: request.chat_ids,
             source: None,
             query: None,
             limit: 10,
             all: false,
-            mode: share_chats_mode_from_tui(request.mode),
+            mode: promote_sessions_mode_from_tui(request.mode),
             context_only: request.context_only,
             max_chars_per_chat: 4000,
         })
@@ -9209,7 +9185,7 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
 }
 
 fn create_chat_summary_agent_session(
-    request: &djinn_tui::ChatShareRequest,
+    request: &djinn_tui::SessionPromoteRequest,
 ) -> Result<AgentSessionId> {
     let args = ShareChatsArgs {
         ids: request.chat_ids.clone(),
@@ -9227,7 +9203,7 @@ fn create_chat_summary_agent_session(
     let title = if selected.len() == 1 {
         format!("Summarize {}", selected[0].title)
     } else {
-        format!("Summarize {} selected chats", selected.len())
+        format!("Summarize {} selected sessions", selected.len())
     };
     let store = agent_session_store();
     let id = store.create_session(AgentSessionMeta {
@@ -9525,7 +9501,7 @@ fn push_nonempty_opencode_line(lines: &mut Vec<String>, value: &str) {
 fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
     match view {
         TuiView::Tools => djinn_tui::DashboardTab::Tools,
-        TuiView::Chats => djinn_tui::DashboardTab::Chats,
+        TuiView::Sessions => djinn_tui::DashboardTab::Sessions,
         TuiView::Memories => djinn_tui::DashboardTab::Memories,
         TuiView::Suggestions => djinn_tui::DashboardTab::Suggestions,
         TuiView::Skills => djinn_tui::DashboardTab::Skills,
@@ -9555,11 +9531,11 @@ fn default_agent_chat_args() -> AgentChatArgs {
     }
 }
 
-fn share_chats_mode_from_tui(mode: djinn_tui::ChatShareMode) -> ShareChatsMode {
+fn promote_sessions_mode_from_tui(mode: djinn_tui::SessionPromoteMode) -> ShareChatsMode {
     match mode {
-        djinn_tui::ChatShareMode::Summary => ShareChatsMode::Summary,
-        djinn_tui::ChatShareMode::Patterns => ShareChatsMode::Patterns,
-        djinn_tui::ChatShareMode::Memories => ShareChatsMode::Memories,
+        djinn_tui::SessionPromoteMode::Summary => ShareChatsMode::Summary,
+        djinn_tui::SessionPromoteMode::Patterns => ShareChatsMode::Patterns,
+        djinn_tui::SessionPromoteMode::Memories => ShareChatsMode::Memories,
     }
 }
 
@@ -9667,7 +9643,7 @@ fn list_chats(args: ListChatsArgs) -> Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&records)?);
     } else if records.is_empty() {
-        println!("Chats are empty.");
+        println!("Sessions are empty.");
     } else {
         for (idx, record) in records.iter().enumerate() {
             println!(
@@ -9679,7 +9655,7 @@ fn list_chats(args: ListChatsArgs) -> Result<()> {
                 format_chat_source_suffix(record)
             );
         }
-        println!("\nTotal: {} chats", records.len());
+        println!("\nTotal: {} sessions", records.len());
     }
     Ok(())
 }
@@ -10425,9 +10401,9 @@ fn clear_memories(no_backup: bool) -> Result<()> {
 
 fn clear_chats(no_backup: bool) -> Result<()> {
     if !io::stdin().is_terminal() {
-        bail!("refusing to clear chats from a non-interactive shell");
+        bail!("refusing to clear sessions from a non-interactive shell");
     }
-    print!("Clear Djinn chats? Type 'clear' to confirm: ");
+    print!("Clear Djinn sessions? Type 'clear' to confirm: ");
     io::stdout().flush()?;
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;
@@ -10438,7 +10414,7 @@ fn clear_chats(no_backup: bool) -> Result<()> {
     let backup = chat_store().clear_with_backup(!no_backup)?;
     if let Some(info) = backup {
         println!(
-            "Chats cleared ({} records). Backup written to {} and metadata to {}{}",
+            "Sessions cleared ({} records). Backup written to {} and metadata to {}{}",
             info.record_count,
             info.path.display(),
             info.metadata_path.display(),
@@ -10448,7 +10424,7 @@ fn clear_chats(no_backup: bool) -> Result<()> {
                 .unwrap_or_default()
         );
     } else {
-        println!("Chats cleared.");
+        println!("Sessions cleared.");
     }
     Ok(())
 }
@@ -10469,9 +10445,9 @@ fn rm_memory(keyword: &str) -> Result<()> {
 fn rm_chat(id: &str) -> Result<()> {
     let removed = chat_store().remove_matching(id)?;
     if removed.is_empty() {
-        println!("No chats matched {id:?}.");
+        println!("No sessions matched {id:?}.");
     } else {
-        println!("Removed {} chats:", removed.len());
+        println!("Removed {} sessions:", removed.len());
         for record in removed {
             println!("  - [{}] {}", record.id, record.title);
         }
@@ -10519,15 +10495,15 @@ fn archive_chats(args: ArchiveChatsArgs) -> Result<()> {
     }
     if !args.force {
         print_archive_chat_selection(&selected, false);
-        bail!("refusing to archive chats without --force; rerun with --dry-run to inspect only");
+        bail!("refusing to archive sessions without --force; rerun with --dry-run to inspect only");
     }
 
     let Some(path) = archive_chat_records_with_label(&selected, "manual")? else {
-        println!("No chats archived.");
+        println!("No sessions archived.");
         return Ok(());
     };
     println!(
-        "Archived {} chats to {} and removed them from the active chat index.",
+        "Archived {} sessions to {} and removed them from the active session index.",
         selected.len(),
         path.display()
     );
@@ -10562,7 +10538,7 @@ fn list_archives(args: ArchiveListArgs) -> Result<()> {
     }
     for summary in &summaries {
         println!(
-            "{}\t{} chats\t{} bytes\t{}",
+            "{}\t{} sessions\t{} bytes\t{}",
             summary.name, summary.record_count, summary.byte_size, summary.path
         );
     }
@@ -10593,7 +10569,7 @@ fn show_archive(args: ArchiveShowArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("\n## Chats\n");
+    println!("\n## Sessions\n");
     for (idx, record) in records.iter().enumerate() {
         println!(
             "{}. [{}] {} — {} chars{}",
@@ -10650,7 +10626,7 @@ fn restore_archive(args: ArchiveRestoreArgs) -> Result<()> {
         "Restored"
     };
     println!(
-        "{verb} {} chats from {}{}.",
+        "{verb} {} sessions from {}{}.",
         report.restored.len(),
         path.display(),
         if report.replaced.is_empty() {
@@ -10669,7 +10645,7 @@ fn restore_archive(args: ArchiveRestoreArgs) -> Result<()> {
     }
     if !report.skipped.is_empty() {
         println!(
-            "Skipped {} chats with existing id/source matches{}:",
+            "Skipped {} sessions with existing id/source matches{}:",
             report.skipped.len(),
             if args.force {
                 ""
@@ -10744,17 +10720,17 @@ fn print_archive_removal_summary(summary: &ChatArchiveRemovalSummary, json: bool
         .unwrap_or_else(|| "unknown".to_string());
     if summary.removed {
         println!(
-            "Removed archive {} ({} chats, {} bytes).",
+            "Removed archive {} ({} sessions, {} bytes).",
             summary.path, record_count, summary.byte_size
         );
     } else if summary.dry_run {
         println!(
-            "Would remove archive {} ({} chats, {} bytes).",
+            "Would remove archive {} ({} sessions, {} bytes).",
             summary.path, record_count, summary.byte_size
         );
     } else {
         println!(
-            "Selected archive {} ({} chats, {} bytes).",
+            "Selected archive {} ({} sessions, {} bytes).",
             summary.path, record_count, summary.byte_size
         );
     }
@@ -10884,7 +10860,7 @@ fn chat_restore_conflicts(existing: &ChatRecord, incoming: &ChatRecord) -> bool 
 
 fn print_archive_chat_selection(records: &[ChatRecord], dry_run: bool) {
     let label = if dry_run { "Would archive" } else { "Selected" };
-    println!("{label} {} chats:", records.len());
+    println!("{label} {} sessions:", records.len());
     for record in records {
         println!(
             "  - [{}] {} — {} chars{}",
@@ -11102,10 +11078,10 @@ fn prune_chats(args: PruneChatsArgs) -> Result<()> {
     let days = parse_days(&args.older_than)?;
     let (pruned, backup) = chat_store().prune_older_than_days(days, !args.no_backup)?;
     if pruned.is_empty() {
-        println!("No chats older than {} were pruned.", args.older_than);
+        println!("No sessions older than {} were pruned.", args.older_than);
     } else {
         println!(
-            "Pruned {} chats older than {}:",
+            "Pruned {} sessions older than {}:",
             pruned.len(),
             args.older_than
         );
@@ -11446,11 +11422,11 @@ fn search_chats(query: &str) -> Result<()> {
             chat_snippet(record, &query_lower)
         );
     }
-    println!("\nTotal: {} matching chats", matches.len());
+    println!("\nTotal: {} matching sessions", matches.len());
     Ok(())
 }
 
-fn share_ideas() -> Result<()> {
+fn promote_ideas() -> Result<()> {
     let memories = memory_store().list()?;
     let chats = chat_store().list()?;
     let tools = scan_tools(&tool_roots(Vec::new()))?;
@@ -11466,7 +11442,7 @@ fn share_ideas() -> Result<()> {
     Ok(())
 }
 
-fn share_suggestions() -> Result<()> {
+fn promote_suggestions() -> Result<()> {
     let records = suggestion_store().list()?;
     println!("{}", format_suggestions_context(&records));
     Ok(())
@@ -11513,13 +11489,13 @@ fn format_ideas_pipeline_context(
     out
 }
 
-fn share_skills(args: ShareSkillsArgs) -> Result<()> {
+fn promote_skills(args: ShareSkillsArgs) -> Result<()> {
     let records = skill_records()?;
     println!("{}", format_skills_context(&records, &args));
     Ok(())
 }
 
-fn share_chat(args: ShareChatArgs) -> Result<()> {
+fn promote_session(args: ShareChatArgs) -> Result<()> {
     let records = chat_store().list()?;
     let record = resolve_chat(&records, &args.id)?;
     if args.context_only {
@@ -11534,7 +11510,7 @@ fn share_chat(args: ShareChatArgs) -> Result<()> {
     Ok(())
 }
 
-fn share_chats(args: ShareChatsArgs) -> Result<()> {
+fn promote_sessions(args: ShareChatsArgs) -> Result<()> {
     let records = chat_store().list()?;
     let selected = select_chats_for_share(&records, &args)?;
     if args.context_only {
@@ -11554,7 +11530,7 @@ fn share_chats(args: ShareChatsArgs) -> Result<()> {
     Ok(())
 }
 
-fn share_merge(args: ShareMergeArgs) -> Result<()> {
+fn promote_merge(args: ShareMergeArgs) -> Result<()> {
     let records = chat_store().list()?;
     let selected = select_chats_for_merge(&records, &args)?;
     let prompt = format_chats_merge_prompt(&selected, &args);
@@ -11563,7 +11539,7 @@ fn share_merge(args: ShareMergeArgs) -> Result<()> {
         return Ok(());
     }
     if selected.is_empty() {
-        println!("No chats matched merge selection.");
+        println!("No sessions matched merge selection.");
         return Ok(());
     }
 
@@ -11571,10 +11547,10 @@ fn share_merge(args: ShareMergeArgs) -> Result<()> {
     let model = resolve_agent_model(args.model.clone(), &profile)?;
     let store = agent_session_store();
     let id = store.create_session(AgentSessionMeta {
-        title: format!("Merge {} chats into memories", selected.len()),
+        title: format!("Promote {} sessions into memories", selected.len()),
         workspace: resolve_agent_workspace(None)?,
         profile: profile.clone(),
-        source: "djinn-share-merge".to_string(),
+        source: "djinn-promote-merge".to_string(),
         ..AgentSessionMeta::default()
     })?;
     store.append_event(
@@ -11605,14 +11581,14 @@ fn share_merge(args: ShareMergeArgs) -> Result<()> {
     };
 
     println!(
-        "Merged {} chats into {} memories.",
+        "Promoted {} sessions into {} memories.",
         selected.len(),
         written.len()
     );
     if let Some(path) = archived {
-        println!("Archived source chats: {}", path.display());
+        println!("Archived source sessions: {}", path.display());
     } else if args.archive {
-        println!("No source chats archived because no memories were written.");
+        println!("No source sessions archived because no memories were written.");
     }
     println!(
         "Agent session [{}]: {}",
@@ -11622,19 +11598,6 @@ fn share_merge(args: ShareMergeArgs) -> Result<()> {
     for memory in written {
         println!("- [{}] {}", memory.id, memory.text);
     }
-    Ok(())
-}
-
-fn promote_chat(args: ShareChatArgs) -> Result<()> {
-    let records = chat_store().list()?;
-    let record = resolve_chat(&records, &args.id)?;
-    let memories = memory_store().list()?;
-    println!("{}", format_chat_promotion_prompt(record, &memories));
-    Ok(())
-}
-
-fn promote_chats(args: ShareChatsArgs) -> Result<()> {
-    println!("{}", build_promote_chats_prompt(args)?);
     Ok(())
 }
 
@@ -12088,7 +12051,7 @@ fn format_chat_context(record: &ChatRecord) -> String {
         out.push_str(&format!("- Source ID: {}\n", record.source_id));
     }
     out.push_str("\nUse this chat as source context for the next agent action.\n\n");
-    out.push_str("## Chat Content\n\n```text\n");
+    out.push_str("## Session Content\n\n```text\n");
     out.push_str(&record.content);
     if !record.content.ends_with('\n') {
         out.push('\n');
@@ -12099,7 +12062,7 @@ fn format_chat_context(record: &ChatRecord) -> String {
 
 fn format_chat_memory_extraction_prompt(record: &ChatRecord, memories: &[MemoryRecord]) -> String {
     let mut out = format!(
-        "# Djinn Chat Memory Extraction\n\nYou are reviewing a saved Djinn chat. Extract durable memories only when they are reusable in future work.\n\n## Chat Metadata\n\n- ID: `{}`\n- Title: {}\n- Created: {}\n",
+        "# Djinn Session Memory Extraction\n\nYou are reviewing a Djinn session. Extract durable memories only when they are reusable in future work.\n\n## Session Metadata\n\n- ID: `{}`\n- Title: {}\n- Created: {}\n",
         record.id, record.title, record.created_at
     );
     if !record.source.trim().is_empty() {
@@ -12130,7 +12093,7 @@ fn format_chat_memory_extraction_prompt(record: &ChatRecord, memories: &[MemoryR
             ));
         }
     }
-    out.push_str("```\n\n## Chat Content\n\n```text\n");
+    out.push_str("```\n\n## Session Content\n\n```text\n");
     out.push_str(&record.content);
     if !record.content.ends_with('\n') {
         out.push('\n');
@@ -12139,25 +12102,9 @@ fn format_chat_memory_extraction_prompt(record: &ChatRecord, memories: &[MemoryR
     out
 }
 
-fn format_chat_promotion_prompt(record: &ChatRecord, memories: &[MemoryRecord]) -> String {
-    let mut out = format_chat_memory_extraction_prompt(record, memories);
-    out = out.replace(
-        "# Djinn Chat Memory Extraction",
-        "# Djinn Chat Promotion Memory Extraction",
-    );
-    out.push_str(
-        "\n\n## Promotion Output\n\nReturn reviewed `djinn add memory` commands. Use this exact command shape so Djinn can track review lifecycle. Use `--not-before YYYY-MM-DD` for memories that should be remembered now but not acted on until later:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"Copied durable evidence ...\" --source-chat ",
-    );
-    out.push_str(&record.id);
-    out.push_str(
-        "\n```\n\nAfter review, the user can run `djinn list memories`, `djinn show memory <id>`, `djinn accept memory <id>` to review for suggestions, or `djinn reject memory <id>` to remove it.\n",
-    );
-    out
-}
-
 fn format_chats_context(records: &[ChatRecord], args: &ShareChatsArgs) -> String {
-    let mut out = String::from("# Djinn Chats Bundle\n\n");
-    out.push_str(&format!("- Chat count: {}\n", records.len()));
+    let mut out = String::from("# Djinn Sessions Bundle\n\n");
+    out.push_str(&format!("- Session count: {}\n", records.len()));
     if let Some(source) = args
         .source
         .as_deref()
@@ -12175,16 +12122,19 @@ fn format_chats_context(records: &[ChatRecord], args: &ShareChatsArgs) -> String
         out.push_str(&format!("- Query filter: {query}\n"));
     }
     if !args.all && args.ids.is_empty() {
-        out.push_str(&format!("- Limit: latest {} matching chats\n", args.limit));
+        out.push_str(&format!(
+            "- Limit: latest {} matching sessions\n",
+            args.limit
+        ));
     }
-    out.push_str("\nUse these chats together as source context for the next agent action.\n");
+    out.push_str("\nUse these sessions together as source context for the next agent action.\n");
     append_chats_bundle(&mut out, records, args.max_chars_per_chat);
     out
 }
 
 fn format_chats_summary(records: &[ChatRecord], args: &ShareChatsArgs) -> String {
-    let mut out = String::from("# Djinn Chat Summary\n\n");
-    out.push_str("This is a local digest of the selected saved chats. No model was run.\n\n");
+    let mut out = String::from("# Djinn Session Summary\n\n");
+    out.push_str("This is a local digest of the selected sessions. No model was run.\n\n");
     out.push_str("## Selection\n\n");
     out.push_str(&format!("- Chat count: {}\n", records.len()));
     if let Some(source) = args
@@ -12204,7 +12154,10 @@ fn format_chats_summary(records: &[ChatRecord], args: &ShareChatsArgs) -> String
         out.push_str(&format!("- Query filter: {query}\n"));
     }
     if !args.all && args.ids.is_empty() {
-        out.push_str(&format!("- Limit: latest {} matching chats\n", args.limit));
+        out.push_str(&format!(
+            "- Limit: latest {} matching sessions\n",
+            args.limit
+        ));
     }
 
     let redacted_count = records
@@ -12213,11 +12166,11 @@ fn format_chats_summary(records: &[ChatRecord], args: &ShareChatsArgs) -> String
         .count();
     if redacted_count > 0 {
         out.push_str(&format!(
-            "- Redacted/sanitized chats: {redacted_count} (summary detail may be limited)\n"
+            "- Redacted/sanitized sessions: {redacted_count} (summary detail may be limited)\n"
         ));
     }
 
-    out.push_str("\n## Chats\n");
+    out.push_str("\n## Sessions\n");
     for (idx, record) in records.iter().enumerate() {
         out.push_str(&format!(
             "\n### {}. {}\n\n- ID: `{}`\n- Created: {}\n",
@@ -12244,7 +12197,7 @@ fn format_chats_summary(records: &[ChatRecord], args: &ShareChatsArgs) -> String
 }
 
 fn format_chats_merge_prompt(records: &[ChatRecord], args: &ShareMergeArgs) -> String {
-    let mut out = String::from("You are merging saved Djinn chats into durable memories.\n\n");
+    let mut out = String::from("You are promoting Djinn sessions into durable memories.\n\n");
     out.push_str("Group related sessions by topic/workflow. Distill only durable, reusable memories that should become active immediately. Do not create an inbox, candidates, suggestions, or todos. If there is no durable lesson, return an empty memories array.\n\n");
     out.push_str("Return strict JSON only, with this shape:\n\n");
     out.push_str(
@@ -12432,7 +12385,7 @@ fn archive_label(label: &str) -> String {
 
 fn format_chat_summary_agent_prompt(records: &[ChatRecord], args: &ShareChatsArgs) -> String {
     let mut out = String::from(
-        "Please summarize the selected saved chats below so we can continue discussing them.\n\n",
+        "Please summarize the selected sessions below so we can continue discussing them.\n\n",
     );
     out.push_str("Focus on:\n");
     out.push_str("- main themes and outcomes;\n");
@@ -12450,14 +12403,14 @@ fn format_chats_review_prompt(
     memories: &[MemoryRecord],
 ) -> String {
     let mut out = String::from("# Djinn Multi-Chat Review\n\n");
-    out.push_str("You are reviewing a bundle of saved Djinn chats. Treat them as a corpus, not as isolated transcripts.\n\n");
+    out.push_str("You are reviewing a bundle of Djinn sessions. Treat them as a corpus, not as isolated transcripts.\n\n");
     out.push_str("## Review Goal\n\n");
     match args.mode {
         ShareChatsMode::Summary => out.push_str(
-            "Summarize the selected chats. Identify the main themes, decisions, outcomes, unresolved follow-ups, and any stale assumptions. Keep the summary useful for resuming work.\n",
+            "Summarize the selected sessions. Identify the main themes, decisions, outcomes, unresolved follow-ups, and any stale assumptions. Keep the summary useful for resuming work.\n",
         ),
         ShareChatsMode::Patterns => out.push_str(
-            "Identify recurring patterns across the selected chats: user preferences, repeated corrections, tool/workflow choices, project conventions, safety gotchas, friction points, and implementation habits. Separate high-confidence repeated patterns from one-off observations.\n",
+            "Identify recurring patterns across the selected sessions: user preferences, repeated corrections, tool/workflow choices, project conventions, safety gotchas, friction points, and implementation habits. Separate high-confidence repeated patterns from one-off observations.\n",
         ),
         ShareChatsMode::Memories => out.push_str(
             "Propose durable memories only when they are reusable in future work and supported by repeated patterns or explicit user instructions. Return reviewed shell commands the user can run manually; do not invent memories from weak one-off evidence.\n",
@@ -12472,7 +12425,7 @@ fn format_chats_review_prompt(
             "Return Markdown with sections: `High-confidence Patterns`, `Possible One-offs`, `Workflow Opportunities`, and `Reviewable Memories`. Do not write memories automatically.\n",
         ),
         ShareChatsMode::Memories => out.push_str(
-            "Return only a short reviewed list of commands. Include scope, kind, confidence, copied evidence, and source chat pointers when available. Use `--not-before YYYY-MM-DD` when a memory should not drive suggestions/actions until later. Use this form:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"Repeated evidence from the reviewed chats ...\" --source-chat CHAT_ID\n```\n\nIf there are no durable lessons, say: `No durable memories recommended.`\n",
+            "Return only a short reviewed list of commands. Include scope, kind, confidence, copied evidence, and source session pointers when available. Use `--not-before YYYY-MM-DD` when a memory should not drive suggestions/actions until later. Use this form:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"Repeated evidence from the reviewed sessions ...\" --source-chat SESSION_ID\n```\n\nIf there are no durable lessons, say: `No durable memories recommended.`\n",
         ),
     }
     out.push_str("\nDo not include secrets, credentials, tokens, private URLs, or sensitive raw data. Avoid duplicating existing memories.\n");
@@ -12497,7 +12450,10 @@ fn format_chats_review_prompt(
         out.push_str(&format!("- Query filter: {query}\n"));
     }
     if !args.all && args.ids.is_empty() {
-        out.push_str(&format!("- Limit: latest {} matching chats\n", args.limit));
+        out.push_str(&format!(
+            "- Limit: latest {} matching sessions\n",
+            args.limit
+        ));
     }
 
     out.push_str("\n## Existing Memories\n\n```text\n");
@@ -12528,13 +12484,13 @@ fn format_chats_promotion_prompt(
     let mut out = format_chats_review_prompt(records, args, memories);
     out = out.replace("# Djinn Multi-Chat Review", "# Djinn Multi-Chat Promotion");
     out.push_str(
-        "\n\n## Promotion Output\n\nReturn reviewed `djinn add memory` commands. Include scope, kind, confidence, copied evidence, and one or more `--source-chat` pointers when available. Use `--not-before YYYY-MM-DD` when a future activation date is appropriate. Example:\n\n```bash\ndjinn add memory \"...\" --scope project --kind convention --confidence high --not-before 2026-10-01 --evidence \"Repeated across reviewed chats ...\" --source-chat CHAT_ID\n```\n\nThe user can review memories for downstream suggestions with `djinn accept memory <id>` or remove them with `djinn reject memory <id>`.\n",
+        "\n\n## Promotion Output\n\nReturn reviewed `djinn add memory` commands. Include scope, kind, confidence, copied evidence, and one or more `--source-chat` pointers when available. Use `--not-before YYYY-MM-DD` when a future activation date is appropriate. Example:\n\n```bash\ndjinn add memory \"...\" --scope project --kind convention --confidence high --not-before 2026-10-01 --evidence \"Repeated across reviewed sessions ...\" --source-chat SESSION_ID\n```\n\nThe user can review memories for downstream suggestions with `djinn accept memory <id>` or remove them with `djinn reject memory <id>`.\n",
     );
     out
 }
 
 fn append_chats_bundle(out: &mut String, records: &[ChatRecord], max_chars_per_chat: usize) {
-    out.push_str("\n## Chats\n");
+    out.push_str("\n## Sessions\n");
     for (idx, record) in records.iter().enumerate() {
         out.push_str(&format!(
             "\n### Chat {}: {}\n\n- ID: `{}`\n- Created: {}\n",
@@ -12980,7 +12936,7 @@ fn select_chats_for_share(
     }
 
     if selected.is_empty() {
-        bail!("no chats matched the share selection");
+        bail!("no sessions matched the promote selection");
     }
     Ok(selected)
 }
@@ -13027,7 +12983,7 @@ fn resolve_chat<'a>(records: &'a [ChatRecord], id: &str) -> Result<&'a ChatRecor
         [record] => Ok(record),
         [] => bail!("no chat named {id:?} found"),
         many => {
-            eprintln!("multiple chats match {id:?}:");
+            eprintln!("multiple sessions match {id:?}:");
             for record in many {
                 eprintln!("  - [{}] {}", record.id, record.title);
             }
@@ -14844,22 +14800,58 @@ mod tests {
     }
 
     #[test]
-    fn parses_archive_chats_selection_command() {
+    fn parses_archive_sessions_selection_command() {
         let cli = Cli::try_parse_from([
-            "djinn", "archive", "chats", "--source", "opencode", "--limit", "25", "--force",
+            "djinn", "archive", "sessions", "--source", "opencode", "--limit", "25", "--force",
         ])
         .unwrap();
 
         let Some(Command::Archive(args)) = cli.command else {
             panic!("expected archive command");
         };
-        let ArchiveNoun::Chats(args) = args.noun else {
-            panic!("expected archive chats command");
+        let ArchiveNoun::Sessions(args) = args.noun else {
+            panic!("expected archive sessions command");
         };
 
         assert_eq!(args.source.as_deref(), Some("opencode"));
         assert_eq!(args.limit, 25);
         assert!(args.force);
+    }
+
+    #[test]
+    fn parses_session_nouns_and_rejects_share_command() {
+        let cli = Cli::try_parse_from(["djinn", "list", "sessions", "--json"]).unwrap();
+        let Some(Command::List(args)) = cli.command else {
+            panic!("expected list command");
+        };
+        let ListNoun::Sessions(args) = args.noun else {
+            panic!("expected list sessions command");
+        };
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from(["djinn", "add", "session", "./session.md"]).unwrap();
+        let Some(Command::Add(args)) = cli.command else {
+            panic!("expected add command");
+        };
+        let AddNoun::Session(args) = args.noun else {
+            panic!("expected add session command");
+        };
+        assert_eq!(args.file, PathBuf::from("./session.md"));
+
+        let cli = Cli::try_parse_from([
+            "djinn", "promote", "sessions", "--source", "opencode", "--mode", "patterns",
+        ])
+        .unwrap();
+        let Some(Command::Promote(args)) = cli.command else {
+            panic!("expected promote command");
+        };
+        let PromoteNoun::Sessions(args) = args.noun else {
+            panic!("expected promote sessions command");
+        };
+        assert_eq!(args.source.as_deref(), Some("opencode"));
+        assert_eq!(args.mode, ShareChatsMode::Patterns);
+
+        assert!(Cli::try_parse_from(["djinn", "share", "chats"]).is_err());
     }
 
     #[test]
@@ -16320,7 +16312,7 @@ mod tests {
     }
 
     #[test]
-    fn share_chats_renders_opencode_exports_as_digest_not_raw_json() {
+    fn promote_sessions_renders_opencode_exports_as_digest_not_raw_json() {
         let records = vec![test_chat(
             "opencode-session-ses-test",
             "OpenCode session ses_test",
@@ -16335,7 +16327,7 @@ mod tests {
                 {"info": {"role": "user"}, "parts": [{"type": "text", "text": "Please fix the CLI output"}]},
                 {"info": {"role": "assistant"}, "parts": [
                   {"type": "reasoning", "text": "hidden chain of thought"},
-                  {"type": "tool", "tool": "read", "state": {"title": "Read main.rs", "output": "found share code"}},
+                  {"type": "tool", "tool": "read", "state": {"title": "Read main.rs", "output": "found promote code"}},
                   {"type": "text", "text": "I updated the formatter."}
                 ]}
               ]
@@ -16357,7 +16349,7 @@ mod tests {
     }
 
     #[test]
-    fn share_chats_warns_when_opencode_export_is_sanitized() {
+    fn promote_sessions_warns_when_opencode_export_is_sanitized() {
         let records = vec![test_chat(
             "opencode-session-ses-test",
             "OpenCode session ses_test",
@@ -16380,7 +16372,7 @@ mod tests {
     }
 
     #[test]
-    fn share_chats_summary_is_human_facing_not_agent_prompt() {
+    fn promote_sessions_summary_is_human_facing_not_agent_prompt() {
         let records = vec![test_chat(
             "opencode-session-ses-test",
             "OpenCode session ses_test",
@@ -16398,7 +16390,7 @@ mod tests {
 
         let summary = format_chats_summary(&records, &args);
 
-        assert!(summary.starts_with("# Djinn Chat Summary"));
+        assert!(summary.starts_with("# Djinn Session Summary"));
         assert!(summary.contains("This is a local digest"));
         assert!(summary.contains("User:\nNeed a useful summary"));
         assert!(summary.contains("Assistant:\nHere is the useful result."));
@@ -16427,7 +16419,7 @@ mod tests {
 
         let prompt = format_chat_summary_agent_prompt(&records, &args);
 
-        assert!(prompt.starts_with("Please summarize the selected saved chats"));
+        assert!(prompt.starts_with("Please summarize the selected sessions"));
         assert!(prompt.contains("so we can continue discussing them"));
         assert!(prompt.contains("OpenCode export digest"));
         assert!(prompt.contains("User:\nSummarize this in chat"));

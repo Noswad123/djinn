@@ -1,11 +1,11 @@
 # Djinn
 
 Djinn is a local-first companion for OpenCode and other AI coding agents. It
-connects local tools, AI chats, reviewed memory, reusable skills, and lightweight
+connects local tools, AI sessions, reviewed memory, reusable skills, and lightweight
 contexts into one practical workflow.
 
 ```text
-Tools → Chats → Memories → Suggestions → Skills
+Tools → Sessions → Memories → Suggestions → Skills
 ```
 
 The original Go implementation is preserved under `legacy/go/`. The root project
@@ -14,8 +14,8 @@ is the Rust rewrite.
 ## What Djinn does
 
 - Discovers tagged aliases, functions, scripts, and wrappers from local files.
-- Imports and searches saved chats, including sanitized OpenCode exports.
-- Promotes chat lessons into active memories with evidence/provenance.
+- Imports and searches sessions, including sanitized OpenCode exports.
+- Promotes session lessons into active memories with evidence/provenance.
 - Reviews memories to create lightweight suggestions for follow-up work.
 - Supports `not_before` dates for memories that should be remembered now but not
   acted on until later.
@@ -63,7 +63,7 @@ Open the TUI:
 ```bash
 djinn
 djinn tui
-djinn tui chats
+djinn tui sessions
 djinn tui memories
 djinn tui suggestions
 djinn tui skills
@@ -182,12 +182,11 @@ are read only by explicit doctor/import adapter commands. OpenCode and Copilot
 exports can preview or write supported fields; exports refuse to overwrite
 existing files unless `--force` is passed.
 
-Save and review chats:
+Save and promote sessions:
 
 ```bash
-djinn add chat ./session.md --title "Debugging session"
-djinn share chat debugging-session
-djinn promote chat debugging-session
+djinn add session ./session.md --title "Debugging session"
+djinn promote session debugging-session
 djinn list memories
 djinn review memory <id> --dry-run
 ```
@@ -248,7 +247,7 @@ djinn show ctx
 Generate an improvement prompt:
 
 ```bash
-djinn share ideas
+djinn promote ideas
 ```
 
 Review memories for suggestions without mutating the memories:
@@ -265,11 +264,11 @@ sends a notification when complete if `osascript` is available. The review is
 advisory and returns exact `djinn add suggestion ...` commands for you to run
 manually.
 
-Archive imported chat clutter after extracting useful memories:
+Archive imported session clutter after extracting useful memories:
 
 ```bash
-djinn archive chats --source opencode --limit 50 --dry-run
-djinn archive chats --source opencode --limit 50 --force
+djinn archive sessions --source opencode --limit 50 --dry-run
+djinn archive sessions --source opencode --limit 50 --force
 djinn archive list
 djinn archive show manual-20260724-120000.jsonl --content
 djinn archive restore manual-20260724-120000.jsonl --dry-run
@@ -277,7 +276,7 @@ djinn archive rm manual-20260724-120000.jsonl --force
 ```
 
 Archives are written under `~/.cache/djinn/chat-archives/` before the selected
-chat rows are removed from the active chat index. Use `archive show` to inspect
+session rows are removed from the active session index. Use `archive show` to inspect
 contents before restoring. Restore with `--force` to replace existing rows with
 matching IDs or source IDs. Remove old archive files with `archive rm --force`.
 
@@ -286,7 +285,7 @@ matching IDs or source IDs. Remove old archive files with `archive rm --force`.
 Djinn uses Linux-style local paths on every platform:
 
 - durable state: `~/.config/djinn`
-- chat/cache state: `~/.cache/djinn`
+- session/cache state: `~/.cache/djinn`
 
 See the [app guide](docs/app-guide.md#storage) for the exact files.
 
@@ -301,7 +300,7 @@ crates/djinn-core/                 # shared paths and file helpers
 crates/djinn-memory/               # memories, suggestions, ideas, and actions
 crates/djinn-opencode/             # OpenCode adapter
 crates/djinn-skills/               # skill discovery and lifecycle
-crates/djinn-suggest/              # share ideas prompt generation
+crates/djinn-suggest/              # promote ideas prompt generation
 crates/djinn-tools/                # tool discovery and indexing
 crates/djinn-tui/                  # ratatui dashboard
 docs/                              # detailed docs

@@ -29,9 +29,9 @@ design decisions. Use these documents as the source of truth for those:
 These items are small enough or well-defined enough to implement without another
 product-design pass.
 
-### Chats/session picker polish
+### Sessions picker polish
 
-- Surface agent role and parent-session metadata more clearly in the Chats tab
+- Surface agent role and parent-session metadata more clearly in the Sessions tab
   projection for Djinn agent sessions.
 - Add session picker filters/actions only where they reuse the existing JSONL
   session list metadata and do not create a separate raw event browser.

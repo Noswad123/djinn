@@ -449,7 +449,7 @@ The first non-interactive agent slice is implemented as:
     appends a `SessionTitleUpdated` metadata event and skips no-op updates.
     Delete requires `--force` and removes the session JSONL file.
 17. A dashboard pane that only browses JSONL agent sessions overlaps with the
-    saved Chats pane and should not be treated as the Agent UI. The Agent UI must
+    Sessions picker and should not be treated as the Agent UI. The Agent UI must
     be an interactive chat/composer/runtime surface, with history/session picking
     as secondary behavior.
 18. `djinn agent chat` opens the first real Agent TUI surface: a Ratatui chat
@@ -477,10 +477,10 @@ The first non-interactive agent slice is implemented as:
     prompt editing instead of adding many inline composer editing controls.
 24. `djinn agent chat --resume <session-id>` resumes an existing JSONL agent
     session using that session's stored workspace/profile metadata. This keeps
-    resume as part of the Agent runtime surface rather than the saved Chats
+    resume as part of the Agent runtime surface rather than the Sessions
     browser.
 25. `djinn` with no arguments now routes to that interactive Agent chat surface
-    when stdin/stdout are terminals. It must not route to the saved Chats tab.
+    when stdin/stdout are terminals. It must not route to the Sessions tab.
 26. Agent chat keeps the same top tab row as the dashboard, with Agent selected
     instead of showing a plain `Djinn Agent` title header. Pressing Tab from
     Agent chat enters Tools; Shift+Tab from Agent chat enters Skills. Pressing
@@ -495,7 +495,7 @@ The first non-interactive agent slice is implemented as:
     Mutation tools (`apply_patch`, `write_file`, and `edit_file`) summarize
     operation/path/line counts from their shared mutation result payloads rather
     than exposing raw `summary`/`preview` JSON.
-28. The dashboard Chats tab doubles as the session picker. Djinn JSONL agent
+28. The dashboard Sessions tab is the session picker. Djinn JSONL agent
     sessions are projected into that tab as `djinn-agent` records; pressing Enter
     or `r` resumes a Djinn agent session or converts an imported OpenCode chat
     (`source=opencode`) into a Djinn JSONL agent session and stays inside Djinn.
@@ -503,9 +503,9 @@ The first non-interactive agent slice is implemented as:
     installed OpenCode plugin later sees that OpenCode session, it best-effort
     hydrates OpenCode session metadata with the Djinn agent session id/path so
     OpenCode-side skills can discover the continuation. Once an OpenCode chat has
-    a Djinn bridge, the Chats/session picker collapses that row to the Djinn
+    a Djinn bridge, the Sessions picker collapses that row to the Djinn
     continuation instead of showing a separate stale OpenCode launch target.
-    Share options moved to `s` for chat records.
+    Promote options live on `s` for promotable session rows.
 29. Djinn agent sessions auto-title from the first user prompt when the session
     still has a default title such as `Agent chat` or `Untitled agent session`.
     Explicit titles and imported/converted session titles are preserved.
@@ -513,7 +513,7 @@ The first non-interactive agent slice is implemented as:
     actions instead of accumulating one-off keybindings. The palette follows the
     OpenCode-style shape: a search box with fuzzy matching, section headers for
     related actions, and Ctrl+P/Ctrl+N navigation while the palette is open. The
-    first action sections open the Chats/session picker and switch the active
+    first action sections open the Sessions picker and switch the active
     profile or model; profile/model changes are persisted as JSONL session
     metadata events so resumed sessions continue with the selected runtime
     context.
@@ -527,9 +527,9 @@ The first non-interactive agent slice is implemented as:
 32. The command palette keeps its search row fixed and scrolls only the action
     list. This keeps config-driven profile/model lists usable without hiding the
     search affordance or letting actions overflow the dialog.
-33. The Chats tab/session picker search matches more than titles: title, id,
+33. The Sessions picker search matches more than titles: title, id,
     source, source id/path, content path, and content are fuzzy-searchable. The
-    selected preview shows the available session actions so resume/share/remove
+    selected preview shows the available session actions so resume/promote/remove
     affordances are visible without relying only on the footer.
 34. The dashboard also uses Ctrl+/ for detailed help. Per-tab keybinding
     guidance belongs in the help overlay, while the dashboard footer stays short
@@ -541,40 +541,40 @@ The first non-interactive agent slice is implemented as:
     action. Starting a new session from the palette should preserve the current
     profile/model context while clearing the resumed session id/title/workspace.
 37. The Agent command palette includes Navigation actions for the shared top tabs
-    (Tools, Chats, Memories, Suggestions, Skills). Ctrl+P should be a central way
+    (Tools, Sessions, Memories, Suggestions, Skills). Ctrl+P should be a central way
     to jump around the interface without remembering tab-specific shortcuts.
 38. Ctrl+P is a TUI-wide command palette entry point. Dashboard tabs expose the
     same searchable/sectioned command palette pattern, with actions scoped to the
     active tab plus shared navigation/help commands.
-39. The Chats tab delete action distinguishes backing stores. Saved chat rows are
+39. The Sessions tab delete action distinguishes backing stores. Persisted session rows are
     removed through the chat store, while projected `djinn-agent` rows delete the
     underlying JSONL agent session by `source_id`. Mixed selections can delete
     both row types in one action. Because Djinn session deletion removes JSONL
     files, the TUI requires an explicit confirmation before executing the delete.
-40. Chats/session picker share options only operate on saved chat rows. Projected
+40. Sessions picker promote options only operate on promotable persisted session rows. Projected
     `djinn-agent` rows are resume/delete session targets and are skipped for
-    share requests, so an agent-only selection does not open the share dialog.
-41. Chat sharing emits context material rather than executing a model. Summary
+    promote requests, so an agent-only selection does not open the promote dialog.
+41. Session promotion emits context material rather than executing a model. Summary
     mode is human-facing in direct CLI use and renders a local digest, not an
     agent-review prompt; patterns/memories modes remain prompt-oriented review
-    helpers. From the TUI Chats picker, summary sharing creates an Agent session
-    seeded with selected chat context and a summarization request so follow-up can
-    continue conversationally instead of dumping output to stdout. When shared
-    chat content is an OpenCode JSON export, Djinn renders a compact role-labeled
+    helpers. From the TUI Sessions picker, summary promotion creates an Agent session
+    seeded with selected session context and a summarization request so follow-up can
+    continue conversationally instead of dumping output to stdout. When promoted
+    session content is an OpenCode JSON export, Djinn renders a compact role-labeled
     digest of readable message/tool parts instead of embedding raw JSON.
     Sanitized/redacted exports should state that source text may be unavailable
     rather than burying that fact in large redacted payloads.
-42. Chat merge is the cleanup-oriented share workflow. It should group selected
-    chats/sessions, distill durable lessons, write active memories directly, and
-    only then archive the source chat rows when explicitly requested. Merge should
+42. `djinn promote merge` is the cleanup-oriented promotion workflow. It should group selected
+    sessions, distill durable lessons, write active memories directly, and
+    only then archive the source session rows when explicitly requested. Merge should
     not introduce another memory-candidate/inbox step; later memory review should
     focus on turning active memories into skills, suggestions, or concrete user
     actions, and on clearing stale inbox/source material.
-43. Manual chat cleanup should be safe and reversible by default. `djinn archive
-    chats` selects saved chat rows with the same id/source/query/limit semantics
-    as sharing, supports `--dry-run` previews, requires `--force` before removal,
+43. Manual session cleanup should be safe and reversible by default. `djinn archive
+    sessions` selects session rows with the same id/source/query/limit semantics
+    as promotion, supports `--dry-run` previews, requires `--force` before removal,
     and writes full JSONL archives under `~/.cache/djinn/chat-archives/` before
-    deleting rows from the active chat index. Archive files should be listable,
+    deleting rows from the active session index. Archive files should be listable,
     inspectable with bounded content previews, and restorable; restore skips
     conflicting active rows by default and requires `--force` to replace rows
     with matching IDs or source/source-id pairs. Archive removal should require

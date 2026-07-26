@@ -55,7 +55,7 @@ pub fn build_prompt_with_pipeline(
     };
 
     let chat_lines = if chats.is_empty() {
-        "No chats recorded.".to_string()
+        "No sessions recorded.".to_string()
     } else {
         chats
             .iter()
@@ -95,19 +95,19 @@ Djinn is a local-first companion for OpenCode and other AI coding agents. It sur
 
 The intended loop is:
 
-chats → merge/add memories → suggestions → actions/skills
+sessions → promote/add memories → suggestions → actions/skills
 
-Analyze the active memories, recent chats, OpenCode watcher state, and discovered local tools below. Deferred memories with future `not_before` dates are included for awareness only; do not propose actions based on them until their date has arrived. Suggest:
+Analyze the active memories, recent sessions, OpenCode watcher state, and discovered local tools below. Deferred memories with future `not_before` dates are included for awareness only; do not propose actions based on them until their date has arrived. Suggest:
 
 1. Workflow patterns or preferences worth preserving.
 2. Stale, noisy, or overly narrow memories to rewrite or remove.
 3. Memories that should become suggestions, actions, skills, rewrites, or cleanup.
-4. Recent chats worth merging into active memories.
+4. Recent sessions worth promoting into active memories.
 5. New aliases, scripts, wrappers, docs, or TUI actions to create.
 6. OpenCode skills or agent behaviors that should be added.
 7. The highest-impact next actions.
 
-Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Memory Activation`, `Chats to Merge`, `Tooling/Skill Ideas`, and `Prioritized Next Actions`.
+Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Memory Activation`, `Sessions to Promote`, `Tooling/Skill Ideas`, and `Prioritized Next Actions`.
 
 ## Memories
 
@@ -121,7 +121,7 @@ Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Mem
 {deferred_memory_lines}
 ```
 
-## Recent chats
+## Recent sessions
 
 ```text
 {chat_lines}

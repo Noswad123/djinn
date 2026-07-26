@@ -55,7 +55,7 @@ Runtime behavior should read Djinn native config, not OpenCode config directly.
 | sub-agents/task agents | constrained agent invocations | not yet | maybe | maybe | likely | Needs Djinn's sub-agent representation first. |
 | MCP entries | external tool bridge | deferred | maybe | maybe | maybe | MCP is deferred until there is a concrete need. |
 | themes/UI settings | TUI preferences | no | unlikely | unlikely | maybe | Likely low priority unless settings map directly to Djinn UI preferences. |
-| session/history storage | chats / agent sessions | separate import path | no | no | no | OpenCode session import is handled as data migration, not config compatibility. |
+| session/history storage | sessions / agent sessions | separate import path | no | no | no | OpenCode session import is handled as data migration, not config compatibility. |
 
 ## Unsupported-field behavior
 

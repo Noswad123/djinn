@@ -6,7 +6,7 @@ Placeholder tabs add navigation cost without helping the user decide or act.
 Current visible tabs:
 
 - **Tools** — browse local wrappers, aliases, and scripts with previews.
-- **Chats** — select chats and emit grouped review/share prompts.
+- **Sessions** — select sessions and emit grouped review/promote prompts.
 - **Memories** — review captured lessons, evidence, and provenance.
 - **Suggestions** — review todo-like follow-up items created from memory review.
 - **Skills** — browse reusable `SKILL.md` workflows and open them in an editor.
@@ -14,7 +14,7 @@ Current visible tabs:
 The current order is intentionally a workflow progression:
 
 ```text
-Tools → Chats → Memories → Suggestions → Skills
+Tools → Sessions → Memories → Suggestions → Skills
 ```
 
 Future TUI work may group tabs by the scope the user is interested in, such as
@@ -25,8 +25,8 @@ actions are concrete enough to justify a permanent place in the TUI.
 
 ## Ideas
 
-Keep `djinn share ideas` as the primary interface for now. It already emits a
-pipeline-level prompt from memories, suggestions, chats, watcher state, and
+Keep `djinn promote ideas` as the primary interface for now. It already emits a
+pipeline-level prompt from memories, suggestions, sessions, watcher state, and
 tools.
 
 An **Ideas** tab may be useful later if Djinn stores or computes actionable
@@ -35,17 +35,17 @@ insights locally, for example:
 - stale memories to prune or rewrite;
 - high-value memories to review;
 - open suggestions to accept/reject;
-- chats worth promoting;
+- sessions worth promoting;
 - tooling or skill opportunities found across recent sessions;
 - prioritized next actions with enough metadata to act on them.
 
 Entry criteria:
 
 - Djinn has an `ideas`/`insights` data model, not just a prompt string.
-- The tab supports actions such as accept, dismiss, promote chat, or open source.
+- The tab supports actions such as accept, dismiss, promote session, or open source.
 - The tab saves review state so items do not reappear endlessly.
 
-Do not add this tab just to show the output of `djinn share ideas`; printing the
+Do not add this tab just to show the output of `djinn promote ideas`; printing the
 prompt is better for that workflow.
 
 ## Contexts / Ctx
@@ -66,7 +66,7 @@ Entry criteria:
 
 - Djinn has persisted context records with inspectable settings.
 - The tab supports switching, editing, and validating contexts.
-- Context filtering applies to enough resources — tools, chats, suggestions,
+- Context filtering applies to enough resources — tools, sessions, suggestions,
   memories, and skills — that a TUI selector provides more value than
   `djinn switch ctx <name>`.
 

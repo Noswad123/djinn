@@ -132,7 +132,7 @@ pub fn run_tools(tools: Vec<ToolEntry>) -> Result<()> {
     result
 }
 
-pub fn run_chats(chats: Vec<ChatRecord>) -> Result<Option<ChatShareRequest>> {
+pub fn run_chats(chats: Vec<ChatRecord>) -> Result<Option<SessionPromoteRequest>> {
     let mut terminal = enter_terminal()?;
     let result = run_chats_loop(&mut terminal, chats);
     leave_terminal(&mut terminal)?;
@@ -247,7 +247,7 @@ pub enum TuiAction {
     OpenChatSession(ChatSessionRequest),
     OpenTool(ToolEntry),
     OpenSkill(SkillRecord),
-    ShareChats(ChatShareRequest),
+    PromoteSessions(SessionPromoteRequest),
     ReviewMemory(String),
     DeleteMemories(Vec<String>),
     DeleteChatRows(ChatDeleteRequest),
@@ -351,7 +351,7 @@ enum DashboardCommand {
     ToggleFilter,
     OpenSelected,
     ResumeSelectedChat,
-    ShareChats,
+    PromoteSessions,
     ToggleSelected,
     ToggleAll,
     AcceptSelected,
@@ -385,7 +385,7 @@ pub enum AgentChatExit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashboardTab {
     Tools,
-    Chats,
+    Sessions,
     Memories,
     Suggestions,
     Skills,
@@ -395,7 +395,7 @@ impl DashboardTab {
     fn index(self) -> usize {
         match self {
             DashboardTab::Tools => 0,
-            DashboardTab::Chats => 1,
+            DashboardTab::Sessions => 1,
             DashboardTab::Memories => 2,
             DashboardTab::Suggestions => 3,
             DashboardTab::Skills => 4,
@@ -405,7 +405,7 @@ impl DashboardTab {
     fn from_index(index: usize) -> Self {
         match index % DASHBOARD_TABS.len() {
             0 => DashboardTab::Tools,
-            1 => DashboardTab::Chats,
+            1 => DashboardTab::Sessions,
             2 => DashboardTab::Memories,
             3 => DashboardTab::Suggestions,
             _ => DashboardTab::Skills,
@@ -421,11 +421,11 @@ fn dashboard_back_tab_returns_to_agent(tab: DashboardTab) -> bool {
     tab == DashboardTab::Tools
 }
 
-const DASHBOARD_TABS: [&str; 5] = ["Tools", "Chats", "Memories", "Suggestions", "Skills"];
+const DASHBOARD_TABS: [&str; 5] = ["Tools", "Sessions", "Memories", "Suggestions", "Skills"];
 const APP_TABS: [&str; 6] = [
     "Agent",
     "Tools",
-    "Chats",
+    "Sessions",
     "Memories",
     "Suggestions",
     "Skills",
@@ -986,7 +986,7 @@ fn agent_chat_transcript_lines(messages: &[AgentChatMessage], notice: &str) -> V
             dim_style(),
         )));
         lines.push(Line::from(Span::styled(
-            "This is the runtime chat surface; saved Chats remains a separate history/memory browser.",
+            "This is the runtime chat surface; Sessions is the unified history and resume picker.",
             dim_style(),
         )));
     } else {
@@ -1237,14 +1237,14 @@ fn tool_execution_body_lines(content: &str) -> Vec<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatShareRequest {
+pub struct SessionPromoteRequest {
     pub chat_ids: Vec<String>,
-    pub mode: ChatShareMode,
+    pub mode: SessionPromoteMode,
     pub context_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChatShareMode {
+pub enum SessionPromoteMode {
     Summary,
     Patterns,
     Memories,
@@ -1357,7 +1357,7 @@ fn run_dashboard_loop(
                     continue;
                 }
 
-                if app.active_tab == DashboardTab::Chats {
+                if app.active_tab == DashboardTab::Sessions {
                     match &app.chats.mode {
                         ChatUiMode::Options => {
                             match key.code {
@@ -1373,8 +1373,8 @@ fn run_dashboard_loop(
                                 KeyCode::Enter => {
                                     return Ok(app
                                         .chats
-                                        .share_request()
-                                        .map(TuiAction::ShareChats));
+                                        .promote_request()
+                                        .map(TuiAction::PromoteSessions));
                                 }
                                 _ => {}
                             }
@@ -1449,7 +1449,7 @@ fn run_dashboard_loop(
                                 return Ok(Some(TuiAction::OpenTool(tool)));
                             }
                         }
-                        DashboardTab::Chats => {
+                        DashboardTab::Sessions => {
                             if let Some(request) = app.chats.selected_chat_session_request() {
                                 return Ok(Some(TuiAction::OpenChatSession(request)));
                             }
@@ -1463,7 +1463,7 @@ fn run_dashboard_loop(
                         DashboardTab::Memories | DashboardTab::Suggestions => {}
                     },
                     KeyCode::Char('r') => {
-                        if app.active_tab == DashboardTab::Chats {
+                        if app.active_tab == DashboardTab::Sessions {
                             if let Some(request) = app.chats.selected_chat_session_request() {
                                 return Ok(Some(TuiAction::OpenChatSession(request)));
                             }
@@ -1483,12 +1483,12 @@ fn run_dashboard_loop(
                         }
                     }
                     KeyCode::Char('s') => {
-                        if app.active_tab == DashboardTab::Chats {
+                        if app.active_tab == DashboardTab::Sessions {
                             app.chats.open_options();
                         }
                     }
                     KeyCode::Char('x') | KeyCode::Delete => match app.active_tab {
-                        DashboardTab::Chats => {
+                        DashboardTab::Sessions => {
                             app.chats.open_delete_confirmation();
                         }
                         DashboardTab::Memories => {
@@ -1557,7 +1557,7 @@ fn handle_dashboard_command(
                     return Ok(Some(TuiAction::OpenTool(tool)));
                 }
             }
-            DashboardTab::Chats => {
+            DashboardTab::Sessions => {
                 if let Some(request) = app.chats.selected_chat_session_request() {
                     return Ok(Some(TuiAction::OpenChatSession(request)));
                 }
@@ -1575,7 +1575,7 @@ fn handle_dashboard_command(
                 return Ok(Some(TuiAction::OpenChatSession(request)));
             }
         }
-        DashboardCommand::ShareChats => app.chats.open_options(),
+        DashboardCommand::PromoteSessions => app.chats.open_options(),
         DashboardCommand::ToggleSelected => app.toggle_selected(),
         DashboardCommand::ToggleAll => app.toggle_all(),
         DashboardCommand::AcceptSelected => {
@@ -1592,7 +1592,7 @@ fn handle_dashboard_command(
             }
         }
         DashboardCommand::DeleteSelected => {
-            if app.active_tab == DashboardTab::Chats {
+            if app.active_tab == DashboardTab::Sessions {
                 app.chats.open_delete_confirmation();
             } else if let Some(action) = app.delete_selected_action() {
                 if handle_continue_action(app, on_continue_action, action.clone())? {
@@ -1650,7 +1650,7 @@ impl DashboardApp {
     }
 
     fn open_palette(&mut self) {
-        if self.active_tab == DashboardTab::Chats {
+        if self.active_tab == DashboardTab::Sessions {
             self.chats.mode = ChatUiMode::Selecting;
         }
         self.help_open = false;
@@ -1717,9 +1717,9 @@ impl DashboardApp {
             },
             DashboardCommandEntry {
                 section: "Navigation".to_string(),
-                label: "Open Chats".to_string(),
+                label: "Open Sessions".to_string(),
                 description: "Jump to the session picker".to_string(),
-                command: DashboardCommand::OpenTab(DashboardTab::Chats),
+                command: DashboardCommand::OpenTab(DashboardTab::Sessions),
             },
             DashboardCommandEntry {
                 section: "Navigation".to_string(),
@@ -1766,39 +1766,39 @@ impl DashboardApp {
                     DashboardCommand::ToggleFilter,
                 ),
             ],
-            DashboardTab::Chats => vec![
+            DashboardTab::Sessions => vec![
                 dashboard_command_entry(
-                    "Chats",
+                    "Sessions",
                     "Resume selected session",
                     "Resume Djinn session or convert+resume OpenCode session",
                     DashboardCommand::ResumeSelectedChat,
                 ),
                 dashboard_command_entry(
-                    "Chats",
-                    "Share selected chats",
-                    "Open share options for selected saved chat rows",
-                    DashboardCommand::ShareChats,
+                    "Sessions",
+                    "Promote selected sessions",
+                    "Open promotion options for selected session rows",
+                    DashboardCommand::PromoteSessions,
                 ),
                 dashboard_command_entry(
-                    "Chats",
-                    "Toggle selected chat",
-                    "Select or unselect the highlighted chat",
+                    "Sessions",
+                    "Toggle selected session",
+                    "Select or unselect the highlighted session",
                     DashboardCommand::ToggleSelected,
                 ),
                 dashboard_command_entry(
-                    "Chats",
-                    "Select all visible chats",
-                    "Toggle all filtered chat rows",
+                    "Sessions",
+                    "Select all visible sessions",
+                    "Toggle all filtered session rows",
                     DashboardCommand::ToggleAll,
                 ),
                 dashboard_command_entry(
-                    "Chats",
-                    "Remove selected chats/sessions",
-                    "Remove selected persisted chat rows or Djinn sessions",
+                    "Sessions",
+                    "Remove selected sessions",
+                    "Remove selected persisted session rows or Djinn sessions",
                     DashboardCommand::DeleteSelected,
                 ),
                 dashboard_command_entry(
-                    "Chats",
+                    "Sessions",
                     "Filter sessions",
                     "Edit the session picker filter",
                     DashboardCommand::ToggleFilter,
@@ -1892,7 +1892,7 @@ impl DashboardApp {
     fn next_item(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.next(),
-            DashboardTab::Chats => self.chats.next(),
+            DashboardTab::Sessions => self.chats.next(),
             DashboardTab::Memories => self.memories.next(),
             DashboardTab::Suggestions => self.suggestions.next(),
             DashboardTab::Skills => self.skills.next(),
@@ -1902,7 +1902,7 @@ impl DashboardApp {
     fn previous_item(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.previous(),
-            DashboardTab::Chats => self.chats.previous(),
+            DashboardTab::Sessions => self.chats.previous(),
             DashboardTab::Memories => self.memories.previous(),
             DashboardTab::Suggestions => self.suggestions.previous(),
             DashboardTab::Skills => self.skills.previous(),
@@ -1912,7 +1912,7 @@ impl DashboardApp {
     fn scroll_down(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.scroll_down(),
-            DashboardTab::Chats => self.chats.scroll_down(),
+            DashboardTab::Sessions => self.chats.scroll_down(),
             DashboardTab::Memories => self.memories.scroll_down(),
             DashboardTab::Suggestions => self.suggestions.scroll_down(),
             DashboardTab::Skills => self.skills.scroll_down(),
@@ -1922,7 +1922,7 @@ impl DashboardApp {
     fn scroll_up(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.scroll_up(),
-            DashboardTab::Chats => self.chats.scroll_up(),
+            DashboardTab::Sessions => self.chats.scroll_up(),
             DashboardTab::Memories => self.memories.scroll_up(),
             DashboardTab::Suggestions => self.suggestions.scroll_up(),
             DashboardTab::Skills => self.skills.scroll_up(),
@@ -1932,7 +1932,7 @@ impl DashboardApp {
     fn filter_editing(&self) -> bool {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter.editing,
-            DashboardTab::Chats => self.chats.filter.editing,
+            DashboardTab::Sessions => self.chats.filter.editing,
             DashboardTab::Memories => self.memories.filter.editing,
             DashboardTab::Suggestions => self.suggestions.filter.editing,
             DashboardTab::Skills => self.skills.filter.editing,
@@ -1942,7 +1942,7 @@ impl DashboardApp {
     fn toggle_filter(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.toggle_filter(),
-            DashboardTab::Chats => self.chats.toggle_filter(),
+            DashboardTab::Sessions => self.chats.toggle_filter(),
             DashboardTab::Memories => self.memories.toggle_filter(),
             DashboardTab::Suggestions => self.suggestions.toggle_filter(),
             DashboardTab::Skills => self.skills.toggle_filter(),
@@ -1952,7 +1952,7 @@ impl DashboardApp {
     fn filter_push(&mut self, ch: char) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter_push(ch),
-            DashboardTab::Chats => self.chats.filter_push(ch),
+            DashboardTab::Sessions => self.chats.filter_push(ch),
             DashboardTab::Memories => self.memories.filter_push(ch),
             DashboardTab::Suggestions => self.suggestions.filter_push(ch),
             DashboardTab::Skills => self.skills.filter_push(ch),
@@ -1962,7 +1962,7 @@ impl DashboardApp {
     fn filter_backspace(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter_backspace(),
-            DashboardTab::Chats => self.chats.filter_backspace(),
+            DashboardTab::Sessions => self.chats.filter_backspace(),
             DashboardTab::Memories => self.memories.filter_backspace(),
             DashboardTab::Suggestions => self.suggestions.filter_backspace(),
             DashboardTab::Skills => self.skills.filter_backspace(),
@@ -1972,7 +1972,7 @@ impl DashboardApp {
     fn finish_filter_edit(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter.editing = false,
-            DashboardTab::Chats => self.chats.filter.editing = false,
+            DashboardTab::Sessions => self.chats.filter.editing = false,
             DashboardTab::Memories => self.memories.filter.editing = false,
             DashboardTab::Suggestions => self.suggestions.filter.editing = false,
             DashboardTab::Skills => self.skills.filter.editing = false,
@@ -1981,7 +1981,7 @@ impl DashboardApp {
 
     fn toggle_selected(&mut self) {
         match self.active_tab {
-            DashboardTab::Chats => self.chats.toggle_selected(),
+            DashboardTab::Sessions => self.chats.toggle_selected(),
             DashboardTab::Memories => self.memories.toggle_selected(),
             DashboardTab::Suggestions => self.suggestions.toggle_selected(),
             DashboardTab::Tools | DashboardTab::Skills => {}
@@ -1990,7 +1990,7 @@ impl DashboardApp {
 
     fn toggle_all(&mut self) {
         match self.active_tab {
-            DashboardTab::Chats => self.chats.toggle_all(),
+            DashboardTab::Sessions => self.chats.toggle_all(),
             DashboardTab::Memories => self.memories.toggle_all(),
             DashboardTab::Suggestions => self.suggestions.toggle_all(),
             DashboardTab::Tools | DashboardTab::Skills => {}
@@ -2004,7 +2004,7 @@ impl DashboardApp {
                 (!ids.is_empty()).then_some(TuiAction::DeleteMemories(ids))
             }
             DashboardTab::Tools
-            | DashboardTab::Chats
+            | DashboardTab::Sessions
             | DashboardTab::Suggestions
             | DashboardTab::Skills => None,
         }
@@ -2012,7 +2012,7 @@ impl DashboardApp {
 
     fn delete_selected_action(&self) -> Option<TuiAction> {
         match self.active_tab {
-            DashboardTab::Chats => self.chats.delete_request().map(TuiAction::DeleteChatRows),
+            DashboardTab::Sessions => self.chats.delete_request().map(TuiAction::DeleteChatRows),
             DashboardTab::Memories => self.reject_selected_action(),
             DashboardTab::Suggestions => {
                 let ids = self.suggestions.selected_suggestion_ids();
@@ -2047,7 +2047,7 @@ impl DashboardApp {
             | TuiAction::OpenAgentChat
             | TuiAction::OpenChatSession(_)
             | TuiAction::OpenSkill(_)
-            | TuiAction::ShareChats(_)
+            | TuiAction::PromoteSessions(_)
             | TuiAction::ReviewMemory(_) => {}
         }
     }
@@ -2078,7 +2078,7 @@ impl DashboardApp {
 
         match self.active_tab {
             DashboardTab::Tools => self.tools.draw_body(frame, chunks[1]),
-            DashboardTab::Chats => self.chats.draw_body(frame, chunks[1]),
+            DashboardTab::Sessions => self.chats.draw_body(frame, chunks[1]),
             DashboardTab::Memories => self.memories.draw_body(frame, chunks[1]),
             DashboardTab::Suggestions => self.suggestions.draw_body(frame, chunks[1]),
             DashboardTab::Skills => self.skills.draw_body(frame, chunks[1]),
@@ -2090,7 +2090,7 @@ impl DashboardApp {
             chunks[2],
         );
 
-        if self.active_tab == DashboardTab::Chats {
+        if self.active_tab == DashboardTab::Sessions {
             match &self.chats.mode {
                 ChatUiMode::Options => self.chats.draw_options(frame),
                 ChatUiMode::ConfirmDelete(request) => {
@@ -2195,14 +2195,14 @@ impl DashboardApp {
                 Span::raw(" open selected tool"),
             ]),
             Line::from(""),
-            Line::from(Span::styled("Chats / session picker", title_style())),
+            Line::from(Span::styled("Sessions", title_style())),
             Line::from(vec![
                 Span::styled("Enter / r", selected_style()),
                 Span::raw(" resume Djinn session or convert+resume OpenCode session"),
             ]),
             Line::from(vec![
                 Span::styled("s", selected_style()),
-                Span::raw(" open share options"),
+                Span::raw(" open promotion options"),
             ]),
             Line::from(vec![
                 Span::styled("Space / A", selected_style()),
@@ -2210,7 +2210,7 @@ impl DashboardApp {
             ]),
             Line::from(vec![
                 Span::styled("x / Delete", selected_style()),
-                Span::raw(" confirm removal of saved chats or Djinn sessions"),
+                Span::raw(" confirm removal of selected sessions"),
             ]),
             Line::from(""),
             Line::from(Span::styled("Memories & Suggestions", title_style())),
@@ -2407,7 +2407,7 @@ impl ToolsApp {
 fn run_chats_loop(
     terminal: &mut TuiTerminal,
     chats: Vec<ChatRecord>,
-) -> Result<Option<ChatShareRequest>> {
+) -> Result<Option<SessionPromoteRequest>> {
     let mut app = ChatsApp::new(chats);
     loop {
         terminal.draw(|frame| app.draw(frame))?;
@@ -2439,7 +2439,7 @@ fn run_chats_loop(
                         KeyCode::Char('j') | KeyCode::Down => app.next_option(),
                         KeyCode::Char('k') | KeyCode::Up => app.previous_option(),
                         KeyCode::Char('c') => app.context_only = !app.context_only,
-                        KeyCode::Enter => return Ok(app.share_request()),
+                        KeyCode::Enter => return Ok(app.promote_request()),
                         _ => {}
                     },
                     ChatUiMode::ConfirmDelete(_) => match key.code {
@@ -2568,7 +2568,7 @@ impl ChatsApp {
         self.ensure_selection_visible();
     }
 
-    fn selected_shareable_chat_ids(&self) -> Vec<String> {
+    fn selected_promotable_session_ids(&self) -> Vec<String> {
         self.selected_chats()
             .into_iter()
             .filter(|chat| chat.source != "djinn-agent")
@@ -2676,7 +2676,7 @@ impl ChatsApp {
     }
 
     fn open_options(&mut self) {
-        if !self.selected_shareable_chat_ids().is_empty() {
+        if !self.selected_promotable_session_ids().is_empty() {
             self.mode = ChatUiMode::Options;
         }
     }
@@ -2689,22 +2689,22 @@ impl ChatsApp {
         self.option_selected = self.option_selected.saturating_sub(1);
     }
 
-    fn selected_share_mode(&self) -> ChatShareMode {
+    fn selected_promote_mode(&self) -> SessionPromoteMode {
         match self.option_selected {
-            0 => ChatShareMode::Summary,
-            1 => ChatShareMode::Patterns,
-            _ => ChatShareMode::Memories,
+            0 => SessionPromoteMode::Summary,
+            1 => SessionPromoteMode::Patterns,
+            _ => SessionPromoteMode::Memories,
         }
     }
 
-    fn share_request(&self) -> Option<ChatShareRequest> {
-        let chat_ids = self.selected_shareable_chat_ids();
+    fn promote_request(&self) -> Option<SessionPromoteRequest> {
+        let chat_ids = self.selected_promotable_session_ids();
         if chat_ids.is_empty() {
             return None;
         }
-        Some(ChatShareRequest {
+        Some(SessionPromoteRequest {
             chat_ids,
-            mode: self.selected_share_mode(),
+            mode: self.selected_promote_mode(),
             context_only: self.context_only,
         })
     }
@@ -2718,7 +2718,7 @@ impl ChatsApp {
         self.draw_body(frame, chunks[0]);
 
         let help = Paragraph::new(
-            "↑/k ↓/j move • Space select • a all visible • Enter share options • x/Delete confirm removal • PgUp/u PgDn/d scroll • q/Esc quit",
+            "↑/k ↓/j move • Space select • a all visible • Enter promote options • x/Delete confirm removal • PgUp/u PgDn/d scroll • q/Esc quit",
         )
         .style(dim_style());
         frame.render_widget(Clear, chunks[1]);
@@ -2740,9 +2740,9 @@ impl ChatsApp {
 
         let visible = self.visible_indices();
         let items = if self.chats.is_empty() {
-            vec![ListItem::new("No chats recorded").style(dim_style())]
+            vec![ListItem::new("No sessions recorded").style(dim_style())]
         } else if visible.is_empty() {
-            vec![ListItem::new("No chats match filter").style(dim_style())]
+            vec![ListItem::new("No sessions match filter").style(dim_style())]
         } else {
             visible
                 .iter()
@@ -2780,7 +2780,7 @@ impl ChatsApp {
             state.select(selected_visible_position(self.selected, &visible));
         }
         let title = format!(
-            "Chats ({} / {} visible, {} selected, {})",
+            "Sessions ({} / {} visible, {} selected, {})",
             visible.len(),
             self.chats.len(),
             self.checked.len(),
@@ -2815,11 +2815,11 @@ impl ChatsApp {
         let area = centered_rect(58, 42, frame.area());
         let mode_names = ["summary", "patterns", "memories"];
         let mut lines = vec![
-            Line::from(Span::styled("Share selected chats", title_style())),
+            Line::from(Span::styled("Promote selected sessions", title_style())),
             Line::from(Span::styled(
                 format!(
-                    "Shareable chats: {}",
-                    self.selected_shareable_chat_ids().len()
+                    "Promotable sessions: {}",
+                    self.selected_promotable_session_ids().len()
                 ),
                 dim_style(),
             )),
@@ -2852,12 +2852,12 @@ impl ChatsApp {
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Enter share • c toggle context • Esc back",
+            "Enter promote • c toggle context • Esc back",
             dim_style(),
         )));
 
         let modal = Paragraph::new(lines)
-            .block(block("Share Options"))
+            .block(block("Promote Options"))
             .style(base_style())
             .wrap(Wrap { trim: false });
         frame.render_widget(Clear, area);
@@ -2874,7 +2874,7 @@ impl ChatsApp {
         ];
         if !request.chat_ids.is_empty() {
             lines.push(Line::from(format!(
-                "Saved chats: {}",
+                "Session rows: {}",
                 request.chat_ids.len()
             )));
             for id in request.chat_ids.iter().take(3) {
@@ -2898,7 +2898,7 @@ impl ChatsApp {
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "This removes saved chats and deletes selected Djinn session JSONL files.",
+            "This removes selected session rows and deletes selected Djinn session JSONL files.",
             dim_style(),
         )));
         lines.push(Line::from(""));
@@ -3652,9 +3652,9 @@ fn chat_picker_action_hint(chat: &ChatRecord) -> &'static str {
     match chat.source.trim() {
         "djinn-agent" => "Enter/r resume session • x delete session (confirm)",
         "opencode" if !chat.source_id.trim().is_empty() => {
-            "Enter/r convert+resume in Djinn • s share • x remove (confirm)"
+            "Enter/r convert+resume in Djinn • s promote • x remove (confirm)"
         }
-        _ => "Enter/s share options • x remove (confirm)",
+        _ => "Enter/s promote options • x remove (confirm)",
     }
 }
 
@@ -3984,7 +3984,7 @@ mod tests {
     }
 
     #[test]
-    fn chats_share_options_do_not_open_for_agent_session_only() {
+    fn sessions_promote_options_do_not_open_for_agent_session_only() {
         let mut app = ChatsApp::new(vec![test_chat_record(
             "agent:agt_1",
             "Agent",
@@ -3995,11 +3995,11 @@ mod tests {
         app.open_options();
 
         assert_eq!(app.mode, ChatUiMode::Selecting);
-        assert!(app.share_request().is_none());
+        assert!(app.promote_request().is_none());
     }
 
     #[test]
-    fn chats_share_request_uses_only_shareable_saved_chat_rows() {
+    fn sessions_promote_request_uses_only_promotable_session_rows() {
         let mut app = ChatsApp::new(vec![
             test_chat_record("chat-one", "Saved", "manual", ""),
             test_chat_record("agent:agt_1", "Agent", "djinn-agent", "agt_1"),
@@ -4010,7 +4010,7 @@ mod tests {
         app.checked.insert("chat-two".to_string());
 
         app.open_options();
-        let request = app.share_request().unwrap();
+        let request = app.promote_request().unwrap();
 
         assert_eq!(app.mode, ChatUiMode::Options);
         assert_eq!(request.chat_ids, vec!["chat-one", "chat-two"]);
@@ -4346,7 +4346,7 @@ mod tests {
             AgentChatCommandEntry {
                 section: "Session".to_string(),
                 label: "Resume session…".to_string(),
-                description: "Open the Chats/session picker".to_string(),
+                description: "Open the Sessions picker".to_string(),
                 command: AgentChatCommand::OpenSessions,
             },
             AgentChatCommandEntry {
@@ -4631,10 +4631,10 @@ mod tests {
     fn dashboard_tabs_follow_progression_order() {
         assert_eq!(
             DASHBOARD_TABS,
-            ["Tools", "Chats", "Memories", "Suggestions", "Skills"]
+            ["Tools", "Sessions", "Memories", "Suggestions", "Skills"]
         );
         assert_eq!(DashboardTab::Tools.index(), 0);
-        assert_eq!(DashboardTab::Chats.index(), 1);
+        assert_eq!(DashboardTab::Sessions.index(), 1);
         assert_eq!(DashboardTab::Memories.index(), 2);
         assert_eq!(DashboardTab::Suggestions.index(), 3);
         assert_eq!(DashboardTab::Skills.index(), 4);
@@ -4648,7 +4648,7 @@ mod tests {
             [
                 "Agent",
                 "Tools",
-                "Chats",
+                "Sessions",
                 "Memories",
                 "Suggestions",
                 "Skills"
@@ -4665,7 +4665,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
-            DashboardTab::Chats,
+            DashboardTab::Sessions,
         );
 
         assert!(!app.help_open);
@@ -4684,7 +4684,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
-            DashboardTab::Chats,
+            DashboardTab::Sessions,
         );
         let chat_entries = chats_app.dashboard_command_palette();
 
@@ -4692,7 +4692,7 @@ mod tests {
             entry.section == "Navigation" && entry.command == DashboardCommand::OpenAgent
         }));
         assert!(chat_entries.iter().any(|entry| {
-            entry.section == "Chats" && entry.command == DashboardCommand::ResumeSelectedChat
+            entry.section == "Sessions" && entry.command == DashboardCommand::ResumeSelectedChat
         }));
         assert!(!chat_entries.iter().any(|entry| {
             entry.section == "Skills" && entry.command == DashboardCommand::OpenSelected
@@ -4712,7 +4712,7 @@ mod tests {
             entry.section == "Skills" && entry.command == DashboardCommand::OpenSelected
         }));
         assert!(!skill_entries.iter().any(|entry| {
-            entry.section == "Chats" && entry.command == DashboardCommand::ResumeSelectedChat
+            entry.section == "Sessions" && entry.command == DashboardCommand::ResumeSelectedChat
         }));
     }
 
@@ -4725,11 +4725,11 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
-            DashboardTab::Chats,
+            DashboardTab::Sessions,
         );
 
         app.open_palette();
-        for ch in "Share selected chats".chars() {
+        for ch in "Promote selected sessions".chars() {
             app.push_palette_query(ch);
         }
 
@@ -4737,7 +4737,7 @@ mod tests {
         assert!(!visible.is_empty());
         assert_eq!(
             app.selected_palette_command(),
-            Some(DashboardCommand::ShareChats)
+            Some(DashboardCommand::PromoteSessions)
         );
     }
 
