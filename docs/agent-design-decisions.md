@@ -495,7 +495,10 @@ The first non-interactive agent slice is implemented as:
 2. Provider-neutral `djinn-agent` traits for model clients, tools, permission
    gates, context providers, and the runtime loop.
 3. OpenAI as the first provider adapter, including OpenAI API-key mode and
-   OpenCode-compatible OpenAI OAuth/Codex mode.
+   OpenCode-compatible OpenAI OAuth/Codex mode. OpenAI, OpenAI OAuth/Codex, and
+   GitHub Copilot model requests retry transient send/status failures with a
+   small bounded retry budget and record retry-attempt counts in model response
+   metadata for session inspection and stats.
 4. Minimal read-only tools for reading files, listing directories, finding files
    by glob-like patterns, and searching UTF-8 text files by regular expression,
    governed by Djinn's local read access policy. The read policy includes

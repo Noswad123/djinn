@@ -180,6 +180,8 @@ pub enum AgentSessionEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_chars: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_attempts: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<AgentSessionTokenUsage>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         estimated_cost: Option<AgentSessionCostEstimate>,

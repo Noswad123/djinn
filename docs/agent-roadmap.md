@@ -24,16 +24,6 @@ design decisions. Use these documents as the source of truth for those:
 - Keep broad constraints as links to decision documents instead of restating them
   here.
 
-## Ready next
-
-These items are small enough or well-defined enough to implement without another
-product-design pass.
-
-### Runtime/accounting metadata
-
-- Add retry-attempt accounting only when provider/tool adapters expose concrete
-  retry behavior that needs inspection.
-
 ## Needs a decision before implementation
 
 These are useful directions, but implementing them now would risk locking in the

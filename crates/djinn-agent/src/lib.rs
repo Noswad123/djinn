@@ -18,6 +18,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use walkdir::WalkDir;
 
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelRole {
@@ -53,6 +57,8 @@ pub struct ModelResponse {
     pub tool_calls: Vec<ModelToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ModelTokenUsage>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub retry_attempts: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -188,6 +194,72 @@ impl CopilotClient {
     }
 }
 
+#[derive(Debug, Clone)]
+struct RetriedHttpResponse {
+    status: reqwest::StatusCode,
+    text: String,
+    retry_attempts: u64,
+}
+
+const MODEL_REQUEST_MAX_RETRY_ATTEMPTS: u64 = 2;
+
+async fn send_json_request_with_retries(
+    mut make_request: impl FnMut() -> reqwest::RequestBuilder,
+    label: &str,
+) -> Result<RetriedHttpResponse> {
+    let mut retry_attempts = 0;
+    loop {
+        match make_request().send().await {
+            Ok(response) => {
+                let status = response.status();
+                let text = response
+                    .text()
+                    .await
+                    .with_context(|| format!("reading {label} response body"))?;
+                if should_retry_status(status) && retry_attempts < MODEL_REQUEST_MAX_RETRY_ATTEMPTS
+                {
+                    retry_attempts += 1;
+                    sleep_for_retry_attempt(retry_attempts).await;
+                    continue;
+                }
+                return Ok(RetriedHttpResponse {
+                    status,
+                    text,
+                    retry_attempts,
+                });
+            }
+            Err(error)
+                if should_retry_reqwest_error(&error)
+                    && retry_attempts < MODEL_REQUEST_MAX_RETRY_ATTEMPTS =>
+            {
+                retry_attempts += 1;
+                sleep_for_retry_attempt(retry_attempts).await;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("sending {label} after {retry_attempts} retry attempt(s)")
+                });
+            }
+        }
+    }
+}
+
+fn should_retry_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status.as_u16(),
+        408 | 409 | 425 | 429 | 500 | 502 | 503 | 504
+    )
+}
+
+fn should_retry_reqwest_error(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect() || error.is_request()
+}
+
+async fn sleep_for_retry_attempt(attempt: u64) {
+    let delay_ms = 100u64.saturating_mul(attempt);
+    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+}
+
 #[async_trait]
 impl ModelClient for OpenAiClient {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
@@ -220,28 +292,29 @@ impl ModelClient for CopilotClient {
             );
         }
 
-        let response = self
-            .http
-            .post(&self.endpoint)
-            .bearer_auth(&self.token)
-            .header(reqwest::header::USER_AGENT, "djinn-agent")
-            .header("Copilot-Integration-Id", "djinn-agent")
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| "sending GitHub Copilot chat completion request")?;
+        let response = send_json_request_with_retries(
+            || {
+                self.http
+                    .post(&self.endpoint)
+                    .bearer_auth(&self.token)
+                    .header(reqwest::header::USER_AGENT, "djinn-agent")
+                    .header("Copilot-Integration-Id", "djinn-agent")
+                    .json(&body)
+            },
+            "GitHub Copilot chat completion request",
+        )
+        .await?;
 
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .with_context(|| "reading GitHub Copilot response body")?;
+        let status = response.status;
+        let text = response.text;
         if !status.is_success() {
             bail!("GitHub Copilot request failed ({status}): {text}");
         }
 
-        parse_openai_chat_response(&text)
-            .with_context(|| format!("parsing GitHub Copilot response: {text}"))
+        let mut parsed = parse_openai_chat_response(&text)
+            .with_context(|| format!("parsing GitHub Copilot response: {text}"))?;
+        parsed.retry_attempts = response.retry_attempts;
+        Ok(parsed)
     }
 }
 
@@ -270,26 +343,27 @@ impl OpenAiClient {
             );
         }
 
-        let response = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(api_key)
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| "sending OpenAI chat completion request")?;
+        let response = send_json_request_with_retries(
+            || {
+                self.http
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .bearer_auth(api_key)
+                    .json(&body)
+            },
+            "OpenAI chat completion request",
+        )
+        .await?;
 
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .with_context(|| "reading OpenAI response body")?;
+        let status = response.status;
+        let text = response.text;
         if !status.is_success() {
             bail!("OpenAI request failed ({status}): {text}");
         }
 
-        parse_openai_chat_response(&text)
-            .with_context(|| format!("parsing OpenAI response: {text}"))
+        let mut parsed = parse_openai_chat_response(&text)
+            .with_context(|| format!("parsing OpenAI response: {text}"))?;
+        parsed.retry_attempts = response.retry_attempts;
+        Ok(parsed)
     }
 }
 
@@ -316,6 +390,7 @@ fn parse_openai_chat_response(text: &str) -> Result<ModelResponse> {
             .map(model_tool_call)
             .collect::<Result<Vec<_>>>()?,
         usage: response.usage.map(ModelTokenUsage::from),
+        retry_attempts: 0,
     })
 }
 
@@ -346,30 +421,31 @@ impl OpenAiClient {
             );
         }
 
-        let mut builder = self
-            .http
-            .post(&oauth.codex_api_endpoint)
-            .bearer_auth(&oauth.access)
-            .header("originator", "opencode")
-            .header(reqwest::header::USER_AGENT, oauth_user_agent())
-            .json(&body);
-        if let Some(account_id) = &oauth.account_id {
-            builder = builder.header("ChatGPT-Account-Id", account_id);
-        }
-
-        let response = builder
-            .send()
-            .await
-            .with_context(|| "sending OpenAI OAuth/Codex response request")?;
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .with_context(|| "reading OpenAI OAuth/Codex response body")?;
+        let response = send_json_request_with_retries(
+            || {
+                let mut builder = self
+                    .http
+                    .post(&oauth.codex_api_endpoint)
+                    .bearer_auth(&oauth.access)
+                    .header("originator", "opencode")
+                    .header(reqwest::header::USER_AGENT, oauth_user_agent())
+                    .json(&body);
+                if let Some(account_id) = &oauth.account_id {
+                    builder = builder.header("ChatGPT-Account-Id", account_id);
+                }
+                builder
+            },
+            "OpenAI OAuth/Codex response request",
+        )
+        .await?;
+        let status = response.status;
+        let text = response.text;
         if !status.is_success() {
             bail!("OpenAI OAuth/Codex request failed ({status}): {text}");
         }
-        parse_openai_responses_response(&text)
+        let mut parsed = parse_openai_responses_response(&text)?;
+        parsed.retry_attempts = response.retry_attempts;
+        Ok(parsed)
     }
 }
 
@@ -594,6 +670,7 @@ fn parse_openai_responses_stream_response(text: &str) -> Result<ModelResponse> {
         },
         tool_calls,
         usage,
+        retry_attempts: 0,
     })
 }
 
@@ -625,6 +702,7 @@ fn parse_openai_responses_value(value: &Value) -> Result<ModelResponse> {
         },
         tool_calls,
         usage: parse_openai_responses_usage(value),
+        retry_attempts: 0,
     })
 }
 
@@ -3710,6 +3788,7 @@ where
                 has_message: !response.message.content.trim().is_empty(),
                 request_chars: Some(request_chars),
                 response_chars: Some(model_response_chars(response)),
+                retry_attempts: (response.retry_attempts > 0).then_some(response.retry_attempts),
                 usage: response.usage.clone().map(AgentSessionTokenUsage::from),
                 estimated_cost: estimate_model_response_cost(model, response.usage.as_ref()),
             }),
@@ -3934,6 +4013,7 @@ mod tests {
                     input: json!({"path": "README.md"}),
                 }],
                 usage: None,
+                retry_attempts: 0,
             })
         }
     }
@@ -3956,6 +4036,26 @@ mod tests {
                     output_tokens: Some(7),
                     total_tokens: Some(18),
                 }),
+                retry_attempts: 0,
+            })
+        }
+    }
+
+    struct RetriedResponseModel;
+
+    #[async_trait]
+    impl ModelClient for RetriedResponseModel {
+        async fn complete(&self, _request: ModelRequest) -> Result<ModelResponse> {
+            Ok(ModelResponse {
+                message: ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: "retried".to_string(),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+                retry_attempts: 2,
             })
         }
     }
@@ -3986,6 +4086,7 @@ mod tests {
                         input: json!({"path": "README.md"}),
                     }],
                     usage: None,
+                    retry_attempts: 0,
                 });
             }
             Ok(ModelResponse {
@@ -3997,6 +4098,7 @@ mod tests {
                 },
                 tool_calls: Vec::new(),
                 usage: None,
+                retry_attempts: 0,
             })
         }
     }
@@ -4284,6 +4386,50 @@ mod tests {
     }
 
     #[test]
+    fn send_json_request_retries_transient_statuses() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            for (index, stream) in listener.incoming().take(2).enumerate() {
+                let mut stream = stream.unwrap();
+                let mut buffer = [0u8; 2048];
+                let _ = std::io::Read::read(&mut stream, &mut buffer);
+                let (status, body) = if index == 0 {
+                    ("HTTP/1.1 500 Internal Server Error", "retry")
+                } else {
+                    ("HTTP/1.1 200 OK", "ok")
+                };
+                let response = format!(
+                    "{status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                std::io::Write::write_all(&mut stream, response.as_bytes()).unwrap();
+            }
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        let client = reqwest::Client::new();
+        let response = runtime
+            .block_on(send_json_request_with_retries(
+                || {
+                    client
+                        .post(format!("http://{address}/chat"))
+                        .json(&json!({}))
+                },
+                "test request",
+            ))
+            .unwrap();
+        handle.join().unwrap();
+
+        assert_eq!(response.status, reqwest::StatusCode::OK);
+        assert_eq!(response.text, "ok");
+        assert_eq!(response.retry_attempts, 1);
+    }
+
+    #[test]
     fn model_response_cost_estimate_requires_known_openai_pricing_and_usage_parts() {
         let usage = ModelTokenUsage {
             input_tokens: Some(11),
@@ -4358,6 +4504,37 @@ mod tests {
         assert!(matches!(
             &loaded.events[1].kind,
             AgentSessionEventKind::AssistantMessage { content } if content == "hello from model"
+        ));
+    }
+
+    #[test]
+    fn runtime_persists_model_retry_attempt_metadata() {
+        let store = temp_session_store("model-retry-metadata");
+        let id = create_test_session(&store);
+        let runtime = AgentRuntime::new(RetriedResponseModel, store.clone(), ToolRegistry::new());
+        let async_runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let response = async_runtime
+            .block_on(runtime.complete_once(
+                &id,
+                ModelRequest {
+                    model: "openai/gpt-4.1".to_string(),
+                    messages: Vec::new(),
+                    tools: Vec::new(),
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(response.retry_attempts, 2);
+        let loaded = store.load_session(&id).unwrap();
+        assert!(matches!(
+            &loaded.events[0].kind,
+            AgentSessionEventKind::ModelResponseMetadata {
+                retry_attempts,
+                ..
+            } if *retry_attempts == Some(2)
         ));
     }
 

@@ -6119,6 +6119,7 @@ struct AgentSessionStats {
     model_elapsed_ms: u64,
     model_request_chars: u64,
     model_response_chars: u64,
+    model_retry_attempts: u64,
     tool_executions: usize,
     tool_successes: usize,
     tool_failures: usize,
@@ -6145,6 +6146,7 @@ struct AgentModelStats {
     message_turns: usize,
     request_chars: u64,
     response_chars: u64,
+    retry_attempts: u64,
     token_usage: AgentSessionTokenUsage,
     estimated_cost_micros_usd: Option<u64>,
 }
@@ -6198,6 +6200,7 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
                 has_message,
                 request_chars,
                 response_chars,
+                retry_attempts,
                 usage,
                 estimated_cost,
                 ..
@@ -6210,6 +6213,9 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
                 stats.model_response_chars = stats
                     .model_response_chars
                     .saturating_add(response_chars.unwrap_or_default());
+                stats.model_retry_attempts = stats
+                    .model_retry_attempts
+                    .saturating_add(retry_attempts.unwrap_or_default());
                 if let Some(usage) = usage {
                     merge_token_usage(&mut stats.token_usage, usage);
                 }
@@ -6233,6 +6239,9 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
                 entry.response_chars = entry
                     .response_chars
                     .saturating_add(response_chars.unwrap_or_default());
+                entry.retry_attempts = entry
+                    .retry_attempts
+                    .saturating_add(retry_attempts.unwrap_or_default());
                 if *has_message {
                     entry.message_turns += 1;
                 }
@@ -6379,6 +6388,13 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
             stats.model_request_chars, stats.model_response_chars
         ));
     }
+    if stats.model_retry_attempts > 0 {
+        out.push_str(&format!(
+            "Model retries: {} attempt{}\n",
+            stats.model_retry_attempts,
+            plural_suffix(stats.model_retry_attempts as usize)
+        ));
+    }
     if !stats.models.is_empty() {
         out.push_str("\nModel breakdown:\n");
         for model in &stats.models {
@@ -6403,8 +6419,17 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
             } else {
                 String::new()
             };
+            let retries = if model.retry_attempts > 0 {
+                format!(
+                    " · {} retry attempt{}",
+                    model.retry_attempts,
+                    plural_suffix(model.retry_attempts as usize)
+                )
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
-                "- {}{}: {} turn{} · {} · {} tool call{} · {} message turn{}{}{}{}\n",
+                "- {}{}: {} turn{} · {} · {} tool call{} · {} message turn{}{}{}{}{}\n",
                 model.model,
                 provider,
                 model.turns,
@@ -6415,6 +6440,7 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
                 model.message_turns,
                 plural_suffix(model.message_turns),
                 chars,
+                retries,
                 usage,
                 cost
             ));
@@ -9144,6 +9170,7 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
             has_message,
             request_chars,
             response_chars,
+            retry_attempts,
             usage,
             estimated_cost,
         } => format_agent_model_metadata_event(
@@ -9155,6 +9182,7 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
             *has_message,
             *request_chars,
             *response_chars,
+            *retry_attempts,
             usage.as_ref(),
             estimated_cost.as_ref(),
         ),
@@ -9207,6 +9235,7 @@ fn format_agent_model_metadata_event(
     has_message: bool,
     request_chars: Option<u64>,
     response_chars: Option<u64>,
+    retry_attempts: Option<u64>,
     usage: Option<&AgentSessionTokenUsage>,
     estimated_cost: Option<&AgentSessionCostEstimate>,
 ) -> String {
@@ -9230,6 +9259,12 @@ fn format_agent_model_metadata_event(
     }
     if let Some(response_chars) = response_chars {
         parts.push(format!("response {response_chars} chars"));
+    }
+    if let Some(retry_attempts) = retry_attempts.filter(|attempts| *attempts > 0) {
+        parts.push(format!(
+            "{retry_attempts} retry attempt{}",
+            plural_suffix(retry_attempts as usize)
+        ));
     }
     if let Some(usage) = usage.and_then(format_agent_token_usage) {
         parts.push(usage);
@@ -15800,6 +15835,7 @@ mod tests {
             has_message: true,
             request_chars: Some(100),
             response_chars: Some(25),
+            retry_attempts: Some(2),
             usage: Some(AgentSessionTokenUsage {
                 input_tokens: Some(10),
                 output_tokens: Some(5),
@@ -15822,6 +15858,7 @@ mod tests {
         assert!(rendered.contains("message"));
         assert!(rendered.contains("request 100 chars"));
         assert!(rendered.contains("response 25 chars"));
+        assert!(rendered.contains("2 retry attempts"));
         assert!(rendered.contains("tokens in 10/out 5/total 15"));
         assert!(rendered.contains("estimated cost $0.000060"));
     }
@@ -15870,6 +15907,7 @@ mod tests {
                     has_message: false,
                     request_chars: Some(40),
                     response_chars: Some(10),
+                    retry_attempts: Some(1),
                     usage: Some(AgentSessionTokenUsage {
                         input_tokens: Some(10),
                         output_tokens: Some(3),
@@ -15890,6 +15928,7 @@ mod tests {
                     has_message: true,
                     request_chars: Some(20),
                     response_chars: Some(5),
+                    retry_attempts: None,
                     usage: Some(AgentSessionTokenUsage {
                         input_tokens: Some(5),
                         output_tokens: Some(2),
@@ -15941,6 +15980,7 @@ mod tests {
         assert_eq!(stats.model_elapsed_ms, 2000);
         assert_eq!(stats.model_request_chars, 60);
         assert_eq!(stats.model_response_chars, 15);
+        assert_eq!(stats.model_retry_attempts, 1);
         assert_eq!(stats.token_usage.total_tokens, Some(20));
         assert_eq!(stats.estimated_cost_micros_usd, Some(44));
         let openai_model = stats
@@ -15954,6 +15994,7 @@ mod tests {
         assert_eq!(openai_model.message_turns, 0);
         assert_eq!(openai_model.request_chars, 40);
         assert_eq!(openai_model.response_chars, 10);
+        assert_eq!(openai_model.retry_attempts, 1);
         assert_eq!(openai_model.token_usage.total_tokens, Some(13));
         assert_eq!(openai_model.estimated_cost_micros_usd, Some(44));
         let copilot_model = stats
@@ -15984,8 +16025,9 @@ mod tests {
         assert!(rendered.contains("Tokens: in 15/out 5/total 20"));
         assert!(rendered.contains("Estimated cost: $0.000044"));
         assert!(rendered.contains("Model chars: 60 request / 15 response"));
+        assert!(rendered.contains("Model retries: 1 attempt"));
         assert!(rendered.contains(
-            "- openai/gpt-test · provider openai: 1 turn · 1.2s · 1 tool call · 0 message turns · 40 request chars / 10 response chars · tokens in 10/out 3/total 13 · estimated cost $0.000044"
+            "- openai/gpt-test · provider openai: 1 turn · 1.2s · 1 tool call · 0 message turns · 40 request chars / 10 response chars · 1 retry attempt · tokens in 10/out 3/total 13 · estimated cost $0.000044"
         ));
         assert!(rendered.contains(
             "- copilot/gpt-test · provider copilot: 1 turn · 800ms · 0 tool calls · 1 message turn · 20 request chars / 5 response chars · tokens in 5/out 2/total 7"
@@ -16310,6 +16352,7 @@ mod tests {
                     has_message: true,
                     request_chars: Some(5),
                     response_chars: Some(2),
+                    retry_attempts: None,
                     usage: Some(AgentSessionTokenUsage {
                         input_tokens: Some(1),
                         output_tokens: Some(2),
