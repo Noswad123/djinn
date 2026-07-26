@@ -278,6 +278,9 @@ Working interpretation:
 - `djinn agent config show --agent <name>` explains the role-resolved effective
   runtime config. `djinn agent tools list/show --agent <name>` applies the role
   tool allowlist, and runtime execution uses the same allowlist when present.
+- Profile and role instruction references are resolved into the runtime system
+  prompt. References first check the native `instructions` registry; otherwise
+  existing files are read relative to the workspace, or as absolute/`~/` paths.
 - Automatic model-driven delegation remains out of scope.
 
 Open questions:

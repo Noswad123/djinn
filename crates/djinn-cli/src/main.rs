@@ -5165,21 +5165,22 @@ fn resolve_agent_role_selection(
     requested_profile: &str,
     requested_model: Option<String>,
 ) -> Result<AgentRoleSelection> {
+    let config = effective_djinn_config()?;
     let Some(agent_name) = agent
         .as_deref()
         .map(str::trim)
         .filter(|agent| !agent.is_empty())
     else {
+        let profile = resolve_agent_profile(requested_profile)?;
         return Ok(AgentRoleSelection {
             agent_name: None,
-            profile: resolve_agent_profile(requested_profile)?,
+            instructions: profile_instructions_from_config(&config, &profile),
+            profile,
             model: requested_model,
-            instructions: Vec::new(),
             tools: Vec::new(),
         });
     };
 
-    let config = effective_djinn_config()?;
     let roles = configured_agent_roles(&config);
     let role = resolve_agent_role(&roles, agent_name)?;
     let profile = role
@@ -5190,13 +5191,25 @@ fn resolve_agent_role_selection(
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| requested_profile.trim().to_string());
     let profile = resolve_agent_profile(&profile)?;
+    let mut instructions = profile_instructions_from_config(&config, &profile);
+    for instruction in &role.instructions {
+        push_unique_string(&mut instructions, instruction);
+    }
     Ok(AgentRoleSelection {
         agent_name: Some(role.name.clone()),
         profile,
         model: requested_model.or_else(|| role.model.clone()),
-        instructions: role.instructions.clone(),
+        instructions,
         tools: role.tools.clone(),
     })
+}
+
+fn profile_instructions_from_config(config: &DjinnConfig, profile: &str) -> Vec<String> {
+    config
+        .profiles
+        .get(profile)
+        .map(|profile| profile.instructions.clone())
+        .unwrap_or_default()
 }
 
 fn parent_session_id_from_arg(parent_session: Option<String>) -> Option<AgentSessionId> {
@@ -5854,9 +5867,12 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
     let title = args
         .title
         .unwrap_or_else(|| prompt_title(&prompt, "Agent prompt"));
+    let workspace = resolve_agent_workspace(args.workspace)?;
+    let system_instructions =
+        resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
     let meta = AgentSessionMeta {
         title,
-        workspace: resolve_agent_workspace(args.workspace)?,
+        workspace,
         profile: profile.clone(),
         agent_name: selection.agent_name,
         parent_session_id: parent_session_id_from_arg(args.parent_session),
@@ -5880,6 +5896,7 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
         args.base_url,
         args.max_tool_rounds,
         &profile,
+        &system_instructions,
         selection.tools,
         !args.json,
     )?;
@@ -6050,6 +6067,8 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
     let workspace = chat_session.workspace;
     let profile = chat_session.profile;
     let session = store.load_session(&id)?;
+    let system_instructions =
+        resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
     let model = resolve_agent_model(
         selection.model.or_else(|| latest_session_model(&session)),
         &profile,
@@ -6088,7 +6107,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
             complete_openai_messages_with_progress(
                 &store,
                 &id,
-                agent_model_messages(&session, &workspace),
+                agent_model_messages(&session, &workspace, &system_instructions),
                 model.clone(),
                 api_key.clone(),
                 base_url.clone(),
@@ -6854,6 +6873,7 @@ fn complete_openai_prompt(
     base_url: Option<String>,
     max_tool_rounds: usize,
     profile: &str,
+    system_instructions: &[ResolvedAgentInstruction],
     allowed_tools: Vec<String>,
     interactive_permissions: bool,
 ) -> Result<djinn_agent::ModelResponse> {
@@ -6862,7 +6882,7 @@ fn complete_openai_prompt(
         store,
         id,
         vec![
-            agent_system_message(&workspace),
+            agent_system_message(&workspace, system_instructions),
             ModelMessage {
                 role: ModelRole::User,
                 content: prompt,
@@ -8304,19 +8324,125 @@ fn format_agent_tool_metadata_event(
     parts.join(" · ")
 }
 
-fn agent_system_message(workspace: &str) -> ModelMessage {
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ResolvedAgentInstruction {
+    source: String,
+    content: String,
+}
+
+fn resolve_agent_instruction_contents(
+    workspace: &str,
+    references: &[String],
+) -> Result<Vec<ResolvedAgentInstruction>> {
+    if references.is_empty() {
+        return Ok(Vec::new());
+    }
+    let config = effective_djinn_config()?;
+    let workspace_path = Path::new(workspace);
+    let mut resolved = Vec::new();
+    for reference in references {
+        let reference = reference.trim();
+        if reference.is_empty() {
+            continue;
+        }
+        if let Some(instruction) = config.instructions.get(reference) {
+            if let Some(text) = instruction
+                .text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                resolved.push(ResolvedAgentInstruction {
+                    source: reference.to_string(),
+                    content: truncate(text, 20_000),
+                });
+            }
+            if let Some(path) = instruction
+                .path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+            {
+                if let Some(resolved_instruction) =
+                    read_agent_instruction_file(workspace_path, path)?
+                {
+                    resolved.push(ResolvedAgentInstruction {
+                        source: format!("{reference}:{path}"),
+                        content: resolved_instruction.content,
+                    });
+                }
+            }
+            continue;
+        }
+        if let Some(instruction) = read_agent_instruction_file(workspace_path, reference)? {
+            resolved.push(instruction);
+        }
+    }
+    Ok(resolved)
+}
+
+fn read_agent_instruction_file(
+    workspace: &Path,
+    reference: &str,
+) -> Result<Option<ResolvedAgentInstruction>> {
+    let path = resolve_agent_instruction_path(workspace, reference);
+    if !path.exists() {
+        return Ok(None);
+    }
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("reading agent instruction file {}", path.display()))?;
+    Ok(Some(ResolvedAgentInstruction {
+        source: path.display().to_string(),
+        content: truncate(content.trim(), 20_000),
+    }))
+}
+
+fn resolve_agent_instruction_path(workspace: &Path, reference: &str) -> PathBuf {
+    let reference = reference.trim();
+    if let Some(rest) = reference.strip_prefix("~/") {
+        return djinn_core::home_dir().join(rest);
+    }
+    let path = PathBuf::from(reference);
+    if path.is_absolute() {
+        path
+    } else {
+        workspace.join(path)
+    }
+}
+
+fn agent_system_message(
+    workspace: &str,
+    instructions: &[ResolvedAgentInstruction],
+) -> ModelMessage {
+    let mut content = format!(
+        "You are running in workspace `{workspace}`. Read-only filesystem tools may also access other paths such as the user's home directory when the configured access policy allows it. Use absolute paths, `~`, or `$HOME` for non-workspace locations."
+    );
+    if !instructions.is_empty() {
+        content.push_str("\n\nAdditional configured instructions:");
+        for instruction in instructions {
+            content.push_str(&format!(
+                "\n\n--- {} ---\n{}",
+                instruction.source, instruction.content
+            ));
+        }
+    }
     ModelMessage {
         role: ModelRole::System,
-        content: format!(
-            "You are running in workspace `{workspace}`. Read-only filesystem tools may also access other paths such as the user's home directory when the configured access policy allows it. Use absolute paths, `~`, or `$HOME` for non-workspace locations."
-        ),
+        content,
         tool_call_id: None,
         tool_calls: Vec::new(),
     }
 }
 
-fn agent_model_messages(session: &AgentSession, workspace: &str) -> Vec<ModelMessage> {
-    let mut messages = vec![agent_system_message(workspace)];
+fn agent_model_messages(
+    session: &AgentSession,
+    workspace: &str,
+    instructions: &[ResolvedAgentInstruction],
+) -> Vec<ModelMessage> {
+    let mut messages = vec![agent_system_message(workspace, instructions)];
     for event in &session.events {
         match &event.kind {
             AgentSessionEventKind::UserMessage { content } => messages.push(ModelMessage {
@@ -11335,6 +11461,7 @@ fn share_merge(args: ShareMergeArgs) -> Result<()> {
         args.base_url,
         0,
         &profile,
+        &[],
         Vec::new(),
         false,
     )?;
@@ -15110,13 +15237,51 @@ mod tests {
             ],
         };
 
-        let messages = agent_model_messages(&session, "/tmp/project");
+        let messages = agent_model_messages(&session, "/tmp/project", &[]);
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role, ModelRole::System);
         assert_eq!(messages[1].role, ModelRole::User);
         assert_eq!(messages[1].content, "hello");
         assert_eq!(messages[2].role, ModelRole::Assistant);
         assert_eq!(messages[2].content, "hi");
+    }
+
+    #[test]
+    fn agent_system_message_includes_resolved_instructions() {
+        let instructions = vec![ResolvedAgentInstruction {
+            source: "docs/review.md".to_string(),
+            content: "Review for correctness and regressions.".to_string(),
+        }];
+
+        let message = agent_system_message("/tmp/project", &instructions);
+
+        assert_eq!(message.role, ModelRole::System);
+        assert!(message.content.contains("workspace `/tmp/project`"));
+        assert!(message
+            .content
+            .contains("Additional configured instructions"));
+        assert!(message.content.contains("--- docs/review.md ---"));
+        assert!(message
+            .content
+            .contains("Review for correctness and regressions."));
+    }
+
+    #[test]
+    fn read_agent_instruction_file_reads_workspace_relative_file() {
+        let workspace =
+            std::env::temp_dir().join(format!("djinn-instruction-test-{}", current_time_millis()));
+        fs::create_dir_all(&workspace).unwrap();
+        let path = workspace.join("AGENTS.md");
+        fs::write(&path, "Use project conventions.\n").unwrap();
+
+        let instruction = read_agent_instruction_file(&workspace, "AGENTS.md")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(instruction.source, path.display().to_string());
+        assert_eq!(instruction.content, "Use project conventions.");
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir(workspace);
     }
 
     #[test]

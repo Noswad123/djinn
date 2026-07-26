@@ -184,6 +184,8 @@ provider/runtime payload details:
 - Role-selected config/tool inspection exists via `djinn agent config show --agent`
   and `djinn agent tools list/show --agent`; role tool allowlists are applied to
   both inspection and runtime execution.
+- Profile and role instruction references are now resolved into the system prompt
+  from the native instruction registry or workspace/absolute/`~/` files.
 
 ### Permission and safety policy
 

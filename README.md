@@ -131,6 +131,11 @@ djinn agent chat --agent planner
 djinn agent session new --agent reviewer --parent-session <session-id>
 ```
 
+Profiles and agent roles can list instruction references. References matching
+`instructions` registry keys use that registry entry; otherwise existing files
+are read relative to the workspace (or as absolute/`~/` paths) and appended to the
+agent system prompt.
+
 Inspect Djinn-native config and external config adapters:
 
 ```bash
