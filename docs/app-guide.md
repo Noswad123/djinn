@@ -266,6 +266,11 @@ Keybindings:
 - Skills: `Enter` opens the selected skill.
 - `q`/`Esc`: quit.
 
+Permission approval dialogs use `a`/`Enter` to approve all files in the current
+request, `Space` to mark the highlighted file, `p` to approve only marked files,
+`A`/`P` to remember all/marked paths for the current agent process, `/` to filter
+hunk lines, and `d`/`q`/`Esc` to deny.
+
 ## Memory review
 
 For focused memory cleanup, use the review verb:

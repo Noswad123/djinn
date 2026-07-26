@@ -4750,7 +4750,7 @@ mod tests {
         assert!(!state.is_empty());
         assert_eq!(
             state.file_labels(),
-            vec!["update src/lib.rs", "move old.txt -> new.txt"]
+            vec!["[ ] update src/lib.rs", "[ ] move old.txt -> new.txt"]
         );
         assert_eq!(state.selected_file().unwrap().path, "src/lib.rs");
         state.next_file();
@@ -4806,6 +4806,96 @@ mod tests {
     }
 
     #[test]
+    fn approval_preview_filter_limits_visible_hunk_lines() {
+        let mut state = ApprovalPreviewState::from_metadata(&serde_json::json!({
+            "preview": [
+                {
+                    "operation": "update",
+                    "relative_path": "src/lib.rs",
+                    "lines_added": 1,
+                    "lines_removed": 1,
+                    "hunks": [
+                        {
+                            "lines": [
+                                {"kind": "context", "content": "fn answer() -> i32 {"},
+                                {"kind": "remove", "content": "    41"},
+                                {"kind": "add", "content": "    42"},
+                                {"kind": "context", "content": "}"}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }));
+
+        state.toggle_filter();
+        for ch in "42".chars() {
+            state.filter_push(ch);
+        }
+        state.finish_filter();
+        let rendered = state
+            .selected_lines()
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(state.filter_query(), "42");
+        assert!(!state.filter_editing());
+        assert!(rendered.iter().any(|line| line == "@@ hunk 1"));
+        assert!(rendered.iter().any(|line| line == "+     42"));
+        assert!(!rendered.iter().any(|line| line == "-     41"));
+    }
+
+    #[test]
+    fn approval_preview_tracks_marked_file_resource_paths() {
+        let mut state = ApprovalPreviewState::from_metadata(&serde_json::json!({
+            "preview": [
+                {
+                    "operation": "update",
+                    "path": "/tmp/work/src/lib.rs",
+                    "relative_path": "src/lib.rs",
+                    "lines_added": 1,
+                    "lines_removed": 1,
+                    "hunks": []
+                },
+                {
+                    "operation": "move",
+                    "path": "/tmp/work/old.txt",
+                    "relative_path": "old.txt",
+                    "new_path": "/tmp/work/new.txt",
+                    "relative_new_path": "new.txt",
+                    "lines_added": 0,
+                    "lines_removed": 0,
+                    "hunks": []
+                }
+            ]
+        }));
+
+        state.toggle_selected_file_approval();
+        state.next_file();
+        state.toggle_selected_file_approval();
+
+        assert_eq!(state.approved_file_indices().len(), 2);
+        assert_eq!(
+            state.approved_paths(),
+            vec![
+                "/tmp/work/src/lib.rs".to_string(),
+                "/tmp/work/old.txt".to_string(),
+                "/tmp/work/new.txt".to_string(),
+            ]
+        );
+        assert_eq!(
+            state.file_labels(),
+            vec!["[x] update src/lib.rs", "[x] move old.txt -> new.txt"]
+        );
+    }
+
+    #[test]
     fn approval_dialog_app_navigates_files_and_scrolls() {
         let mut app = ApprovalDialogApp::new(serde_json::json!({
             "preview": [
@@ -4822,6 +4912,74 @@ mod tests {
         app.previous_file();
         assert_eq!(app.preview.selected_file().unwrap().path, "a.txt");
         assert_eq!(app.preview.scroll(), 0);
+    }
+
+    #[test]
+    fn approval_dialog_app_edits_filter_query() {
+        let mut app = ApprovalDialogApp::new(serde_json::json!({
+            "preview": [
+                {"operation": "update", "relative_path": "a.txt", "lines_added": 1, "lines_removed": 0, "hunks": []}
+            ]
+        }));
+
+        app.toggle_filter();
+        app.filter_push('a');
+        app.filter_push('b');
+        app.filter_backspace();
+        app.finish_filter();
+
+        assert_eq!(app.preview.filter_query(), "a");
+        assert!(!app.preview.filter_editing());
+        app.toggle_filter();
+        assert_eq!(app.preview.filter_query(), "");
+    }
+
+    #[test]
+    fn approval_dialog_app_returns_marked_file_decision() {
+        let mut app = ApprovalDialogApp::new(serde_json::json!({
+            "preview": [
+                {"operation": "update", "path": "/tmp/work/a.txt", "relative_path": "a.txt", "lines_added": 1, "lines_removed": 0, "hunks": []}
+            ]
+        }));
+
+        assert!(app.approval_decision_for_marked_files().is_none());
+        app.toggle_selected_file_approval();
+
+        assert_eq!(
+            app.approval_decision_for_marked_files(),
+            Some(ApprovalDecision::ApprovePaths(vec![
+                "/tmp/work/a.txt".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn approval_dialog_app_returns_session_scope_decisions() {
+        let mut app = ApprovalDialogApp::new(serde_json::json!({
+            "preview": [
+                {"operation": "update", "path": "/tmp/work/a.txt", "relative_path": "a.txt", "lines_added": 1, "lines_removed": 0, "hunks": []},
+                {"operation": "move", "path": "/tmp/work/b.txt", "relative_path": "b.txt", "new_path": "/tmp/work/c.txt", "relative_new_path": "c.txt", "lines_added": 0, "lines_removed": 0, "hunks": []}
+            ]
+        }));
+
+        assert_eq!(
+            app.approval_decision_for_all_files_session(),
+            ApprovalDecision::ApproveAllForSession(vec![
+                "/tmp/work/a.txt".to_string(),
+                "/tmp/work/b.txt".to_string(),
+                "/tmp/work/c.txt".to_string(),
+            ])
+        );
+
+        app.next_file();
+        app.toggle_selected_file_approval();
+        assert_eq!(
+            app.approval_decision_for_marked_files_session(),
+            Some(ApprovalDecision::ApprovePathsForSession(vec![
+                "/tmp/work/b.txt".to_string(),
+                "/tmp/work/c.txt".to_string(),
+            ]))
+        );
     }
 
     #[test]

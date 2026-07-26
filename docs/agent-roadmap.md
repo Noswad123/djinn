@@ -29,13 +29,6 @@ design decisions. Use these documents as the source of truth for those:
 These items are small enough or well-defined enough to implement without another
 product-design pass.
 
-### TUI permission approval ergonomics
-
-- Extend the existing Ratatui approval dialog with feature-driven improvements:
-  - per-file approval decisions;
-  - search/filter within hunks;
-  - persisted approval scopes if/when the permission model supports them.
-
 ### Runtime/accounting metadata
 
 - Add cost accounting to `model_response_metadata` only after provider adapters

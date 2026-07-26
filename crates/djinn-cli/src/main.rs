@@ -5,7 +5,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1299,14 +1299,99 @@ struct AgentChatArgs {
     max_tool_rounds: usize,
 }
 
-struct TerminalPermissionGate;
+#[derive(Debug, Default)]
+struct TerminalPermissionGate {
+    session_scopes: Mutex<Vec<TerminalApprovalScope>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TerminalApprovalScope {
+    action: String,
+    workspace: String,
+    paths: HashSet<String>,
+}
+
+impl TerminalPermissionGate {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn cached_decision(&self, request: &PermissionRequest) -> Option<PermissionDecision> {
+        let request_paths = approval_paths_from_metadata(&request.metadata);
+        if request_paths.is_empty() {
+            return None;
+        }
+        let workspace = request
+            .metadata
+            .get("workspace")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let scopes = self.session_scopes.lock().ok()?;
+        let mut approved = Vec::new();
+        for path in &request_paths {
+            let covered = scopes.iter().any(|scope| {
+                scope.action == request.action
+                    && scope.workspace == workspace
+                    && scope.paths.contains(path)
+            });
+            if !covered {
+                return None;
+            }
+            approved.push(path.clone());
+        }
+        Some(PermissionDecision::AllowPaths { paths: approved })
+    }
+
+    fn remember_paths_for_session(&self, request: &PermissionRequest, paths: Vec<String>) {
+        let paths = paths
+            .into_iter()
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty())
+            .collect::<HashSet<_>>();
+        if paths.is_empty() {
+            return;
+        }
+        let workspace = request
+            .metadata
+            .get("workspace")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let Ok(mut scopes) = self.session_scopes.lock() else {
+            return;
+        };
+        if let Some(existing) = scopes
+            .iter_mut()
+            .find(|scope| scope.action == request.action && scope.workspace == workspace)
+        {
+            existing.paths.extend(paths);
+        } else {
+            scopes.push(TerminalApprovalScope {
+                action: request.action.clone(),
+                workspace,
+                paths,
+            });
+        }
+    }
+}
 
 #[async_trait]
 impl PermissionGate for TerminalPermissionGate {
     async fn approve(&self, request: PermissionRequest) -> Result<PermissionDecision> {
+        if let Some(decision) = self.cached_decision(&request) {
+            return Ok(decision);
+        }
         if io::stdin().is_terminal() && io::stdout().is_terminal() {
             return match djinn_tui::run_approval_dialog(request.metadata.clone())? {
-                djinn_tui::ApprovalDecision::Approve => Ok(PermissionDecision::Allow),
+                djinn_tui::ApprovalDecision::ApproveAll => Ok(PermissionDecision::Allow),
+                djinn_tui::ApprovalDecision::ApprovePaths(paths) => {
+                    Ok(PermissionDecision::AllowPaths { paths })
+                }
+                djinn_tui::ApprovalDecision::ApproveAllForSession(paths)
+                | djinn_tui::ApprovalDecision::ApprovePathsForSession(paths) => {
+                    self.remember_paths_for_session(&request, paths.clone());
+                    Ok(PermissionDecision::AllowPaths { paths })
+                }
                 djinn_tui::ApprovalDecision::Deny => Ok(PermissionDecision::Deny),
             };
         }
@@ -1323,6 +1408,30 @@ impl PermissionGate for TerminalPermissionGate {
             Ok(PermissionDecision::Deny)
         }
     }
+}
+
+fn approval_paths_from_metadata(metadata: &Value) -> Vec<String> {
+    let mut paths = Vec::new();
+    let Some(preview) = metadata.get("preview").and_then(Value::as_array) else {
+        return paths;
+    };
+    for item in preview {
+        if let Some(path) = item
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+        {
+            push_unique_string(&mut paths, path);
+        }
+        if let Some(path) = item
+            .get("new_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+        {
+            push_unique_string(&mut paths, path);
+        }
+    }
+    paths
 }
 
 fn format_permission_preview(metadata: &Value) -> Result<String> {
@@ -7071,7 +7180,7 @@ where
         && io::stdin().is_terminal()
         && (io::stdout().is_terminal() || io::stderr().is_terminal())
     {
-        Some(Arc::new(TerminalPermissionGate))
+        Some(Arc::new(TerminalPermissionGate::new()))
     } else {
         None
     };
@@ -13074,6 +13183,60 @@ mod tests {
         assert!(rendered.contains("    fn answer() -> i32 {"));
         assert!(rendered.contains("  -     41"));
         assert!(rendered.contains("  +     42"));
+    }
+
+    #[test]
+    fn terminal_permission_gate_reuses_session_path_scopes() {
+        let gate = TerminalPermissionGate::new();
+        let request = PermissionRequest {
+            action: "apply_patch".to_string(),
+            description: "patch".to_string(),
+            metadata: serde_json::json!({
+                "workspace": "/tmp/work",
+                "preview": [
+                    {"path": "/tmp/work/a.txt", "relative_path": "a.txt"},
+                    {"path": "/tmp/work/b.txt", "relative_path": "b.txt"}
+                ]
+            }),
+        };
+
+        assert!(gate.cached_decision(&request).is_none());
+        gate.remember_paths_for_session(
+            &request,
+            vec!["/tmp/work/a.txt".to_string(), "/tmp/work/b.txt".to_string()],
+        );
+
+        assert_eq!(
+            gate.cached_decision(&request),
+            Some(PermissionDecision::AllowPaths {
+                paths: vec!["/tmp/work/a.txt".to_string(), "/tmp/work/b.txt".to_string()]
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_permission_gate_does_not_reuse_partial_or_cross_action_scopes() {
+        let gate = TerminalPermissionGate::new();
+        let request = PermissionRequest {
+            action: "apply_patch".to_string(),
+            description: "patch".to_string(),
+            metadata: serde_json::json!({
+                "workspace": "/tmp/work",
+                "preview": [
+                    {"path": "/tmp/work/a.txt", "relative_path": "a.txt"},
+                    {"path": "/tmp/work/b.txt", "relative_path": "b.txt"}
+                ]
+            }),
+        };
+        let other_action = PermissionRequest {
+            action: "write".to_string(),
+            ..request.clone()
+        };
+
+        gate.remember_paths_for_session(&request, vec!["/tmp/work/a.txt".to_string()]);
+
+        assert!(gate.cached_decision(&request).is_none());
+        assert!(gate.cached_decision(&other_action).is_none());
     }
 
     #[test]

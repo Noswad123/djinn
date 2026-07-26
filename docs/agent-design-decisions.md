@@ -379,8 +379,18 @@ Ask/preview direction:
   that parse the same structured preview payload, track selected files, and
   render file-level hunk lines for a future Ratatui approval dialog.
 - A first Ratatui approval dialog is available for terminal-backed permission
-  gates. It supports file navigation, preview scrolling, and explicit
-  approve/deny actions over the structured patch preview payload.
+  gates. It supports file navigation, preview scrolling, hunk-line filtering,
+  and explicit approve/deny actions over the structured patch preview payload.
+  The dialog also supports scoped per-file decisions: users can mark specific
+  preview files and approve only those paths, approve all files in the current
+  request, or remember marked/all preview paths for the current agent process.
+  Remembered approval scopes are action-, workspace-, and path-scoped; they are
+  reused only when a later permission request is fully covered by the remembered
+  path set. The permission gate returns an allow-paths decision, and the mutation
+  layer applies only operations whose resources are included in that approved
+  path set; unapproved operations are skipped and reported instead of being
+  silently applied. These scopes are process-local and do not write durable
+  permission rules to config.
 
 Direct write/edit direction:
 

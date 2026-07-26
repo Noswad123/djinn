@@ -816,11 +816,41 @@ pub struct PermissionRequest {
     pub metadata: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionDecision {
     Allow,
+    AllowPaths { paths: Vec<String> },
     Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PermissionApprovalScope {
+    All,
+    Paths(HashSet<String>),
+}
+
+impl PermissionApprovalScope {
+    fn from_decision(decision: PermissionDecision) -> Option<Self> {
+        match decision {
+            PermissionDecision::Allow => Some(Self::All),
+            PermissionDecision::AllowPaths { paths } => Some(Self::Paths(
+                paths
+                    .into_iter()
+                    .map(|path| path.trim().to_string())
+                    .filter(|path| !path.is_empty())
+                    .collect(),
+            )),
+            PermissionDecision::Deny => None,
+        }
+    }
+
+    fn allows_resource(&self, resource: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Paths(paths) => paths.contains(resource),
+        }
+    }
 }
 
 #[async_trait]
@@ -2166,7 +2196,7 @@ async fn invoke_mutation_operations(
         .canonicalize()
         .with_context(|| format!("resolving workspace {}", workspace.display()))?;
     let patch_id = fresh_patch_id();
-    let mut approval_granted = false;
+    let mut approval_scope: Option<PermissionApprovalScope> = None;
     if mutation_requires_approval(permission_action, &operations, &workspace, permissions)? {
         let previews = operations
             .iter()
@@ -2189,8 +2219,8 @@ async fn invoke_mutation_operations(
                     metadata: approval_payload.clone(),
                 })
                 .await?;
-            if decision == PermissionDecision::Allow {
-                approval_granted = true;
+            if let Some(scope) = PermissionApprovalScope::from_decision(decision) {
+                approval_scope = Some(scope);
             } else {
                 return Ok(ToolResult {
                     success: false,
@@ -2212,25 +2242,50 @@ async fn invoke_mutation_operations(
         }
     }
     let mut summaries = Vec::new();
+    let mut skipped = Vec::new();
 
     for operation in operations {
+        if let Some(scope) = &approval_scope {
+            let resources = operation_resources(&operation, &workspace)?;
+            if !resources
+                .iter()
+                .all(|resource| scope.allows_resource(resource))
+            {
+                let mut preview = preview_patch_operation(
+                    &operation,
+                    &workspace,
+                    permissions,
+                    permission_action,
+                )?;
+                if let Some(object) = preview.as_object_mut() {
+                    object.insert("skipped".to_string(), json!(true));
+                    object.insert(
+                        "reason".to_string(),
+                        json!("operation not included in approval scope"),
+                    );
+                }
+                skipped.push(preview);
+                continue;
+            }
+        }
         summaries.push(apply_patch_operation_summary(
             operation,
             &workspace,
             permissions,
             history,
             &patch_id,
-            approval_granted,
+            approval_scope.is_some(),
             permission_action,
         )?);
     }
 
     Ok(ToolResult {
-        success: true,
+        success: !summaries.is_empty(),
         output: json!({
             "patch_id": patch_id,
             "workspace": workspace.display().to_string(),
             "summary": summaries,
+            "skipped": skipped,
         }),
     })
 }
@@ -3363,7 +3418,7 @@ mod tests {
     #[async_trait]
     impl PermissionGate for StaticPermissionGate {
         async fn approve(&self, _request: PermissionRequest) -> Result<PermissionDecision> {
-            Ok(self.0)
+            Ok(self.0.clone())
         }
     }
 
@@ -4076,6 +4131,56 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.output["summary"][0]["operation"], "update");
         assert_eq!(fs::read_to_string(root.join("ask.txt")).unwrap(), "after\n");
+    }
+
+    #[test]
+    fn apply_patch_tool_applies_only_permission_gate_approved_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-apply-patch-gate-path-scope-test-{}",
+            chrono_like_test_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("approved.txt"), "before\n").unwrap();
+        fs::write(root.join("denied.txt"), "before\n").unwrap();
+        let mut policy = PermissionPolicy::allow_by_default();
+        policy.rules.push(PermissionRule {
+            action: "apply_patch".to_string(),
+            resource: "*.txt".to_string(),
+            effect: PermissionEffect::Ask,
+        });
+        let approved_path = root
+            .canonicalize()
+            .unwrap()
+            .join("approved.txt")
+            .display()
+            .to_string();
+        let tool = ApplyPatchTool::with_permissions(&root, policy).with_permission_gate(Arc::new(
+            StaticPermissionGate(PermissionDecision::AllowPaths {
+                paths: vec![approved_path],
+            }),
+        ));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let result = runtime
+            .block_on(tool.invoke(json!({"patch": "*** Begin Patch\n*** Update File: approved.txt\n@@\n-before\n+after\n*** Update File: denied.txt\n@@\n-before\n+after\n*** End Patch"})))
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["summary"].as_array().unwrap().len(), 1);
+        assert_eq!(result.output["summary"][0]["relative_path"], "approved.txt");
+        assert_eq!(result.output["skipped"].as_array().unwrap().len(), 1);
+        assert_eq!(result.output["skipped"][0]["relative_path"], "denied.txt");
+        assert_eq!(result.output["skipped"][0]["skipped"], true);
+        assert_eq!(
+            fs::read_to_string(root.join("approved.txt")).unwrap(),
+            "after\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("denied.txt")).unwrap(),
+            "before\n"
+        );
     }
 
     #[test]
