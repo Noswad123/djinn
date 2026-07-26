@@ -244,10 +244,12 @@ djinn add ctx djinn \
 djinn show ctx
 ```
 
-Generate an improvement prompt:
+Promote sessions into a local digest or model-ready review prompt:
 
 ```bash
-djinn promote ideas
+djinn promote session debugging-session
+djinn promote sessions --source opencode --limit 20 --mode pattern
+djinn promote sessions --source opencode --limit 50 --mode merge --dry-run
 ```
 
 Review memories for suggestions without mutating the memories:
@@ -300,7 +302,7 @@ crates/djinn-core/                 # shared paths and file helpers
 crates/djinn-memory/               # memories, suggestions, ideas, and actions
 crates/djinn-opencode/             # OpenCode adapter
 crates/djinn-skills/               # skill discovery and lifecycle
-crates/djinn-suggest/              # promote ideas prompt generation
+crates/djinn-suggest/              # suggestion/review prompt helpers
 crates/djinn-tools/                # tool discovery and indexing
 crates/djinn-tui/                  # ratatui dashboard
 docs/                              # detailed docs

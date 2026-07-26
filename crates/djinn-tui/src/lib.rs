@@ -1240,13 +1240,12 @@ fn tool_execution_body_lines(content: &str) -> Vec<String> {
 pub struct SessionPromoteRequest {
     pub chat_ids: Vec<String>,
     pub mode: SessionPromoteMode,
-    pub context_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionPromoteMode {
     Summary,
-    Patterns,
+    Pattern,
     Memories,
 }
 
@@ -1367,9 +1366,6 @@ fn run_dashboard_loop(
                                 }
                                 KeyCode::Char('j') | KeyCode::Down => app.chats.next_option(),
                                 KeyCode::Char('k') | KeyCode::Up => app.chats.previous_option(),
-                                KeyCode::Char('c') => {
-                                    app.chats.context_only = !app.chats.context_only
-                                }
                                 KeyCode::Enter => {
                                     return Ok(app
                                         .chats
@@ -2438,7 +2434,6 @@ fn run_chats_loop(
                         KeyCode::Esc | KeyCode::Backspace => app.mode = ChatUiMode::Selecting,
                         KeyCode::Char('j') | KeyCode::Down => app.next_option(),
                         KeyCode::Char('k') | KeyCode::Up => app.previous_option(),
-                        KeyCode::Char('c') => app.context_only = !app.context_only,
                         KeyCode::Enter => return Ok(app.promote_request()),
                         _ => {}
                     },
@@ -2469,7 +2464,6 @@ struct ChatsApp {
     checked: HashSet<String>,
     mode: ChatUiMode,
     option_selected: usize,
-    context_only: bool,
     filter: FilterState,
 }
 
@@ -2481,8 +2475,7 @@ impl ChatsApp {
             preview_scroll: 0,
             checked: HashSet::new(),
             mode: ChatUiMode::Selecting,
-            option_selected: 1,
-            context_only: false,
+            option_selected: 0,
             filter: FilterState::default(),
         }
     }
@@ -2692,7 +2685,7 @@ impl ChatsApp {
     fn selected_promote_mode(&self) -> SessionPromoteMode {
         match self.option_selected {
             0 => SessionPromoteMode::Summary,
-            1 => SessionPromoteMode::Patterns,
+            1 => SessionPromoteMode::Pattern,
             _ => SessionPromoteMode::Memories,
         }
     }
@@ -2705,7 +2698,6 @@ impl ChatsApp {
         Some(SessionPromoteRequest {
             chat_ids,
             mode: self.selected_promote_mode(),
-            context_only: self.context_only,
         })
     }
 
@@ -2813,7 +2805,7 @@ impl ChatsApp {
 
     fn draw_options(&self, frame: &mut ratatui::Frame) {
         let area = centered_rect(58, 42, frame.area());
-        let mode_names = ["summary", "patterns", "memories"];
+        let mode_names = ["summary", "pattern", "memories"];
         let mut lines = vec![
             Line::from(Span::styled("Promote selected sessions", title_style())),
             Line::from(Span::styled(
@@ -2838,21 +2830,8 @@ impl ChatsApp {
             };
             lines.push(Line::from(Span::styled(format!("{marker} {name}"), style)));
         }
-        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            format!(
-                "[{}] context only",
-                if self.context_only { "x" } else { " " }
-            ),
-            if self.context_only {
-                Style::default().fg(CTP_GREEN).bg(CTP_BASE)
-            } else {
-                dim_style()
-            },
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Enter promote • c toggle context • Esc back",
+            "Enter promote • Esc back",
             dim_style(),
         )));
 

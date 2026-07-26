@@ -25,9 +25,9 @@ actions are concrete enough to justify a permanent place in the TUI.
 
 ## Ideas
 
-Keep `djinn promote ideas` as the primary interface for now. It already emits a
-pipeline-level prompt from memories, suggestions, sessions, watcher state, and
-tools.
+Do not add an Ideas tab until Djinn has a concrete ideas/insights data model and
+workflow. Session promotion is handled by the Sessions tab and `djinn promote
+session(s)` commands; memory cleanup is handled by review commands.
 
 An **Ideas** tab may be useful later if Djinn stores or computes actionable
 insights locally, for example:
@@ -45,8 +45,8 @@ Entry criteria:
 - The tab supports actions such as accept, dismiss, promote session, or open source.
 - The tab saves review state so items do not reappear endlessly.
 
-Do not add this tab just to show the output of `djinn promote ideas`; printing the
-prompt is better for that workflow.
+Do not add this tab just to show a generated prompt. A visible tab should expose
+state the user can inspect, act on, and clear.
 
 ## Contexts / Ctx
 

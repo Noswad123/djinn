@@ -564,12 +564,12 @@ The first non-interactive agent slice is implemented as:
     digest of readable message/tool parts instead of embedding raw JSON.
     Sanitized/redacted exports should state that source text may be unavailable
     rather than burying that fact in large redacted payloads.
-42. `djinn promote merge` is the cleanup-oriented promotion workflow. It should group selected
-    sessions, distill durable lessons, write active memories directly, and
-    only then archive the source session rows when explicitly requested. Merge should
-    not introduce another memory-candidate/inbox step; later memory review should
-    focus on turning active memories into skills, suggestions, or concrete user
-    actions, and on clearing stale inbox/source material.
+42. `djinn promote sessions --mode merge` is the cleanup-oriented promotion workflow.
+    It should group selected sessions, distill durable lessons, write active memories
+    directly, and only then archive the source session rows when explicitly requested.
+    Merge should not introduce another memory-candidate/inbox step; later memory
+    review should focus on turning active memories into skills, suggestions, or
+    concrete user actions, and on clearing stale inbox/source material.
 43. Manual session cleanup should be safe and reversible by default. `djinn archive
     sessions` selects session rows with the same id/source/query/limit semantics
     as promotion, supports `--dry-run` previews, requires `--force` before removal,

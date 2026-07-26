@@ -358,26 +358,10 @@ struct ReviewOpencodeArgs {
 
 #[derive(Debug, Subcommand)]
 enum PromoteNoun {
-    /// Emit agent-ready context for local tools.
-    Tools(ToolsScope),
-    /// Emit agent-ready context for memories.
-    Context,
-    /// Emit agent-ready context for open suggestions.
-    Suggestions,
-    /// Emit an agent-ready improvement prompt from Djinn's current knowledge.
-    Ideas,
-    /// Emit agent-ready context for skills.
-    Skills(ShareSkillsArgs),
-    /// Promote one session into context or an extraction prompt.
+    /// Promote one session. Defaults to a local summary.
     Session(ShareChatArgs),
-    /// Promote multiple sessions into context, summary, patterns, or memory prompts.
+    /// Promote multiple sessions. Defaults to a local summary.
     Sessions(ShareChatsArgs),
-    /// Distill selected sessions into active memories and optionally archive them.
-    Merge(ShareMergeArgs),
-    /// Review one or more memories and create suggestions.
-    Memory(ReviewMemoriesArgs),
-    /// Review one or more memories and create suggestions.
-    Memories(ReviewMemoriesArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1084,16 +1068,6 @@ struct AddCtxArgs {
 }
 
 #[derive(Debug, Args)]
-struct ShareSkillsArgs {
-    /// Include skill file contents, truncated per skill.
-    #[arg(long)]
-    include_content: bool,
-    /// Maximum characters per skill when --include-content is used.
-    #[arg(long, default_value_t = 2000)]
-    max_chars_per_skill: usize,
-}
-
-#[derive(Debug, Args)]
 struct OpenToolArgs {
     /// Tool name, case-insensitive. Falls back to substring matching.
     name: String,
@@ -1585,9 +1559,33 @@ struct AcceptMemoryArgs {
 struct ShareChatArgs {
     /// Session id, source id, or unambiguous title fragment.
     id: String,
-    /// Emit raw context only instead of a memory-extraction prompt.
+    /// Promotion style. Defaults to a local summary.
+    #[arg(long, value_enum, default_value_t = ShareChatsMode::Summary)]
+    mode: ShareChatsMode,
+    /// Maximum characters to include from the session body.
+    #[arg(long, default_value_t = 4000)]
+    max_chars_per_chat: usize,
+    /// Maximum memories the model should return for --mode merge.
+    #[arg(long, default_value_t = 20)]
+    max_memories: usize,
+    /// Archive the source session row after --mode merge writes memories successfully.
     #[arg(long)]
-    context_only: bool,
+    archive: bool,
+    /// Print the merge prompt instead of running the model, writing memories, or archiving.
+    #[arg(long)]
+    dry_run: bool,
+    /// Agent profile name for --mode merge.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// Model to use for --mode merge. Prefix with copilot/ to use GitHub Copilot.
+    #[arg(long)]
+    model: Option<String>,
+    /// Provider API token for --mode merge. For copilot/* models, this is a Copilot API token.
+    #[arg(long = "api-key")]
+    api_key: Option<String>,
+    /// Provider endpoint/base URL for --mode merge.
+    #[arg(long = "base-url")]
+    base_url: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1603,43 +1601,19 @@ struct ShareChatsArgs {
     /// Maximum number of sessions to include unless --all or explicit ids are used.
     #[arg(long, default_value_t = 10)]
     limit: usize,
-    /// Include every matching chat. Use deliberately; this can produce a large prompt.
+    /// Include every matching session. Use deliberately; this can produce a large prompt.
     #[arg(long)]
     all: bool,
     /// Prompt style for the grouped sessions.
-    #[arg(long, value_enum, default_value_t = ShareChatsMode::Patterns)]
+    #[arg(long, value_enum, default_value_t = ShareChatsMode::Summary)]
     mode: ShareChatsMode,
-    /// Emit bundled session context only, without summary/pattern/memory instructions.
-    #[arg(long)]
-    context_only: bool,
-    /// Maximum characters to include from each chat body.
-    #[arg(long, default_value_t = 4000)]
-    max_chars_per_chat: usize,
-}
-
-#[derive(Debug, Args)]
-struct ShareMergeArgs {
-    /// Optional session ids, source ids, or unambiguous title fragments to include.
-    ids: Vec<String>,
-    /// Filter by source, for example: opencode.
-    #[arg(long)]
-    source: Option<String>,
-    /// Filter sessions by id, title, source metadata, path, or content.
-    #[arg(long)]
-    query: Option<String>,
-    /// Maximum number of sessions to include unless --all or explicit ids are used.
-    #[arg(long, default_value_t = 50)]
-    limit: usize,
-    /// Include every matching chat. Use deliberately; this can produce a large prompt.
-    #[arg(long)]
-    all: bool,
-    /// Maximum characters to include from each chat body.
+    /// Maximum characters to include from each session body.
     #[arg(long, default_value_t = 4000)]
     max_chars_per_chat: usize,
     /// Maximum memories the model should return.
     #[arg(long, default_value_t = 20)]
     max_memories: usize,
-    /// Archive selected session rows after memories are written successfully.
+    /// Archive selected session rows after --mode merge writes memories successfully.
     #[arg(long)]
     archive: bool,
     /// Print the merge prompt instead of running the model, writing memories, or archiving.
@@ -1664,9 +1638,11 @@ enum ShareChatsMode {
     /// Ask the agent to summarize the grouped sessions.
     Summary,
     /// Ask the agent to find recurring patterns across sessions.
-    Patterns,
+    Pattern,
     /// Ask the agent to propose durable memory commands from cross-chat patterns.
     Memories,
+    /// Run the model and write durable memories from selected sessions.
+    Merge,
 }
 
 #[derive(Debug, Args)]
@@ -2098,24 +2074,8 @@ fn run_ingest(args: IngestArgs) -> Result<()> {
 
 fn run_promote(args: PromoteArgs) -> Result<()> {
     match args.noun {
-        PromoteNoun::Tools(scope) => {
-            let roots = tool_roots(scope.roots);
-            let entries = scan_tools(&roots)?;
-            println!("{}", format_tools_context(&entries));
-            Ok(())
-        }
-        PromoteNoun::Context => {
-            let records = memory_store().list()?;
-            println!("{}", format_memories_context(&records));
-            Ok(())
-        }
-        PromoteNoun::Suggestions => promote_suggestions(),
-        PromoteNoun::Ideas => promote_ideas(),
-        PromoteNoun::Skills(args) => promote_skills(args),
         PromoteNoun::Session(args) => promote_session(args),
         PromoteNoun::Sessions(args) => promote_sessions(args),
-        PromoteNoun::Merge(args) => promote_merge(args),
-        PromoteNoun::Memory(args) | PromoteNoun::Memories(args) => review_memories(args),
     }
 }
 
@@ -9136,7 +9096,7 @@ fn run_tui_in_session(
         });
     }
     if let djinn_tui::TuiAction::PromoteSessions(request) = &action {
-        if request.mode == djinn_tui::SessionPromoteMode::Summary && !request.context_only {
+        if request.mode == djinn_tui::SessionPromoteMode::Summary {
             let id = create_chat_summary_agent_session(request)?;
             return Ok(TuiRunOutcome::OpenAgentChat {
                 resume: Some(id.to_string()),
@@ -9164,8 +9124,14 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
             limit: 10,
             all: false,
             mode: promote_sessions_mode_from_tui(request.mode),
-            context_only: request.context_only,
             max_chars_per_chat: 4000,
+            max_memories: 20,
+            archive: false,
+            dry_run: false,
+            profile: "default".to_string(),
+            model: None,
+            api_key: None,
+            base_url: None,
         })
         .map(|_| false),
         djinn_tui::TuiAction::ReviewMemory(id) => accept_memory(AcceptMemoryArgs {
@@ -9194,8 +9160,14 @@ fn create_chat_summary_agent_session(
         limit: 10,
         all: false,
         mode: ShareChatsMode::Summary,
-        context_only: false,
         max_chars_per_chat: 4000,
+        max_memories: 20,
+        archive: false,
+        dry_run: false,
+        profile: "default".to_string(),
+        model: None,
+        api_key: None,
+        base_url: None,
     };
     let records = chat_store().list()?;
     let selected = select_chats_for_share(&records, &args)?;
@@ -9534,7 +9506,7 @@ fn default_agent_chat_args() -> AgentChatArgs {
 fn promote_sessions_mode_from_tui(mode: djinn_tui::SessionPromoteMode) -> ShareChatsMode {
     match mode {
         djinn_tui::SessionPromoteMode::Summary => ShareChatsMode::Summary,
-        djinn_tui::SessionPromoteMode::Patterns => ShareChatsMode::Patterns,
+        djinn_tui::SessionPromoteMode::Pattern => ShareChatsMode::Pattern,
         djinn_tui::SessionPromoteMode::Memories => ShareChatsMode::Memories,
     }
 }
@@ -10314,51 +10286,6 @@ fn save_opencode_watch_state(state: &OpencodeWatchState) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
-fn format_opencode_watcher_state_for_ideas() -> String {
-    match load_opencode_watch_state() {
-        Ok(state) if state.sessions.is_empty() => "No OpenCode sessions tracked yet.".to_string(),
-        Ok(state) => {
-            let mut out = format!("Tracked sessions: {}\n", state.sessions.len());
-            for (idx, (session_id, session)) in state.sessions.iter().take(20).enumerate() {
-                let bridge = if session.djinn_session_id.is_empty() {
-                    String::new()
-                } else {
-                    format!(", djinn {}", session.djinn_session_id)
-                };
-                out.push_str(&format!(
-                    "  {}. {} -> chat {} ({}, imported {}{})\n",
-                    idx + 1,
-                    session_id,
-                    if session.chat_id.is_empty() {
-                        "unknown"
-                    } else {
-                        &session.chat_id
-                    },
-                    if session.title.is_empty() {
-                        "untitled"
-                    } else {
-                        &session.title
-                    },
-                    if session.imported_at.is_empty() {
-                        "unknown"
-                    } else {
-                        &session.imported_at
-                    },
-                    bridge
-                ));
-            }
-            if state.sessions.len() > 20 {
-                out.push_str(&format!(
-                    "... {} more tracked sessions omitted ...\n",
-                    state.sessions.len() - 20
-                ));
-            }
-            out
-        }
-        Err(err) => format!("Watcher state unavailable: {err}"),
-    }
-}
-
 fn content_hash(content: &str) -> String {
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
@@ -10485,8 +10412,14 @@ fn archive_chats(args: ArchiveChatsArgs) -> Result<()> {
         limit: args.limit,
         all: args.all,
         mode: ShareChatsMode::Summary,
-        context_only: true,
         max_chars_per_chat: 0,
+        max_memories: 20,
+        archive: false,
+        dry_run: false,
+        profile: "default".to_string(),
+        model: None,
+        api_key: None,
+        base_url: None,
     };
     let selected = select_chats_for_share(&records, &selection_args)?;
     if args.dry_run {
@@ -11426,111 +11359,46 @@ fn search_chats(query: &str) -> Result<()> {
     Ok(())
 }
 
-fn promote_ideas() -> Result<()> {
-    let memories = memory_store().list()?;
-    let chats = chat_store().list()?;
-    let tools = scan_tools(&tool_roots(Vec::new()))?;
-    let watcher_state = format_ideas_pipeline_context(
-        &idea_store().list()?,
-        &action_store().list()?,
-        &format_opencode_watcher_state_for_ideas(),
-    );
-    println!(
-        "{}",
-        djinn_suggest::build_prompt_with_pipeline(&memories, &chats, &tools, &watcher_state)
-    );
-    Ok(())
-}
-
-fn promote_suggestions() -> Result<()> {
-    let records = suggestion_store().list()?;
-    println!("{}", format_suggestions_context(&records));
-    Ok(())
-}
-
-fn format_ideas_pipeline_context(
-    ideas: &[IdeaRecord],
-    actions: &[ActionRecord],
-    watcher_state: &str,
-) -> String {
-    let mut out = String::new();
-    out.push_str("## Saved ideas\n");
-    if ideas.is_empty() {
-        out.push_str("No saved ideas.\n");
-    } else {
-        for idea in ideas.iter().take(50) {
-            out.push_str(&format!(
-                "- [{}] {}{}\n",
-                idea.id,
-                idea.text,
-                format_idea_suffix(idea)
-            ));
-        }
-    }
-    out.push_str("\n## Open actions\n");
-    if actions.is_empty() {
-        out.push_str("No open actions.\n");
-    } else {
-        for action in actions
-            .iter()
-            .filter(|action| !action.status.eq_ignore_ascii_case("done"))
-            .take(50)
-        {
-            out.push_str(&format!(
-                "- [{}] {}{}\n",
-                action.id,
-                action.text,
-                format_action_suffix(action)
-            ));
-        }
-    }
-    out.push_str("\n## Watcher state\n");
-    out.push_str(watcher_state);
-    out
-}
-
-fn promote_skills(args: ShareSkillsArgs) -> Result<()> {
-    let records = skill_records()?;
-    println!("{}", format_skills_context(&records, &args));
-    Ok(())
-}
-
 fn promote_session(args: ShareChatArgs) -> Result<()> {
-    let records = chat_store().list()?;
-    let record = resolve_chat(&records, &args.id)?;
-    if args.context_only {
-        println!("{}", format_chat_context(record));
-    } else {
-        let memories = memory_store().list()?;
-        println!(
-            "{}",
-            format_chat_memory_extraction_prompt(record, &memories)
-        );
-    }
-    Ok(())
+    promote_sessions(ShareChatsArgs {
+        ids: vec![args.id],
+        source: None,
+        query: None,
+        limit: 1,
+        all: false,
+        mode: args.mode,
+        max_chars_per_chat: args.max_chars_per_chat,
+        max_memories: args.max_memories,
+        archive: args.archive,
+        dry_run: args.dry_run,
+        profile: args.profile,
+        model: args.model,
+        api_key: args.api_key,
+        base_url: args.base_url,
+    })
 }
 
 fn promote_sessions(args: ShareChatsArgs) -> Result<()> {
+    if args.mode == ShareChatsMode::Merge {
+        return promote_merge(args);
+    }
     let records = chat_store().list()?;
     let selected = select_chats_for_share(&records, &args)?;
-    if args.context_only {
-        println!("{}", format_chats_context(&selected, &args));
-    } else {
-        match args.mode {
-            ShareChatsMode::Summary => println!("{}", format_chats_summary(&selected, &args)),
-            ShareChatsMode::Patterns | ShareChatsMode::Memories => {
-                let memories = memory_store().list()?;
-                println!(
-                    "{}",
-                    format_chats_review_prompt(&selected, &args, &memories)
-                );
-            }
+    match args.mode {
+        ShareChatsMode::Summary => println!("{}", format_chats_summary(&selected, &args)),
+        ShareChatsMode::Pattern | ShareChatsMode::Memories => {
+            let memories = memory_store().list()?;
+            println!(
+                "{}",
+                format_chats_review_prompt(&selected, &args, &memories)
+            );
         }
+        ShareChatsMode::Merge => unreachable!("merge mode handled above"),
     }
     Ok(())
 }
 
-fn promote_merge(args: ShareMergeArgs) -> Result<()> {
+fn promote_merge(args: ShareChatsArgs) -> Result<()> {
     let records = chat_store().list()?;
     let selected = select_chats_for_merge(&records, &args)?;
     let prompt = format_chats_merge_prompt(&selected, &args);
@@ -11603,7 +11471,6 @@ fn promote_merge(args: ShareMergeArgs) -> Result<()> {
 
 fn build_promote_chats_prompt(mut args: ShareChatsArgs) -> Result<String> {
     args.mode = ShareChatsMode::Memories;
-    args.context_only = false;
     let records = chat_store().list()?;
     let selected = select_chats_for_share(&records, &args)?;
     let memories = memory_store().list()?;
@@ -11631,8 +11498,14 @@ fn review_chats(args: ReviewChatsArgs) -> Result<()> {
         limit: args.limit,
         all: args.all,
         mode: ShareChatsMode::Memories,
-        context_only: false,
         max_chars_per_chat: 4000,
+        max_memories: 20,
+        archive: false,
+        dry_run: false,
+        profile: "default".to_string(),
+        model: None,
+        api_key: None,
+        base_url: None,
     })?;
 
     if args.dry_run {
@@ -11815,139 +11688,6 @@ fn open_editor_at(path: &Path, line: usize, editor: Option<String>) -> Result<()
     Ok(())
 }
 
-fn format_tools_context(entries: &[ToolEntry]) -> String {
-    let mut out = String::from("# Local Tools\n\nThese local tools are available to the user:\n\n");
-    if entries.is_empty() {
-        out.push_str("No local tools discovered.\n");
-        return out;
-    }
-    for entry in entries {
-        out.push_str(&format!(
-            "- `{}`: {}\n  Source: {}:{}\n",
-            entry.name,
-            entry.description,
-            entry.path.display(),
-            entry.line
-        ));
-    }
-    out.push_str("\nPrefer these existing local tools before inventing new scripts.\n");
-    out
-}
-
-fn format_skills_context(records: &[SkillRecord], args: &ShareSkillsArgs) -> String {
-    let mut out = String::from("# Local Agent Skills\n\nThese reusable local workflows are available to the user/agent environment. Prefer an existing skill when it matches the task instead of inventing a new procedure.\n\n");
-    if records.is_empty() {
-        out.push_str("No skills discovered.\n");
-        return out;
-    }
-    for record in records {
-        out.push_str(&format!(
-            "- `{}`: {}\n  Source: {}\n  Path: {}\n  Managed by Djinn: {}\n",
-            record.name,
-            if record.description.is_empty() {
-                "No description"
-            } else {
-                record.description.as_str()
-            },
-            record.source,
-            record.path.display(),
-            if record.managed { "yes" } else { "no" }
-        ));
-        if args.include_content {
-            match read_skill_content(record) {
-                Ok(content) => {
-                    out.push_str("  Instructions preview:\n\n```markdown\n");
-                    out.push_str(&truncate(&content, args.max_chars_per_skill));
-                    if content.chars().count() > args.max_chars_per_skill {
-                        out.push_str(&format!(
-                            "\n... skill content truncated to {} chars ...\n",
-                            args.max_chars_per_skill
-                        ));
-                    }
-                    out.push_str("```\n");
-                }
-                Err(error) => {
-                    out.push_str(&format!("  Instructions preview unavailable: {error}\n"));
-                }
-            }
-        }
-    }
-    out.push_str("\nUse `djinn show skill <name>` to inspect a skill before relying on it.\n");
-    out
-}
-
-fn format_memories_context(records: &[MemoryRecord]) -> String {
-    let mut out = String::from("# Djinn Memories\n\n");
-    if records.is_empty() {
-        out.push_str("No memories recorded.\n");
-        return out;
-    }
-    for record in records {
-        out.push_str(&format!("- `[{}]` {}\n", record.id, record.text));
-        let mut details = Vec::new();
-        if !record.scope.trim().is_empty() {
-            details.push(format!("scope: {}", record.scope));
-        }
-        if !record.kind.trim().is_empty() {
-            details.push(format!("kind: {}", record.kind));
-        }
-        if !record.confidence.trim().is_empty() {
-            details.push(format!("confidence: {}", record.confidence));
-        }
-        if !record.not_before.trim().is_empty() {
-            details.push(format!("not-before: {}", record.not_before));
-        }
-        if !record.sources.is_empty() {
-            details.push(format!("sources: {}", record.sources.len()));
-        }
-        if !details.is_empty() {
-            out.push_str(&format!("  Metadata: {}\n", details.join(", ")));
-        }
-        if !record.evidence.is_empty() {
-            out.push_str("  Evidence:\n");
-            for evidence in record.evidence.iter().take(3) {
-                out.push_str(&format!("  - {}\n", evidence));
-            }
-            if record.evidence.len() > 3 {
-                out.push_str(&format!(
-                    "  - ... {} more evidence items omitted ...\n",
-                    record.evidence.len() - 3
-                ));
-            }
-        }
-    }
-    out
-}
-
-fn format_suggestions_context(records: &[SuggestionRecord]) -> String {
-    let mut out = String::from("# Djinn Suggestions\n\n");
-    out.push_str("Suggestions are review outcomes and todo-like next steps. They are removed when accepted/done or rejected.\n\n");
-    if records.is_empty() {
-        out.push_str("No open suggestions recorded.\n");
-        return out;
-    }
-    for record in records {
-        out.push_str(&format!("- `[{}]` {}\n", record.id, record.text));
-        let mut details = Vec::new();
-        if !record.target.trim().is_empty() {
-            details.push(format!("target: {}", record.target));
-        }
-        if !record.status.trim().is_empty() {
-            details.push(format!("status: {}", record.status));
-        }
-        if !record.sources.is_empty() {
-            details.push(format!("sources: {}", record.sources.len()));
-        }
-        if !details.is_empty() {
-            out.push_str(&format!("  Metadata: {}\n", details.join(", ")));
-        }
-        if !record.rationale.trim().is_empty() {
-            out.push_str(&format!("  Rationale: {}\n", record.rationale));
-        }
-    }
-    out
-}
-
 fn format_memory_review_prompt(
     memories: &[MemoryRecord],
     suggestions: &[SuggestionRecord],
@@ -12036,102 +11776,6 @@ fn format_memory_review_prompt(
     out
 }
 
-fn format_chat_context(record: &ChatRecord) -> String {
-    let mut out = format!(
-        "# Djinn Chat\n\n- ID: `{}`\n- Title: {}\n- Created: {}\n",
-        record.id, record.title, record.created_at
-    );
-    if !record.source_path.trim().is_empty() {
-        out.push_str(&format!("- Source path: {}\n", record.source_path));
-    }
-    if !record.source.trim().is_empty() {
-        out.push_str(&format!("- Source type: {}\n", record.source));
-    }
-    if !record.source_id.trim().is_empty() {
-        out.push_str(&format!("- Source ID: {}\n", record.source_id));
-    }
-    out.push_str("\nUse this chat as source context for the next agent action.\n\n");
-    out.push_str("## Session Content\n\n```text\n");
-    out.push_str(&record.content);
-    if !record.content.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str("```\n");
-    out
-}
-
-fn format_chat_memory_extraction_prompt(record: &ChatRecord, memories: &[MemoryRecord]) -> String {
-    let mut out = format!(
-        "# Djinn Session Memory Extraction\n\nYou are reviewing a Djinn session. Extract durable memories only when they are reusable in future work.\n\n## Session Metadata\n\n- ID: `{}`\n- Title: {}\n- Created: {}\n",
-        record.id, record.title, record.created_at
-    );
-    if !record.source.trim().is_empty() {
-        out.push_str(&format!("- Source type: {}\n", record.source));
-    }
-    if !record.source_id.trim().is_empty() {
-        out.push_str(&format!("- Source ID: {}\n", record.source_id));
-    }
-    if !record.source_path.trim().is_empty() {
-        out.push_str(&format!("- Source path: {}\n", record.source_path));
-    }
-
-    out.push_str(
-        "\n## Extraction Guidelines\n\nExtract active memories for:\n\n- user preferences and corrections\n- repeated workflows or tool choices\n- project-specific conventions\n- safety constraints or gotchas\n- reusable debugging/implementation patterns\n\nDo not extract:\n\n- one-off task status\n- secrets, credentials, tokens, private URLs, or sensitive raw data\n- facts that are already captured in existing memories\n- noisy transcript details that will not help future agents\n\nReturn only a short reviewed list of shell commands the user can run manually. Include enough metadata and copied evidence that the memory remains understandable even if the source chat is deleted later. Use `--not-before YYYY-MM-DD` when a true memory should not drive actions until a future date. Prefer this form:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"User explicitly corrected the agent to ...\" --source-chat CHAT_ID\n```\n\nIf there are no durable lessons, say: `No durable memories recommended.`\n",
-    );
-
-    out.push_str("\n## Existing Memories\n\n```text\n");
-    if memories.is_empty() {
-        out.push_str("No existing memories recorded.\n");
-    } else {
-        for record in memories.iter().take(100) {
-            out.push_str(&format!("- [{}] {}\n", record.id, record.text));
-        }
-        if memories.len() > 100 {
-            out.push_str(&format!(
-                "... {} more memories omitted ...\n",
-                memories.len() - 100
-            ));
-        }
-    }
-    out.push_str("```\n\n## Session Content\n\n```text\n");
-    out.push_str(&record.content);
-    if !record.content.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str("```\n");
-    out
-}
-
-fn format_chats_context(records: &[ChatRecord], args: &ShareChatsArgs) -> String {
-    let mut out = String::from("# Djinn Sessions Bundle\n\n");
-    out.push_str(&format!("- Session count: {}\n", records.len()));
-    if let Some(source) = args
-        .source
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        out.push_str(&format!("- Source filter: {source}\n"));
-    }
-    if let Some(query) = args
-        .query
-        .as_deref()
-        .map(str::trim)
-        .filter(|q| !q.is_empty())
-    {
-        out.push_str(&format!("- Query filter: {query}\n"));
-    }
-    if !args.all && args.ids.is_empty() {
-        out.push_str(&format!(
-            "- Limit: latest {} matching sessions\n",
-            args.limit
-        ));
-    }
-    out.push_str("\nUse these sessions together as source context for the next agent action.\n");
-    append_chats_bundle(&mut out, records, args.max_chars_per_chat);
-    out
-}
-
 fn format_chats_summary(records: &[ChatRecord], args: &ShareChatsArgs) -> String {
     let mut out = String::from("# Djinn Session Summary\n\n");
     out.push_str("This is a local digest of the selected sessions. No model was run.\n\n");
@@ -12196,7 +11840,7 @@ fn format_chats_summary(records: &[ChatRecord], args: &ShareChatsArgs) -> String
     out
 }
 
-fn format_chats_merge_prompt(records: &[ChatRecord], args: &ShareMergeArgs) -> String {
+fn format_chats_merge_prompt(records: &[ChatRecord], args: &ShareChatsArgs) -> String {
     let mut out = String::from("You are promoting Djinn sessions into durable memories.\n\n");
     out.push_str("Group related sessions by topic/workflow. Distill only durable, reusable memories that should become active immediately. Do not create an inbox, candidates, suggestions, or todos. If there is no durable lesson, return an empty memories array.\n\n");
     out.push_str("Return strict JSON only, with this shape:\n\n");
@@ -12228,17 +11872,7 @@ fn format_chats_merge_prompt(records: &[ChatRecord], args: &ShareMergeArgs) -> S
     out.push_str("- Preserve provenance with source_chat_ids.\n");
     out.push_str("- If sanitized exports hide content, only create memories supported by readable metadata/text.\n");
 
-    let share_args = ShareChatsArgs {
-        ids: args.ids.clone(),
-        source: args.source.clone(),
-        query: args.query.clone(),
-        limit: args.limit,
-        all: args.all,
-        mode: ShareChatsMode::Memories,
-        context_only: true,
-        max_chars_per_chat: args.max_chars_per_chat,
-    };
-    append_chats_bundle(&mut out, records, share_args.max_chars_per_chat);
+    append_chats_bundle(&mut out, records, args.max_chars_per_chat);
     out
 }
 
@@ -12402,17 +12036,17 @@ fn format_chats_review_prompt(
     args: &ShareChatsArgs,
     memories: &[MemoryRecord],
 ) -> String {
-    let mut out = String::from("# Djinn Multi-Chat Review\n\n");
+    let mut out = String::from("# Djinn Multi-Session Review\n\n");
     out.push_str("You are reviewing a bundle of Djinn sessions. Treat them as a corpus, not as isolated transcripts.\n\n");
     out.push_str("## Review Goal\n\n");
     match args.mode {
         ShareChatsMode::Summary => out.push_str(
             "Summarize the selected sessions. Identify the main themes, decisions, outcomes, unresolved follow-ups, and any stale assumptions. Keep the summary useful for resuming work.\n",
         ),
-        ShareChatsMode::Patterns => out.push_str(
+        ShareChatsMode::Pattern => out.push_str(
             "Identify recurring patterns across the selected sessions: user preferences, repeated corrections, tool/workflow choices, project conventions, safety gotchas, friction points, and implementation habits. Separate high-confidence repeated patterns from one-off observations.\n",
         ),
-        ShareChatsMode::Memories => out.push_str(
+        ShareChatsMode::Memories | ShareChatsMode::Merge => out.push_str(
             "Propose durable memories only when they are reusable in future work and supported by repeated patterns or explicit user instructions. Return reviewed shell commands the user can run manually; do not invent memories from weak one-off evidence.\n",
         ),
     }
@@ -12421,17 +12055,17 @@ fn format_chats_review_prompt(
         ShareChatsMode::Summary => out.push_str(
             "Return Markdown with sections: `Summary`, `Decisions`, `Open Follow-ups`, and `Potential Memories`. Do not write memories automatically.\n",
         ),
-        ShareChatsMode::Patterns => out.push_str(
+        ShareChatsMode::Pattern => out.push_str(
             "Return Markdown with sections: `High-confidence Patterns`, `Possible One-offs`, `Workflow Opportunities`, and `Reviewable Memories`. Do not write memories automatically.\n",
         ),
-        ShareChatsMode::Memories => out.push_str(
+        ShareChatsMode::Memories | ShareChatsMode::Merge => out.push_str(
             "Return only a short reviewed list of commands. Include scope, kind, confidence, copied evidence, and source session pointers when available. Use `--not-before YYYY-MM-DD` when a memory should not drive suggestions/actions until later. Use this form:\n\n```bash\ndjinn add memory \"...\" --scope project --kind preference --confidence high --not-before 2026-10-01 --evidence \"Repeated evidence from the reviewed sessions ...\" --source-chat SESSION_ID\n```\n\nIf there are no durable lessons, say: `No durable memories recommended.`\n",
         ),
     }
     out.push_str("\nDo not include secrets, credentials, tokens, private URLs, or sensitive raw data. Avoid duplicating existing memories.\n");
 
     out.push_str("\n## Selection Metadata\n\n");
-    out.push_str(&format!("- Chat count: {}\n", records.len()));
+    out.push_str(&format!("- Session count: {}\n", records.len()));
     out.push_str(&format!("- Mode: {:?}\n", args.mode));
     if let Some(source) = args
         .source
@@ -12943,21 +12577,9 @@ fn select_chats_for_share(
 
 fn select_chats_for_merge(
     records: &[ChatRecord],
-    args: &ShareMergeArgs,
+    args: &ShareChatsArgs,
 ) -> Result<Vec<ChatRecord>> {
-    select_chats_for_share(
-        records,
-        &ShareChatsArgs {
-            ids: args.ids.clone(),
-            source: args.source.clone(),
-            query: args.query.clone(),
-            limit: args.limit,
-            all: args.all,
-            mode: ShareChatsMode::Memories,
-            context_only: false,
-            max_chars_per_chat: args.max_chars_per_chat,
-        },
-    )
+    select_chats_for_share(records, args)
 }
 
 fn resolve_chat<'a>(records: &'a [ChatRecord], id: &str) -> Result<&'a ChatRecord> {
@@ -13372,9 +12994,15 @@ mod tests {
             query: None,
             limit: 10,
             all: false,
-            mode: ShareChatsMode::Patterns,
-            context_only: false,
+            mode: ShareChatsMode::Summary,
             max_chars_per_chat: 4000,
+            max_memories: 20,
+            archive: false,
+            dry_run: false,
+            profile: "default".to_string(),
+            model: None,
+            api_key: None,
+            base_url: None,
         }
     }
 
@@ -14839,7 +14467,7 @@ mod tests {
         assert_eq!(args.file, PathBuf::from("./session.md"));
 
         let cli = Cli::try_parse_from([
-            "djinn", "promote", "sessions", "--source", "opencode", "--mode", "patterns",
+            "djinn", "promote", "sessions", "--source", "opencode", "--mode", "pattern",
         ])
         .unwrap();
         let Some(Command::Promote(args)) = cli.command else {
@@ -14849,7 +14477,7 @@ mod tests {
             panic!("expected promote sessions command");
         };
         assert_eq!(args.source.as_deref(), Some("opencode"));
-        assert_eq!(args.mode, ShareChatsMode::Patterns);
+        assert_eq!(args.mode, ShareChatsMode::Pattern);
 
         assert!(Cli::try_parse_from(["djinn", "share", "chats"]).is_err());
     }
@@ -16435,12 +16063,13 @@ mod tests {
             "manual",
             "Prefer using the local wrapper for repeatable tasks.",
         )];
-        let args = ShareMergeArgs {
+        let args = ShareChatsArgs {
             ids: Vec::new(),
             source: None,
             query: None,
             limit: 50,
             all: false,
+            mode: ShareChatsMode::Merge,
             max_chars_per_chat: 4000,
             max_memories: 5,
             archive: true,
@@ -16606,7 +16235,7 @@ mod tests {
         let mut args = default_share_chats_args();
         args.mode = ShareChatsMode::Memories;
         let prompt = format_chats_review_prompt(&records, &args, &[]);
-        assert!(prompt.contains("# Djinn Multi-Chat Review"));
+        assert!(prompt.contains("# Djinn Multi-Session Review"));
         assert!(prompt.contains("djinn add memory"));
         assert!(prompt.contains("Prefer uv here"));
     }

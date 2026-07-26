@@ -62,7 +62,6 @@ djinn list tools
 djinn list tools --root ~/.dotfiles --root ~/.local/bin
 djinn show tool gs
 djinn open tool gs --editor nvim
-djinn promote tools
 djinn index tools
 ```
 
@@ -86,25 +85,24 @@ djinn status opencode
 djinn uninstall opencode
 ```
 
-Promotion emits reusable session context. In the TUI, choosing `summary` from the
-Sessions picker opens an Agent chat seeded with the selected session context so you can
-ask follow-up questions conversationally. In the CLI, `--mode summary` prints a
-local, human-facing digest and does not run a model. `--mode patterns` and
-`--mode memories`, plus promotion/review commands, emit agent-ready prompts
-without writing memories automatically. For OpenCode exports, Djinn renders a
-readable digest of message/tool parts instead of raw JSON when possible;
-sanitized exports may still have redacted message text.
+Promotion is session-focused. In the TUI, choosing `summary` from the Sessions
+picker opens an Agent chat seeded with the selected session context so you can ask
+follow-up questions conversationally. In the CLI, `--mode summary` prints a local,
+human-facing digest and does not run a model. `--mode pattern` and `--mode
+memories` emit agent-ready prompts without writing memories automatically. For
+OpenCode exports, Djinn renders a readable digest of message/tool parts instead of
+raw JSON when possible; sanitized exports may still have redacted message text.
 
-`djinn promote merge` is the cleanup-oriented path: it asks the model to group the
-selected sessions and distill durable lessons into active memories directly. It does
-not create a memory inbox/candidate queue. With `--archive`, source session rows
-are archived only after memory writes succeed.
+`--mode merge` is the cleanup-oriented promotion mode: it asks the model to group
+the selected sessions and distill durable lessons into active memories directly.
+It does not create a memory inbox/candidate queue. With `--archive`, source
+session rows are archived only after memory writes succeed.
 
 ```bash
 djinn promote session debugging-session
-djinn promote sessions --source opencode --limit 20 --mode patterns
-djinn promote merge --source opencode --limit 50 --dry-run
-djinn promote merge --source opencode --limit 50 --archive
+djinn promote sessions --source opencode --limit 20 --mode pattern
+djinn promote sessions --source opencode --limit 50 --mode merge --dry-run
+djinn promote sessions --source opencode --limit 50 --mode merge --archive
 djinn archive sessions --source opencode --limit 50 --dry-run
 djinn archive sessions --source opencode --limit 50 --force
 djinn archive list
@@ -159,7 +157,6 @@ djinn add suggestion "Create a Python tooling preference skill." \
   --source-memory prefer-uv
 djinn list suggestions
 djinn show suggestion python-tooling-preference
-djinn promote suggestions
 djinn accept suggestion python-tooling-preference
 djinn reject suggestion stale-suggestion
 ```
@@ -183,8 +180,8 @@ djinn add memory "Revisit context-heavy workflows after the workflow matures." \
   --evidence "User wants this remembered but not acted on yet."
 ```
 
-`djinn promote ideas` separates future-dated memories into deferred sections and
-instructs the agent not to act on them before their date.
+Memory review respects future-dated memories and instructs the agent not to act on
+them before their date.
 
 ## Skills
 
@@ -202,7 +199,6 @@ Commands:
 ```bash
 djinn list skills
 djinn show skill go-change-safety
-djinn promote skills --include-content
 djinn add skill "release-checklist" --description "Safe release workflow."
 djinn rm skill release-checklist
 ```
@@ -269,12 +265,7 @@ Keybindings:
 - Skills: `Enter` opens the selected skill.
 - `q`/`Esc`: quit.
 
-## Strategic prompt
-
-`djinn promote ideas` is the planning layer. It reviews memories, suggestions,
-sessions, OpenCode watcher state, and local tools, then asks for cleanup,
-additional review, sessions to promote, tooling/skill ideas, and prioritized next
-actions.
+## Memory review
 
 For focused memory cleanup, use the review verb:
 
