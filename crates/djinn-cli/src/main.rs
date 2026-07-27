@@ -42,6 +42,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
+const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -1469,7 +1470,7 @@ struct AgentAskArgs {
     #[arg(long = "base-url")]
     base_url: Option<String>,
     /// Maximum model/tool-call rounds before stopping.
-    #[arg(long = "max-tool-rounds", default_value_t = 5)]
+    #[arg(long = "max-tool-rounds", default_value_t = DEFAULT_AGENT_MAX_TOOL_ROUNDS)]
     max_tool_rounds: usize,
     /// Output JSON instead of text.
     #[arg(long)]
@@ -1506,7 +1507,7 @@ struct AgentChatArgs {
     #[arg(long = "base-url")]
     base_url: Option<String>,
     /// Maximum model/tool-call rounds before stopping.
-    #[arg(long = "max-tool-rounds", default_value_t = 5)]
+    #[arg(long = "max-tool-rounds", default_value_t = DEFAULT_AGENT_MAX_TOOL_ROUNDS)]
     max_tool_rounds: usize,
 }
 
@@ -2359,7 +2360,7 @@ fn main() -> Result<()> {
                 model: None,
                 api_key: None,
                 base_url: None,
-                max_tool_rounds: 5,
+                max_tool_rounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
             });
         }
         Cli::command().print_help()?;
@@ -7084,6 +7085,7 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                 match command {
                     djinn_tui::AgentChatCommand::OpenHelp => {}
                     djinn_tui::AgentChatCommand::ToggleSidebar
+                    | djinn_tui::AgentChatCommand::ToggleThoughtDetail
                     | djinn_tui::AgentChatCommand::ScrollHalfPageUp
                     | djinn_tui::AgentChatCommand::ScrollHalfPageDown
                     | djinn_tui::AgentChatCommand::JumpFirstMessage
@@ -7319,7 +7321,10 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
             progress(
                 agent_chat_messages(&session)
                     .into_iter()
-                    .chain([agent_thought_message("Waiting for model response…")])
+                    .chain([agent_thought_message(initial_agent_thought_detail(
+                        &prompt,
+                        max_tool_rounds,
+                    ))])
                     .collect(),
                 "Waiting for model response…".to_string(),
             )?;
@@ -7345,7 +7350,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                 |event| {
                     let session = store.load_session(&id)?;
                     let mut messages = agent_chat_messages(&session);
-                    let notice = agent_progress_notice(&event);
+                    let notice = agent_progress_notice(&event, max_tool_rounds);
                     if let Some(reporter) = &kitsune_reporter {
                         reporter.report_state(
                             KitsuneAgentReportState::Working,
@@ -7353,7 +7358,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                             Some(&notice),
                         );
                     }
-                    if let Some(message) = agent_progress_message(&event) {
+                    if let Some(message) = agent_progress_message(&event, max_tool_rounds) {
                         messages.push(message);
                     }
                     progress(messages, notice)
@@ -10905,6 +10910,14 @@ fn agent_thought_message(content: impl Into<String>) -> djinn_tui::AgentChatMess
     }
 }
 
+fn initial_agent_thought_detail(prompt: &str, max_tool_rounds: usize) -> String {
+    format!(
+        "Waiting for model response…\nPrompt focus: {}\nTool-round safety cap: up to {max_tool_rounds} round{} before Djinn stops this turn; pass --max-tool-rounds N if you want a smaller bound.",
+        prompt_title(prompt, "(empty prompt)"),
+        plural_suffix(max_tool_rounds)
+    )
+}
+
 fn format_agent_error_message(phase: &str, message: &str, details: Option<&Value>) -> String {
     let mut lines = vec![format!("error [{phase}]: {message}")];
     if let Some(details) = details.filter(|value| !value.is_null()) {
@@ -10913,13 +10926,16 @@ fn format_agent_error_message(phase: &str, message: &str, details: Option<&Value
     lines.join("\n")
 }
 
-fn agent_progress_message(event: &AgentProgressEvent) -> Option<djinn_tui::AgentChatMessage> {
+fn agent_progress_message(
+    event: &AgentProgressEvent,
+    max_tool_rounds: usize,
+) -> Option<djinn_tui::AgentChatMessage> {
     match event {
-        AgentProgressEvent::ModelRequestStarted { round } => Some(agent_thought_message(format!(
-            "Planning next step{}…",
-            progress_round_suffix(*round)
-        ))),
+        AgentProgressEvent::ModelRequestStarted { round } => Some(agent_thought_message(
+            format_agent_model_request_thought(*round, max_tool_rounds),
+        )),
         AgentProgressEvent::ModelResponseCompleted {
+            round,
             elapsed_ms,
             tool_calls,
             has_message,
@@ -10936,8 +10952,12 @@ fn agent_progress_message(event: &AgentProgressEvent) -> Option<djinn_tui::Agent
                 "Completed model turn".to_string()
             };
             Some(agent_thought_message(format!(
-                "{label} · {}",
-                format_elapsed_ms(*elapsed_ms)
+                "{label} · {}\nTool-round safety cap: completed model request {} of {}; rounds used {}/{}.",
+                format_elapsed_ms(*elapsed_ms),
+                round.saturating_add(1),
+                max_tool_rounds.saturating_add(1),
+                *round,
+                max_tool_rounds,
             )))
         }
         AgentProgressEvent::ToolCallStarted { call, .. } => Some(agent_thought_message(format!(
@@ -10958,9 +10978,25 @@ fn agent_progress_message(event: &AgentProgressEvent) -> Option<djinn_tui::Agent
     }
 }
 
-fn agent_progress_notice(event: &AgentProgressEvent) -> String {
+fn format_agent_model_request_thought(round: usize, max_tool_rounds: usize) -> String {
+    format!(
+        "Planning next step{}…\nTool-round safety cap: model request {} of {}; rounds used {}/{}.\nDetail: the model is deciding whether to answer now or request another tool call; hidden reasoning is not exposed.",
+        progress_round_suffix(round),
+        round.saturating_add(1),
+        max_tool_rounds.saturating_add(1),
+        round,
+        max_tool_rounds,
+    )
+}
+
+fn agent_progress_notice(event: &AgentProgressEvent, max_tool_rounds: usize) -> String {
     match event {
-        AgentProgressEvent::ModelRequestStarted { .. } => "Planning next step…".to_string(),
+        AgentProgressEvent::ModelRequestStarted { round } => format!(
+            "Planning next step{} · tool-round cap {}/{}…",
+            progress_round_suffix(*round),
+            *round,
+            max_tool_rounds,
+        ),
         AgentProgressEvent::ModelResponseCompleted { tool_calls, .. } if *tool_calls > 0 => {
             format!(
                 "Planned {tool_calls} tool call{}.",
@@ -11809,7 +11845,7 @@ fn default_agent_chat_args() -> AgentChatArgs {
         model: None,
         api_key: None,
         base_url: None,
-        max_tool_rounds: 5,
+        max_tool_rounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
     }
 }
 
@@ -15927,6 +15963,7 @@ mod tests {
         };
         assert_eq!(args.agent.as_deref(), Some("reviewer"));
         assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
+        assert_eq!(args.max_tool_rounds, DEFAULT_AGENT_MAX_TOOL_ROUNDS);
         assert!(args.json);
 
         let cli = Cli::try_parse_from([
@@ -15937,6 +15974,8 @@ mod tests {
             "planner",
             "--parent-session",
             "agt_parent",
+            "--max-tool-rounds",
+            "8",
         ])
         .unwrap();
         let Some(Command::Agent(agent_args)) = cli.command else {
@@ -15947,6 +15986,7 @@ mod tests {
         };
         assert_eq!(args.agent.as_deref(), Some("planner"));
         assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
+        assert_eq!(args.max_tool_rounds, 8);
     }
 
     #[test]
@@ -17500,6 +17540,23 @@ mod tests {
         assert!(rendered.contains("2 retry attempts"));
         assert!(rendered.contains("tokens in 10/out 5/total 15"));
         assert!(rendered.contains("estimated cost $0.000060"));
+    }
+
+    #[test]
+    fn agent_progress_thoughts_surface_tool_budget_details() {
+        let event = AgentProgressEvent::ModelRequestStarted { round: 5 };
+
+        let message = agent_progress_message(&event, 12).unwrap();
+        let notice = agent_progress_notice(&event, 12);
+
+        assert!(message.content.contains("Planning next step (round 6)…"));
+        assert!(message.content.contains("model request 6 of 13"));
+        assert!(message.content.contains("Tool-round safety cap"));
+        assert!(message.content.contains("hidden reasoning is not exposed"));
+        assert_eq!(
+            notice,
+            "Planning next step (round 6) · tool-round cap 5/12…"
+        );
     }
 
     #[test]

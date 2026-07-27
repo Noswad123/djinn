@@ -3665,8 +3665,10 @@ where
                 return Ok(response);
             }
             if round == max_tool_rounds {
-                let message =
-                    format!("model requested tool calls after max tool rounds ({max_tool_rounds})");
+                let message = format!(
+                    "model requested tool calls after max tool rounds ({max_tool_rounds}); retry \
+                     with --max-tool-rounds N or ask for a narrower plan"
+                );
                 self.persist_error_event(
                     session,
                     "tool_round_limit",

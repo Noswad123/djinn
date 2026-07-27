@@ -342,6 +342,7 @@ impl GroupedSelectItem for AgentChatCommandEntry {
 pub enum AgentChatCommand {
     OpenHelp,
     ToggleSidebar,
+    ToggleThoughtDetail,
     ScrollHalfPageUp,
     ScrollHalfPageDown,
     JumpFirstMessage,
@@ -486,6 +487,28 @@ impl AgentToolDetailMode {
 
     fn is_full(self) -> bool {
         self == Self::Full
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentThoughtDetailMode {
+    Compact,
+    Detailed,
+}
+
+impl AgentThoughtDetailMode {
+    fn toggle(self) -> Self {
+        match self {
+            Self::Compact => Self::Detailed,
+            Self::Detailed => Self::Compact,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "compact thoughts",
+            Self::Detailed => "detailed thoughts",
+        }
     }
 }
 
@@ -859,8 +882,11 @@ where
                         terminal.draw(|frame| app.draw(frame))?;
 
                         let mut progress = |messages: Vec<AgentChatMessage>, notice: String| {
-                            app.messages = messages;
-                            app.status.notice = notice;
+                            app.replace_messages_preserving_follow(
+                                messages,
+                                notice,
+                                terminal.size()?.height,
+                            );
                             terminal.draw(|frame| app.draw(frame))?;
                             Ok(())
                         };
@@ -907,6 +933,7 @@ struct AgentChatComposerApp {
     sidebar_open: bool,
     render_mode: AgentChatRenderMode,
     tool_detail_mode: AgentToolDetailMode,
+    thought_detail_mode: AgentThoughtDetailMode,
 }
 
 const AGENT_CHAT_HEADER_HEIGHT: u16 = 3;
@@ -938,6 +965,7 @@ impl AgentChatComposerApp {
             sidebar_open: false,
             render_mode: AgentChatRenderMode::Markdown,
             tool_detail_mode: AgentToolDetailMode::Collapsed,
+            thought_detail_mode: AgentThoughtDetailMode::Compact,
         }
     }
 
@@ -949,6 +977,11 @@ impl AgentChatComposerApp {
     fn toggle_tool_detail_mode(&mut self) {
         self.tool_detail_mode = self.tool_detail_mode.toggle();
         self.status.notice = format!("Tool output display: {}.", self.tool_detail_mode.label());
+    }
+
+    fn toggle_thought_detail_mode(&mut self) {
+        self.thought_detail_mode = self.thought_detail_mode.toggle();
+        self.status.notice = format!("Thought display: {}.", self.thought_detail_mode.label());
     }
 
     fn open_help(&mut self) {
@@ -1023,6 +1056,11 @@ impl AgentChatComposerApp {
             }
             AgentChatCommand::ToggleSidebar => {
                 self.toggle_sidebar();
+                self.close_palette();
+                true
+            }
+            AgentChatCommand::ToggleThoughtDetail => {
+                self.toggle_thought_detail_mode();
                 self.close_palette();
                 true
             }
@@ -1255,6 +1293,7 @@ impl AgentChatComposerApp {
                     message,
                     self.render_mode,
                     self.tool_detail_mode,
+                    self.thought_detail_mode,
                     code_block_width,
                     Some(context),
                 )
@@ -1290,6 +1329,7 @@ impl AgentChatComposerApp {
             &self.status.notice,
             self.render_mode,
             self.tool_detail_mode,
+            self.thought_detail_mode,
             None,
             Some(context),
         )
@@ -1300,6 +1340,24 @@ impl AgentChatComposerApp {
 
     fn at_transcript_end(&self, transcript_area_height: u16) -> bool {
         self.transcript_scroll >= self.max_transcript_scroll(transcript_area_height)
+    }
+
+    fn following_transcript_end_for_terminal(&self, terminal_height: u16) -> bool {
+        self.transcript_scroll >= self.max_transcript_scroll_for_terminal(terminal_height)
+    }
+
+    fn replace_messages_preserving_follow(
+        &mut self,
+        messages: Vec<AgentChatMessage>,
+        notice: String,
+        terminal_height: u16,
+    ) {
+        let was_following_end = self.following_transcript_end_for_terminal(terminal_height);
+        self.messages = messages;
+        self.status.notice = notice;
+        if was_following_end {
+            self.jump_to_end(terminal_height);
+        }
     }
 
     fn message_render_context(&self) -> AgentChatMessageRenderContext<'_> {
@@ -1358,6 +1416,7 @@ impl AgentChatComposerApp {
             &self.status.notice,
             self.render_mode,
             self.tool_detail_mode,
+            self.thought_detail_mode,
             Some(chunks[1].width as usize),
             Some(self.message_render_context()),
         );
@@ -1384,9 +1443,10 @@ impl AgentChatComposerApp {
         frame.set_cursor_position(self.cursor_position(chunks[2]));
 
         let footer = format!(
-            "{} transcript • {} tool output • cwd {}",
+            "{} transcript • {} tool output • {} • cwd {}",
             self.render_mode.label(),
             self.tool_detail_mode.label(),
+            self.thought_detail_mode.label(),
             self.status.workspace
         );
         frame.render_widget(Clear, chunks[3]);
@@ -1744,6 +1804,14 @@ fn agent_chat_command_specs() -> Vec<AgentChatCommandSpec> {
             None,
         ),
         agent_chat_command_spec(
+            "Transcript",
+            "Toggle thought detail",
+            "show or hide extra progress details for model planning/tool rounds",
+            None,
+            None,
+            Some(AgentChatCommand::ToggleThoughtDetail),
+        ),
+        agent_chat_command_spec(
             "View",
             "Toggle context sidebar",
             "Show or hide the wide-terminal context sidebar",
@@ -1994,6 +2062,7 @@ fn agent_chat_transcript_lines(messages: &[AgentChatMessage], notice: &str) -> V
         notice,
         AgentChatRenderMode::Markdown,
         AgentToolDetailMode::Collapsed,
+        AgentThoughtDetailMode::Compact,
         None,
         None,
     )
@@ -2004,6 +2073,7 @@ fn agent_chat_transcript_lines_with_mode(
     notice: &str,
     render_mode: AgentChatRenderMode,
     tool_detail_mode: AgentToolDetailMode,
+    thought_detail_mode: AgentThoughtDetailMode,
     code_block_width: Option<usize>,
     context: Option<AgentChatMessageRenderContext<'_>>,
 ) -> Vec<Line<'static>> {
@@ -2019,6 +2089,7 @@ fn agent_chat_transcript_lines_with_mode(
                 message,
                 render_mode,
                 tool_detail_mode,
+                thought_detail_mode,
                 code_block_width,
                 context,
             ));
@@ -2040,7 +2111,14 @@ fn notice_duplicates_last_message(messages: &[AgentChatMessage], notice: &str) -
 }
 
 fn normalize_notice_text(value: &str) -> String {
-    value.trim().trim_end_matches('.').to_string()
+    value
+        .trim()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('.')
+        .to_string()
 }
 
 fn dashboard_command_entry(
@@ -2079,6 +2157,7 @@ fn agent_chat_message_lines(message: &AgentChatMessage) -> Vec<Line<'static>> {
         message,
         AgentChatRenderMode::Markdown,
         AgentToolDetailMode::Collapsed,
+        AgentThoughtDetailMode::Compact,
         None,
         None,
     )
@@ -2088,6 +2167,7 @@ fn agent_chat_message_lines_with_mode(
     message: &AgentChatMessage,
     render_mode: AgentChatRenderMode,
     tool_detail_mode: AgentToolDetailMode,
+    thought_detail_mode: AgentThoughtDetailMode,
     code_block_width: Option<usize>,
     context: Option<AgentChatMessageRenderContext<'_>>,
 ) -> Vec<Line<'static>> {
@@ -2098,7 +2178,7 @@ fn agent_chat_message_lines_with_mode(
         return agent_tool_message_lines(message.role, message.content.trim(), tool_detail_mode);
     }
 
-    let content = message.content.trim();
+    let content = agent_chat_display_content(message.role, &message.content, thought_detail_mode);
     let (label, label_style, content_style) = match message.role {
         AgentChatRole::User => (
             "You",
@@ -2117,7 +2197,7 @@ fn agent_chat_message_lines_with_mode(
         AgentChatRole::ToolOutput => {
             unreachable!("tool output messages return before generic rendering")
         }
-        AgentChatRole::Notice if notice_is_error(content) => (
+        AgentChatRole::Notice if notice_is_error(&content) => (
             "Error",
             error_style()
                 .bg(theme_tokens().elevated_bg)
@@ -2126,7 +2206,7 @@ fn agent_chat_message_lines_with_mode(
         ),
         AgentChatRole::Notice => ("Notice", dim_style(), dim_style()),
     };
-    let label = agent_chat_message_label(message.role, label, content);
+    let label = agent_chat_message_label(message.role, label, &content);
     let mut lines = vec![Line::from(vec![
         Span::styled(" ", label_style),
         Span::styled(label, label_style.add_modifier(Modifier::BOLD)),
@@ -2140,13 +2220,30 @@ fn agent_chat_message_lines_with_mode(
     } else {
         lines.extend(agent_chat_message_body_lines(
             message.role,
-            content,
+            &content,
             content_style,
             render_mode,
             code_block_width,
         ));
     }
     lines
+}
+
+fn agent_chat_display_content(
+    role: AgentChatRole,
+    content: &str,
+    thought_detail_mode: AgentThoughtDetailMode,
+) -> String {
+    let trimmed = content.trim();
+    if role != AgentChatRole::Thought || thought_detail_mode == AgentThoughtDetailMode::Detailed {
+        return trimmed.to_string();
+    }
+    trimmed
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 fn agent_chat_assistant_metadata_line(
@@ -2651,10 +2748,7 @@ fn render_agent_markdown_body_lines(
             if raw_line.trim_start().starts_with(&code_fence) {
                 in_code_block = false;
             } else {
-                lines.push(Line::from(Span::styled(
-                    padded_code_block_line(raw_line, code_block_width, prefix),
-                    markdown_code_style(),
-                )));
+                lines.push(markdown_code_block_line(raw_line, code_block_width, prefix));
             }
             index += 1;
             continue;
@@ -2673,6 +2767,19 @@ fn render_agent_markdown_body_lines(
     }
 
     lines
+}
+
+fn markdown_code_block_line(
+    raw_line: &str,
+    code_block_width: Option<usize>,
+    prefix: &str,
+) -> Line<'static> {
+    let style = markdown_code_style();
+    Line::from(Span::styled(
+        padded_code_block_line(raw_line, code_block_width, prefix),
+        style,
+    ))
+    .style(style)
 }
 
 fn markdown_table_lines(
@@ -5666,6 +5773,7 @@ mod tests {
             message,
             render_mode,
             AgentToolDetailMode::Collapsed,
+            AgentThoughtDetailMode::Compact,
             None,
         )
     }
@@ -5679,6 +5787,7 @@ mod tests {
             message,
             render_mode,
             AgentToolDetailMode::Collapsed,
+            AgentThoughtDetailMode::Compact,
             code_block_width,
         )
     }
@@ -5687,12 +5796,14 @@ mod tests {
         message: AgentChatMessage,
         render_mode: AgentChatRenderMode,
         tool_detail_mode: AgentToolDetailMode,
+        thought_detail_mode: AgentThoughtDetailMode,
         code_block_width: Option<usize>,
     ) -> Vec<String> {
         agent_chat_message_lines_with_mode(
             &message,
             render_mode,
             tool_detail_mode,
+            thought_detail_mode,
             code_block_width,
             None,
         )
@@ -6049,7 +6160,8 @@ mod tests {
         let lines = agent_chat_transcript_lines(
             &[AgentChatMessage {
                 role: AgentChatRole::Thought,
-                content: "Planning next step…".to_string(),
+                content: "Planning next step…\nTool-round safety cap: model request 2 of 13"
+                    .to_string(),
             }],
             "Planning next step…",
         )
@@ -6068,6 +6180,39 @@ mod tests {
                 .filter(|line| line.contains("Planning next step"))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn agent_chat_thought_detail_toggle_expands_progress_details() {
+        let message = AgentChatMessage {
+            role: AgentChatRole::Thought,
+            content: "Planning next step…\nTool-round safety cap: model request 2 of 13"
+                .to_string(),
+        };
+        let compact = rendered_agent_chat_message_lines_with_modes(
+            message.clone(),
+            AgentChatRenderMode::Markdown,
+            AgentToolDetailMode::Collapsed,
+            AgentThoughtDetailMode::Compact,
+            None,
+        );
+        let detailed = rendered_agent_chat_message_lines_with_modes(
+            message,
+            AgentChatRenderMode::Markdown,
+            AgentToolDetailMode::Collapsed,
+            AgentThoughtDetailMode::Detailed,
+            None,
+        );
+
+        assert_eq!(compact, vec![" Thought ", " Planning next step… "]);
+        assert_eq!(
+            detailed,
+            vec![
+                " Thought ",
+                " Planning next step… ",
+                " Tool-round safety cap: model request 2 of 13 ",
+            ]
         );
     }
 
@@ -6099,6 +6244,7 @@ mod tests {
             "",
             AgentChatRenderMode::Markdown,
             AgentToolDetailMode::Collapsed,
+            AgentThoughtDetailMode::Compact,
             None,
             Some(AgentChatMessageRenderContext {
                 profile: Some("architect"),
@@ -6185,6 +6331,26 @@ mod tests {
         assert_eq!(lines[1].chars().count(), 10);
         assert_eq!(lines[2].chars().count(), 10);
         assert_eq!(lines[3].chars().count(), 10);
+    }
+
+    #[test]
+    fn agent_chat_code_blocks_style_empty_lines_as_code_rows() {
+        let lines = agent_chat_message_lines_with_mode(
+            &AgentChatMessage {
+                role: AgentChatRole::Assistant,
+                content: "```text\nx\n\ny\n```".to_string(),
+            },
+            AgentChatRenderMode::Markdown,
+            AgentToolDetailMode::Collapsed,
+            AgentThoughtDetailMode::Compact,
+            Some(10),
+            None,
+        );
+        let code_style = markdown_code_style();
+
+        assert_eq!(lines[2].style.bg, code_style.bg);
+        assert_eq!(lines[2].spans[0].style.bg, code_style.bg);
+        assert_eq!(lines[2].spans[0].content.chars().count(), 10);
     }
 
     #[test]
@@ -6353,6 +6519,7 @@ mod tests {
             },
             AgentChatRenderMode::Markdown,
             AgentToolDetailMode::Full,
+            AgentThoughtDetailMode::Compact,
             None,
         );
 
@@ -6432,6 +6599,16 @@ mod tests {
                 && entry.label == "Toggle context sidebar"
                 && entry.command == AgentChatCommand::ToggleSidebar
         }));
+    }
+
+    #[test]
+    fn agent_chat_thought_detail_toggle_is_palette_runnable() {
+        let mut app = AgentChatComposerApp::new(Vec::new(), test_agent_chat_status("Ready."));
+
+        assert_eq!(app.thought_detail_mode, AgentThoughtDetailMode::Compact);
+        assert!(app.handle_local_palette_command(&AgentChatCommand::ToggleThoughtDetail, 30, 100));
+        assert_eq!(app.thought_detail_mode, AgentThoughtDetailMode::Detailed);
+        assert_eq!(app.status.notice, "Thought display: detailed thoughts.");
     }
 
     #[test]
@@ -6945,6 +7122,11 @@ mod tests {
             entry.section == "Navigation"
                 && entry.label == "Jump to last user message"
                 && entry.command == AgentChatCommand::JumpLastUserMessage
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.section == "Transcript"
+                && entry.label == "Toggle thought detail"
+                && entry.command == AgentChatCommand::ToggleThoughtDetail
         }));
     }
 
