@@ -81,8 +81,10 @@ djinn agent chat --model copilot/gpt-4.1
 
 When `djinn agent chat` runs inside Kitsune, Djinn reports its session id and
 agent lifecycle state back to the hosting pane automatically. Kitsune can then
-show Djinn as a first-class agent, track idle/working/blocked state, and resume
-reported sessions with `djinn agent chat --resume <id>`.
+show Djinn as a first-class agent, track idle/working/blocked state, surface
+permission and auth/configuration waits as blocked, and resume reported sessions
+with `djinn agent chat --resume <id>`. Djinn releases its Kitsune agent authority
+when the chat session exits so the hosting pane does not keep stale Djinn state.
 
 `djinn agent config list` and the TUI command palette include Copilot model
 options from `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`, comma/semicolon-list

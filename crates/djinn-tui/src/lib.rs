@@ -332,7 +332,7 @@ impl CommandPaletteItem for AgentChatCommandEntry {
 pub enum AgentChatCommand {
     NewSession,
     OpenSessions,
-    LoginOpenAiWithOpenCode,
+    AddCredential,
     OpenDashboardTab(DashboardTab),
     SwitchProfile(String),
     SwitchModel(String),

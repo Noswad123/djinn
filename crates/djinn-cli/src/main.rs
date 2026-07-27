@@ -3,11 +3,12 @@ use std::env;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, IsTerminal, Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -37,6 +38,7 @@ use djinn_skills::{
 use djinn_tools::ToolEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -92,12 +94,48 @@ enum Command {
     Open(OpenArgs),
     /// Inspect Djinn configuration and external harness config adapters.
     Config(ConfigArgs),
+    /// Manage provider credentials.
+    Auth(AuthArgs),
     /// Run or inspect Djinn-native agent sessions.
     Agent(AgentArgs),
     /// Inspect configured Djinn agent roles.
     Agents(AgentsArgs),
     /// Open the unified terminal dashboard.
     Tui(TuiArgs),
+}
+
+#[derive(Debug, Args)]
+struct AuthArgs {
+    #[command(subcommand)]
+    command: AuthCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// Add or update a provider credential.
+    Login(AuthLoginArgs),
+}
+
+#[derive(Debug, Args)]
+struct AuthLoginArgs {
+    /// Provider id. Defaults to an interactive provider picker.
+    #[arg(long, value_enum)]
+    provider: Option<AuthProvider>,
+    /// Login method. Defaults to an interactive method picker.
+    #[arg(long, value_enum)]
+    method: Option<OpenAiLoginMethod>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum AuthProvider {
+    Openai,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OpenAiLoginMethod {
+    Browser,
+    Headless,
+    ApiKey,
 }
 
 #[derive(Debug, Args)]
@@ -1382,6 +1420,8 @@ struct AgentChatArgs {
 #[derive(Debug, Default)]
 struct TerminalPermissionGate {
     session_scopes: Mutex<Vec<TerminalApprovalScope>>,
+    kitsune_reporter: Option<KitsuneAgentReporterHandle>,
+    agent_session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1392,8 +1432,12 @@ struct TerminalApprovalScope {
 }
 
 impl TerminalPermissionGate {
-    fn new() -> Self {
-        Self::default()
+    fn new(kitsune_reporter: Option<KitsuneAgentReporterHandle>, agent_session_id: String) -> Self {
+        Self {
+            session_scopes: Mutex::new(Vec::new()),
+            kitsune_reporter,
+            agent_session_id,
+        }
     }
 
     fn cached_decision(&self, request: &PermissionRequest) -> Option<PermissionDecision> {
@@ -1464,6 +1508,27 @@ impl TerminalPermissionGate {
             });
         }
     }
+
+    fn report_permission_blocked(&self, request: &PermissionRequest) {
+        if let Some(reporter) = &self.kitsune_reporter {
+            let message = format!("Permission approval required: {}", request.description);
+            reporter.report_state(
+                KitsuneAgentReportState::Blocked,
+                &self.agent_session_id,
+                Some(&message),
+            );
+        }
+    }
+
+    fn report_permission_resolved(&self) {
+        if let Some(reporter) = &self.kitsune_reporter {
+            reporter.report_state(
+                KitsuneAgentReportState::Working,
+                &self.agent_session_id,
+                Some("Permission decision received"),
+            );
+        }
+    }
 }
 
 #[async_trait]
@@ -1472,6 +1537,7 @@ impl PermissionGate for TerminalPermissionGate {
         if let Some(decision) = self.cached_decision(&request) {
             return Ok(decision);
         }
+        self.report_permission_blocked(&request);
         if request
             .metadata
             .get("preview")
@@ -1480,18 +1546,20 @@ impl PermissionGate for TerminalPermissionGate {
             && io::stdin().is_terminal()
             && io::stdout().is_terminal()
         {
-            return match djinn_tui::run_approval_dialog(request.metadata.clone())? {
-                djinn_tui::ApprovalDecision::ApproveAll => Ok(PermissionDecision::Allow),
+            let decision = match djinn_tui::run_approval_dialog(request.metadata.clone())? {
+                djinn_tui::ApprovalDecision::ApproveAll => PermissionDecision::Allow,
                 djinn_tui::ApprovalDecision::ApprovePaths(paths) => {
-                    Ok(PermissionDecision::AllowPaths { paths })
+                    PermissionDecision::AllowPaths { paths }
                 }
                 djinn_tui::ApprovalDecision::ApproveAllForSession(paths)
                 | djinn_tui::ApprovalDecision::ApprovePathsForSession(paths) => {
                     self.remember_resources_for_session(&request, paths.clone());
-                    Ok(PermissionDecision::AllowPaths { paths })
+                    PermissionDecision::AllowPaths { paths }
                 }
-                djinn_tui::ApprovalDecision::Deny => Ok(PermissionDecision::Deny),
+                djinn_tui::ApprovalDecision::Deny => PermissionDecision::Deny,
             };
+            self.report_permission_resolved();
+            return Ok(decision);
         }
         eprintln!("\nPermission approval required: {}", request.description);
         eprint!("{}", format_permission_preview(&request.metadata)?);
@@ -1500,8 +1568,8 @@ impl PermissionGate for TerminalPermissionGate {
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
         let answer = answer.trim().to_ascii_lowercase();
-        if answer == "y" || answer == "yes" {
-            Ok(PermissionDecision::Allow)
+        let decision = if answer == "y" || answer == "yes" {
+            PermissionDecision::Allow
         } else if answer == "s" || answer == "session" {
             let resources = approval_resources_from_metadata(&request.metadata);
             self.remember_resources_for_session(&request, resources.clone());
@@ -1511,13 +1579,15 @@ impl PermissionGate for TerminalPermissionGate {
                 .and_then(Value::as_array)
                 .is_some()
             {
-                Ok(PermissionDecision::AllowPaths { paths: resources })
+                PermissionDecision::AllowPaths { paths: resources }
             } else {
-                Ok(PermissionDecision::AllowResources { resources })
+                PermissionDecision::AllowResources { resources }
             }
         } else {
-            Ok(PermissionDecision::Deny)
-        }
+            PermissionDecision::Deny
+        };
+        self.report_permission_resolved();
+        Ok(decision)
     }
 }
 
@@ -2226,6 +2296,7 @@ fn main() -> Result<()> {
         Command::Switch(args) => run_switch(args),
         Command::Open(args) => run_open(args),
         Command::Config(args) => run_config(args),
+        Command::Auth(args) => run_auth(args),
         Command::Agent(args) => run_agent(args),
         Command::Agents(args) => run_agents(args),
         Command::Tui(args) => {
@@ -2444,6 +2515,21 @@ fn run_config(args: ConfigArgs) -> Result<()> {
         ConfigCommand::Doctor(args) => config_doctor(args),
         ConfigCommand::Import(args) => config_import(args),
         ConfigCommand::Export(args) => config_export(args),
+    }
+}
+
+fn run_auth(args: AuthArgs) -> Result<()> {
+    match args.command {
+        AuthCommand::Login(args) => auth_login(args),
+    }
+}
+
+fn auth_login(args: AuthLoginArgs) -> Result<()> {
+    let provider = args.provider.unwrap_or_else(prompt_auth_provider);
+    match provider {
+        AuthProvider::Openai => {
+            run_openai_login_method(args.method.unwrap_or_else(prompt_openai_login_method))
+        }
     }
 }
 
@@ -6808,8 +6894,8 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                             }
                         }
                     }
-                    djinn_tui::AgentChatCommand::LoginOpenAiWithOpenCode => {
-                        run_opencode_openai_login_in_terminal(&mut tui)?;
+                    djinn_tui::AgentChatCommand::AddCredential => {
+                        run_djinn_auth_login_in_terminal(&mut tui)?;
                     }
                     djinn_tui::AgentChatCommand::OpenDashboardTab(initial_tab) => {
                         match run_tui_in_session(&mut tui, &default_tui_args(), initial_tab)? {
@@ -6877,19 +6963,46 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
     let workspace = chat_session.workspace;
     let profile = chat_session.profile;
     let session = store.load_session(&id)?;
+    let kitsune_reporter = KitsuneAgentReporter::from_env().map(KitsuneAgentReporterHandle::new);
+    if let Some(reporter) = &kitsune_reporter {
+        reporter.report_session(&id_string, if resumed { "resume" } else { "new" });
+    }
+    let _kitsune_release_guard = KitsuneAgentReleaseGuard::new(kitsune_reporter.clone());
     let system_instructions =
-        resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
-    let model = resolve_agent_model(
+        match resolve_agent_instruction_contents(&workspace, &selection.instructions) {
+            Ok(instructions) => instructions,
+            Err(error) => {
+                if let Some(reporter) = &kitsune_reporter {
+                    reporter.report_state(
+                        KitsuneAgentReportState::Blocked,
+                        &id_string,
+                        Some("Agent instruction configuration failed"),
+                    );
+                }
+                return Err(error);
+            }
+        };
+    let model = match resolve_agent_model(
         selection.model.or_else(|| latest_session_model(&session)),
         &profile,
-    )?;
+    ) {
+        Ok(model) => model,
+        Err(error) => {
+            if let Some(reporter) = &kitsune_reporter {
+                reporter.report_state(
+                    KitsuneAgentReportState::Blocked,
+                    &id_string,
+                    Some("Agent model configuration failed"),
+                );
+            }
+            return Err(error);
+        }
+    };
     let api_key = args.api_key;
     let base_url = args.base_url;
     let max_tool_rounds = args.max_tool_rounds;
     let allowed_tools = selection.tools;
-    let mut kitsune_reporter = KitsuneAgentReporter::from_env();
-    if let Some(reporter) = kitsune_reporter.as_mut() {
-        reporter.report_session(&id_string, if resumed { "resume" } else { "new" });
+    if let Some(reporter) = &kitsune_reporter {
         reporter.report_state(
             KitsuneAgentReportState::Idle,
             &id_string,
@@ -6923,7 +7036,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                     .collect(),
                 "Waiting for model response…".to_string(),
             )?;
-            if let Some(reporter) = kitsune_reporter.as_mut() {
+            if let Some(reporter) = &kitsune_reporter {
                 reporter.report_state(
                     KitsuneAgentReportState::Working,
                     &id_string,
@@ -6941,11 +7054,12 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                 &profile,
                 allowed_tools.clone(),
                 true,
+                kitsune_reporter.clone(),
                 |event| {
                     let session = store.load_session(&id)?;
                     let mut messages = agent_chat_messages(&session);
                     let notice = agent_progress_notice(&event);
-                    if let Some(reporter) = kitsune_reporter.as_mut() {
+                    if let Some(reporter) = &kitsune_reporter {
                         reporter.report_state(
                             KitsuneAgentReportState::Working,
                             &id_string,
@@ -6960,7 +7074,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
             );
             match completion {
                 Ok(_) => {
-                    if let Some(reporter) = kitsune_reporter.as_mut() {
+                    if let Some(reporter) = &kitsune_reporter {
                         reporter.report_state(
                             KitsuneAgentReportState::Idle,
                             &id_string,
@@ -6969,11 +7083,11 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                     }
                 }
                 Err(error) => {
-                    if let Some(reporter) = kitsune_reporter.as_mut() {
+                    if let Some(reporter) = &kitsune_reporter {
                         reporter.report_state(
                             KitsuneAgentReportState::Blocked,
                             &id_string,
-                            Some("Agent turn failed"),
+                            Some(kitsune_blocked_message_for_error(&error)),
                         );
                     }
                     return Err(error);
@@ -7029,6 +7143,61 @@ struct KitsuneAgentReporter {
     seq: u64,
 }
 
+#[derive(Debug, Clone)]
+struct KitsuneAgentReporterHandle {
+    inner: Arc<Mutex<KitsuneAgentReporter>>,
+}
+
+impl KitsuneAgentReporterHandle {
+    fn new(reporter: KitsuneAgentReporter) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(reporter)),
+        }
+    }
+
+    fn report_session(&self, session_id: &str, session_start_source: &str) {
+        if let Ok(mut reporter) = self.inner.lock() {
+            reporter.report_session(session_id, session_start_source);
+        }
+    }
+
+    fn report_state(
+        &self,
+        state: KitsuneAgentReportState,
+        session_id: &str,
+        message: Option<&str>,
+    ) {
+        if let Ok(mut reporter) = self.inner.lock() {
+            reporter.report_state(state, session_id, message);
+        }
+    }
+
+    fn release_agent(&self) {
+        if let Ok(mut reporter) = self.inner.lock() {
+            reporter.release_agent();
+        }
+    }
+}
+
+#[derive(Debug)]
+struct KitsuneAgentReleaseGuard {
+    reporter: Option<KitsuneAgentReporterHandle>,
+}
+
+impl KitsuneAgentReleaseGuard {
+    fn new(reporter: Option<KitsuneAgentReporterHandle>) -> Self {
+        Self { reporter }
+    }
+}
+
+impl Drop for KitsuneAgentReleaseGuard {
+    fn drop(&mut self) {
+        if let Some(reporter) = self.reporter.take() {
+            reporter.release_agent();
+        }
+    }
+}
+
 impl KitsuneAgentReporter {
     fn from_env() -> Option<Self> {
         if env::var("DJINN_KITSUNE_REPORT_DISABLED").ok().as_deref() == Some("1") {
@@ -7077,6 +7246,11 @@ impl KitsuneAgentReporter {
             session_id,
             message,
         ));
+    }
+
+    fn release_agent(&mut self) {
+        let seq = self.next_seq();
+        self.run(kitsune_agent_release_report_args(&self.pane_id, seq));
     }
 
     fn next_seq(&mut self) -> u64 {
@@ -7144,6 +7318,20 @@ fn kitsune_agent_state_report_args(
         args.push(message.to_string());
     }
     args
+}
+
+fn kitsune_agent_release_report_args(pane_id: &str, seq: u64) -> Vec<String> {
+    vec![
+        "pane".to_string(),
+        "release-agent".to_string(),
+        pane_id.to_string(),
+        "--source".to_string(),
+        "kitsune:djinn".to_string(),
+        "--agent".to_string(),
+        "djinn".to_string(),
+        "--seq".to_string(),
+        seq.to_string(),
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7292,11 +7480,9 @@ fn agent_chat_command_palette(
         },
         djinn_tui::AgentChatCommandEntry {
             section: "Auth".to_string(),
-            label: "Login to OpenAI with OpenCode…".to_string(),
-            description:
-                "Run `opencode providers login`; Djinn can reuse OpenCode OpenAI OAuth auth"
-                    .to_string(),
-            command: djinn_tui::AgentChatCommand::LoginOpenAiWithOpenCode,
+            label: "Add credential…".to_string(),
+            description: "Select provider and login method".to_string(),
+            command: djinn_tui::AgentChatCommand::AddCredential,
         },
     ];
     for (label, tab) in [
@@ -7350,19 +7536,640 @@ fn agent_chat_command_palette(
     Ok(entries)
 }
 
-fn run_opencode_openai_login_in_terminal(tui: &mut djinn_tui::TuiSession) -> Result<()> {
+fn run_djinn_auth_login_in_terminal(tui: &mut djinn_tui::TuiSession) -> Result<()> {
     tui.suspend()?;
-    println!("Starting OpenCode provider login. Choose OpenAI if prompted.");
-    let status = ProcessCommand::new("opencode")
-        .args(["providers", "login"])
-        .status()
-        .with_context(|| "running `opencode providers login`")?;
-    if !status.success() {
-        eprintln!("`opencode providers login` exited with {status}");
-        eprintln!("Press Enter to return to Djinn.");
-        let _ = io::stdin().read_line(&mut String::new());
-    }
+    let result = auth_login(AuthLoginArgs {
+        provider: None,
+        method: None,
+    });
+    println!("Press Enter to return to Djinn.");
+    let _ = io::stdin().read_line(&mut String::new());
     tui.resume()?;
+    result
+}
+
+fn prompt_auth_provider() -> AuthProvider {
+    println!("┌  Add credential");
+    println!("│");
+    println!("◇  Select provider");
+    println!("│  1) OpenAI");
+    let choice = prompt_number("Provider", 1, 1).unwrap_or(1);
+    match choice {
+        _ => AuthProvider::Openai,
+    }
+}
+
+fn prompt_openai_login_method() -> OpenAiLoginMethod {
+    println!("│");
+    println!("◆  Login method");
+    println!("│  1) ChatGPT Pro/Plus (browser)");
+    println!("│  2) ChatGPT Pro/Plus (headless)");
+    println!("│  3) Manually enter API Key");
+    match prompt_number("Login method", 1, 3).unwrap_or(1) {
+        2 => OpenAiLoginMethod::Headless,
+        3 => OpenAiLoginMethod::ApiKey,
+        _ => OpenAiLoginMethod::Browser,
+    }
+}
+
+fn prompt_number(prompt: &str, default: usize, max: usize) -> Result<usize> {
+    eprint!("{prompt} [{default}]: ");
+    io::stderr().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(default);
+    }
+    let value = input
+        .parse::<usize>()
+        .with_context(|| format!("invalid {prompt} selection `{input}`"))?;
+    if value == 0 || value > max {
+        bail!("{prompt} selection must be between 1 and {max}");
+    }
+    Ok(value)
+}
+
+fn run_openai_login_method(method: OpenAiLoginMethod) -> Result<()> {
+    match method {
+        OpenAiLoginMethod::Browser => run_djinn_openai_browser_login(),
+        OpenAiLoginMethod::Headless => run_djinn_openai_device_login(),
+        OpenAiLoginMethod::ApiKey => run_djinn_openai_api_key_login(),
+    }
+}
+
+fn run_djinn_openai_api_key_login() -> Result<()> {
+    println!("Save an OpenAI API key for Djinn.");
+    println!(
+        "The key will be stored in {} with owner-only permissions.",
+        djinn_auth_path().display()
+    );
+    let api_key = read_secret_line("OpenAI API key: ")?.trim().to_string();
+    if api_key.is_empty() {
+        bail!("OpenAI API key cannot be empty");
+    }
+    write_djinn_openai_api_key(&api_key)?;
+    println!("OpenAI API key saved for Djinn.");
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct OpenAiPkce {
+    verifier: String,
+    challenge: String,
+}
+
+fn run_djinn_openai_browser_login() -> Result<()> {
+    println!("Starting Djinn OpenAI browser login.");
+    let pkce = generate_openai_pkce()?;
+    let state = random_base64_url(32)?;
+    let redirect_uri = format!(
+        "http://localhost:{}/auth/callback",
+        OPENCODE_OPENAI_OAUTH_PORT
+    );
+    let listener = TcpListener::bind(("127.0.0.1", OPENCODE_OPENAI_OAUTH_PORT))
+        .with_context(|| format!("binding OAuth callback server on {redirect_uri}"))?;
+    listener
+        .set_nonblocking(true)
+        .with_context(|| "setting OAuth callback listener nonblocking")?;
+    let url = openai_authorize_url(&redirect_uri, &pkce, &state);
+    println!("Opening browser for OpenAI authorization…");
+    println!("If it does not open, visit: {url}");
+    let _ = open_url_in_browser(&url);
+    let code = wait_for_openai_browser_callback(listener, &state)?;
+    let tokens = exchange_openai_browser_authorization_code(&code, &redirect_uri, &pkce)?;
+    let account_id = extract_account_id_from_tokens(&tokens);
+    let oauth = OpenCodeOpenAiOAuthCredential {
+        access: tokens.access_token,
+        refresh: tokens.refresh_token,
+        expires: current_time_millis() + tokens.expires_in.unwrap_or(3600) * 1000,
+        account_id,
+    };
+    write_djinn_openai_oauth(&oauth)?;
+    println!("Login successful. Saved OpenAI OAuth credentials for Djinn.");
+    Ok(())
+}
+
+fn wait_for_openai_browser_callback(listener: TcpListener, expected_state: &str) -> Result<String> {
+    let started = Instant::now();
+    let timeout = Duration::from_secs(10 * 60);
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if started.elapsed() > timeout {
+                    bail!("OpenAI OAuth browser authorization timed out");
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(error).with_context(|| "waiting for OpenAI OAuth callback"),
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .with_context(|| "setting OAuth callback read timeout")?;
+    let mut buffer = [0_u8; 8192];
+    let read = stream
+        .read(&mut buffer)
+        .with_context(|| "reading OpenAI OAuth callback")?;
+    let request = String::from_utf8_lossy(&buffer[..read]);
+    let first_line = request.lines().next().unwrap_or_default();
+    let target = first_line.split_whitespace().nth(1).unwrap_or_default();
+    let params = parse_query_params(target);
+    let error = params
+        .get("error_description")
+        .or_else(|| params.get("error"))
+        .cloned();
+    if let Some(error) = error {
+        let _ = write_oauth_callback_response(&mut stream, false, &error);
+        bail!("OpenAI OAuth failed: {error}");
+    }
+    let code = params
+        .get("code")
+        .cloned()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("OpenAI OAuth callback did not include a code"));
+    let state = params.get("state").map(String::as_str).unwrap_or_default();
+    if state != expected_state {
+        let _ = write_oauth_callback_response(&mut stream, false, "Invalid OAuth state");
+        bail!("OpenAI OAuth callback state did not match");
+    }
+    let code = code?;
+    let _ = write_oauth_callback_response(
+        &mut stream,
+        true,
+        "Authorization complete. Return to Djinn.",
+    );
+    Ok(code)
+}
+
+fn write_oauth_callback_response(
+    stream: &mut std::net::TcpStream,
+    success: bool,
+    message: &str,
+) -> Result<()> {
+    let title = if success {
+        "Djinn authorization complete"
+    } else {
+        "Djinn authorization failed"
+    };
+    let body = format!(
+        "<html><body><h1>{}</h1><p>{}</p></body></html>",
+        html_escape(title),
+        html_escape(message)
+    );
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )?;
+    Ok(())
+}
+
+fn exchange_openai_browser_authorization_code(
+    code: &str,
+    redirect_uri: &str,
+    pkce: &OpenAiPkce,
+) -> Result<OpenCodeOpenAiTokenResponse> {
+    let response = reqwest::blocking::Client::new()
+        .post(format!("{OPENCODE_OPENAI_OAUTH_ISSUER}/oauth/token"))
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+            ("client_id", OPENCODE_OPENAI_OAUTH_CLIENT_ID),
+            ("code_verifier", pkce.verifier.as_str()),
+        ])
+        .send()
+        .with_context(|| "exchanging OpenAI browser authorization code")?;
+    let status = response.status();
+    let text = response
+        .text()
+        .with_context(|| "reading OpenAI browser token response")?;
+    if !status.is_success() {
+        bail!("OpenAI browser token exchange failed ({status}): {text}");
+    }
+    serde_json::from_str(&text)
+        .with_context(|| format!("parsing OpenAI browser token response: {text}"))
+}
+
+fn generate_openai_pkce() -> Result<OpenAiPkce> {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    let random = random_bytes(43)?;
+    let verifier = random
+        .into_iter()
+        .map(|byte| CHARS[byte as usize % CHARS.len()] as char)
+        .collect::<String>();
+    let digest = Sha256::digest(verifier.as_bytes());
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
+    Ok(OpenAiPkce {
+        verifier,
+        challenge,
+    })
+}
+
+fn random_base64_url(bytes: usize) -> Result<String> {
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random_bytes(bytes)?))
+}
+
+fn random_bytes(bytes: usize) -> Result<Vec<u8>> {
+    let mut data = vec![0_u8; bytes];
+    #[cfg(unix)]
+    {
+        let mut file = fs::File::open("/dev/urandom").with_context(|| "opening /dev/urandom")?;
+        file.read_exact(&mut data)
+            .with_context(|| "reading random bytes")?;
+        return Ok(data);
+    }
+    #[cfg(not(unix))]
+    {
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        for (idx, byte) in data.iter_mut().enumerate() {
+            *byte = ((seed >> ((idx % 16) * 8)) & 0xff) as u8;
+        }
+        Ok(data)
+    }
+}
+
+fn openai_authorize_url(redirect_uri: &str, pkce: &OpenAiPkce, state: &str) -> String {
+    let params = [
+        ("response_type", "code"),
+        ("client_id", OPENCODE_OPENAI_OAUTH_CLIENT_ID),
+        ("redirect_uri", redirect_uri),
+        ("scope", "openid profile email offline_access"),
+        ("code_challenge", pkce.challenge.as_str()),
+        ("code_challenge_method", "S256"),
+        ("id_token_add_organizations", "true"),
+        ("codex_cli_simplified_flow", "true"),
+        ("state", state),
+        ("originator", "opencode"),
+    ];
+    let query = params
+        .into_iter()
+        .map(|(key, value)| format!("{}={}", url_encode(key), url_encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{OPENCODE_OPENAI_OAUTH_ISSUER}/oauth/authorize?{query}")
+}
+
+fn open_url_in_browser(url: &str) -> Result<()> {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "cmd"
+    } else {
+        "xdg-open"
+    };
+    let status = if cfg!(target_os = "windows") {
+        ProcessCommand::new(opener)
+            .args(["/C", "start", "", url])
+            .status()
+    } else {
+        ProcessCommand::new(opener).arg(url).status()
+    }
+    .with_context(|| format!("opening browser with `{opener}`"))?;
+    if !status.success() {
+        bail!("browser opener `{opener}` exited with {status}");
+    }
+    Ok(())
+}
+
+fn parse_query_params(target: &str) -> BTreeMap<String, String> {
+    let query = target
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
+    query
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            (percent_decode(key), percent_decode(value))
+        })
+        .collect()
+}
+
+fn url_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut idx = 0;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'+' => {
+                out.push(b' ');
+                idx += 1;
+            }
+            b'%' if idx + 2 < bytes.len() => {
+                let hex = &value[idx + 1..idx + 3];
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    idx += 3;
+                } else {
+                    out.push(bytes[idx]);
+                    idx += 1;
+                }
+            }
+            byte => {
+                out.push(byte);
+                idx += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiDeviceAuthUserCodeResponse {
+    device_auth_id: String,
+    user_code: String,
+    interval: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiDeviceAuthTokenResponse {
+    authorization_code: String,
+    code_verifier: String,
+}
+
+fn run_djinn_openai_device_login() -> Result<()> {
+    println!("Starting Djinn OpenAI login.");
+    let device = request_openai_device_auth_user_code()?;
+    println!();
+    println!("Open: {OPENCODE_OPENAI_OAUTH_ISSUER}/codex/device");
+    println!("Enter code: {}", device.user_code);
+    println!();
+    println!("Waiting for authorization…");
+
+    let interval = device
+        .interval
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .unwrap_or(5);
+    let auth_code = poll_openai_device_auth_token(&device, interval)?;
+    let tokens = exchange_openai_device_authorization_code(&auth_code)?;
+    let account_id = extract_account_id_from_tokens(&tokens);
+    let oauth = OpenCodeOpenAiOAuthCredential {
+        access: tokens.access_token,
+        refresh: tokens.refresh_token,
+        expires: current_time_millis() + tokens.expires_in.unwrap_or(3600) * 1000,
+        account_id,
+    };
+    write_djinn_openai_oauth(&oauth)?;
+    println!("Login successful. Saved OpenAI OAuth credentials for Djinn.");
+    Ok(())
+}
+
+fn request_openai_device_auth_user_code() -> Result<OpenAiDeviceAuthUserCodeResponse> {
+    let response = reqwest::blocking::Client::new()
+        .post(format!(
+            "{OPENCODE_OPENAI_OAUTH_ISSUER}/api/accounts/deviceauth/usercode"
+        ))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::USER_AGENT, oauth_user_agent())
+        .body(format!(
+            r#"{{"client_id":"{OPENCODE_OPENAI_OAUTH_CLIENT_ID}"}}"#
+        ))
+        .send()
+        .with_context(|| "starting OpenAI device authorization")?;
+    let status = response.status();
+    let text = response
+        .text()
+        .with_context(|| "reading OpenAI device authorization response")?;
+    if !status.is_success() {
+        bail!("OpenAI device authorization failed ({status}): {text}");
+    }
+    serde_json::from_str(&text)
+        .with_context(|| format!("parsing OpenAI device authorization response: {text}"))
+}
+
+fn poll_openai_device_auth_token(
+    device: &OpenAiDeviceAuthUserCodeResponse,
+    interval_seconds: u64,
+) -> Result<OpenAiDeviceAuthTokenResponse> {
+    let started = SystemTime::now();
+    let timeout = Duration::from_secs(10 * 60);
+    loop {
+        if started.elapsed().unwrap_or_default() > timeout {
+            bail!("OpenAI device authorization timed out");
+        }
+        let response = reqwest::blocking::Client::new()
+            .post(format!(
+                "{OPENCODE_OPENAI_OAUTH_ISSUER}/api/accounts/deviceauth/token"
+            ))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::USER_AGENT, oauth_user_agent())
+            .body(format!(
+                r#"{{"device_auth_id":"{}","user_code":"{}"}}"#,
+                device.device_auth_id, device.user_code
+            ))
+            .send()
+            .with_context(|| "polling OpenAI device authorization")?;
+        let status = response.status();
+        let text = response
+            .text()
+            .with_context(|| "reading OpenAI device authorization poll response")?;
+        if status.is_success() {
+            return serde_json::from_str(&text).with_context(|| {
+                format!("parsing OpenAI device authorization poll response: {text}")
+            });
+        }
+        if status.as_u16() != 403 && status.as_u16() != 404 {
+            bail!("OpenAI device authorization failed ({status}): {text}");
+        }
+        print!(".");
+        let _ = io::stdout().flush();
+        thread::sleep(Duration::from_secs(interval_seconds).saturating_add(Duration::from_secs(3)));
+    }
+}
+
+fn exchange_openai_device_authorization_code(
+    auth: &OpenAiDeviceAuthTokenResponse,
+) -> Result<OpenCodeOpenAiTokenResponse> {
+    let response = reqwest::blocking::Client::new()
+        .post(format!("{OPENCODE_OPENAI_OAUTH_ISSUER}/oauth/token"))
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", auth.authorization_code.as_str()),
+            (
+                "redirect_uri",
+                "https://auth.openai.com/deviceauth/callback",
+            ),
+            ("client_id", OPENCODE_OPENAI_OAUTH_CLIENT_ID),
+            ("code_verifier", auth.code_verifier.as_str()),
+        ])
+        .send()
+        .with_context(|| "exchanging OpenAI device authorization code")?;
+    let status = response.status();
+    let text = response
+        .text()
+        .with_context(|| "reading OpenAI device token response")?;
+    if !status.is_success() {
+        bail!("OpenAI device token exchange failed ({status}): {text}");
+    }
+    serde_json::from_str(&text)
+        .with_context(|| format!("parsing OpenAI device token response: {text}"))
+}
+
+fn write_djinn_openai_oauth(oauth: &OpenCodeOpenAiOAuthCredential) -> Result<()> {
+    let mut openai = Map::new();
+    openai.insert("type".to_string(), Value::String("oauth".to_string()));
+    openai.insert("access".to_string(), Value::String(oauth.access.clone()));
+    openai.insert("refresh".to_string(), Value::String(oauth.refresh.clone()));
+    openai.insert(
+        "expires".to_string(),
+        Value::Number(serde_json::Number::from(oauth.expires)),
+    );
+    if let Some(account_id) = &oauth.account_id {
+        openai.insert("accountId".to_string(), Value::String(account_id.clone()));
+    }
+    write_djinn_openai_auth_value(Value::Object(openai))
+}
+
+fn write_djinn_openai_api_key(api_key: &str) -> Result<()> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        bail!("OpenAI API key cannot be empty");
+    }
+    let mut openai = Map::new();
+    openai.insert("type".to_string(), Value::String("api".to_string()));
+    openai.insert("key".to_string(), Value::String(api_key.to_string()));
+    write_djinn_openai_auth_value(Value::Object(openai))
+}
+
+fn write_djinn_openai_auth_value(openai: Value) -> Result<()> {
+    let path = djinn_auth_path();
+    let mut value = if path.exists() {
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("reading Djinn auth file {}", path.display()))?;
+        serde_json::from_str(&content)
+            .with_context(|| format!("parsing Djinn auth file {}", path.display()))?
+    } else {
+        Value::Object(Map::new())
+    };
+    let Some(root) = value.as_object_mut() else {
+        bail!("Djinn auth file root must be a JSON object");
+    };
+    root.insert("openai".to_string(), openai);
+
+    djinn_core::ensure_parent(&path)?;
+    let rendered = format!("{}\n", serde_json::to_string_pretty(&value)?);
+    fs::write(&path, rendered)
+        .with_context(|| format!("writing Djinn auth file {}", path.display()))?;
+    set_owner_only_permissions(&path)?;
+    Ok(())
+}
+
+fn read_secret_line(prompt: &str) -> Result<String> {
+    eprint!("{prompt}");
+    io::stderr().flush()?;
+    let echo_disabled = disable_terminal_echo();
+    let mut value = String::new();
+    let result = io::stdin().read_line(&mut value);
+    if echo_disabled {
+        let _ = enable_terminal_echo();
+        eprintln!();
+    }
+    result?;
+    Ok(value)
+}
+
+#[cfg(unix)]
+fn disable_terminal_echo() -> bool {
+    if !io::stdin().is_terminal() {
+        return false;
+    }
+    ProcessCommand::new("stty")
+        .arg("-echo")
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn enable_terminal_echo() -> bool {
+    ProcessCommand::new("stty")
+        .arg("echo")
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn disable_terminal_echo() -> bool {
+    false
+}
+
+#[cfg(not(unix))]
+fn enable_terminal_echo() -> bool {
+    false
+}
+
+fn djinn_auth_path() -> PathBuf {
+    env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| djinn_core::home_dir().join(".local").join("share"))
+        .join("djinn")
+        .join("auth.json")
+}
+
+fn oauth_user_agent() -> String {
+    format!("djinn/{}", env!("CARGO_PKG_VERSION"))
+}
+
+#[cfg(unix)]
+fn set_owner_only_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)
+        .with_context(|| format!("reading permissions for {}", path.display()))?
+        .permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(path, permissions)
+        .with_context(|| format!("setting permissions for {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -8002,6 +8809,7 @@ fn complete_openai_messages(
         profile,
         allowed_tools,
         interactive_permissions,
+        None,
         |_| Ok(()),
     )
 }
@@ -8017,6 +8825,7 @@ fn complete_openai_messages_with_progress<F>(
     profile: &str,
     allowed_tools: Vec<String>,
     interactive_permissions: bool,
+    kitsune_reporter: Option<KitsuneAgentReporterHandle>,
     on_progress: F,
 ) -> Result<djinn_agent::ModelResponse>
 where
@@ -8037,6 +8846,7 @@ where
             profile,
             allowed_tools,
             interactive_permissions,
+            kitsune_reporter,
             client,
             on_progress,
         );
@@ -8052,6 +8862,7 @@ where
         profile,
         allowed_tools,
         interactive_permissions,
+        kitsune_reporter,
         client,
         on_progress,
     )
@@ -8066,6 +8877,7 @@ fn complete_messages_with_client<M, F>(
     profile: &str,
     allowed_tools: Vec<String>,
     interactive_permissions: bool,
+    kitsune_reporter: Option<KitsuneAgentReporterHandle>,
     client: M,
     mut on_progress: F,
 ) -> Result<djinn_agent::ModelResponse>
@@ -8083,7 +8895,10 @@ where
         && io::stdin().is_terminal()
         && (io::stdout().is_terminal() || io::stderr().is_terminal())
     {
-        Some(Arc::new(TerminalPermissionGate::new()))
+        Some(Arc::new(TerminalPermissionGate::new(
+            kitsune_reporter,
+            id.to_string(),
+        )))
     } else {
         None
     };
@@ -8291,6 +9106,7 @@ const OPENCODE_OPENAI_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENCODE_OPENAI_OAUTH_ISSUER: &str = "https://auth.openai.com";
 #[allow(dead_code)]
 const OPENCODE_OPENAI_CODEX_API_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+const OPENCODE_OPENAI_OAUTH_PORT: u16 = 1455;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OpenCodeOpenAiOAuthCredential {
@@ -8332,11 +9148,14 @@ fn resolve_openai_auth(explicit: Option<String>) -> Result<OpenAiAuth> {
     if let Some(auth) = djinn_config_openai_auth()? {
         return Ok(auth);
     }
+    if let Some(auth) = djinn_auth_openai_auth()? {
+        return Ok(auth);
+    }
     if let Some(auth) = opencode_auth_openai_auth()? {
         return Ok(auth);
     }
     Err(anyhow::anyhow!(
-        "OpenAI auth is required; use / then `Login to OpenAI with OpenCode…`, pass --api-key, set OPENAI_API_KEY, configure providers.openai.auth in Djinn config, or run `opencode providers login`"
+        "OpenAI auth is required; use / then `Add credential…`, run `djinn auth login`, pass --api-key, set OPENAI_API_KEY, or configure providers.openai.auth in Djinn config"
     ))
 }
 
@@ -8374,6 +9193,21 @@ fn djinn_config_openai_auth() -> Result<Option<OpenAiAuth>> {
         );
     }
     Ok(Some(OpenAiAuth::ApiKey(auth.to_string())))
+}
+
+fn djinn_auth_openai_auth() -> Result<Option<OpenAiAuth>> {
+    let path = djinn_auth_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("reading Djinn auth file {}", path.display()))?;
+    let Some(auth) = opencode_auth_openai_auth_from_content(&content)
+        .with_context(|| format!("parsing Djinn auth file {}", path.display()))?
+    else {
+        return Ok(None);
+    };
+    opencode_auth_credential_to_openai_auth(auth, Some((&path, &content))).map(Some)
 }
 
 #[allow(dead_code)]
@@ -9866,6 +10700,24 @@ fn agent_progress_notice(event: &AgentProgressEvent) -> String {
             if result.success { "Finished" } else { "Failed" },
             call.name
         ),
+    }
+}
+
+fn kitsune_blocked_message_for_error(error: &anyhow::Error) -> &'static str {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("auth")
+        || message.contains("api key")
+        || message.contains("token")
+        || message.contains("login")
+        || message.contains("provider")
+        || message.contains("config")
+        || message.contains("model")
+    {
+        "Agent needs provider auth or configuration"
+    } else if message.contains("permission") {
+        "Agent needs permission approval"
+    } else {
+        "Agent turn failed"
     }
 }
 
@@ -14290,6 +15142,83 @@ mod tests {
                 "djinn-session",
             ]
         );
+        assert_eq!(
+            kitsune_agent_state_report_args(
+                "w1:p2",
+                KitsuneAgentReportState::Blocked,
+                10,
+                "djinn-session",
+                Some("Permission approval required"),
+            ),
+            vec![
+                "pane",
+                "report-agent",
+                "w1:p2",
+                "--source",
+                "kitsune:djinn",
+                "--agent",
+                "djinn",
+                "--state",
+                "blocked",
+                "--seq",
+                "10",
+                "--agent-session-id",
+                "djinn-session",
+                "--message",
+                "Permission approval required",
+            ]
+        );
+    }
+
+    #[test]
+    fn kitsune_release_report_args_match_pane_api_contract() {
+        assert_eq!(
+            kitsune_agent_release_report_args("w1:p2", 11),
+            vec![
+                "pane",
+                "release-agent",
+                "w1:p2",
+                "--source",
+                "kitsune:djinn",
+                "--agent",
+                "djinn",
+                "--seq",
+                "11",
+            ]
+        );
+    }
+
+    #[test]
+    fn kitsune_reporter_sequence_is_shared_by_all_report_types() {
+        let mut reporter = KitsuneAgentReporter {
+            bin: "kitsune".to_string(),
+            pane_id: "w1:p2".to_string(),
+            seq: 0,
+        };
+
+        assert_eq!(reporter.next_seq(), 1);
+        assert_eq!(reporter.next_seq(), 2);
+        assert_eq!(reporter.next_seq(), 3);
+    }
+
+    #[test]
+    fn kitsune_blocked_message_classifies_auth_config_and_permission_errors() {
+        assert_eq!(
+            kitsune_blocked_message_for_error(&anyhow::anyhow!(
+                "OpenAI auth is required; run providers login"
+            )),
+            "Agent needs provider auth or configuration"
+        );
+        assert_eq!(
+            kitsune_blocked_message_for_error(&anyhow::anyhow!(
+                "permission requires approval in non-interactive mode"
+            )),
+            "Agent needs permission approval"
+        );
+        assert_eq!(
+            kitsune_blocked_message_for_error(&anyhow::anyhow!("network timeout")),
+            "Agent turn failed"
+        );
     }
 
     #[test]
@@ -14325,7 +15254,7 @@ mod tests {
 
     #[test]
     fn terminal_permission_gate_reuses_session_path_scopes() {
-        let gate = TerminalPermissionGate::new();
+        let gate = TerminalPermissionGate::new(None, String::new());
         let request = PermissionRequest {
             action: "apply_patch".to_string(),
             description: "patch".to_string(),
@@ -14354,7 +15283,7 @@ mod tests {
 
     #[test]
     fn terminal_permission_gate_does_not_reuse_partial_or_cross_action_scopes() {
-        let gate = TerminalPermissionGate::new();
+        let gate = TerminalPermissionGate::new(None, String::new());
         let request = PermissionRequest {
             action: "apply_patch".to_string(),
             description: "patch".to_string(),
@@ -14379,7 +15308,7 @@ mod tests {
 
     #[test]
     fn terminal_permission_gate_reuses_session_resource_scopes() {
-        let gate = TerminalPermissionGate::new();
+        let gate = TerminalPermissionGate::new(None, String::new());
         let request = PermissionRequest {
             action: "shell".to_string(),
             description: "shell".to_string(),
@@ -14730,6 +15659,28 @@ mod tests {
 
         assert_eq!(args.path.as_deref(), Some(Path::new("/tmp/djinn.json")));
         assert!(args.json);
+    }
+
+    #[test]
+    fn parses_auth_login_command() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "auth",
+            "login",
+            "--provider",
+            "openai",
+            "--method",
+            "api-key",
+        ])
+        .unwrap();
+
+        let Some(Command::Auth(args)) = cli.command else {
+            panic!("expected auth command");
+        };
+        let AuthCommand::Login(args) = args.command;
+
+        assert_eq!(args.provider, Some(AuthProvider::Openai));
+        assert_eq!(args.method, Some(OpenAiLoginMethod::ApiKey));
     }
 
     #[test]
@@ -16863,8 +17814,8 @@ mod tests {
         }));
         assert!(entries.iter().any(|entry| {
             entry.section == "Auth"
-                && entry.label == "Login to OpenAI with OpenCode…"
-                && entry.command == djinn_tui::AgentChatCommand::LoginOpenAiWithOpenCode
+                && entry.label == "Add credential…"
+                && entry.command == djinn_tui::AgentChatCommand::AddCredential
         }));
         assert!(entries.iter().any(|entry| {
             entry.section == "Navigation"
