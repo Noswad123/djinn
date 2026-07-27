@@ -30,7 +30,8 @@ use djinn_memory::{
     AgentSessionStore, AgentSessionSummary, AgentSessionTokenUsage, FileHistoryEntryId,
     FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
     JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource, SuggestionInput,
-    SuggestionRecord, SuggestionStore,
+    SuggestionRecord, SuggestionStore, DEFAULT_MAX_ACTIVE_BACKGROUND_CHILDREN_PER_PARENT,
+    DEFAULT_MAX_ACTIVE_BACKGROUND_SESSIONS_PER_WORKSPACE,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -960,6 +961,21 @@ struct AgentFileHistoryArgs {
 }
 
 #[derive(Debug, Args)]
+struct AgentSessionChildArgs {
+    #[command(subcommand)]
+    command: AgentSessionChildCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentSessionChildCommand {
+    /// Start a background child agent session from a parent session.
+    Start(AgentSessionChildStartArgs),
+    /// Internal background child worker. Not intended for direct use.
+    #[command(hide = true)]
+    Run(AgentSessionChildRunArgs),
+}
+
+#[derive(Debug, Args)]
 struct AgentConfigListArgs {
     /// Agent profile to treat as current.
     #[arg(long, default_value = "default")]
@@ -1041,6 +1057,8 @@ struct AgentToolsShowArgs {
 enum AgentSessionCommand {
     /// Create an empty agent session.
     New(AgentSessionNewArgs),
+    /// Manage child agent sessions.
+    Child(AgentSessionChildArgs),
     /// List agent sessions.
     List(AgentSessionListArgs),
     /// List child sessions whose parent_session_id matches one session.
@@ -1405,6 +1423,30 @@ struct AgentSessionDeleteArgs {
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionChildStartArgs {
+    /// Parent agent session id.
+    parent_session_id: String,
+    /// Prompt to send to the child agent session.
+    #[arg(long)]
+    prompt: String,
+    /// Configured agent role name. Defaults to the parent session's agent role when present.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Human-friendly child session title. Defaults to a trimmed prompt preview.
+    #[arg(long)]
+    title: Option<String>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionChildRunArgs {
+    /// Child agent session id to execute.
+    id: String,
 }
 
 #[derive(Debug, Args)]
@@ -5657,6 +5699,7 @@ fn run_agent_policy(args: AgentPolicyArgs) -> Result<()> {
 fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
     match args.command {
         AgentSessionCommand::New(args) => agent_session_new(args),
+        AgentSessionCommand::Child(args) => agent_session_child(args),
         AgentSessionCommand::List(args) => agent_session_list(args),
         AgentSessionCommand::Children(args) => agent_session_children(args),
         AgentSessionCommand::Show(args) => agent_session_show(args),
@@ -5665,6 +5708,254 @@ fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
         AgentSessionCommand::Rename(args) => agent_session_rename(args),
         AgentSessionCommand::Delete(args) => agent_session_delete(args),
     }
+}
+
+fn agent_session_child(args: AgentSessionChildArgs) -> Result<()> {
+    match args.command {
+        AgentSessionChildCommand::Start(args) => agent_session_child_start(args),
+        AgentSessionChildCommand::Run(args) => agent_session_child_run(args),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentSessionChildStartReport {
+    parent_session_id: AgentSessionId,
+    child_session_id: AgentSessionId,
+    title: String,
+    workspace: String,
+    profile: String,
+    agent_name: Option<String>,
+    active_background_children_for_parent: usize,
+    max_active_background_children_per_parent: usize,
+    active_background_sessions_in_workspace: usize,
+    max_active_background_sessions_per_workspace: usize,
+    path: String,
+}
+
+fn agent_session_child_start(args: AgentSessionChildStartArgs) -> Result<()> {
+    let prompt = args.prompt.trim().to_string();
+    if prompt.is_empty() {
+        bail!("--prompt cannot be empty");
+    }
+
+    let store = agent_session_store();
+    let parent_session_id = AgentSessionId::new(args.parent_session_id.trim().to_string());
+    let parent = store
+        .load_session(&parent_session_id)
+        .with_context(|| format!("loading parent agent session {parent_session_id}"))?;
+    validate_agent_child_session_depth(&store, Some(&parent_session_id))?;
+
+    let workspace = if parent.meta.workspace.trim().is_empty() {
+        resolve_agent_workspace(None)?
+    } else {
+        parent.meta.workspace.clone()
+    };
+    let active_children = store.count_active_background_children(&parent_session_id)?;
+    if active_children >= DEFAULT_MAX_ACTIVE_BACKGROUND_CHILDREN_PER_PARENT {
+        bail!(
+            "active background child limit reached for parent {parent_session_id}: \
+             {active_children}/{DEFAULT_MAX_ACTIVE_BACKGROUND_CHILDREN_PER_PARENT} running"
+        );
+    }
+    let active_workspace = store.count_active_background_sessions_in_workspace(&workspace)?;
+    if active_workspace >= DEFAULT_MAX_ACTIVE_BACKGROUND_SESSIONS_PER_WORKSPACE {
+        bail!(
+            "active background session limit reached for workspace {workspace}: \
+             {active_workspace}/{DEFAULT_MAX_ACTIVE_BACKGROUND_SESSIONS_PER_WORKSPACE} running"
+        );
+    }
+
+    let requested_profile = if parent.meta.profile.trim().is_empty() {
+        "default"
+    } else {
+        parent.meta.profile.as_str()
+    };
+    let requested_agent = args.agent.or_else(|| parent.meta.agent_name.clone());
+    let requested_model = latest_session_model(&parent).or_else(|| {
+        parent
+            .meta
+            .runtime_config
+            .as_ref()
+            .and_then(|config| nonempty_string(&config.model))
+    });
+    let selection = resolve_agent_role_selection(requested_agent, requested_profile, requested_model)?;
+    let model = resolve_agent_model(selection.model.clone(), &selection.profile)?;
+    let effective_config = agent_effective_config_from_parts(
+        workspace.clone(),
+        selection.profile.clone(),
+        model,
+        selection.agent_name.clone(),
+        selection.instructions.clone(),
+        selection.tools.clone(),
+    )?;
+    let title = args
+        .title
+        .unwrap_or_else(|| prompt_title(&prompt, "Child agent session"));
+    let child_id = store.create_session(AgentSessionMeta {
+        title: title.clone(),
+        workspace: workspace.clone(),
+        profile: selection.profile.clone(),
+        agent_name: selection.agent_name.clone(),
+        parent_session_id: Some(parent_session_id.clone()),
+        source: "djinn-agent-child".to_string(),
+        runtime_config: Some(agent_session_runtime_config(&effective_config)),
+        ..AgentSessionMeta::default()
+    })?;
+    store.append_event(
+        &child_id,
+        AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+            content: prompt,
+        }),
+    )?;
+    store.append_event(
+        &child_id,
+        AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
+            state: AgentSessionLifecycleState::Running,
+            mode: Some(AgentSessionExecutionMode::Background),
+            reason: Some("spawned".to_string()),
+            note: Some(format!("parent session {parent_session_id}")),
+        }),
+    )?;
+
+    spawn_agent_session_child_worker(&child_id)?;
+
+    let report = AgentSessionChildStartReport {
+        parent_session_id,
+        child_session_id: child_id.clone(),
+        title,
+        workspace,
+        profile: selection.profile,
+        agent_name: selection.agent_name,
+        active_background_children_for_parent: active_children + 1,
+        max_active_background_children_per_parent: DEFAULT_MAX_ACTIVE_BACKGROUND_CHILDREN_PER_PARENT,
+        active_background_sessions_in_workspace: active_workspace + 1,
+        max_active_background_sessions_per_workspace: DEFAULT_MAX_ACTIVE_BACKGROUND_SESSIONS_PER_WORKSPACE,
+        path: store.session_file_path(&child_id).display().to_string(),
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "Background child agent session started [{}]: {}",
+            report.child_session_id, report.title
+        );
+        println!("Parent session: {}", report.parent_session_id);
+        println!("Workspace: {}", report.workspace);
+        if let Some(agent_name) = &report.agent_name {
+            println!("Agent: {agent_name}");
+        }
+        println!(
+            "Active background children for parent: {}/{}",
+            report.active_background_children_for_parent,
+            report.max_active_background_children_per_parent
+        );
+        println!(
+            "Active background sessions in workspace: {}/{}",
+            report.active_background_sessions_in_workspace,
+            report.max_active_background_sessions_per_workspace
+        );
+        println!("Path: {}", report.path);
+    }
+    Ok(())
+}
+
+fn spawn_agent_session_child_worker(child_id: &AgentSessionId) -> Result<()> {
+    let exe = env::current_exe().with_context(|| "resolving current djinn executable")?;
+    ProcessCommand::new(exe)
+        .args([
+            "agent",
+            "session",
+            "child",
+            "run",
+            child_id.as_str(),
+        ])
+        .env("DJINN_BACKGROUND_CHILD", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| "spawning background child agent session worker")?;
+    Ok(())
+}
+
+fn agent_session_child_run(args: AgentSessionChildRunArgs) -> Result<()> {
+    let store = agent_session_store();
+    let id = AgentSessionId::new(args.id);
+    let session = store.load_session(&id)?;
+    let prompt = first_user_prompt(&session)
+        .ok_or_else(|| anyhow::anyhow!("child session {id} has no user prompt"))?;
+    let profile = if session.meta.profile.trim().is_empty() {
+        "default".to_string()
+    } else {
+        session.meta.profile.clone()
+    };
+    let workspace = if session.meta.workspace.trim().is_empty() {
+        resolve_agent_workspace(None)?
+    } else {
+        session.meta.workspace.clone()
+    };
+    let (model, instruction_refs, allowed_tools) = session
+        .meta
+        .runtime_config
+        .as_ref()
+        .map(|config| {
+            (
+                nonempty_string(&config.model),
+                config.agent_instructions.clone(),
+                config.agent_tools.clone(),
+            )
+        })
+        .unwrap_or_default();
+    let model = resolve_agent_model(model, &profile)?;
+    let system_instructions = resolve_agent_instruction_contents(&workspace, &instruction_refs)?;
+
+    let result = complete_openai_prompt(
+        &store,
+        &id,
+        prompt,
+        model,
+        None,
+        None,
+        DEFAULT_AGENT_MAX_TOOL_ROUNDS,
+        &profile,
+        &system_instructions,
+        allowed_tools,
+        false,
+    );
+    match result {
+        Ok(_) => store.append_event(
+            &id,
+            AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
+                state: AgentSessionLifecycleState::Completed,
+                mode: Some(AgentSessionExecutionMode::Background),
+                reason: Some("completed".to_string()),
+                note: None,
+            }),
+        )?,
+        Err(error) => {
+            let message = error.to_string();
+            let _ = store.append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
+                    state: AgentSessionLifecycleState::Failed,
+                    mode: Some(AgentSessionExecutionMode::Background),
+                    reason: Some("failed".to_string()),
+                    note: Some(message.clone()),
+                }),
+            );
+            return Err(error).with_context(|| format!("running background child session {id}"));
+        }
+    }
+    Ok(())
+}
+
+fn first_user_prompt(session: &AgentSession) -> Option<String> {
+    session.events.iter().find_map(|event| match &event.kind {
+        AgentSessionEventKind::UserMessage { content } if !content.trim().is_empty() => {
+            Some(content.clone())
+        }
+        _ => None,
+    })
 }
 
 fn run_agent_file_history(args: AgentFileHistoryArgs) -> Result<()> {
@@ -15803,6 +16094,45 @@ mod tests {
             args.state,
             Some(AgentSessionLifecycleStateValue::Completed)
         ));
+        assert!(args.json);
+    }
+
+    #[test]
+    fn parses_agent_session_child_start_command() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "session",
+            "child",
+            "start",
+            "agt_parent",
+            "--prompt",
+            "review this diff",
+            "--agent",
+            "reviewer",
+            "--title",
+            "Review diff",
+            "--json",
+        ])
+        .unwrap();
+
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Session(session_args) = agent_args.command else {
+            panic!("expected agent session command");
+        };
+        let AgentSessionCommand::Child(child_args) = session_args.command else {
+            panic!("expected agent session child command");
+        };
+        let AgentSessionChildCommand::Start(args) = child_args.command else {
+            panic!("expected agent session child start command");
+        };
+
+        assert_eq!(args.parent_session_id, "agt_parent");
+        assert_eq!(args.prompt, "review this diff");
+        assert_eq!(args.agent.as_deref(), Some("reviewer"));
+        assert_eq!(args.title.as_deref(), Some("Review diff"));
         assert!(args.json);
     }
 

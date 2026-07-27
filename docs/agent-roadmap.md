@@ -92,6 +92,12 @@ Do not copy these OpenCode details directly:
   expansion path.
 - Fixed widths without adapting to terminal size and copy/paste constraints.
 
+More UI fixes
+- this text below the composer is not wanted: rendered Markdown transcript • compact tools tool output • compact thoughts •
+- the background color for djinn should be: #24273A 
+- the bacgrkound color for the composer should be: #181926
+- the scroll in opencode is much smoother. In djinn the scroll will keep scrolling and keep rendering blanks. We should scroll more down more than half the screen in blankness.
+- I can't confirm this but it looks like opencode has syntax highlighting
 ### Child-session sub-agent model
 
 The product model is decided: sub-agents are normal Djinn agent sessions with
