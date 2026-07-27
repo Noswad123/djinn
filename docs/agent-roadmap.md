@@ -106,9 +106,6 @@ Ready implementation slices:
   children per parent and maximum active background children per workspace.
 - Add background child-session lifecycle state and commands for start/list/show,
   foreground/resume, and cancel/stop without changing the JSONL session model.
-- Define the lifecycle state machine separately from notification/review state:
-  execution states such as created/running/paused/completed/failed/cancelled, and
-  review states such as unread/dismissed/imported.
 - Support multiple children per parent. Background children may run concurrently;
   foregrounding selects one active child without implying that siblings disappear
   or merge into the parent.
@@ -131,6 +128,18 @@ Ready implementation slices:
   not inherit parent approvals implicitly.
 - Define an inspectable parent-to-child grant record with parent id, child id,
   action, resource, effect, source, and session scope.
+
+Completed implementation slices:
+
+- Foreground child-session launch from Agent chat creates a normal agent session
+  with `parent_session_id`, preserving current profile/agent/model context while
+  normal New Session clears parent linkage.
+- Child-session tree depth is capped at three levels below the root at creation
+  time.
+- CLI-only lifecycle state is recorded as JSONL session events and derived from
+  the latest event, with states `created`, `running`, `paused`, `completed`,
+  `failed`, and `cancelled`. Review/notification state remains separate and is
+  not implemented yet.
 
 ## Needs a decision before implementation
 

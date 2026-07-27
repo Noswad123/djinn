@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 pub mod agent_sessions;
 pub mod file_history;
 pub use agent_sessions::{
-    AgentSession, AgentSessionCostEstimate, AgentSessionEvent, AgentSessionEventKind,
-    AgentSessionFilter, AgentSessionId, AgentSessionMeta, AgentSessionPolicyRule,
+    lifecycle_for, AgentSession, AgentSessionCostEstimate, AgentSessionEvent,
+    AgentSessionEventKind, AgentSessionExecutionMode, AgentSessionFilter, AgentSessionId,
+    AgentSessionLifecycle, AgentSessionLifecycleState, AgentSessionMeta, AgentSessionPolicyRule,
     AgentSessionPolicySnapshot, AgentSessionRuntimeConfig, AgentSessionStore, AgentSessionSummary,
     AgentSessionTokenUsage, JsonlAgentSessionStore,
 };

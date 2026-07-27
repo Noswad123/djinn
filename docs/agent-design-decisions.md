@@ -908,6 +908,18 @@ The first non-interactive agent slice is implemented as:
     depth-three session as the parent for another child is rejected. The check
     follows `parent_session_id` links in the JSONL session store and also catches
     missing/cyclic parent chains instead of creating ambiguous descendants.
+60. Agent session lifecycle state is modeled as append-only JSONL session events,
+    not a separate persistence source. The derived lifecycle is the latest
+    `session_lifecycle_updated` event, defaulting to `created` when no lifecycle
+    event exists. The first CLI-only states are `created`, `running`, `paused`,
+    `completed`, `failed`, and `cancelled`, with optional `foreground` or
+    `background` execution mode metadata plus reason/note fields. This state is
+    informational until a later process manager/background runner slice wires it
+    to actual start/stop/cancel behavior.
+61. Lifecycle execution state remains separate from notification/review state.
+    Future review states such as unread/dismissed/imported should live in a
+    family projection or notification layer, not overload the execution lifecycle
+    event.
 
 Not in the first slice unless explicitly reopened:
 

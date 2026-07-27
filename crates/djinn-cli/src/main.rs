@@ -23,8 +23,9 @@ use djinn_agent::{
 use djinn_chats::{ChatRecord, ChatRestoreReport};
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
-    ActionRecord, ActionStore, AgentSession, AgentSessionCostEstimate, AgentSessionEvent,
-    AgentSessionEventKind, AgentSessionFilter, AgentSessionId, AgentSessionMeta,
+    lifecycle_for, ActionRecord, ActionStore, AgentSession, AgentSessionCostEstimate,
+    AgentSessionEvent, AgentSessionEventKind, AgentSessionExecutionMode, AgentSessionFilter,
+    AgentSessionId, AgentSessionLifecycle, AgentSessionLifecycleState, AgentSessionMeta,
     AgentSessionPolicyRule, AgentSessionPolicySnapshot, AgentSessionRuntimeConfig,
     AgentSessionStore, AgentSessionSummary, AgentSessionTokenUsage, FileHistoryEntryId,
     FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
@@ -1047,6 +1048,8 @@ enum AgentSessionCommand {
     Show(AgentSessionShowArgs),
     /// Summarize model/tool/error accounting for one agent session.
     Stats(AgentSessionStatsArgs),
+    /// Show or update one session's lifecycle state.
+    Lifecycle(AgentSessionLifecycleArgs),
     /// Rename an agent session by appending a title metadata event.
     Rename(AgentSessionRenameArgs),
     /// Delete an agent session JSONL file.
@@ -1254,6 +1257,9 @@ struct AgentSessionListArgs {
     /// Filter by exact source label.
     #[arg(long)]
     source: Option<String>,
+    /// Filter by derived lifecycle state.
+    #[arg(long, value_enum)]
+    state: Option<AgentSessionLifecycleStateValue>,
     /// Maximum sessions to list.
     #[arg(long)]
     limit: Option<usize>,
@@ -1269,9 +1275,94 @@ struct AgentSessionChildrenArgs {
     /// Maximum child sessions to list.
     #[arg(long)]
     limit: Option<usize>,
+    /// Filter by derived lifecycle state.
+    #[arg(long, value_enum)]
+    state: Option<AgentSessionLifecycleStateValue>,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionLifecycleArgs {
+    #[command(subcommand)]
+    command: AgentSessionLifecycleCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentSessionLifecycleCommand {
+    /// Show the derived lifecycle state for one session.
+    Show(AgentSessionLifecycleShowArgs),
+    /// Append a lifecycle state event to one session.
+    Set(AgentSessionLifecycleSetArgs),
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionLifecycleShowArgs {
+    /// Agent session id.
+    id: String,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionLifecycleSetArgs {
+    /// Agent session id.
+    id: String,
+    /// New lifecycle state to record.
+    #[arg(value_enum)]
+    state: AgentSessionLifecycleStateValue,
+    /// Optional execution mode metadata.
+    #[arg(long, value_enum)]
+    mode: Option<AgentSessionExecutionModeValue>,
+    /// Optional short reason for the state change.
+    #[arg(long)]
+    reason: Option<String>,
+    /// Optional human note about the lifecycle update.
+    #[arg(long)]
+    note: Option<String>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum AgentSessionLifecycleStateValue {
+    Created,
+    Running,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl From<AgentSessionLifecycleStateValue> for AgentSessionLifecycleState {
+    fn from(value: AgentSessionLifecycleStateValue) -> Self {
+        match value {
+            AgentSessionLifecycleStateValue::Created => Self::Created,
+            AgentSessionLifecycleStateValue::Running => Self::Running,
+            AgentSessionLifecycleStateValue::Paused => Self::Paused,
+            AgentSessionLifecycleStateValue::Completed => Self::Completed,
+            AgentSessionLifecycleStateValue::Failed => Self::Failed,
+            AgentSessionLifecycleStateValue::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum AgentSessionExecutionModeValue {
+    Foreground,
+    Background,
+}
+
+impl From<AgentSessionExecutionModeValue> for AgentSessionExecutionMode {
+    fn from(value: AgentSessionExecutionModeValue) -> Self {
+        match value {
+            AgentSessionExecutionModeValue::Foreground => Self::Foreground,
+            AgentSessionExecutionModeValue::Background => Self::Background,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -5569,6 +5660,7 @@ fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
         AgentSessionCommand::Children(args) => agent_session_children(args),
         AgentSessionCommand::Show(args) => agent_session_show(args),
         AgentSessionCommand::Stats(args) => agent_session_stats(args),
+        AgentSessionCommand::Lifecycle(args) => agent_session_lifecycle(args),
         AgentSessionCommand::Rename(args) => agent_session_rename(args),
         AgentSessionCommand::Delete(args) => agent_session_delete(args),
     }
@@ -6042,6 +6134,7 @@ fn agent_session_list(args: AgentSessionListArgs) -> Result<()> {
         agent_name,
         parent_session_id: parent_session_id_from_arg(args.parent_session),
         source: args.source,
+        lifecycle_state: args.state.map(Into::into),
         limit: args.limit,
     })?;
     if args.json {
@@ -6059,6 +6152,7 @@ fn agent_session_children(args: AgentSessionChildrenArgs) -> Result<()> {
     let parent_session_id = AgentSessionId::new(args.id);
     let children = agent_session_store().list_sessions(AgentSessionFilter {
         parent_session_id: Some(parent_session_id.clone()),
+        lifecycle_state: args.state.map(Into::into),
         limit: args.limit,
         ..AgentSessionFilter::default()
     })?;
@@ -6158,6 +6252,11 @@ fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
     }
     println!("Source: {}", session.meta.source);
     println!("Created: {}", session.meta.created_at);
+    let lifecycle = lifecycle_for(&session);
+    println!(
+        "Lifecycle: {}",
+        format_agent_session_lifecycle_inline(&lifecycle)
+    );
     if session.events.is_empty() {
         println!("\nNo events recorded.");
     } else {
@@ -6169,8 +6268,121 @@ fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
     Ok(())
 }
 
+fn agent_session_lifecycle(args: AgentSessionLifecycleArgs) -> Result<()> {
+    match args.command {
+        AgentSessionLifecycleCommand::Show(args) => agent_session_lifecycle_show(args),
+        AgentSessionLifecycleCommand::Set(args) => agent_session_lifecycle_set(args),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentSessionLifecycleReport {
+    id: AgentSessionId,
+    title: String,
+    lifecycle: AgentSessionLifecycle,
+}
+
+fn agent_session_lifecycle_show(args: AgentSessionLifecycleShowArgs) -> Result<()> {
+    let id = AgentSessionId::new(args.id);
+    let session = agent_session_store().load_session(&id)?;
+    let report = AgentSessionLifecycleReport {
+        id,
+        lifecycle: lifecycle_for(&session),
+        title: session.meta.title,
+    };
+    print!(
+        "{}",
+        format_agent_session_lifecycle_report(&report, args.json)?
+    );
+    Ok(())
+}
+
+fn agent_session_lifecycle_set(args: AgentSessionLifecycleSetArgs) -> Result<()> {
+    let id = AgentSessionId::new(args.id);
+    let store = agent_session_store();
+    store.load_session(&id)?;
+    store.append_event(
+        &id,
+        AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
+            state: args.state.into(),
+            mode: args.mode.map(Into::into),
+            reason: nonempty_cli_value(args.reason),
+            note: nonempty_cli_value(args.note),
+        }),
+    )?;
+    let session = store.load_session(&id)?;
+    let report = AgentSessionLifecycleReport {
+        id,
+        lifecycle: lifecycle_for(&session),
+        title: session.meta.title,
+    };
+    print!(
+        "{}",
+        format_agent_session_lifecycle_report(&report, args.json)?
+    );
+    Ok(())
+}
+
+fn format_agent_session_lifecycle_report(
+    report: &AgentSessionLifecycleReport,
+    json: bool,
+) -> Result<String> {
+    if json {
+        let mut rendered = serde_json::to_string_pretty(report)?;
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+
+    let mut lines = vec![
+        format!("Agent session lifecycle [{}]", report.id),
+        format!(
+            "Title: {}",
+            if report.title.trim().is_empty() {
+                "Untitled agent session"
+            } else {
+                &report.title
+            }
+        ),
+        format!("State: {}", report.lifecycle.state),
+    ];
+    if let Some(mode) = &report.lifecycle.mode {
+        lines.push(format!("Mode: {mode}"));
+    }
+    if !report.lifecycle.updated_at.trim().is_empty() {
+        lines.push(format!("Updated: {}", report.lifecycle.updated_at));
+    }
+    if let Some(reason) = &report.lifecycle.reason {
+        lines.push(format!("Reason: {reason}"));
+    }
+    if let Some(note) = &report.lifecycle.note {
+        lines.push(format!("Note: {note}"));
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn format_agent_session_lifecycle_inline(lifecycle: &AgentSessionLifecycle) -> String {
+    let mut parts = vec![lifecycle.state.to_string()];
+    if let Some(mode) = &lifecycle.mode {
+        parts.push(format!("mode {mode}"));
+    }
+    if let Some(reason) = &lifecycle.reason {
+        parts.push(format!("reason {reason}"));
+    }
+    parts.join(", ")
+}
+
+fn nonempty_cli_value(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn format_agent_session_summary_suffix(session: &AgentSessionSummary) -> String {
-    let mut parts = Vec::new();
+    let mut parts = vec![format!("state: {}", session.lifecycle.state)];
+    if let Some(mode) = &session.lifecycle.mode {
+        parts.push(format!("mode: {mode}"));
+    }
     if let Some(agent_name) = &session.agent_name {
         parts.push(format!("agent: {agent_name}"));
     }
@@ -6411,7 +6623,8 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
             | AgentSessionEventKind::SessionProfileUpdated { .. }
             | AgentSessionEventKind::SessionModelUpdated { .. }
             | AgentSessionEventKind::Summary { .. }
-            | AgentSessionEventKind::Checkpoint { .. } => {}
+            | AgentSessionEventKind::Checkpoint { .. }
+            | AgentSessionEventKind::SessionLifecycleUpdated { .. } => {}
         }
     }
 
@@ -10320,6 +10533,24 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
             format!("summary: {}", prompt_title(content, "(empty)"))
         }
         AgentSessionEventKind::Checkpoint { label } => format!("checkpoint: {label}"),
+        AgentSessionEventKind::SessionLifecycleUpdated {
+            state,
+            mode,
+            reason,
+            note,
+        } => {
+            let lifecycle = AgentSessionLifecycle {
+                state: state.clone(),
+                mode: mode.clone(),
+                updated_at: event.created_at.clone(),
+                reason: reason.clone(),
+                note: note.clone(),
+            };
+            format!(
+                "lifecycle: {}",
+                format_agent_session_lifecycle_inline(&lifecycle)
+            )
+        }
     }
 }
 
@@ -10654,6 +10885,7 @@ fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessag
             | AgentSessionEventKind::SessionModelUpdated { .. }
             | AgentSessionEventKind::ModelResponseMetadata { .. }
             | AgentSessionEventKind::ToolExecutionMetadata { .. }
+            | AgentSessionEventKind::SessionLifecycleUpdated { .. }
             | AgentSessionEventKind::AssistantMessage { .. } => {}
         }
     }
@@ -15478,6 +15710,8 @@ mod tests {
             "reviewer",
             "--parent-session",
             "agt_parent",
+            "--state",
+            "running",
             "--json",
         ])
         .unwrap();
@@ -15494,6 +15728,10 @@ mod tests {
 
         assert_eq!(args.agent.as_deref(), Some("reviewer"));
         assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
+        assert!(matches!(
+            args.state,
+            Some(AgentSessionLifecycleStateValue::Running)
+        ));
         assert!(args.json);
     }
 
@@ -15507,6 +15745,8 @@ mod tests {
             "agt_parent",
             "--limit",
             "5",
+            "--state",
+            "completed",
             "--json",
         ])
         .unwrap();
@@ -15523,6 +15763,80 @@ mod tests {
 
         assert_eq!(args.id, "agt_parent");
         assert_eq!(args.limit, Some(5));
+        assert!(matches!(
+            args.state,
+            Some(AgentSessionLifecycleStateValue::Completed)
+        ));
+        assert!(args.json);
+    }
+
+    #[test]
+    fn parses_agent_session_lifecycle_commands() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "session",
+            "lifecycle",
+            "show",
+            "agt_child",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Session(session_args) = agent_args.command else {
+            panic!("expected agent session command");
+        };
+        let AgentSessionCommand::Lifecycle(args) = session_args.command else {
+            panic!("expected lifecycle command");
+        };
+        let AgentSessionLifecycleCommand::Show(args) = args.command else {
+            panic!("expected lifecycle show command");
+        };
+        assert_eq!(args.id, "agt_child");
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "session",
+            "lifecycle",
+            "set",
+            "agt_child",
+            "completed",
+            "--mode",
+            "background",
+            "--reason",
+            "done",
+            "--note",
+            "summary ready",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Session(session_args) = agent_args.command else {
+            panic!("expected agent session command");
+        };
+        let AgentSessionCommand::Lifecycle(args) = session_args.command else {
+            panic!("expected lifecycle command");
+        };
+        let AgentSessionLifecycleCommand::Set(args) = args.command else {
+            panic!("expected lifecycle set command");
+        };
+        assert_eq!(args.id, "agt_child");
+        assert!(matches!(
+            args.state,
+            AgentSessionLifecycleStateValue::Completed
+        ));
+        assert!(matches!(
+            args.mode,
+            Some(AgentSessionExecutionModeValue::Background)
+        ));
+        assert_eq!(args.reason.as_deref(), Some("done"));
+        assert_eq!(args.note.as_deref(), Some("summary ready"));
         assert!(args.json);
     }
 
@@ -15541,12 +15855,21 @@ mod tests {
                 created_at: "2026-07-25T00:00:00Z".to_string(),
                 updated_at: "2026-07-25T00:00:00Z".to_string(),
                 event_count: 3,
+                lifecycle: AgentSessionLifecycle {
+                    state: AgentSessionLifecycleState::Completed,
+                    mode: Some(AgentSessionExecutionMode::Background),
+                    updated_at: "2026-07-25T00:00:00Z".to_string(),
+                    reason: Some("done".to_string()),
+                    note: None,
+                },
             }],
         };
 
         let rendered = format_agent_session_children_report(&report);
         assert!(rendered.contains("Child agent sessions for [agt_parent]"));
         assert!(rendered.contains("[agt_child] Review diff"));
+        assert!(rendered.contains("state: completed"));
+        assert!(rendered.contains("mode: background"));
         assert!(rendered.contains("agent: reviewer"));
         assert!(rendered.contains("parent: agt_parent"));
         assert!(rendered.contains("Total: 1 child agent sessions"));
@@ -15554,6 +15877,32 @@ mod tests {
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["parent_session_id"], "agt_parent");
         assert_eq!(json["children"][0]["id"], "agt_child");
+    }
+
+    #[test]
+    fn format_agent_session_lifecycle_report_renders_text_and_json() {
+        let report = AgentSessionLifecycleReport {
+            id: AgentSessionId::new("agt_child"),
+            title: "Review diff".to_string(),
+            lifecycle: AgentSessionLifecycle {
+                state: AgentSessionLifecycleState::Failed,
+                mode: Some(AgentSessionExecutionMode::Background),
+                updated_at: "2026-07-27T00:00:00Z".to_string(),
+                reason: Some("tool failed".to_string()),
+                note: Some("see stderr".to_string()),
+            },
+        };
+
+        let text = format_agent_session_lifecycle_report(&report, false).unwrap();
+        assert!(text.contains("Agent session lifecycle [agt_child]"));
+        assert!(text.contains("State: failed"));
+        assert!(text.contains("Mode: background"));
+        assert!(text.contains("Reason: tool failed"));
+
+        let json = format_agent_session_lifecycle_report(&report, true).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["lifecycle"]["state"], "failed");
+        assert_eq!(value["lifecycle"]["mode"], "background");
     }
 
     #[test]
@@ -18218,6 +18567,7 @@ mod tests {
             created_at: "2026-07-24T00:00:00Z".to_string(),
             updated_at: "2026-07-24T01:00:00Z".to_string(),
             event_count: 3,
+            lifecycle: AgentSessionLifecycle::default(),
         };
         let store = JsonlAgentSessionStore::default_in(&std::env::temp_dir());
 
@@ -18245,6 +18595,7 @@ mod tests {
             created_at: "2026-07-25T00:00:00Z".to_string(),
             updated_at: "2026-07-25T01:00:00Z".to_string(),
             event_count: 7,
+            lifecycle: AgentSessionLifecycle::default(),
         };
         let store = JsonlAgentSessionStore::default_in(&std::env::temp_dir());
 

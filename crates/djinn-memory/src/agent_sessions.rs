@@ -81,6 +81,73 @@ pub struct AgentSessionPolicySnapshot {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct AgentSessionLifecycle {
+    #[serde(default)]
+    pub state: AgentSessionLifecycleState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<AgentSessionExecutionMode>,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSessionLifecycleState {
+    #[default]
+    Created,
+    Running,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl AgentSessionLifecycleState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl fmt::Display for AgentSessionLifecycleState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSessionExecutionMode {
+    Foreground,
+    Background,
+}
+
+impl AgentSessionExecutionMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Foreground => "foreground",
+            Self::Background => "background",
+        }
+    }
+}
+
+impl fmt::Display for AgentSessionExecutionMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct AgentSessionPolicyRule {
     #[serde(default)]
     pub source: String,
@@ -226,6 +293,15 @@ pub enum AgentSessionEventKind {
     Checkpoint {
         label: String,
     },
+    SessionLifecycleUpdated {
+        state: AgentSessionLifecycleState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<AgentSessionExecutionMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -261,6 +337,8 @@ pub struct AgentSessionSummary {
     pub created_at: String,
     pub updated_at: String,
     pub event_count: usize,
+    #[serde(default)]
+    pub lifecycle: AgentSessionLifecycle,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -270,6 +348,7 @@ pub struct AgentSessionFilter {
     pub agent_name: Option<String>,
     pub parent_session_id: Option<AgentSessionId>,
     pub source: Option<String>,
+    pub lifecycle_state: Option<AgentSessionLifecycleState>,
     pub limit: Option<usize>,
 }
 
@@ -486,6 +565,7 @@ fn summary_for(session: &AgentSession) -> AgentSessionSummary {
         .last()
         .map(|event| event.created_at.clone())
         .unwrap_or_else(|| session.meta.created_at.clone());
+    let lifecycle = lifecycle_for(session);
     AgentSessionSummary {
         id: session.id.clone(),
         title: session.meta.title.clone(),
@@ -497,7 +577,36 @@ fn summary_for(session: &AgentSession) -> AgentSessionSummary {
         created_at: session.meta.created_at.clone(),
         updated_at,
         event_count: session.events.len(),
+        lifecycle,
     }
+}
+
+pub fn lifecycle_for(session: &AgentSession) -> AgentSessionLifecycle {
+    let mut lifecycle = AgentSessionLifecycle {
+        state: AgentSessionLifecycleState::Created,
+        updated_at: session.meta.created_at.clone(),
+        ..AgentSessionLifecycle::default()
+    };
+
+    for event in &session.events {
+        if let AgentSessionEventKind::SessionLifecycleUpdated {
+            state,
+            mode,
+            reason,
+            note,
+        } = &event.kind
+        {
+            lifecycle = AgentSessionLifecycle {
+                state: state.clone(),
+                mode: mode.clone(),
+                updated_at: event.created_at.clone(),
+                reason: reason.clone(),
+                note: note.clone(),
+            };
+        }
+    }
+
+    lifecycle
 }
 
 fn matches_filter(session: &AgentSession, filter: &AgentSessionFilter) -> bool {
@@ -525,6 +634,11 @@ fn matches_filter(session: &AgentSession, filter: &AgentSessionFilter) -> bool {
             .source
             .as_ref()
             .map(|value| session.meta.source == *value)
+            .unwrap_or(true)
+        && filter
+            .lifecycle_state
+            .as_ref()
+            .map(|value| lifecycle_for(session).state == *value)
             .unwrap_or(true)
 }
 
@@ -745,6 +859,75 @@ mod tests {
             assert!(value.get("created_at").is_some());
             assert!(value.get("type").is_some());
         }
+    }
+
+    #[test]
+    fn lifecycle_events_derive_latest_state_and_filter_summaries() {
+        let store = temp_store("lifecycle-state");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "background child".to_string(),
+                workspace: "/tmp/project".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        let default_session = store.load_session(&id).unwrap();
+        assert_eq!(
+            lifecycle_for(&default_session).state,
+            AgentSessionLifecycleState::Created
+        );
+
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
+                    state: AgentSessionLifecycleState::Running,
+                    mode: Some(AgentSessionExecutionMode::Background),
+                    reason: Some("spawned".to_string()),
+                    note: None,
+                }),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
+                    state: AgentSessionLifecycleState::Completed,
+                    mode: Some(AgentSessionExecutionMode::Background),
+                    reason: Some("done".to_string()),
+                    note: Some("summary ready".to_string()),
+                }),
+            )
+            .unwrap();
+
+        let loaded = store.load_session(&id).unwrap();
+        let lifecycle = lifecycle_for(&loaded);
+        assert_eq!(lifecycle.state, AgentSessionLifecycleState::Completed);
+        assert_eq!(lifecycle.mode, Some(AgentSessionExecutionMode::Background));
+        assert_eq!(lifecycle.reason.as_deref(), Some("done"));
+        assert_eq!(lifecycle.note.as_deref(), Some("summary ready"));
+
+        let completed = store
+            .list_sessions(AgentSessionFilter {
+                lifecycle_state: Some(AgentSessionLifecycleState::Completed),
+                ..AgentSessionFilter::default()
+            })
+            .unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(
+            completed[0].lifecycle.state,
+            AgentSessionLifecycleState::Completed
+        );
+
+        let running = store
+            .list_sessions(AgentSessionFilter {
+                lifecycle_state: Some(AgentSessionLifecycleState::Running),
+                ..AgentSessionFilter::default()
+            })
+            .unwrap();
+        assert!(running.is_empty());
     }
 
     #[test]
