@@ -891,6 +891,10 @@ The first non-interactive agent slice is implemented as:
     their original text on submit; the composer shows a compact line/byte summary
     such as `📋 pasted … — included on submit`. Opening the external editor edits
     the raw prompt text, not the summary placeholder.
+57. Agent chat treats Ctrl+C as a composer clear before it is a quit command. If
+    the composer contains text, Ctrl+C clears the prompt and any paste summaries;
+    if the composer is empty, Ctrl+C exits the chat. Esc remains an empty-composer
+    quit affordance.
 
 Not in the first slice unless explicitly reopened:
 

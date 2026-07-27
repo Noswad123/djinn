@@ -92,10 +92,6 @@ Do not copy these OpenCode details directly:
   expansion path.
 - Fixed widths without adapting to terminal size and copy/paste constraints.
 
-Ready implementation slices:
-
-- if the composer has some text, pressing ctl+c should clear the composer. if nothing is there, It should exist
-
 ### Child-session sub-agent model
 
 The product model is decided: sub-agents are normal Djinn agent sessions with

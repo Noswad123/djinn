@@ -86,6 +86,15 @@ pub(crate) fn agent_chat_quit_key(
     modifiers: KeyModifiers,
     input_empty: bool,
 ) -> bool {
-    (modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c')))
-        || (input_empty && matches!(code, KeyCode::Esc))
+    input_empty
+        && ((modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c')))
+            || matches!(code, KeyCode::Esc))
+}
+
+pub(crate) fn agent_chat_clear_composer_key(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    input_empty: bool,
+) -> bool {
+    !input_empty && modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c'))
 }

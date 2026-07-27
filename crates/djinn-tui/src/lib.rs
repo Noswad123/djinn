@@ -631,6 +631,14 @@ fn run_agent_chat_prompt_loop(
                     continue;
                 }
                 match key.code {
+                    _ if agent_chat_clear_composer_key(
+                        key.code,
+                        key.modifiers,
+                        app.input.is_empty(),
+                    ) =>
+                    {
+                        app.clear_composer();
+                    }
                     _ if agent_chat_quit_key(key.code, key.modifiers, app.input.is_empty()) => {
                         return Ok(None);
                     }
@@ -783,6 +791,14 @@ where
                         return Ok(AgentChatExit::Dashboard {
                             initial_tab: agent_chat_dashboard_target(key.code).unwrap(),
                         });
+                    }
+                    _ if agent_chat_clear_composer_key(
+                        key.code,
+                        key.modifiers,
+                        app.input.is_empty(),
+                    ) =>
+                    {
+                        app.clear_composer();
                     }
                     _ if agent_chat_quit_key(key.code, key.modifiers, app.input.is_empty()) => {
                         return Ok(AgentChatExit::Quit);
@@ -1136,6 +1152,12 @@ impl AgentChatComposerApp {
     fn backspace(&mut self) {
         self.input.pop();
         self.normalize_paste_summaries();
+    }
+
+    fn clear_composer(&mut self) {
+        self.input.clear();
+        self.paste_summaries.clear();
+        self.status.notice = "Composer cleared.".to_string();
     }
 
     fn submit_prompt(&mut self) -> Option<String> {
@@ -1892,8 +1914,8 @@ fn agent_chat_command_specs() -> Vec<AgentChatCommandSpec> {
         ),
         agent_chat_command_spec(
             "Session",
-            "Quit",
-            "quit",
+            "Clear composer / quit",
+            "clear composer text; quit when composer is empty",
             Some("Ctrl+C"),
             Some("Composer"),
             None,
@@ -6619,6 +6641,23 @@ mod tests {
     }
 
     #[test]
+    fn agent_chat_clear_composer_clears_input_and_paste_summaries() {
+        let pasted = (1..=12)
+            .map(|idx| format!("line {idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = AgentChatComposerApp::new(Vec::new(), test_agent_chat_status("Ready."));
+
+        app.push_char('x');
+        app.paste_text(&pasted);
+        app.clear_composer();
+
+        assert!(app.input.is_empty());
+        assert!(app.paste_summaries.is_empty());
+        assert_eq!(app.status.notice, "Composer cleared.");
+    }
+
+    #[test]
     fn agent_chat_newline_key_uses_shift_enter_without_ctrl_j_fallback() {
         assert!(agent_chat_newline_key(KeyCode::Enter, KeyModifiers::SHIFT));
         assert!(!agent_chat_newline_key(
@@ -7026,9 +7065,24 @@ mod tests {
         assert!(agent_chat_quit_key(
             KeyCode::Char('c'),
             KeyModifiers::CONTROL,
+            true
+        ));
+        assert!(!agent_chat_quit_key(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
             false
         ));
         assert!(agent_chat_quit_key(KeyCode::Esc, KeyModifiers::NONE, true));
+        assert!(agent_chat_clear_composer_key(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            false
+        ));
+        assert!(!agent_chat_clear_composer_key(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            true
+        ));
         assert!(!agent_chat_quit_key(
             KeyCode::Esc,
             KeyModifiers::NONE,
