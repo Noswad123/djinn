@@ -575,7 +575,12 @@ fn run_agent_chat_prompt_loop(
     loop {
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
-            if let Event::Key(key) = event::read()? {
+            let event = event::read()?;
+            if let Event::Paste(text) = event {
+                app.paste_text(&text);
+                continue;
+            }
+            if let Event::Key(key) = event {
                 if !actionable_key_event(&key) {
                     continue;
                 }
@@ -711,7 +716,12 @@ where
     loop {
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
-            if let Event::Key(key) = event::read()? {
+            let event = event::read()?;
+            if let Event::Paste(text) = event {
+                app.paste_text(&text);
+                continue;
+            }
+            if let Event::Key(key) = event {
                 if !actionable_key_event(&key) {
                     continue;
                 }
@@ -873,6 +883,7 @@ struct AgentChatComposerApp {
     messages: Vec<AgentChatMessage>,
     status: AgentChatStatus,
     input: String,
+    paste_summaries: Vec<ComposerPasteSummary>,
     transcript_scroll: u16,
     palette: GroupedSelectState,
     help_open: bool,
@@ -887,6 +898,15 @@ const AGENT_CHAT_FOOTER_HEIGHT: u16 = 1;
 const AGENT_CHAT_COMPOSER_INPUT_MAX_LINES: usize = 4;
 const AGENT_CHAT_SIDEBAR_MIN_WIDTH: u16 = 128;
 const AGENT_CHAT_SIDEBAR_WIDTH: u16 = 34;
+const COMPOSER_PASTE_SUMMARY_MIN_BYTES: usize = 2048;
+const COMPOSER_PASTE_SUMMARY_MIN_LINES: usize = 12;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComposerPasteSummary {
+    start: usize,
+    end: usize,
+    label: String,
+}
 
 impl AgentChatComposerApp {
     fn new(messages: Vec<AgentChatMessage>, status: AgentChatStatus) -> Self {
@@ -894,6 +914,7 @@ impl AgentChatComposerApp {
             messages,
             status,
             input: String::new(),
+            paste_summaries: Vec::new(),
             transcript_scroll: 0,
             palette: GroupedSelectState::default(),
             help_open: false,
@@ -1087,14 +1108,34 @@ impl AgentChatComposerApp {
 
     fn push_char(&mut self, ch: char) {
         self.input.push(ch);
+        self.normalize_paste_summaries();
+    }
+
+    fn paste_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let start = self.input.len();
+        self.input.push_str(text);
+        let end = self.input.len();
+        if should_summarize_paste(text) {
+            self.paste_summaries.push(ComposerPasteSummary {
+                start,
+                end,
+                label: paste_summary_label(text),
+            });
+        }
+        self.normalize_paste_summaries();
     }
 
     fn insert_newline(&mut self) {
         self.input.push('\n');
+        self.normalize_paste_summaries();
     }
 
     fn backspace(&mut self) {
         self.input.pop();
+        self.normalize_paste_summaries();
     }
 
     fn submit_prompt(&mut self) -> Option<String> {
@@ -1103,7 +1144,14 @@ impl AgentChatComposerApp {
             return None;
         }
         self.input.clear();
+        self.paste_summaries.clear();
         Some(prompt)
+    }
+
+    fn normalize_paste_summaries(&mut self) {
+        let input_len = self.input.len();
+        self.paste_summaries
+            .retain(|summary| summary.start < summary.end && summary.end <= input_len);
     }
 
     fn scroll_up(&mut self) {
@@ -1419,8 +1467,8 @@ impl AgentChatComposerApp {
     }
 
     fn visible_composer_input_lines(&self) -> Vec<String> {
-        let lines = self
-            .input
+        let display_input = self.composer_display_input();
+        let lines = display_input
             .split('\n')
             .map(str::to_string)
             .collect::<Vec<_>>();
@@ -1432,6 +1480,60 @@ impl AgentChatComposerApp {
         let mut visible = vec![format!("… {hidden} earlier lines")];
         visible.extend(lines[lines.len().saturating_sub(keep)..].iter().cloned());
         visible
+    }
+
+    fn composer_display_input(&self) -> String {
+        if self.paste_summaries.is_empty() {
+            return self.input.clone();
+        }
+        let mut summaries = self.paste_summaries.clone();
+        summaries.sort_by_key(|summary| summary.start);
+        let mut output = String::new();
+        let mut cursor = 0usize;
+        for summary in summaries {
+            if summary.start < cursor || summary.end > self.input.len() {
+                continue;
+            }
+            output.push_str(&self.input[cursor..summary.start]);
+            output.push_str(&summary.label);
+            cursor = summary.end;
+        }
+        output.push_str(&self.input[cursor..]);
+        output
+    }
+}
+
+fn should_summarize_paste(text: &str) -> bool {
+    text.len() >= COMPOSER_PASTE_SUMMARY_MIN_BYTES
+        || paste_line_count(text) >= COMPOSER_PASTE_SUMMARY_MIN_LINES
+}
+
+fn paste_summary_label(text: &str) -> String {
+    format!(
+        "📋 pasted {} / {} — included on submit",
+        pluralize_count(paste_line_count(text), "line"),
+        human_bytes(text.len())
+    )
+}
+
+fn paste_line_count(text: &str) -> usize {
+    text.lines().count().max(1)
+}
+
+fn pluralize_count(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+fn human_bytes(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else {
+        let kib = bytes as f64 / 1024.0;
+        format!("{kib:.1} KiB")
     }
 }
 
@@ -1939,6 +2041,7 @@ fn agent_chat_dashboard_target(code: KeyCode) -> Option<DashboardTab> {
 fn edit_agent_chat_input(terminal: &mut TuiTerminal, app: &mut AgentChatComposerApp) -> Result<()> {
     let edited = edit_text_in_external_editor(terminal, &app.input)?;
     app.input = normalize_editor_text(&edited);
+    app.paste_summaries.clear();
     app.status.notice = "Composer updated from editor.".to_string();
     Ok(())
 }
@@ -6304,6 +6407,62 @@ mod tests {
         assert_eq!(
             rendered,
             vec!["… 2 earlier lines", "three", "four", "five",]
+        );
+    }
+
+    #[test]
+    fn agent_chat_small_paste_inserts_normally() {
+        let mut app = AgentChatComposerApp::new(Vec::new(), test_agent_chat_status("Ready."));
+
+        app.paste_text("small paste");
+
+        assert_eq!(app.input, "small paste");
+        assert!(app.paste_summaries.is_empty());
+        assert_eq!(app.composer_display_input(), "small paste");
+    }
+
+    #[test]
+    fn agent_chat_large_paste_is_summarized_but_submits_raw_text() {
+        let pasted = (1..=12)
+            .map(|idx| format!("line {idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = AgentChatComposerApp::new(Vec::new(), test_agent_chat_status("Ready."));
+
+        app.push_char('>');
+        app.paste_text(&pasted);
+        app.push_char('<');
+
+        assert_eq!(app.input, format!(">{pasted}<"));
+        assert_eq!(app.paste_summaries.len(), 1);
+        let display = app.composer_display_input();
+        assert!(display.starts_with('>'));
+        assert!(display.ends_with('<'));
+        assert!(display.contains("📋 pasted 12 lines"));
+        assert!(display.contains("included on submit"));
+        assert!(!display.contains("line 12"));
+        assert_eq!(app.submit_prompt(), Some(format!(">{pasted}<")));
+        assert!(app.paste_summaries.is_empty());
+    }
+
+    #[test]
+    fn agent_chat_large_paste_summary_is_removed_when_paste_range_is_deleted() {
+        let pasted = (1..=12)
+            .map(|idx| format!("line {idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut app = AgentChatComposerApp::new(Vec::new(), test_agent_chat_status("Ready."));
+
+        app.paste_text(&pasted);
+        for _ in 0..pasted.chars().count() {
+            app.backspace();
+        }
+
+        assert!(app.input.is_empty());
+        assert!(app.paste_summaries.is_empty());
+        assert_eq!(
+            app.composer_lines()[0].spans[0].content,
+            "Type a prompt and press Enter…"
         );
     }
 

@@ -883,6 +883,12 @@ The first non-interactive agent slice is implemented as:
     modes, and message counts. Future active tools, child sessions, permissions,
     memories, or workspace health can extend that sidebar without adding more
     persistent footer/header noise.
+56. Agent chat enables bracketed paste and summarizes large pasted ranges in the
+    composer preview so clipboard dumps do not flood the input box. Small pastes
+    insert normally. Large pastes remain in the raw prompt buffer and expand to
+    their original text on submit; the composer shows a compact line/byte summary
+    such as `📋 pasted … — included on submit`. Opening the external editor edits
+    the raw prompt text, not the summary placeholder.
 
 Not in the first slice unless explicitly reopened:
 

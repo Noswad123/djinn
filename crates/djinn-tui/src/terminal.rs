@@ -2,7 +2,8 @@ use std::io::{self, Stdout};
 
 use anyhow::Result;
 use crossterm::event::{
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -16,7 +17,12 @@ pub(crate) type TuiTerminal = Terminal<CrosstermBackend<Stdout>>;
 pub(crate) fn enter_terminal() -> Result<TuiTerminal> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, push_keyboard_enhancement())?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        push_keyboard_enhancement()
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -32,6 +38,7 @@ pub(crate) fn suspend_terminal(terminal: &mut TuiTerminal) -> Result<()> {
     execute!(
         terminal.backend_mut(),
         PopKeyboardEnhancementFlags,
+        DisableBracketedPaste,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
@@ -43,6 +50,7 @@ pub(crate) fn resume_terminal(terminal: &mut TuiTerminal) -> Result<()> {
     execute!(
         terminal.backend_mut(),
         EnterAlternateScreen,
+        EnableBracketedPaste,
         push_keyboard_enhancement()
     )?;
     terminal.clear()?;
