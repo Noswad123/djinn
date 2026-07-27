@@ -763,7 +763,8 @@ The first non-interactive agent slice is implemented as:
     not append redundant JSONL metadata events.
 36. The Agent command palette Session section includes New session as a first-class
     action. Starting a new session from the palette should preserve the current
-    profile/model context while clearing the resumed session id/title/workspace.
+    profile/model context while clearing the resumed session id/title/workspace;
+    it does not create a parent/child relationship.
 37. The Agent command palette includes Navigation actions for the shared top tabs
     (Tools, Sessions, Memories, Suggestions, Skills). Ctrl+P should be a central way
     to jump around the interface without remembering tab-specific shortcuts.
@@ -895,6 +896,18 @@ The first non-interactive agent slice is implemented as:
     the composer contains text, Ctrl+C clears the prompt and any paste summaries;
     if the composer is empty, Ctrl+C exits the chat. Esc remains an empty-composer
     quit affordance.
+58. Agent chat has a foreground child-session launch surface in the command
+    palette. `Launch child session…` starts a new Agent chat using the current
+    session's profile, configured agent role, latest selected model, and runtime
+    policy snapshot path while setting `parent_session_id` to the current session.
+    This foregrounds the child by switching the current TUI to that new session;
+    background lifecycle, grant records, and child result import remain separate
+    later slices.
+59. Djinn enforces the initial child-session tree depth cap at session creation
+    time. A child may be created up to three levels below the root session; using a
+    depth-three session as the parent for another child is rejected. The check
+    follows `parent_session_id` links in the JSONL session store and also catches
+    missing/cyclic parent chains instead of creating ambiguous descendants.
 
 Not in the first slice unless explicitly reopened:
 

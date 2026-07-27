@@ -40,6 +40,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
+
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
 #[command(about = "Local-first companion for OpenCode and other AI coding agents")]
@@ -5986,6 +5988,9 @@ fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
     let selection = resolve_agent_role_selection(args.agent, &args.profile, None)?;
     let workspace = resolve_agent_workspace(args.workspace)?;
     let model = resolve_agent_model(selection.model.clone(), &selection.profile)?;
+    let store = agent_session_store();
+    let parent_session_id = parent_session_id_from_arg(args.parent_session);
+    validate_agent_child_session_depth(&store, parent_session_id.as_ref())?;
     let effective_config = agent_effective_config_from_parts(
         workspace.clone(),
         selection.profile.clone(),
@@ -6001,12 +6006,11 @@ fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
         workspace,
         profile: selection.profile,
         agent_name: selection.agent_name,
-        parent_session_id: parent_session_id_from_arg(args.parent_session),
+        parent_session_id,
         source: args.source,
         runtime_config: Some(agent_session_runtime_config(&effective_config)),
         ..AgentSessionMeta::default()
     };
-    let store = agent_session_store();
     let id = store.create_session(meta)?;
     let session = store.load_session(&id)?;
     if args.json {
@@ -6740,6 +6744,9 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
     let selection = resolve_agent_role_selection(args.agent, &args.profile, args.model)?;
     let profile = selection.profile;
     let model = resolve_agent_model(selection.model, &profile)?;
+    let store = agent_session_store();
+    let parent_session_id = parent_session_id_from_arg(args.parent_session);
+    validate_agent_child_session_depth(&store, parent_session_id.as_ref())?;
     let title = args
         .title
         .unwrap_or_else(|| prompt_title(&prompt, "Agent prompt"));
@@ -6759,12 +6766,11 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
         workspace,
         profile: profile.clone(),
         agent_name: selection.agent_name,
-        parent_session_id: parent_session_id_from_arg(args.parent_session),
+        parent_session_id,
         source: "djinn-agent".to_string(),
         runtime_config: Some(agent_session_runtime_config(&effective_config)),
         ..AgentSessionMeta::default()
     };
-    let store = agent_session_store();
     let id = store.create_session(meta)?;
     store.append_event(
         &id,
@@ -6876,13 +6882,13 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                         let store = agent_session_store();
                         let id = AgentSessionId::new(resume);
                         let session = store.load_session(&id)?;
-                        args.model = args.model.or_else(|| latest_session_model(&session));
-                        args.profile = session.meta.profile;
-                        args.agent = session.meta.agent_name.clone();
-                        args.parent_session = Some(session.id.to_string());
-                        args.resume = None;
-                        args.title = None;
-                        args.workspace = None;
+                        prepare_foreground_session_args_from_parent(&mut args, &session, false);
+                    }
+                    djinn_tui::AgentChatCommand::LaunchChildSession => {
+                        let store = agent_session_store();
+                        let id = AgentSessionId::new(resume);
+                        let session = store.load_session(&id)?;
+                        prepare_foreground_session_args_from_parent(&mut args, &session, true);
                     }
                     djinn_tui::AgentChatCommand::OpenSessions => {
                         match run_tui_in_session(
@@ -6944,6 +6950,65 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                 }
             }
         }
+    }
+}
+
+fn prepare_foreground_session_args_from_parent(
+    args: &mut AgentChatArgs,
+    session: &AgentSession,
+    child: bool,
+) {
+    args.model = args.model.clone().or_else(|| latest_session_model(session));
+    args.profile = session.meta.profile.clone();
+    args.agent = session.meta.agent_name.clone();
+    args.parent_session = child.then(|| session.id.to_string());
+    args.resume = None;
+    args.title = None;
+    args.workspace = None;
+}
+
+fn validate_agent_child_session_depth(
+    store: &JsonlAgentSessionStore,
+    parent_session_id: Option<&AgentSessionId>,
+) -> Result<()> {
+    let Some(parent_session_id) = parent_session_id else {
+        return Ok(());
+    };
+
+    let parent_depth = agent_session_depth(store, parent_session_id)?;
+    if parent_depth >= AGENT_CHILD_SESSION_MAX_DEPTH {
+        bail!(
+            "child session depth limit exceeded: parent session {parent_session_id} is at depth \
+             {parent_depth}; maximum child-session depth is {AGENT_CHILD_SESSION_MAX_DEPTH} \
+             levels below the root"
+        );
+    }
+
+    Ok(())
+}
+
+fn agent_session_depth(
+    store: &JsonlAgentSessionStore,
+    session_id: &AgentSessionId,
+) -> Result<usize> {
+    let mut depth = 0;
+    let mut current = session_id.clone();
+    let mut seen = HashSet::new();
+
+    loop {
+        if !seen.insert(current.clone()) {
+            bail!("cycle detected in agent session parent chain at {current}");
+        }
+
+        let session = store
+            .load_session(&current)
+            .with_context(|| format!("loading parent agent session {current}"))?;
+        let Some(parent) = session.meta.parent_session_id else {
+            return Ok(depth);
+        };
+
+        depth += 1;
+        current = parent;
     }
 }
 
@@ -7026,7 +7091,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
             workspace: workspace.clone(),
             profile: profile.clone(),
             model: model.clone(),
-            notice: "History is secondary here; type a prompt to run the agent.".to_string(),
+            notice: String::new(),
             command_palette: agent_chat_command_palette(&profile, &model)?,
         },
         |prompt, progress| {
@@ -7382,6 +7447,7 @@ fn prepare_agent_chat_session(
         });
     }
 
+    validate_agent_child_session_depth(store, parent_session_id.as_ref())?;
     let workspace = resolve_agent_workspace(workspace)?;
     let resolved_model = resolve_agent_model(model, profile)?;
     let effective_config = agent_effective_config_from_parts(
@@ -17661,6 +17727,12 @@ mod tests {
                 .unwrap_or_default()
         ));
         fs::create_dir_all(&workspace).unwrap();
+        let parent_id = store
+            .create_session(AgentSessionMeta {
+                title: "Parent session".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
 
         let prepared = prepare_agent_chat_session(
             &store,
@@ -17672,7 +17744,7 @@ mod tests {
             Some("openai/gpt-5.5".to_string()),
             vec!["docs/review.md".to_string()],
             vec!["read_file".to_string()],
-            Some(AgentSessionId::new("agt_parent")),
+            Some(parent_id.clone()),
         )
         .unwrap();
         let loaded = store.load_session(&prepared.id).unwrap();
@@ -17688,7 +17760,7 @@ mod tests {
                 .parent_session_id
                 .as_ref()
                 .map(AgentSessionId::as_str),
-            Some("agt_parent")
+            Some(parent_id.as_str())
         );
         assert_eq!(
             loaded.meta.workspace,
@@ -17783,6 +17855,107 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.label == "✓ Current model · openai/gpt-5.5"));
+    }
+
+    #[test]
+    fn foreground_session_args_can_start_fresh_or_child_from_current_session() {
+        let mut session = AgentSession {
+            id: AgentSessionId::new("agt_parent"),
+            meta: AgentSessionMeta {
+                profile: "architect".to_string(),
+                agent_name: Some("reviewer".to_string()),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![AgentSessionEvent::new(
+                AgentSessionEventKind::SessionModelUpdated {
+                    model: "openai/gpt-5.5".to_string(),
+                },
+            )],
+        };
+
+        let mut fresh_args = default_agent_chat_args();
+        prepare_foreground_session_args_from_parent(&mut fresh_args, &session, false);
+
+        assert_eq!(fresh_args.profile, "architect");
+        assert_eq!(fresh_args.agent.as_deref(), Some("reviewer"));
+        assert_eq!(fresh_args.model.as_deref(), Some("openai/gpt-5.5"));
+        assert_eq!(fresh_args.parent_session, None);
+        assert_eq!(fresh_args.resume, None);
+
+        session.meta.profile = "default".to_string();
+        let mut child_args = default_agent_chat_args();
+        prepare_foreground_session_args_from_parent(&mut child_args, &session, true);
+
+        assert_eq!(child_args.profile, "default");
+        assert_eq!(child_args.parent_session.as_deref(), Some("agt_parent"));
+        assert_eq!(child_args.title, None);
+        assert_eq!(child_args.workspace, None);
+    }
+
+    #[test]
+    fn child_session_depth_limit_allows_three_levels_below_root() {
+        let store = temp_agent_store("child-depth-allow");
+        let root = store
+            .create_session(AgentSessionMeta {
+                title: "root".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        let child = store
+            .create_session(AgentSessionMeta {
+                title: "child".to_string(),
+                parent_session_id: Some(root),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        let grandchild = store
+            .create_session(AgentSessionMeta {
+                title: "grandchild".to_string(),
+                parent_session_id: Some(child),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        validate_agent_child_session_depth(&store, Some(&grandchild)).unwrap();
+    }
+
+    #[test]
+    fn child_session_depth_limit_rejects_fourth_level_below_root() {
+        let store = temp_agent_store("child-depth-reject");
+        let root = store
+            .create_session(AgentSessionMeta {
+                title: "root".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        let child = store
+            .create_session(AgentSessionMeta {
+                title: "child".to_string(),
+                parent_session_id: Some(root),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        let grandchild = store
+            .create_session(AgentSessionMeta {
+                title: "grandchild".to_string(),
+                parent_session_id: Some(child),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        let great_grandchild = store
+            .create_session(AgentSessionMeta {
+                title: "great grandchild".to_string(),
+                parent_session_id: Some(grandchild),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        let err = validate_agent_child_session_depth(&store, Some(&great_grandchild)).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("child session depth limit exceeded"));
+        assert!(err.to_string().contains("maximum child-session depth is 3"));
     }
 
     #[test]

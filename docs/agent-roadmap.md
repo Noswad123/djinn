@@ -102,11 +102,6 @@ merged into the parent unless the user explicitly imports it.
 
 Ready implementation slices:
 
-- Add a foreground child-session launch surface that creates a child agent session
-  with `parent_session_id`, selected role/profile, and explicit policy snapshot.
-- Enforce a conservative child-session tree depth limit, initially around three
-  levels below the root, to prevent accidental recursive delegation and confusing
-  permission fan-out.
 - Add conservative background concurrency limits, including maximum active
   children per parent and maximum active background children per workspace.
 - Add background child-session lifecycle state and commands for start/list/show,

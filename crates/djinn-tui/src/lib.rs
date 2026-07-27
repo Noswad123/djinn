@@ -350,6 +350,7 @@ pub enum AgentChatCommand {
     JumpLastMessage,
     JumpLastUserMessage,
     NewSession,
+    LaunchChildSession,
     OpenSessions,
     AddCredential,
     OpenDashboardTab(DashboardTab),
@@ -1760,6 +1761,14 @@ fn agent_chat_command_specs() -> Vec<AgentChatCommandSpec> {
         ),
         agent_chat_command_spec(
             "Session",
+            "Launch child session…",
+            "Start a foreground child agent linked to this session",
+            None,
+            None,
+            Some(AgentChatCommand::LaunchChildSession),
+        ),
+        agent_chat_command_spec(
+            "Session",
             "Resume session…",
             "Open the Sessions picker",
             None,
@@ -2002,10 +2011,6 @@ fn agent_chat_transcript_lines_with_mode(
     if messages.is_empty() {
         lines.push(Line::from(Span::styled(
             "Start a new agent conversation below.",
-            dim_style(),
-        )));
-        lines.push(Line::from(Span::styled(
-            "This is the runtime chat surface; Sessions is the unified history and resume picker.",
             dim_style(),
         )));
     } else {
@@ -6021,7 +6026,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_chat_transcript_starts_with_runtime_guidance() {
+    fn agent_chat_transcript_keeps_empty_state_concise() {
         let lines = agent_chat_transcript_lines(&[], "ready")
             .into_iter()
             .map(|line| {
@@ -6035,9 +6040,7 @@ mod tests {
         assert!(lines
             .iter()
             .any(|line| line.contains("Start a new agent conversation")));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("runtime chat surface")));
+        assert_eq!(lines.len(), 2);
         assert!(lines.iter().any(|line| line == "ready"));
     }
 
@@ -6922,6 +6925,11 @@ mod tests {
             entry.section == "Session"
                 && entry.label == "New session"
                 && entry.command == AgentChatCommand::NewSession
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.section == "Session"
+                && entry.label == "Launch child session…"
+                && entry.command == AgentChatCommand::LaunchChildSession
         }));
         assert!(entries.iter().any(|entry| {
             entry.section == "Auth"
