@@ -94,7 +94,20 @@ Do not copy these OpenCode details directly:
 
 More UI fixes
 - I can't confirm this but it looks like opencode has syntax highlighting
+### better thought text
+below is opencode's thoughts
 
+Thought: Planning external editor integration · 8.2s
+Thought: Designing markdown transcript export · 1.5s
+Thought: Refining editor temp file handling · 2.7s
+Thought: Updating editor open behavior and help text · 27ms
+
+djinn's thought just says planning then it allows itself to be overwritten
+
+→Read crates/djinn-tui/src/lib.rs [offset=1788, limit=35]
+Thought: Planning roadmap and design updates · 7.9s
+Thought: Designing transcript export text function · 1.7s
+Thought: Implementing transcript editor integration · 15ms
 ### Coven-led orchestration and Djinn worker primitives
 
 The user-facing product direction is **not** manual child-session management.

@@ -687,9 +687,12 @@ The first non-interactive agent slice is implemented as:
     use Ctrl+J as a newline fallback. The focused composer should show a visible
     terminal cursor, and typing `q` into an empty composer must insert text rather
     than quit the chat.
-23. Agent chat composer uses Ctrl+E to suspend the TUI and open the current prompt
-    in `$VISUAL`, `$EDITOR`, or `nvim`. This is the preferred path for advanced
-    prompt editing instead of adding many inline composer editing controls.
+23. Agent chat uses Ctrl+E as a transcript extraction escape hatch. Ctrl+E
+    suspends the TUI and opens a copy-friendly Markdown export of the current
+    transcript in `$VISUAL`, `$EDITOR`, or `nvim` regardless of whether the
+    composer has text. Existing composer text and paste summaries are preserved so
+    the user can yank from the transcript editor, return to chat, and paste into
+    the next prompt without losing their draft.
 24. `djinn agent chat --resume <session-id>` resumes an existing JSONL agent
     session using that session's stored workspace/profile metadata. This keeps
     resume as part of the Agent runtime surface rather than the Sessions
@@ -895,8 +898,8 @@ The first non-interactive agent slice is implemented as:
     composer preview so clipboard dumps do not flood the input box. Small pastes
     insert normally. Large pastes remain in the raw prompt buffer and expand to
     their original text on submit; the composer shows a compact line/byte summary
-    such as `📋 pasted … — included on submit`. Opening the external editor edits
-    the raw prompt text, not the summary placeholder.
+    such as `📋 pasted … — included on submit`. Opening the transcript in the
+    external editor preserves the raw prompt text and paste summaries.
 57. Agent chat treats Ctrl+C as a composer clear before it is a quit command. If
     the composer contains text, Ctrl+C clears the prompt and any paste summaries;
     if the composer is empty, Ctrl+C exits the chat. Esc remains an empty-composer

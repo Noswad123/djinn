@@ -29,7 +29,9 @@ pub use approval::{
     approval_preview_file_lines, ApprovalDecision, ApprovalPreviewFile, ApprovalPreviewHunk,
     ApprovalPreviewLine, ApprovalPreviewLineKind, ApprovalPreviewState,
 };
-use editor::{edit_text_in_external_editor, normalize_editor_text};
+#[cfg(test)]
+use editor::normalize_editor_text;
+use editor::open_text_in_external_editor;
 use filter::{fuzzy_match, selected_visible_position, FilterState};
 use grouped_select::{GroupedSelectItem, GroupedSelectState};
 use keys::*;
@@ -678,7 +680,7 @@ fn run_agent_chat_prompt_loop(
                         app.insert_newline();
                     }
                     _ if agent_chat_editor_key(key.code, key.modifiers) => {
-                        if let Err(error) = edit_agent_chat_input(terminal, &mut app) {
+                        if let Err(error) = handle_agent_chat_editor_key(terminal, &mut app) {
                             app.status.notice = format!("Editor failed: {error:#}");
                         }
                     }
@@ -831,7 +833,7 @@ where
                         app.insert_newline();
                     }
                     _ if agent_chat_editor_key(key.code, key.modifiers) => {
-                        if let Err(error) = edit_agent_chat_input(terminal, &mut app) {
+                        if let Err(error) = handle_agent_chat_editor_key(terminal, &mut app) {
                             app.status.notice = format!("Editor failed: {error:#}");
                         }
                     }
@@ -1801,11 +1803,11 @@ fn agent_chat_command_specs() -> Vec<AgentChatCommandSpec> {
             None,
         ),
         agent_chat_command_spec(
-            "Composer",
-            "Edit prompt externally",
-            "edit prompt in $VISUAL/$EDITOR/nvim",
+            "Transcript",
+            "Open transcript externally",
+            "open transcript in $VISUAL/$EDITOR/nvim without changing composer text",
             Some("Ctrl+E"),
-            Some("Composer"),
+            Some("Transcript"),
             None,
         ),
         agent_chat_command_spec(
@@ -2164,12 +2166,87 @@ fn agent_chat_dashboard_target(code: KeyCode) -> Option<DashboardTab> {
     }
 }
 
-fn edit_agent_chat_input(terminal: &mut TuiTerminal, app: &mut AgentChatComposerApp) -> Result<()> {
-    let edited = edit_text_in_external_editor(terminal, &app.input)?;
-    app.input = normalize_editor_text(&edited);
-    app.paste_summaries.clear();
-    app.status.notice = "Composer updated from editor.".to_string();
+fn handle_agent_chat_editor_key(
+    terminal: &mut TuiTerminal,
+    app: &mut AgentChatComposerApp,
+) -> Result<()> {
+    open_agent_chat_transcript(terminal, app)
+}
+
+fn open_agent_chat_transcript(
+    terminal: &mut TuiTerminal,
+    app: &mut AgentChatComposerApp,
+) -> Result<()> {
+    let transcript = agent_chat_transcript_export_text(&app.messages, &app.status);
+    open_text_in_external_editor(terminal, "djinn-agent-transcript", &transcript)?;
+    app.status.notice = "Transcript opened in editor; composer preserved.".to_string();
     Ok(())
+}
+
+fn agent_chat_transcript_export_text(
+    messages: &[AgentChatMessage],
+    status: &AgentChatStatus,
+) -> String {
+    let mut output = String::new();
+    output.push_str("# Djinn transcript\n\n");
+    let mut wrote_metadata = false;
+    if !status.session_id.trim().is_empty() {
+        output.push_str(&format!("- Session: {}\n", status.session_id));
+        wrote_metadata = true;
+    }
+    if !status.workspace.trim().is_empty() {
+        output.push_str(&format!("- Workspace: {}\n", status.workspace));
+        wrote_metadata = true;
+    }
+    if !status.profile.trim().is_empty() {
+        output.push_str(&format!("- Profile: {}\n", status.profile));
+        wrote_metadata = true;
+    }
+    if !status.model.trim().is_empty() {
+        output.push_str(&format!("- Model: {}\n", status.model));
+        wrote_metadata = true;
+    }
+
+    if wrote_metadata {
+        output.push('\n');
+    }
+
+    if messages.is_empty() {
+        output.push_str("_No transcript messages yet._\n");
+    } else {
+        for message in messages {
+            output.push_str("## ");
+            output.push_str(agent_chat_export_role_label(message.role));
+            output.push_str("\n\n");
+            let content = message.content.trim_end();
+            if content.is_empty() {
+                output.push_str("(empty)\n\n");
+            } else {
+                output.push_str(content);
+                output.push_str("\n\n");
+            }
+        }
+    }
+
+    if !status.notice.trim().is_empty() && !notice_duplicates_last_message(messages, &status.notice)
+    {
+        output.push_str("## Status\n\n");
+        output.push_str(status.notice.trim_end());
+        output.push('\n');
+    }
+
+    output
+}
+
+fn agent_chat_export_role_label(role: AgentChatRole) -> &'static str {
+    match role {
+        AgentChatRole::User => "You",
+        AgentChatRole::Assistant => "Djinn",
+        AgentChatRole::Thought => "Thought",
+        AgentChatRole::Tool => "Tool Request",
+        AgentChatRole::ToolOutput => "Tool Result",
+        AgentChatRole::Notice => "Notice",
+    }
 }
 
 #[cfg(test)]
@@ -6585,6 +6662,34 @@ mod tests {
         assert_eq!(app.transcript_scroll, 1);
         app.scroll_up();
         assert_eq!(app.transcript_scroll, 0);
+    }
+
+    #[test]
+    fn agent_chat_transcript_export_is_copy_friendly_markdown() {
+        let messages = vec![
+            AgentChatMessage {
+                role: AgentChatRole::User,
+                content: "Inspect this".to_string(),
+            },
+            AgentChatMessage {
+                role: AgentChatRole::Assistant,
+                content: "Found `one` issue.".to_string(),
+            },
+            AgentChatMessage {
+                role: AgentChatRole::Tool,
+                content: "read_file: crates/djinn-tui/src/lib.rs".to_string(),
+            },
+        ];
+
+        let exported =
+            agent_chat_transcript_export_text(&messages, &test_agent_chat_status("Ready."));
+
+        assert!(exported.starts_with("# Djinn transcript\n\n"));
+        assert!(exported.contains("- Session: agt_test\n"));
+        assert!(exported.contains("## You\n\nInspect this\n\n"));
+        assert!(exported.contains("## Djinn\n\nFound `one` issue.\n\n"));
+        assert!(exported.contains("## Tool Request\n\nread_file: crates/djinn-tui/src/lib.rs\n\n"));
+        assert!(exported.contains("## Status\n\nReady.\n"));
     }
 
     #[test]

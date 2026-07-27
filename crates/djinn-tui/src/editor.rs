@@ -6,27 +6,21 @@ use anyhow::{bail, Context, Result};
 
 use crate::terminal::{resume_terminal, suspend_terminal, TuiTerminal};
 
-pub(crate) fn edit_text_in_external_editor(
+pub(crate) fn open_text_in_external_editor(
     terminal: &mut TuiTerminal,
-    current: &str,
-) -> Result<String> {
-    let path = env::temp_dir().join(format!(
-        "djinn-agent-composer-{}-{}.md",
-        std::process::id(),
-        timestamp_nanos()
-    ));
-    fs::write(&path, current).with_context(|| format!("writing {}", path.display()))?;
+    prefix: &str,
+    content: &str,
+) -> Result<()> {
+    let path = temporary_markdown_path(prefix);
+    fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
 
     suspend_terminal(terminal)?;
     let editor_result = run_editor_for_path(&path);
     let resume_result = resume_terminal(terminal);
-    let read_result =
-        fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()));
     let _ = fs::remove_file(&path);
 
     resume_result?;
-    editor_result?;
-    read_result
+    editor_result
 }
 
 fn run_editor_for_path(path: &std::path::Path) -> Result<()> {
@@ -46,6 +40,7 @@ fn run_editor_for_path(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn normalize_editor_text(value: &str) -> String {
     value
         .strip_suffix("\r\n")
@@ -59,4 +54,12 @@ fn timestamp_nanos() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default()
+}
+
+fn temporary_markdown_path(prefix: &str) -> std::path::PathBuf {
+    env::temp_dir().join(format!(
+        "{prefix}-{}-{}.md",
+        std::process::id(),
+        timestamp_nanos()
+    ))
 }
