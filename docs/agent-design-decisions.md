@@ -868,6 +868,13 @@ The first non-interactive agent slice is implemented as:
     when an action is palette-runnable. Built-in palette entries and the Agent
     help overlay are generated from that registry; dynamic profile/model entries
     remain runtime-provided but should follow the same grouped-select shape.
+54. TUI styling uses semantic theme tokens backed initially by Catppuccin Mocha.
+    Shared styles and Agent chat rendering should refer to roles such as app
+    background, panel background, elevated background, text, muted text, title,
+    selected, success, warning, error, info, code background, and tool background
+    instead of hard-coding palette constants at each call site. Catppuccin
+    constants remain the default palette values and can still support legacy code
+    during incremental migration.
 
 Not in the first slice unless explicitly reopened:
 

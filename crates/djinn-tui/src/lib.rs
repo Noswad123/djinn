@@ -1837,18 +1837,16 @@ fn agent_chat_message_lines_with_mode(
     let (label, label_style, content_style) = match message.role {
         AgentChatRole::User => (
             "You",
-            Style::default().fg(CTP_GREEN).bg(CTP_SURFACE0),
-            Style::default().fg(CTP_TEXT).bg(CTP_SURFACE0),
+            success_style().bg(theme_tokens().elevated_bg),
+            elevated_style(),
         ),
-        AgentChatRole::Assistant => (
-            "Djinn",
-            title_style().bg(CTP_BASE),
-            Style::default().fg(CTP_TEXT).bg(CTP_BASE),
-        ),
+        AgentChatRole::Assistant => ("Djinn", title_style(), base_style()),
         AgentChatRole::Thought => (
             "Thought",
-            Style::default().fg(CTP_MAUVE).bg(CTP_SURFACE0),
-            Style::default().fg(CTP_SUBTEXT0).bg(CTP_SURFACE0),
+            Style::default()
+                .fg(theme_tokens().accent)
+                .bg(theme_tokens().elevated_bg),
+            muted_elevated_style(),
         ),
         AgentChatRole::Tool => unreachable!("tool messages return before generic rendering"),
         AgentChatRole::ToolOutput => {
@@ -1856,11 +1854,10 @@ fn agent_chat_message_lines_with_mode(
         }
         AgentChatRole::Notice if notice_is_error(content) => (
             "Error",
-            Style::default()
-                .fg(CTP_RED)
-                .bg(CTP_SURFACE0)
+            error_style()
+                .bg(theme_tokens().elevated_bg)
                 .add_modifier(Modifier::BOLD),
-            Style::default().fg(CTP_RED).bg(CTP_SURFACE0),
+            error_style().bg(theme_tokens().elevated_bg),
         ),
         AgentChatRole::Notice => ("Notice", dim_style(), dim_style()),
     };
@@ -2089,12 +2086,12 @@ fn shell_tool_output_lines(
             shell_tool_block_style(),
         )));
     }
-    lines.extend(parsed.meta.into_iter().map(|line| {
-        Line::from(Span::styled(
-            format!(" {line} "),
-            dim_style().bg(CTP_SURFACE0),
-        ))
-    }));
+    lines.extend(
+        parsed
+            .meta
+            .into_iter()
+            .map(|line| Line::from(Span::styled(format!(" {line} "), muted_elevated_style()))),
+    );
     push_tool_output_section(
         &mut lines,
         "stdout",
@@ -2161,7 +2158,7 @@ fn push_tool_output_section(
     }
     lines.push(Line::from(Span::styled(
         format!(" {label} "),
-        dim_style().bg(CTP_SURFACE1),
+        dim_style().bg(theme_tokens().code_bg),
     )));
     let limit = if detail_mode.is_full() {
         values.len()
@@ -2180,7 +2177,7 @@ fn push_tool_output_section(
                 " … {} more lines (Ctrl+T full tool output) ",
                 values.len() - limit
             ),
-            dim_style().bg(CTP_SURFACE1),
+            dim_style().bg(theme_tokens().code_bg),
         )));
     }
 }
@@ -2207,19 +2204,18 @@ fn block_tool_output_lines(
         .filter(|_| !detail_mode.is_full())
         .map(|budget| budget.min(body.len()))
         .unwrap_or(body.len());
-    lines.extend(body.iter().take(limit).map(|line| {
-        Line::from(Span::styled(
-            format!(" {line} "),
-            Style::default().fg(CTP_TEXT).bg(CTP_SURFACE0),
-        ))
-    }));
+    lines.extend(
+        body.iter()
+            .take(limit)
+            .map(|line| Line::from(Span::styled(format!(" {line} "), elevated_style()))),
+    );
     if limit < body.len() {
         lines.push(Line::from(Span::styled(
             format!(
                 " … {} more lines (Ctrl+T full tool output) ",
                 body.len() - limit
             ),
-            dim_style().bg(CTP_SURFACE1),
+            dim_style().bg(theme_tokens().code_bg),
         )));
     }
     lines
@@ -2291,19 +2287,19 @@ fn tool_display_name(name: &str) -> &'static str {
 }
 
 fn tool_request_style() -> Style {
-    Style::default().fg(CTP_YELLOW).bg(CTP_BASE)
+    warning_style()
 }
 
 fn tool_status_style(status: &str) -> Style {
     match status {
-        "ok" => Style::default().fg(CTP_GREEN).bg(CTP_BASE),
-        "failed" => Style::default().fg(CTP_RED).bg(CTP_BASE),
-        _ => Style::default().fg(CTP_SKY).bg(CTP_BASE),
+        "ok" => success_style(),
+        "failed" => error_style(),
+        _ => info_style(),
     }
 }
 
 fn shell_tool_block_style() -> Style {
-    Style::default().fg(CTP_TEXT).bg(CTP_SURFACE1)
+    tool_block_style()
 }
 
 fn agent_chat_message_label(role: AgentChatRole, default_label: &str, _content: &str) -> String {
@@ -2429,7 +2425,7 @@ fn render_agent_markdown_line(
         };
         return Line::from(Span::styled(
             format!("{prefix}{marker}{heading} "),
-            title_style().bg(CTP_BASE),
+            title_style(),
         ));
     }
     if markdown_horizontal_rule(trimmed) {
@@ -2579,11 +2575,11 @@ fn markdown_link(line: &str) -> Option<(String, String, usize)> {
 }
 
 fn markdown_code_style() -> Style {
-    Style::default().fg(CTP_TEXT).bg(CTP_SURFACE1)
+    code_style()
 }
 
 fn markdown_inline_code_style() -> Style {
-    Style::default().fg(CTP_YELLOW).bg(CTP_SURFACE1)
+    code_warning_style()
 }
 
 fn parse_tool_execution_status(line: &str) -> Option<(&str, &str)> {

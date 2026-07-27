@@ -94,8 +94,6 @@ Do not copy these OpenCode details directly:
 
 Ready implementation slices:
 
-- Introduce a semantic theme-token layer while keeping Catppuccin as the initial
-  default palette.
 - Add optional wide-terminal sidebar support for contextual state such as session
   metadata, active tools/children, permissions, memories, or workspace status.
 - Add paste summarization for long pasted text so large clipboard content does
