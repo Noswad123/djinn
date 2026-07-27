@@ -808,7 +808,9 @@ The first non-interactive agent slice is implemented as:
     copy/export fidelity. Fenced code blocks should render as quiet rectangular
     background-highlighted rows padded to the transcript width, including empty
     code rows, without decorative border/header/footer glyphs in the selectable
-    transcript text.
+    transcript text. Markdown tables render as aligned text rows without copied
+    table separator rows or decorative table borders; raw mode preserves the
+    original Markdown table markers for exact copying/export.
 45. Agent chat scroll affordances should not occupy a persistent selectable text
     column. Prefer title/footer hints such as `Transcript ↓ End` plus explicit
     jump keys over a glyph scrollbar that can be copied with terminal selection.

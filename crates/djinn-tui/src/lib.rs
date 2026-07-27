@@ -2607,13 +2607,17 @@ fn render_agent_markdown_body_lines(
     let mut lines = Vec::new();
     let mut in_code_block = false;
     let mut code_fence = "```".to_string();
+    let raw_lines = content.lines().collect::<Vec<_>>();
+    let mut index = 0;
 
-    for raw_line in content.lines() {
+    while index < raw_lines.len() {
+        let raw_line = raw_lines[index];
         let trimmed_start = raw_line.trim_start();
         if !in_code_block && (trimmed_start.starts_with("```") || trimmed_start.starts_with("~~~"))
         {
             in_code_block = true;
             code_fence = trimmed_start[..3].to_string();
+            index += 1;
             continue;
         }
         if in_code_block {
@@ -2625,13 +2629,120 @@ fn render_agent_markdown_body_lines(
                     markdown_code_style(),
                 )));
             }
+            index += 1;
+            continue;
+        }
+
+        if let Some((table_lines, consumed)) =
+            markdown_table_lines(&raw_lines[index..], base_style, prefix)
+        {
+            lines.extend(table_lines);
+            index += consumed;
             continue;
         }
 
         lines.push(render_agent_markdown_line(raw_line, base_style, prefix));
+        index += 1;
     }
 
     lines
+}
+
+fn markdown_table_lines(
+    lines: &[&str],
+    base_style: Style,
+    prefix: &'static str,
+) -> Option<(Vec<Line<'static>>, usize)> {
+    if lines.len() < 2 {
+        return None;
+    }
+    let header = markdown_table_cells(lines[0])?;
+    let separator = markdown_table_cells(lines[1])?;
+    if header.is_empty()
+        || separator.is_empty()
+        || header.len() != separator.len()
+        || !separator
+            .iter()
+            .all(|cell| markdown_table_separator_cell(cell))
+    {
+        return None;
+    }
+
+    let mut rows = vec![header];
+    let mut consumed = 2;
+    while consumed < lines.len() {
+        let Some(row) = markdown_table_cells(lines[consumed]) else {
+            break;
+        };
+        if row.len() != rows[0].len() || row.iter().all(|cell| cell.trim().is_empty()) {
+            break;
+        }
+        rows.push(row);
+        consumed += 1;
+    }
+
+    let widths = markdown_table_column_widths(&rows);
+    let rendered = rows
+        .into_iter()
+        .enumerate()
+        .map(|(row_idx, row)| {
+            render_markdown_table_row(row, &widths, row_idx == 0, base_style, prefix)
+        })
+        .collect::<Vec<_>>();
+    Some((rendered, consumed))
+}
+
+fn markdown_table_cells(line: &str) -> Option<Vec<String>> {
+    let trimmed = line.trim();
+    if !trimmed.contains('|') {
+        return None;
+    }
+    let trimmed = trimmed.trim_matches('|');
+    let cells = trimmed
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect::<Vec<_>>();
+    (cells.len() >= 2).then_some(cells)
+}
+
+fn markdown_table_separator_cell(cell: &str) -> bool {
+    let cell = cell.trim();
+    let cell = cell.strip_prefix(':').unwrap_or(cell);
+    let cell = cell.strip_suffix(':').unwrap_or(cell);
+    cell.len() >= 3 && cell.chars().all(|ch| ch == '-')
+}
+
+fn markdown_table_column_widths(rows: &[Vec<String>]) -> Vec<usize> {
+    let columns = rows.first().map(Vec::len).unwrap_or_default();
+    let mut widths = vec![0; columns];
+    for row in rows {
+        for (idx, cell) in row.iter().enumerate() {
+            widths[idx] = widths[idx].max(cell.chars().count());
+        }
+    }
+    widths
+}
+
+fn render_markdown_table_row(
+    row: Vec<String>,
+    widths: &[usize],
+    header: bool,
+    base_style: Style,
+    prefix: &'static str,
+) -> Line<'static> {
+    let style = if header { title_style() } else { base_style };
+    let mut spans = vec![Span::styled(prefix.to_string(), style)];
+    for (idx, cell) in row.into_iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled("  ".to_string(), style));
+        }
+        let width = widths.get(idx).copied().unwrap_or_default();
+        let padding = width.saturating_sub(cell.chars().count());
+        spans.extend(render_inline_markdown(&cell, style));
+        spans.push(Span::styled(" ".repeat(padding), style));
+    }
+    spans.push(Span::styled(" ".to_string(), style));
+    Line::from(spans)
 }
 
 fn padded_code_block_line(raw_line: &str, code_block_width: Option<usize>, prefix: &str) -> String {
@@ -6064,6 +6175,47 @@ mod tests {
         assert_eq!(
             lines,
             vec![" Djinn ", "  # Plan ", "  - **Build** `thing` "]
+        );
+    }
+
+    #[test]
+    fn agent_chat_markdown_tables_render_as_aligned_text_without_separator_row() {
+        let lines = rendered_agent_chat_message_lines(AgentChatMessage {
+            role: AgentChatRole::Assistant,
+            content: "| Name | Count |\n| --- | ---: |\n| apples | 10 |\n| pears | 2 |".to_string(),
+        });
+
+        assert_eq!(
+            lines,
+            vec![
+                " Djinn ",
+                "  Name    Count ",
+                "  apples  10    ",
+                "  pears   2     ",
+            ]
+        );
+        assert!(lines.iter().all(|line| !line.contains("---")));
+        assert!(lines.iter().all(|line| !line.contains('│')));
+    }
+
+    #[test]
+    fn agent_chat_raw_markdown_mode_preserves_table_markers_for_copying() {
+        let lines = rendered_agent_chat_message_lines_with_mode(
+            AgentChatMessage {
+                role: AgentChatRole::Assistant,
+                content: "| Name | Count |\n| --- | ---: |\n| apples | 10 |".to_string(),
+            },
+            AgentChatRenderMode::Raw,
+        );
+
+        assert_eq!(
+            lines,
+            vec![
+                " Djinn ",
+                "  | Name | Count | ",
+                "  | --- | ---: | ",
+                "  | apples | 10 | ",
+            ]
         );
     }
 

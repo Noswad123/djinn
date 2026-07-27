@@ -94,13 +94,6 @@ Do not copy these OpenCode details directly:
 
 Ready implementation slices:
 
-- Improve copy-first rendering of assistant output: raw transcript/session data
-  remains Markdown, rendered mode is visual only, and raw/rendered toggling must
-  stay cheap.
-- Add focused rendering tests for any visual transformation that affects copied
-  text, especially fenced code, tool calls, progress/thought rows, and Markdown
-  raw-mode fallback.
-- markdown tables don't get rendered correctly in render mode
 - if the composer has some text, pressing ctl+c should clear the composer. if nothing is there, It should exist
 
 ### Child-session sub-agent model
