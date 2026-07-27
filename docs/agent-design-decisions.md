@@ -855,6 +855,13 @@ The first non-interactive agent slice is implemented as:
     copying Solid/OpenTUI implementation details, heavy assistant chrome,
     unbounded output blocks, hover/mouse-primary behavior, or exposing every
     completed tool detail by default.
+52. Searchable grouped picker behavior lives in a generic grouped-select TUI
+    primitive rather than command-palette-specific code. It owns open/close state,
+    fuzzy query text, visible index projection, selection movement, selected-row
+    scroll visibility, grouped row rendering, and selected-item extraction. The
+    Agent and dashboard command palettes now use that primitive, and future model,
+    profile, session, theme, and agent pickers should use the same abstraction
+    unless they need a clearly different interaction model.
 
 Not in the first slice unless explicitly reopened:
 

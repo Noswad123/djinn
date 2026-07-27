@@ -1,7 +1,7 @@
 mod approval;
-mod command_palette;
 mod editor;
 mod filter;
+mod grouped_select;
 mod keys;
 mod style;
 mod terminal;
@@ -29,9 +29,9 @@ pub use approval::{
     approval_preview_file_lines, ApprovalDecision, ApprovalPreviewFile, ApprovalPreviewHunk,
     ApprovalPreviewLine, ApprovalPreviewLineKind, ApprovalPreviewState,
 };
-use command_palette::{CommandPaletteItem, CommandPaletteState};
 use editor::{edit_text_in_external_editor, normalize_editor_text};
 use filter::{fuzzy_match, selected_visible_position, FilterState};
+use grouped_select::{GroupedSelectItem, GroupedSelectState};
 use keys::*;
 use style::*;
 use terminal::{enter_terminal, leave_terminal, resume_terminal, suspend_terminal, TuiTerminal};
@@ -314,7 +314,7 @@ pub struct AgentChatCommandEntry {
     pub command: AgentChatCommand,
 }
 
-impl CommandPaletteItem for AgentChatCommandEntry {
+impl GroupedSelectItem for AgentChatCommandEntry {
     fn section(&self) -> &str {
         &self.section
     }
@@ -354,7 +354,7 @@ struct DashboardCommandEntry {
     command: DashboardCommand,
 }
 
-impl CommandPaletteItem for DashboardCommandEntry {
+impl GroupedSelectItem for DashboardCommandEntry {
     fn section(&self) -> &str {
         &self.section
     }
@@ -863,7 +863,7 @@ struct AgentChatComposerApp {
     status: AgentChatStatus,
     input: String,
     transcript_scroll: u16,
-    palette: CommandPaletteState,
+    palette: GroupedSelectState,
     help_open: bool,
     render_mode: AgentChatRenderMode,
     tool_detail_mode: AgentToolDetailMode,
@@ -881,7 +881,7 @@ impl AgentChatComposerApp {
             status,
             input: String::new(),
             transcript_scroll: 0,
-            palette: CommandPaletteState::default(),
+            palette: GroupedSelectState::default(),
             help_open: false,
             render_mode: AgentChatRenderMode::Markdown,
             tool_detail_mode: AgentToolDetailMode::Collapsed,
@@ -939,13 +939,13 @@ impl AgentChatComposerApp {
     fn selected_palette_command(&self) -> Option<AgentChatCommand> {
         let entries = self.agent_chat_command_palette();
         let visible = self.visible_palette_indices();
-        command_palette::selected_command(&entries, &visible, self.palette.selected, |entry| {
+        grouped_select::selected_item(&entries, &visible, self.palette.selected, |entry| {
             entry.command.clone()
         })
     }
 
     fn visible_palette_indices(&self) -> Vec<usize> {
-        command_palette::visible_indices(&self.agent_chat_command_palette(), &self.palette.query)
+        grouped_select::visible_indices(&self.agent_chat_command_palette(), &self.palette.query)
     }
 
     fn handle_local_palette_command(
@@ -1020,7 +1020,7 @@ impl AgentChatComposerApp {
     fn palette_body_lines_and_selected_row(&self) -> (Vec<Line<'static>>, Option<usize>) {
         let entries = self.agent_chat_command_palette();
         let visible = self.visible_palette_indices();
-        command_palette::body_lines_and_selected_row(&entries, &visible, self.palette.selected)
+        grouped_select::body_lines_and_selected_row(&entries, &visible, self.palette.selected)
     }
 
     fn ensure_palette_selection_visible(
@@ -2818,7 +2818,7 @@ struct DashboardApp {
     skills: SkillsApp,
     active_context: Option<ContextRecord>,
     help_open: bool,
-    palette: CommandPaletteState,
+    palette: GroupedSelectState,
 }
 
 impl DashboardApp {
@@ -2840,7 +2840,7 @@ impl DashboardApp {
             skills: SkillsApp::new(skills),
             active_context,
             help_open: false,
-            palette: CommandPaletteState::default(),
+            palette: GroupedSelectState::default(),
         }
     }
 
@@ -2888,7 +2888,7 @@ impl DashboardApp {
 
     fn selected_palette_command(&self) -> Option<DashboardCommand> {
         let visible = self.visible_palette_indices();
-        command_palette::selected_command(
+        grouped_select::selected_item(
             &self.dashboard_command_palette(),
             &visible,
             self.palette.selected,
@@ -2897,7 +2897,7 @@ impl DashboardApp {
     }
 
     fn visible_palette_indices(&self) -> Vec<usize> {
-        command_palette::visible_indices(&self.dashboard_command_palette(), &self.palette.query)
+        grouped_select::visible_indices(&self.dashboard_command_palette(), &self.palette.query)
     }
 
     fn normalize_palette_selection(&mut self) {
@@ -3240,7 +3240,7 @@ impl DashboardApp {
     fn palette_body_lines_and_selected_row(&self) -> (Vec<Line<'static>>, Option<usize>) {
         let entries = self.dashboard_command_palette();
         let visible = self.visible_palette_indices();
-        command_palette::body_lines_and_selected_row(&entries, &visible, self.palette.selected)
+        grouped_select::body_lines_and_selected_row(&entries, &visible, self.palette.selected)
     }
 
     fn ensure_palette_selection_visible(

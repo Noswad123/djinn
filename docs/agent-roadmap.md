@@ -94,8 +94,6 @@ Do not copy these OpenCode details directly:
 
 Ready implementation slices:
 
-- Refactor the command palette toward a reusable grouped select dialog so model,
-  profile, session, theme, and future agent pickers share one interaction model.
 - Add a central command registry that can feed both the command palette and help
   overlay, with labels, descriptions, grouping, keybindings, and visibility.
 - Introduce a semantic theme-token layer while keeping Catppuccin as the initial
