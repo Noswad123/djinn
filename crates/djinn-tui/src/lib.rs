@@ -1195,6 +1195,13 @@ fn agent_chat_message_lines_with_mode(
     render_mode: AgentChatRenderMode,
     code_block_width: Option<usize>,
 ) -> Vec<Line<'static>> {
+    if matches!(
+        message.role,
+        AgentChatRole::Tool | AgentChatRole::ToolOutput
+    ) {
+        return agent_tool_message_lines(message.role, message.content.trim());
+    }
+
     let (label, label_style, content_style) = match message.role {
         AgentChatRole::User => (
             "You",
@@ -1211,21 +1218,14 @@ fn agent_chat_message_lines_with_mode(
             Style::default().fg(CTP_MAUVE).bg(CTP_SURFACE0),
             Style::default().fg(CTP_SUBTEXT0).bg(CTP_SURFACE0),
         ),
-        AgentChatRole::Tool => (
-            "Tool Request",
-            Style::default().fg(CTP_PEACH).bg(CTP_SURFACE1),
-            Style::default().fg(CTP_YELLOW).bg(CTP_SURFACE1),
-        ),
-        AgentChatRole::ToolOutput => (
-            "Tool Execution",
-            Style::default().fg(CTP_SKY).bg(CTP_SURFACE0),
-            Style::default().fg(CTP_TEXT).bg(CTP_SURFACE0),
-        ),
+        AgentChatRole::Tool => unreachable!("tool messages return before generic rendering"),
+        AgentChatRole::ToolOutput => {
+            unreachable!("tool output messages return before generic rendering")
+        }
         AgentChatRole::Notice => ("Notice", dim_style(), dim_style()),
     };
     let content = message.content.trim();
     let label = agent_chat_message_label(message.role, label, content);
-    let label_style = agent_chat_message_label_style(message.role, label_style, content);
     let mut lines = vec![Line::from(vec![
         Span::styled(" ", label_style),
         Span::styled(label, label_style.add_modifier(Modifier::BOLD)),
@@ -1245,42 +1245,288 @@ fn agent_chat_message_lines_with_mode(
     lines
 }
 
-fn agent_chat_message_label(role: AgentChatRole, default_label: &str, content: &str) -> String {
+fn agent_tool_message_lines(role: AgentChatRole, content: &str) -> Vec<Line<'static>> {
+    if content.is_empty() {
+        return vec![Line::from(Span::styled(" ⚙ Tool · empty ", dim_style()))];
+    }
     match role {
-        AgentChatRole::Tool => {
-            tool_request_label(content).unwrap_or_else(|| default_label.to_string())
-        }
-        AgentChatRole::ToolOutput => {
-            tool_execution_label(content).unwrap_or_else(|| default_label.to_string())
-        }
+        AgentChatRole::Tool => agent_tool_request_lines(content),
+        AgentChatRole::ToolOutput => agent_tool_output_lines(content),
         AgentChatRole::User
         | AgentChatRole::Assistant
         | AgentChatRole::Thought
-        | AgentChatRole::Notice => default_label.to_string(),
+        | AgentChatRole::Notice => unreachable!("only tool roles use tool rendering"),
     }
 }
 
-fn agent_chat_message_label_style(
-    role: AgentChatRole,
-    default_style: Style,
-    content: &str,
-) -> Style {
-    match role {
-        AgentChatRole::ToolOutput => {
-            let status = content.lines().next().and_then(|line| {
-                parse_tool_execution_status(line.trim()).map(|(_, status)| status)
-            });
-            match status {
-                Some("ok") => default_style.fg(CTP_GREEN),
-                Some("failed") => default_style.fg(CTP_RED),
-                _ => default_style,
+fn agent_tool_request_lines(content: &str) -> Vec<Line<'static>> {
+    if let Some((workdir, command)) = parse_shell_request(content) {
+        return shell_tool_request_lines(workdir, command);
+    }
+    let Some((name, detail)) = parse_tool_request(content) else {
+        return vec![inline_tool_line("⚙", "Tool", content, dim_style())];
+    };
+    vec![inline_tool_line(
+        tool_icon(name),
+        tool_display_name(name),
+        detail,
+        tool_request_style(),
+    )]
+}
+
+fn agent_tool_output_lines(content: &str) -> Vec<Line<'static>> {
+    let mut lines = content.lines();
+    let Some(first) = lines.next() else {
+        return vec![inline_tool_line("⚙", "Tool", "empty result", dim_style())];
+    };
+    let body = lines.collect::<Vec<_>>();
+    let Some((name, status)) = parse_tool_execution_status(first.trim()) else {
+        return vec![inline_tool_line("⚙", "Tool", content, dim_style())];
+    };
+    if name == "shell" {
+        return shell_tool_output_lines(status, &body);
+    }
+    if matches!(name, "apply_patch" | "write_file" | "edit_file") {
+        return block_tool_output_lines(name, status, &body);
+    }
+    let mut rendered = vec![inline_tool_line(
+        tool_status_icon(status),
+        tool_display_name(name),
+        &inline_tool_output_summary(name, status, &body),
+        tool_status_style(status),
+    )];
+    rendered.extend(inline_tool_detail_lines(name, &body));
+    rendered
+}
+
+fn inline_tool_line(icon: &str, label: &str, detail: &str, style: Style) -> Line<'static> {
+    let detail = detail.trim();
+    let text = if detail.is_empty() {
+        format!(" {icon} {label} ")
+    } else {
+        format!(" {icon} {label} {detail} ")
+    };
+    Line::from(Span::styled(text, style))
+}
+
+fn inline_tool_detail_lines(name: &str, body: &[&str]) -> Vec<Line<'static>> {
+    if !matches!(name, "list_dir" | "find_files" | "search_files") {
+        return Vec::new();
+    }
+    body.iter()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .take(3)
+        .map(|detail| Line::from(Span::styled(format!("   ↳ {detail} "), dim_style())))
+        .collect()
+}
+
+fn inline_tool_output_summary(name: &str, status: &str, body: &[&str]) -> String {
+    let status_label = if status == "ok" { "" } else { "failed · " };
+    match name {
+        "read_file" => {
+            let path = body_value(body, "path").unwrap_or("file");
+            let size = body
+                .iter()
+                .map(|line| line.trim())
+                .find(|line| line.contains("bytes") && line.contains("lines"))
+                .unwrap_or_default();
+            if size.is_empty() {
+                format!("{status_label}{path}")
+            } else {
+                format!("{status_label}{path} · {size}")
             }
         }
+        "list_dir" | "find_files" | "search_files" => {
+            let path = body_value(body, "path").unwrap_or(".");
+            let matches = body
+                .iter()
+                .map(|line| line.trim())
+                .find(|line| line.ends_with("matches") || line.ends_with("match"))
+                .unwrap_or("matches");
+            format!("{status_label}{matches} in {path}")
+        }
+        _ => {
+            let first = body
+                .iter()
+                .map(|line| line.trim())
+                .find(|line| !line.is_empty());
+            match first {
+                Some(first) => format!("{status_label}{first}"),
+                None => status_label.trim_end_matches(" · ").to_string(),
+            }
+        }
+    }
+}
+
+fn body_value<'a>(body: &'a [&str], key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}:");
+    body.iter()
+        .map(|line| line.trim())
+        .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
+        .filter(|value| !value.is_empty())
+}
+
+fn shell_tool_request_lines(workdir: &str, command: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![block_tool_header_line(
+        "$",
+        "Shell",
+        workdir,
+        tool_request_style(),
+    )];
+    lines.push(Line::from(Span::styled(
+        format!(" $ {command} "),
+        shell_tool_block_style(),
+    )));
+    lines
+}
+
+fn shell_tool_output_lines(status: &str, body: &[&str]) -> Vec<Line<'static>> {
+    let mut lines = vec![block_tool_header_line(
+        tool_status_icon(status),
+        "Shell",
+        status,
+        tool_status_style(status),
+    )];
+    let mut in_output = false;
+    for raw in body {
+        let line = raw.trim_end();
+        if let Some(command) = line
+            .strip_prefix("command: `")
+            .and_then(|line| line.strip_suffix('`'))
+        {
+            lines.push(Line::from(Span::styled(
+                format!(" $ {command} "),
+                shell_tool_block_style(),
+            )));
+            continue;
+        }
+        if matches!(line, "stdout:" | "stderr:") {
+            in_output = true;
+            lines.push(Line::from(Span::styled(
+                format!(" {} ", line.trim_end_matches(':')),
+                dim_style().bg(CTP_SURFACE1),
+            )));
+            continue;
+        }
+        let style = if in_output {
+            shell_tool_block_style()
+        } else {
+            dim_style().bg(CTP_SURFACE0)
+        };
+        lines.push(Line::from(Span::styled(format!(" {line} "), style)));
+    }
+    lines
+}
+
+fn block_tool_output_lines(name: &str, status: &str, body: &[&str]) -> Vec<Line<'static>> {
+    let mut lines = vec![block_tool_header_line(
+        tool_status_icon(status),
+        tool_display_name(name),
+        status,
+        tool_status_style(status),
+    )];
+    lines.extend(
+        body.iter()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                Line::from(Span::styled(
+                    format!(" {} ", line.trim()),
+                    Style::default().fg(CTP_TEXT).bg(CTP_SURFACE0),
+                ))
+            }),
+    );
+    lines
+}
+
+fn block_tool_header_line(icon: &str, label: &str, detail: &str, style: Style) -> Line<'static> {
+    let detail = detail.trim();
+    let text = if detail.is_empty() || detail == "." {
+        format!(" {icon} {label} ")
+    } else {
+        format!(" {icon} {label} · {detail} ")
+    };
+    Line::from(Span::styled(text, style.add_modifier(Modifier::BOLD)))
+}
+
+fn parse_shell_request(content: &str) -> Option<(&str, &str)> {
+    let mut lines = content.lines();
+    let first = lines.next()?.trim();
+    let second = lines.next()?.trim();
+    let workdir = first.strip_prefix("# Running in ")?.trim();
+    let command = second.strip_prefix("$ ")?.trim();
+    Some((workdir, command))
+}
+
+fn parse_tool_request(content: &str) -> Option<(&str, &str)> {
+    let first = content.lines().next()?.trim();
+    let (name, detail) = first.split_once(':')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, detail.trim()))
+}
+
+fn tool_icon(name: &str) -> &'static str {
+    match name {
+        "shell" => "$",
+        "read_file" | "list_dir" => "→",
+        "find_files" | "search_files" => "✱",
+        "webfetch" => "%",
+        "websearch" => "◈",
+        "apply_patch" | "write_file" | "edit_file" => "←",
+        _ => "⚙",
+    }
+}
+
+fn tool_status_icon(status: &str) -> &'static str {
+    match status {
+        "ok" => "✓",
+        "failed" => "✗",
+        _ => "•",
+    }
+}
+
+fn tool_display_name(name: &str) -> &'static str {
+    match name {
+        "shell" => "Shell",
+        "read_file" => "Read",
+        "list_dir" => "List",
+        "find_files" => "Find",
+        "search_files" => "Search",
+        "webfetch" => "WebFetch",
+        "websearch" => "WebSearch",
+        "apply_patch" => "Patch",
+        "write_file" => "Write",
+        "edit_file" => "Edit",
+        _ => "Tool",
+    }
+}
+
+fn tool_request_style() -> Style {
+    Style::default().fg(CTP_YELLOW).bg(CTP_BASE)
+}
+
+fn tool_status_style(status: &str) -> Style {
+    match status {
+        "ok" => Style::default().fg(CTP_GREEN).bg(CTP_BASE),
+        "failed" => Style::default().fg(CTP_RED).bg(CTP_BASE),
+        _ => Style::default().fg(CTP_SKY).bg(CTP_BASE),
+    }
+}
+
+fn shell_tool_block_style() -> Style {
+    Style::default().fg(CTP_TEXT).bg(CTP_SURFACE1)
+}
+
+fn agent_chat_message_label(role: AgentChatRole, default_label: &str, _content: &str) -> String {
+    match role {
         AgentChatRole::User
         | AgentChatRole::Assistant
         | AgentChatRole::Thought
         | AgentChatRole::Tool
-        | AgentChatRole::Notice => default_style,
+        | AgentChatRole::ToolOutput
+        | AgentChatRole::Notice => default_label.to_string(),
     }
 }
 
@@ -1295,15 +1541,11 @@ fn agent_chat_message_body_lines(
         AgentChatRole::Assistant if render_mode == AgentChatRenderMode::Markdown => {
             render_agent_markdown_body_lines(content, content_style, code_block_width)
         }
-        AgentChatRole::Tool => {
-            plain_agent_chat_body_lines(tool_request_body_lines(content), content_style)
-        }
-        AgentChatRole::ToolOutput => {
-            plain_agent_chat_body_lines(tool_execution_body_lines(content), content_style)
-        }
         AgentChatRole::User
         | AgentChatRole::Assistant
         | AgentChatRole::Thought
+        | AgentChatRole::Tool
+        | AgentChatRole::ToolOutput
         | AgentChatRole::Notice => plain_agent_chat_body_lines(
             content.lines().map(ToOwned::to_owned).collect(),
             content_style,
@@ -1528,35 +1770,6 @@ fn markdown_inline_code_style() -> Style {
     Style::default().fg(CTP_YELLOW).bg(CTP_SURFACE1)
 }
 
-fn tool_request_label(content: &str) -> Option<String> {
-    let first = content.lines().next()?.trim();
-    if first.starts_with("# Running in ") {
-        return Some("▶ Tool Request · shell".to_string());
-    }
-    let (name, _) = first.split_once(':')?;
-    let name = name.trim();
-    if name.is_empty() {
-        return None;
-    }
-    Some(format!("▶ Tool Request · {name}"))
-}
-
-fn tool_execution_label(content: &str) -> Option<String> {
-    let (name, status) = parse_tool_execution_status(content.lines().next()?.trim())?;
-    Some(format!(
-        "{} Tool Execution · {name} · {status}",
-        tool_execution_status_glyph(status)
-    ))
-}
-
-fn tool_execution_status_glyph(status: &str) -> &'static str {
-    match status {
-        "ok" => "✓",
-        "failed" => "✗",
-        _ => "•",
-    }
-}
-
 fn parse_tool_execution_status(line: &str) -> Option<(&str, &str)> {
     let (name, status) = line.split_once(" result: ")?;
     let name = name.trim();
@@ -1565,44 +1778,6 @@ fn parse_tool_execution_status(line: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((name, status))
-}
-
-fn tool_request_body_lines(content: &str) -> Vec<String> {
-    let mut lines = content.lines();
-    let Some(first) = lines.next() else {
-        return Vec::new();
-    };
-    if first.trim_start().starts_with("# Running in ") {
-        return std::iter::once(first)
-            .chain(lines)
-            .map(ToOwned::to_owned)
-            .collect();
-    }
-    let mut rendered = Vec::new();
-    if let Some((_, rest)) = first.split_once(':') {
-        let rest = rest.trim();
-        if !rest.is_empty() {
-            rendered.push(rest.to_string());
-        }
-    } else {
-        rendered.push(first.to_string());
-    }
-    rendered.extend(lines.map(ToOwned::to_owned));
-    rendered
-}
-
-fn tool_execution_body_lines(content: &str) -> Vec<String> {
-    let mut lines = content.lines();
-    let Some(first) = lines.next() else {
-        return Vec::new();
-    };
-    if parse_tool_execution_status(first.trim()).is_some() {
-        return lines.map(ToOwned::to_owned).collect();
-    }
-    std::iter::once(first)
-        .chain(lines)
-        .map(ToOwned::to_owned)
-        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4759,21 +4934,41 @@ mod tests {
     }
 
     #[test]
-    fn agent_chat_tool_blocks_use_request_and_execution_labels() {
+    fn agent_chat_tool_read_uses_compact_inline_rows() {
         let request_lines = rendered_agent_chat_message_lines(AgentChatMessage {
             role: AgentChatRole::Tool,
             content: "read_file: Cargo.toml".to_string(),
         });
         let execution_lines = rendered_agent_chat_message_lines(AgentChatMessage {
             role: AgentChatRole::ToolOutput,
-            content: "read_file result: ok".to_string(),
+            content: "read_file result: ok\npath: Cargo.toml\n123 bytes, 7 lines".to_string(),
+        });
+
+        assert_eq!(request_lines, vec![" → Read Cargo.toml "]);
+        assert_eq!(
+            execution_lines,
+            vec![" ✓ Read Cargo.toml · 123 bytes, 7 lines "]
+        );
+    }
+
+    #[test]
+    fn agent_chat_search_tools_keep_compact_match_details() {
+        let lines = rendered_agent_chat_message_lines(AgentChatMessage {
+            role: AgentChatRole::ToolOutput,
+            content:
+                "find_files result: ok\npath: .\n3 matches\n- Cargo.toml\n- src/lib.rs\n- README.md"
+                    .to_string(),
         });
 
         assert_eq!(
-            request_lines,
-            vec![" ▶ Tool Request · read_file ", " Cargo.toml "]
+            lines,
+            vec![
+                " ✓ Find 3 matches in . ",
+                "   ↳ Cargo.toml ",
+                "   ↳ src/lib.rs ",
+                "   ↳ README.md ",
+            ]
         );
-        assert_eq!(execution_lines, vec![" ✓ Tool Execution · read_file · ok "]);
     }
 
     #[test]
@@ -4783,25 +4978,35 @@ mod tests {
             content: "shell result: failed\nexit 1".to_string(),
         });
 
-        assert_eq!(
-            lines,
-            vec![" ✗ Tool Execution · shell · failed ", " exit 1 "]
-        );
+        assert_eq!(lines, vec![" ✗ Shell · failed ", " exit 1 "]);
     }
 
     #[test]
-    fn agent_chat_shell_request_label_preserves_command_block() {
+    fn agent_chat_shell_request_renders_as_block_tool() {
         let lines = rendered_agent_chat_message_lines(AgentChatMessage {
             role: AgentChatRole::Tool,
             content: "# Running in .\n$ cargo test".to_string(),
         });
 
+        assert_eq!(lines, vec![" $ Shell ", " $ cargo test "]);
+    }
+
+    #[test]
+    fn agent_chat_shell_output_renders_as_block_tool() {
+        let lines = rendered_agent_chat_message_lines(AgentChatMessage {
+            role: AgentChatRole::ToolOutput,
+            content: "shell result: ok\ncommand: `cargo test`\nexit 0 • 42ms\nstdout:\nok"
+                .to_string(),
+        });
+
         assert_eq!(
             lines,
             vec![
-                " ▶ Tool Request · shell ",
-                " # Running in . ",
-                " $ cargo test "
+                " ✓ Shell · ok ",
+                " $ cargo test ",
+                " exit 0 • 42ms ",
+                " stdout ",
+                " ok ",
             ]
         );
     }

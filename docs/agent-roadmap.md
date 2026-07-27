@@ -94,9 +94,6 @@ Do not copy these OpenCode details directly:
 
 Ready implementation slices:
 
-- Adopt an OpenCode-like tool rendering taxonomy: compact inline rows for read,
-  glob, grep, web fetch/search, and simple status; richer block panels for shell
-  output, diffs, writes/patches, todos, errors, and long generic output.
 - Add collapsed-output budgets and expansion state for shell/generic tools. Start
   with conservative keyboard controls and keep full details inspectable.
 - Improve message layout hierarchy: subtle user-turn accent/panel, quiet indented
@@ -130,7 +127,7 @@ Ready implementation slices:
 - Add focused rendering tests for any visual transformation that affects copied
   text, especially fenced code, tool calls, progress/thought rows, and Markdown
   raw-mode fallback.
-
+- markdown tables don't get rendered correctly in render mode
 ### Child-session sub-agent model
 
 The product model is decided: sub-agents are normal Djinn agent sessions with

@@ -812,6 +812,13 @@ The first non-interactive agent slice is implemented as:
 45. Agent chat scroll affordances should not occupy a persistent selectable text
     column. Prefer title/footer hints such as `Transcript ↓ End` plus explicit
     jump keys over a glyph scrollbar that can be copied with terminal selection.
+46. Agent chat tool rendering uses an OpenCode-inspired taxonomy rather than a
+    uniform raw tool-call block. Read/list/find/search/web/simple tools render as
+    compact inline rows with status glyphs and short summaries. Shell requests
+    and shell results render as richer block-style rows with command, exit/status,
+    stdout, and stderr separated visually. Mutation tools such as patch/write/edit
+    render as block-style results so file operations remain prominent and
+    inspectable.
 
 Not in the first slice unless explicitly reopened:
 
