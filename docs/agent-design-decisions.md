@@ -862,6 +862,12 @@ The first non-interactive agent slice is implemented as:
     Agent and dashboard command palettes now use that primitive, and future model,
     profile, session, theme, and agent pickers should use the same abstraction
     unless they need a clearly different interaction model.
+53. Agent chat command metadata lives in a central command spec registry for
+    built-in chat actions. The registry records section/group, label,
+    description, optional keybinding, optional help section, and the command value
+    when an action is palette-runnable. Built-in palette entries and the Agent
+    help overlay are generated from that registry; dynamic profile/model entries
+    remain runtime-provided but should follow the same grouped-select shape.
 
 Not in the first slice unless explicitly reopened:
 

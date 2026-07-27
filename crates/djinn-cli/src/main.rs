@@ -7473,40 +7473,7 @@ fn agent_chat_command_palette(
     profile: &str,
     model: &str,
 ) -> Result<Vec<djinn_tui::AgentChatCommandEntry>> {
-    let mut entries = vec![
-        djinn_tui::AgentChatCommandEntry {
-            section: "Session".to_string(),
-            label: "New session".to_string(),
-            description: "Start a fresh Agent chat with the current profile/model".to_string(),
-            command: djinn_tui::AgentChatCommand::NewSession,
-        },
-        djinn_tui::AgentChatCommandEntry {
-            section: "Session".to_string(),
-            label: "Resume session…".to_string(),
-            description: "Open the Sessions picker".to_string(),
-            command: djinn_tui::AgentChatCommand::OpenSessions,
-        },
-        djinn_tui::AgentChatCommandEntry {
-            section: "Auth".to_string(),
-            label: "Add credential…".to_string(),
-            description: "Select provider and login method".to_string(),
-            command: djinn_tui::AgentChatCommand::AddCredential,
-        },
-    ];
-    for (label, tab) in [
-        ("Open Tools", djinn_tui::DashboardTab::Tools),
-        ("Open Sessions", djinn_tui::DashboardTab::Sessions),
-        ("Open Memories", djinn_tui::DashboardTab::Memories),
-        ("Open Suggestions", djinn_tui::DashboardTab::Suggestions),
-        ("Open Skills", djinn_tui::DashboardTab::Skills),
-    ] {
-        entries.push(djinn_tui::AgentChatCommandEntry {
-            section: "Navigation".to_string(),
-            label: label.to_string(),
-            description: "Jump to this dashboard tab".to_string(),
-            command: djinn_tui::AgentChatCommand::OpenDashboardTab(tab),
-        });
-    }
+    let mut entries = Vec::new();
     for candidate in agent_profile_options(profile)? {
         let current = same_agent_option(&candidate, profile);
         entries.push(djinn_tui::AgentChatCommandEntry {
@@ -17815,30 +17782,6 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.label == "✓ Current model · openai/gpt-5.5"));
-        assert!(entries.iter().any(|entry| {
-            entry.section == "Session"
-                && entry.label == "New session"
-                && entry.command == djinn_tui::AgentChatCommand::NewSession
-        }));
-        assert!(entries.iter().any(|entry| {
-            entry.section == "Auth"
-                && entry.label == "Add credential…"
-                && entry.command == djinn_tui::AgentChatCommand::AddCredential
-        }));
-        assert!(entries.iter().any(|entry| {
-            entry.section == "Navigation"
-                && entry.label == "Open Tools"
-                && entry.command
-                    == djinn_tui::AgentChatCommand::OpenDashboardTab(djinn_tui::DashboardTab::Tools)
-        }));
-        assert!(entries.iter().any(|entry| {
-            entry.section == "Navigation"
-                && entry.label == "Open Suggestions"
-                && entry.command
-                    == djinn_tui::AgentChatCommand::OpenDashboardTab(
-                        djinn_tui::DashboardTab::Suggestions,
-                    )
-        }));
     }
 
     #[test]

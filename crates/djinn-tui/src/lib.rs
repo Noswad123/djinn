@@ -314,6 +314,16 @@ pub struct AgentChatCommandEntry {
     pub command: AgentChatCommand,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentChatCommandSpec {
+    section: &'static str,
+    label: &'static str,
+    description: &'static str,
+    keybinding: Option<&'static str>,
+    help_section: Option<&'static str>,
+    command: Option<AgentChatCommand>,
+}
+
 impl GroupedSelectItem for AgentChatCommandEntry {
     fn section(&self) -> &str {
         &self.section
@@ -999,14 +1009,13 @@ impl AgentChatComposerApp {
     }
 
     fn agent_chat_command_palette(&self) -> Vec<AgentChatCommandEntry> {
-        let local_entries = agent_chat_local_command_entries();
+        let local_entries = agent_chat_builtin_command_entries();
         let mut entries = Vec::with_capacity(
             self.status
                 .command_palette
                 .len()
                 .saturating_add(local_entries.len()),
         );
-        entries.push(agent_chat_help_command_entry());
         entries.extend(local_entries);
         entries.extend(self.status.command_palette.clone());
         entries
@@ -1301,100 +1310,7 @@ impl AgentChatComposerApp {
 
     fn draw_help(&self, frame: &mut ratatui::Frame) {
         let area = centered_rect(66, 58, frame.area());
-        let lines = vec![
-            Line::from(Span::styled("Agent chat", title_style())),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Enter", selected_style()),
-                Span::raw(" send prompt"),
-            ]),
-            Line::from(vec![
-                Span::styled("Shift+Enter", selected_style()),
-                Span::raw(" insert newline"),
-            ]),
-            Line::from(vec![
-                Span::styled("Ctrl+E", selected_style()),
-                Span::raw(" edit prompt in $VISUAL/$EDITOR/nvim"),
-            ]),
-            Line::from(vec![
-                Span::styled("Ctrl+R", selected_style()),
-                Span::raw(" toggle rendered/raw Markdown transcript"),
-            ]),
-            Line::from(vec![
-                Span::styled("Ctrl+T", selected_style()),
-                Span::raw(" toggle compact/full tool output"),
-            ]),
-            Line::from(vec![
-                Span::styled("Esc", selected_style()),
-                Span::raw(" quit when composer is empty"),
-            ]),
-            Line::from(vec![
-                Span::styled("Ctrl+C", selected_style()),
-                Span::raw(" quit"),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled("Navigation", title_style())),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Ctrl+P", selected_style()),
-                Span::raw(" open command palette"),
-            ]),
-            Line::from(vec![
-                Span::styled("/", selected_style()),
-                Span::raw(" open command palette when composer is empty"),
-            ]),
-            Line::from(vec![
-                Span::styled("Ctrl+/", selected_style()),
-                Span::raw(" open or close this help"),
-            ]),
-            Line::from(vec![
-                Span::styled("Tab / Shift+Tab", selected_style()),
-                Span::raw(" jump to Tools / Skills"),
-            ]),
-            Line::from(vec![
-                Span::styled("↑/↓ or PgUp/PgDn", selected_style()),
-                Span::raw(" scroll transcript"),
-            ]),
-            Line::from(vec![
-                Span::styled("Ctrl+U / Ctrl+D", selected_style()),
-                Span::raw(" scroll transcript by half page"),
-            ]),
-            Line::from(vec![
-                Span::styled("Alt+↑ / Alt+↓", selected_style()),
-                Span::raw(" jump previous / next message"),
-            ]),
-            Line::from(vec![
-                Span::styled("Ctrl+Home / Ctrl+End", selected_style()),
-                Span::raw(" jump first / last message"),
-            ]),
-            Line::from(vec![
-                Span::styled("Alt+U", selected_style()),
-                Span::raw(" jump to last user message"),
-            ]),
-            Line::from(vec![
-                Span::styled("Home / End", selected_style()),
-                Span::raw(" jump to transcript top / latest"),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled("Command palette", title_style())),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("type", selected_style()),
-                Span::raw(" fuzzy-search actions"),
-            ]),
-            Line::from(vec![
-                Span::styled("Ctrl+N / Ctrl+P", selected_style()),
-                Span::raw(" move selection"),
-            ]),
-            Line::from(vec![
-                Span::styled("Enter", selected_style()),
-                Span::raw(" run selected action"),
-            ]),
-            Line::from(vec![
-                Span::styled("Esc", selected_style()),
-                Span::raw(" close palette"),
-            ]),
-        ];
+        let lines = agent_chat_help_lines();
         let help = Paragraph::new(lines)
             .block(block("Help"))
             .style(base_style())
@@ -1480,72 +1396,320 @@ impl AgentChatComposerApp {
     }
 }
 
-fn agent_chat_help_command_entry() -> AgentChatCommandEntry {
-    AgentChatCommandEntry {
-        section: "Help".to_string(),
-        label: "Show keybindings".to_string(),
-        description: "View agent chat shortcuts and navigation keys.".to_string(),
-        command: AgentChatCommand::OpenHelp,
+pub fn agent_chat_builtin_command_entries() -> Vec<AgentChatCommandEntry> {
+    agent_chat_command_specs()
+        .into_iter()
+        .filter_map(|spec| {
+            let command = spec.command.clone()?;
+            Some(spec.palette_entry(command))
+        })
+        .collect()
+}
+
+fn agent_chat_help_lines() -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled("Agent chat", title_style()))];
+    let mut previous_section = None::<&'static str>;
+    for spec in agent_chat_command_specs() {
+        let Some(help_section) = spec.help_section else {
+            continue;
+        };
+        let Some(keybinding) = spec.keybinding else {
+            continue;
+        };
+        if previous_section != Some(help_section) {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(help_section, title_style())));
+            lines.push(Line::from(""));
+            previous_section = Some(help_section);
+        }
+        lines.push(Line::from(vec![
+            Span::styled(keybinding.to_string(), selected_style()),
+            Span::raw(format!(" {}", spec.description)),
+        ]));
+    }
+    lines
+}
+
+impl AgentChatCommandSpec {
+    fn palette_entry(self, command: AgentChatCommand) -> AgentChatCommandEntry {
+        AgentChatCommandEntry {
+            section: self.section.to_string(),
+            label: self.label.to_string(),
+            description: self.description.to_string(),
+            command,
+        }
     }
 }
 
-fn agent_chat_local_command_entries() -> Vec<AgentChatCommandEntry> {
+fn agent_chat_command_specs() -> Vec<AgentChatCommandSpec> {
     vec![
-        agent_chat_command_entry(
+        agent_chat_command_spec(
+            "Help",
+            "Show keybindings",
+            "open or close this help",
+            Some("Ctrl+/"),
+            Some("Navigation"),
+            Some(AgentChatCommand::OpenHelp),
+        ),
+        agent_chat_command_spec(
+            "Composer",
+            "Send prompt",
+            "send prompt",
+            Some("Enter"),
+            Some("Composer"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Composer",
+            "Insert newline",
+            "insert newline",
+            Some("Shift+Enter"),
+            Some("Composer"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Composer",
+            "Edit prompt externally",
+            "edit prompt in $VISUAL/$EDITOR/nvim",
+            Some("Ctrl+E"),
+            Some("Composer"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Transcript",
+            "Toggle rendered/raw Markdown",
+            "toggle rendered/raw Markdown transcript",
+            Some("Ctrl+R"),
+            Some("Composer"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Transcript",
+            "Toggle compact/full tool output",
+            "toggle compact/full tool output",
+            Some("Ctrl+T"),
+            Some("Composer"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Session",
+            "New session",
+            "Start a fresh Agent chat with the current profile/model",
+            None,
+            None,
+            Some(AgentChatCommand::NewSession),
+        ),
+        agent_chat_command_spec(
+            "Session",
+            "Resume session…",
+            "Open the Sessions picker",
+            None,
+            None,
+            Some(AgentChatCommand::OpenSessions),
+        ),
+        agent_chat_command_spec(
+            "Auth",
+            "Add credential…",
+            "Select provider and login method",
+            None,
+            None,
+            Some(AgentChatCommand::AddCredential),
+        ),
+        agent_chat_command_spec(
+            "Navigation",
+            "Open command palette",
+            "open command palette",
+            Some("Ctrl+P"),
+            Some("Navigation"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Navigation",
+            "Open slash command palette",
+            "open command palette when composer is empty",
+            Some("/"),
+            Some("Navigation"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Navigation",
+            "Open Tools",
+            "Jump to this dashboard tab",
+            Some("Tab"),
+            Some("Navigation"),
+            Some(AgentChatCommand::OpenDashboardTab(DashboardTab::Tools)),
+        ),
+        agent_chat_command_spec(
+            "Navigation",
+            "Open Sessions",
+            "Jump to this dashboard tab",
+            None,
+            None,
+            Some(AgentChatCommand::OpenDashboardTab(DashboardTab::Sessions)),
+        ),
+        agent_chat_command_spec(
+            "Navigation",
+            "Open Memories",
+            "Jump to this dashboard tab",
+            None,
+            None,
+            Some(AgentChatCommand::OpenDashboardTab(DashboardTab::Memories)),
+        ),
+        agent_chat_command_spec(
+            "Navigation",
+            "Open Suggestions",
+            "Jump to this dashboard tab",
+            None,
+            None,
+            Some(AgentChatCommand::OpenDashboardTab(
+                DashboardTab::Suggestions,
+            )),
+        ),
+        agent_chat_command_spec(
+            "Navigation",
+            "Open Skills",
+            "Jump to this dashboard tab",
+            Some("Shift+Tab"),
+            Some("Navigation"),
+            Some(AgentChatCommand::OpenDashboardTab(DashboardTab::Skills)),
+        ),
+        agent_chat_command_spec(
+            "Navigation",
+            "Scroll transcript",
+            "scroll transcript",
+            Some("↑/↓ or PgUp/PgDn"),
+            Some("Navigation"),
+            None,
+        ),
+        agent_chat_command_spec(
             "Navigation",
             "Scroll half page up",
-            "Move the transcript up by half a visible page.",
-            AgentChatCommand::ScrollHalfPageUp,
+            "scroll transcript by half page",
+            Some("Ctrl+U / Ctrl+D"),
+            Some("Navigation"),
+            Some(AgentChatCommand::ScrollHalfPageUp),
         ),
-        agent_chat_command_entry(
+        agent_chat_command_spec(
             "Navigation",
             "Scroll half page down",
             "Move the transcript down by half a visible page.",
-            AgentChatCommand::ScrollHalfPageDown,
+            None,
+            None,
+            Some(AgentChatCommand::ScrollHalfPageDown),
         ),
-        agent_chat_command_entry(
-            "Navigation",
-            "Jump to first message",
-            "Move to the start of the transcript.",
-            AgentChatCommand::JumpFirstMessage,
-        ),
-        agent_chat_command_entry(
+        agent_chat_command_spec(
             "Navigation",
             "Jump to previous message",
-            "Move to the previous message boundary.",
-            AgentChatCommand::JumpPreviousMessage,
+            "jump previous / next message",
+            Some("Alt+↑ / Alt+↓"),
+            Some("Navigation"),
+            Some(AgentChatCommand::JumpPreviousMessage),
         ),
-        agent_chat_command_entry(
+        agent_chat_command_spec(
             "Navigation",
             "Jump to next message",
             "Move to the next message boundary.",
-            AgentChatCommand::JumpNextMessage,
+            None,
+            None,
+            Some(AgentChatCommand::JumpNextMessage),
         ),
-        agent_chat_command_entry(
+        agent_chat_command_spec(
+            "Navigation",
+            "Jump to first message",
+            "jump first / last message",
+            Some("Ctrl+Home / Ctrl+End"),
+            Some("Navigation"),
+            Some(AgentChatCommand::JumpFirstMessage),
+        ),
+        agent_chat_command_spec(
             "Navigation",
             "Jump to last message",
             "Move to the final message boundary.",
-            AgentChatCommand::JumpLastMessage,
+            None,
+            None,
+            Some(AgentChatCommand::JumpLastMessage),
         ),
-        agent_chat_command_entry(
+        agent_chat_command_spec(
             "Navigation",
             "Jump to last user message",
-            "Move to the most recent user turn.",
-            AgentChatCommand::JumpLastUserMessage,
+            "jump to last user message",
+            Some("Alt+U"),
+            Some("Navigation"),
+            Some(AgentChatCommand::JumpLastUserMessage),
+        ),
+        agent_chat_command_spec(
+            "Navigation",
+            "Jump to latest transcript",
+            "jump to transcript top / latest",
+            Some("Home / End"),
+            Some("Navigation"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Session",
+            "Quit when empty",
+            "quit when composer is empty",
+            Some("Esc"),
+            Some("Composer"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Session",
+            "Quit",
+            "quit",
+            Some("Ctrl+C"),
+            Some("Composer"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Command palette",
+            "Type to search",
+            "fuzzy-search actions",
+            Some("type"),
+            Some("Command palette"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Command palette",
+            "Move selection",
+            "move selection",
+            Some("Ctrl+N / Ctrl+P"),
+            Some("Command palette"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Command palette",
+            "Run selected action",
+            "run selected action",
+            Some("Enter"),
+            Some("Command palette"),
+            None,
+        ),
+        agent_chat_command_spec(
+            "Command palette",
+            "Close palette",
+            "close palette",
+            Some("Esc"),
+            Some("Command palette"),
+            None,
         ),
     ]
 }
 
-fn agent_chat_command_entry(
-    section: &str,
-    label: &str,
-    description: &str,
-    command: AgentChatCommand,
-) -> AgentChatCommandEntry {
-    AgentChatCommandEntry {
-        section: section.to_string(),
-        label: label.to_string(),
-        description: description.to_string(),
+fn agent_chat_command_spec(
+    section: &'static str,
+    label: &'static str,
+    description: &'static str,
+    keybinding: Option<&'static str>,
+    help_section: Option<&'static str>,
+    command: Option<AgentChatCommand>,
+) -> AgentChatCommandSpec {
+    AgentChatCommandSpec {
+        section,
+        label,
+        description,
+        keybinding,
+        help_section,
         command,
     }
 }
@@ -6150,22 +6314,22 @@ mod tests {
             },
             AgentChatCommandEntry {
                 section: "Model".to_string(),
-                label: "Switch model · test".to_string(),
+                label: "Switch model · zxq".to_string(),
                 description: String::new(),
-                command: AgentChatCommand::SwitchModel("test".to_string()),
+                command: AgentChatCommand::SwitchModel("zxq".to_string()),
             },
         ];
         let mut app = AgentChatComposerApp::new(Vec::new(), status);
 
         app.open_palette();
-        for ch in "model".chars() {
+        for ch in "zxq".chars() {
             app.push_palette_query(ch);
         }
 
         assert!(app.palette.open);
         assert_eq!(
             app.selected_palette_command(),
-            Some(AgentChatCommand::SwitchModel("test".to_string()))
+            Some(AgentChatCommand::SwitchModel("zxq".to_string()))
         );
     }
 
@@ -6187,6 +6351,60 @@ mod tests {
             .spans
             .iter()
             .any(|span| span.content.contains("Show keybindings"))));
+    }
+
+    #[test]
+    fn agent_chat_builtin_command_registry_feeds_palette_entries() {
+        let entries = agent_chat_builtin_command_entries();
+
+        assert!(entries.iter().any(|entry| {
+            entry.section == "Session"
+                && entry.label == "New session"
+                && entry.command == AgentChatCommand::NewSession
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.section == "Auth"
+                && entry.label == "Add credential…"
+                && entry.command == AgentChatCommand::AddCredential
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.section == "Navigation"
+                && entry.label == "Open Tools"
+                && entry.command == AgentChatCommand::OpenDashboardTab(DashboardTab::Tools)
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.section == "Navigation"
+                && entry.label == "Jump to last user message"
+                && entry.command == AgentChatCommand::JumpLastUserMessage
+        }));
+    }
+
+    #[test]
+    fn agent_chat_help_is_generated_from_command_registry() {
+        let help_lines = agent_chat_help_lines();
+        let rendered = help_lines
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        for spec in agent_chat_command_specs()
+            .into_iter()
+            .filter(|spec| spec.help_section.is_some() && spec.keybinding.is_some())
+        {
+            let keybinding = spec.keybinding.unwrap();
+            assert!(
+                rendered
+                    .iter()
+                    .any(|line| line.contains(keybinding) && line.contains(spec.description)),
+                "missing help line for {keybinding}: {}",
+                spec.description
+            );
+        }
     }
 
     #[test]
@@ -6219,7 +6437,7 @@ mod tests {
             app.push_palette_query(ch);
         }
 
-        assert_eq!(app.visible_palette_indices(), vec![10]);
+        assert_eq!(app.visible_palette_indices().len(), 1);
         assert_eq!(
             app.selected_palette_command(),
             Some(AgentChatCommand::SwitchModel("openai/gpt-5.5".to_string()))

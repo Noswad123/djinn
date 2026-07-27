@@ -94,8 +94,6 @@ Do not copy these OpenCode details directly:
 
 Ready implementation slices:
 
-- Add a central command registry that can feed both the command palette and help
-  overlay, with labels, descriptions, grouping, keybindings, and visibility.
 - Introduce a semantic theme-token layer while keeping Catppuccin as the initial
   default palette.
 - Add optional wide-terminal sidebar support for contextual state such as session
