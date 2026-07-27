@@ -861,10 +861,15 @@ impl AgentChatComposerApp {
 
     fn max_transcript_scroll(&self, transcript_area_height: u16) -> u16 {
         let visible_lines = transcript_area_height.saturating_sub(2).max(1) as usize;
-        agent_chat_transcript_lines_with_mode(&self.messages, &self.status.notice, self.render_mode)
-            .len()
-            .saturating_sub(visible_lines)
-            .min(u16::MAX as usize) as u16
+        agent_chat_transcript_lines_with_mode(
+            &self.messages,
+            &self.status.notice,
+            self.render_mode,
+            None,
+        )
+        .len()
+        .saturating_sub(visible_lines)
+        .min(u16::MAX as usize) as u16
     }
 
     fn at_transcript_end(&self, transcript_area_height: u16) -> bool {
@@ -917,6 +922,7 @@ impl AgentChatComposerApp {
             &self.messages,
             &self.status.notice,
             self.render_mode,
+            Some(chunks[1].width as usize),
         );
         let transcript_title = if self.at_transcript_end(chunks[1].height) {
             "Transcript"
@@ -1103,13 +1109,14 @@ impl AgentChatComposerApp {
 
 #[cfg(test)]
 fn agent_chat_transcript_lines(messages: &[AgentChatMessage], notice: &str) -> Vec<Line<'static>> {
-    agent_chat_transcript_lines_with_mode(messages, notice, AgentChatRenderMode::Markdown)
+    agent_chat_transcript_lines_with_mode(messages, notice, AgentChatRenderMode::Markdown, None)
 }
 
 fn agent_chat_transcript_lines_with_mode(
     messages: &[AgentChatMessage],
     notice: &str,
     render_mode: AgentChatRenderMode,
+    code_block_width: Option<usize>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if messages.is_empty() {
@@ -1123,7 +1130,11 @@ fn agent_chat_transcript_lines_with_mode(
         )));
     } else {
         for message in messages {
-            lines.extend(agent_chat_message_lines_with_mode(message, render_mode));
+            lines.extend(agent_chat_message_lines_with_mode(
+                message,
+                render_mode,
+                code_block_width,
+            ));
             lines.push(Line::from(""));
         }
     }
@@ -1176,12 +1187,13 @@ fn edit_agent_chat_input(terminal: &mut TuiTerminal, app: &mut AgentChatComposer
 
 #[cfg(test)]
 fn agent_chat_message_lines(message: &AgentChatMessage) -> Vec<Line<'static>> {
-    agent_chat_message_lines_with_mode(message, AgentChatRenderMode::Markdown)
+    agent_chat_message_lines_with_mode(message, AgentChatRenderMode::Markdown, None)
 }
 
 fn agent_chat_message_lines_with_mode(
     message: &AgentChatMessage,
     render_mode: AgentChatRenderMode,
+    code_block_width: Option<usize>,
 ) -> Vec<Line<'static>> {
     let (label, label_style, content_style) = match message.role {
         AgentChatRole::User => (
@@ -1227,6 +1239,7 @@ fn agent_chat_message_lines_with_mode(
             content,
             content_style,
             render_mode,
+            code_block_width,
         ));
     }
     lines
@@ -1276,10 +1289,11 @@ fn agent_chat_message_body_lines(
     content: &str,
     content_style: Style,
     render_mode: AgentChatRenderMode,
+    code_block_width: Option<usize>,
 ) -> Vec<Line<'static>> {
     match role {
         AgentChatRole::Assistant if render_mode == AgentChatRenderMode::Markdown => {
-            render_agent_markdown_body_lines(content, content_style)
+            render_agent_markdown_body_lines(content, content_style, code_block_width)
         }
         AgentChatRole::Tool => {
             plain_agent_chat_body_lines(tool_request_body_lines(content), content_style)
@@ -1304,7 +1318,11 @@ fn plain_agent_chat_body_lines(lines: Vec<String>, style: Style) -> Vec<Line<'st
         .collect()
 }
 
-fn render_agent_markdown_body_lines(content: &str, base_style: Style) -> Vec<Line<'static>> {
+fn render_agent_markdown_body_lines(
+    content: &str,
+    base_style: Style,
+    code_block_width: Option<usize>,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut in_code_block = false;
     let mut code_fence = "```".to_string();
@@ -1322,7 +1340,7 @@ fn render_agent_markdown_body_lines(content: &str, base_style: Style) -> Vec<Lin
                 in_code_block = false;
             } else {
                 lines.push(Line::from(Span::styled(
-                    format!(" {raw_line} "),
+                    padded_code_block_line(raw_line, code_block_width),
                     markdown_code_style(),
                 )));
             }
@@ -1333,6 +1351,18 @@ fn render_agent_markdown_body_lines(content: &str, base_style: Style) -> Vec<Lin
     }
 
     lines
+}
+
+fn padded_code_block_line(raw_line: &str, code_block_width: Option<usize>) -> String {
+    let mut line = format!(" {raw_line} ");
+    let Some(width) = code_block_width else {
+        return line;
+    };
+    let line_width = line.chars().count();
+    if line_width < width {
+        line.push_str(&" ".repeat(width - line_width));
+    }
+    line
 }
 
 fn render_agent_markdown_line(raw_line: &str, base_style: Style) -> Line<'static> {
@@ -4269,7 +4299,15 @@ mod tests {
         message: AgentChatMessage,
         render_mode: AgentChatRenderMode,
     ) -> Vec<String> {
-        agent_chat_message_lines_with_mode(&message, render_mode)
+        rendered_agent_chat_message_lines_with_mode_and_width(message, render_mode, None)
+    }
+
+    fn rendered_agent_chat_message_lines_with_mode_and_width(
+        message: AgentChatMessage,
+        render_mode: AgentChatRenderMode,
+        code_block_width: Option<usize>,
+    ) -> Vec<String> {
+        agent_chat_message_lines_with_mode(&message, render_mode, code_block_width)
             .into_iter()
             .map(|line| {
                 line.spans
@@ -4682,6 +4720,29 @@ mod tests {
                 " fn main() {} ",
             ]
         );
+    }
+
+    #[test]
+    fn agent_chat_code_blocks_pad_to_transcript_width() {
+        let lines = rendered_agent_chat_message_lines_with_mode_and_width(
+            AgentChatMessage {
+                role: AgentChatRole::Assistant,
+                content: "```text\nx\n\ny\n```".to_string(),
+            },
+            AgentChatRenderMode::Markdown,
+            Some(10),
+        );
+
+        assert_eq!(
+            lines,
+            vec![" Djinn ", " x        ", "          ", " y        "]
+        );
+        assert!(lines.iter().all(|line| !line.contains('│')));
+        assert!(lines.iter().all(|line| !line.contains('┌')));
+        assert!(lines.iter().all(|line| !line.contains('└')));
+        assert_eq!(lines[1].chars().count(), 10);
+        assert_eq!(lines[2].chars().count(), 10);
+        assert_eq!(lines[3].chars().count(), 10);
     }
 
     #[test]

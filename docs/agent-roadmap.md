@@ -29,7 +29,107 @@ design decisions. Use these documents as the source of truth for those:
 ## Ready next
 
 These items are small enough or well-defined enough to implement without another
-product-design pass.
+product-design pass. UI work is the current priority because it affects every
+agent turn and makes the rest of the runtime easier to evaluate.
+
+### Agent chat UI polish
+
+Djinn's interactive chat is the primary product surface. It should keep the
+Ratatui/local-first architecture but borrow OpenCode's strongest UX patterns
+where they map cleanly to a terminal UI: quiet chrome, easy copy/paste,
+progressive disclosure, and visually scannable assistant turns. This is an
+OpenCode-inspired direction, not a commitment to clone OpenCode wholesale; choose
+the degree of stylistic emulation slice-by-slice as the UI evolves.
+
+Useful OpenCode reference files:
+
+- `~/Projects/opencode/opencode/packages/tui/src/routes/session/index.tsx`:
+  session layout, transcript, message/tool/reasoning rendering, navigation,
+  sidebar, scrolling.
+- `~/Projects/opencode/opencode/packages/tui/src/component/prompt/index.tsx`:
+  composer layout, metadata/status rows, paste handling, shell/normal mode.
+- `~/Projects/opencode/opencode/packages/tui/src/component/prompt/autocomplete.tsx`:
+  slash and at-mention autocomplete.
+- `~/Projects/opencode/opencode/packages/tui/src/component/command-palette.tsx`
+  and `~/Projects/opencode/opencode/packages/tui/src/ui/dialog-select.tsx`:
+  command registry-backed palette and reusable grouped fuzzy select dialogs.
+- `~/Projects/opencode/opencode/packages/tui/src/routes/session/footer.tsx`:
+  quiet persistent footer status.
+- `~/Projects/opencode/opencode/packages/tui/src/routes/session/permission.tsx`:
+  docked permission prompts and diff previews.
+- `~/Projects/opencode/opencode/packages/tui/src/theme/index.ts` and
+  `~/Projects/opencode/opencode/packages/tui/src/context/theme.tsx`: theme token
+  model and custom/system theme handling.
+
+Borrow these concepts directly where they fit Ratatui:
+
+- **Session layout:** scrollable transcript, fixed composer/status dock, optional
+  right sidebar on wide terminals, low-noise persistent footer.
+- **Message hierarchy:** stronger user turns, quieter assistant text, muted
+  assistant metadata, distinct error/progress/tool states.
+- **Tool taxonomy:** inline rows for simple/status-like tools; block panels for
+  shell output, diffs, writes, todos, errors, and long generic output.
+- **Progressive disclosure:** collapse long tool output and reasoning by default,
+  with keyboard-first expand/collapse affordances.
+- **Composer polish:** bounded multiline input, profile/model/provider metadata,
+  active status/spinner row, cwd/context/usage hints, paste summarization.
+- **Reusable dialogs:** one grouped fuzzy select abstraction for commands,
+  models, sessions, themes, agents/profiles, and future pickers.
+- **Navigation:** line/page/half-page scroll, first/last, next/previous message,
+  jump to last user message, jump to latest, and sticky-bottom only when the user
+  is already following the bottom.
+- **Theme tokens:** move from direct color constants toward semantic tokens for
+  backgrounds, text/muted text, borders, status colors, diff colors, and Markdown
+  colors.
+
+Do not copy these OpenCode details directly:
+
+- Solid/OpenTUI component architecture; port concepts to Rust/Ratatui instead.
+- Mouse/hover as the primary control path; Djinn should stay keyboard-first.
+- Web-only details such as DOM copy buttons, CSS transitions, Shiki workers, or
+  browser-grade Markdown behavior.
+- Aggressive hiding of tool/audit details unless there is an obvious, reversible
+  expansion path.
+- Fixed widths without adapting to terminal size and copy/paste constraints.
+
+Ready implementation slices:
+
+- Adopt an OpenCode-like tool rendering taxonomy: compact inline rows for read,
+  glob, grep, web fetch/search, and simple status; richer block panels for shell
+  output, diffs, writes/patches, todos, errors, and long generic output.
+- Add collapsed-output budgets and expansion state for shell/generic tools. Start
+  with conservative keyboard controls and keep full details inspectable.
+- Improve message layout hierarchy: subtle user-turn accent/panel, quiet indented
+  assistant Markdown, muted assistant metadata line with model/profile/duration
+  when available, and visually distinct error rows.
+- Add transcript navigation commands for half-page scroll, first/last message,
+  next/previous message, and last-user-message jumps.
+- Polish the composer into an OpenCode-like dock: bounded height, profile/model
+  metadata row, active spinner/status row, cwd/context/usage hints, and less
+  shortcut noise in the global footer.
+- Audit OpenCode's current session UI for portable patterns worth adapting:
+  message grouping, assistant/tool visual hierarchy, command palette ergonomics,
+  jump-to-latest affordance, and hidden/overlay scroll treatment. Record only
+  patterns that make sense for Ratatui; do not chase web/CSS details directly.
+- Refactor the command palette toward a reusable grouped select dialog so model,
+  profile, session, theme, and future agent pickers share one interaction model.
+- Add a central command registry that can feed both the command palette and help
+  overlay, with labels, descriptions, grouping, keybindings, and visibility.
+- Introduce a semantic theme-token layer while keeping Catppuccin as the initial
+  default palette.
+- Add optional wide-terminal sidebar support for contextual state such as session
+  metadata, active tools/children, permissions, memories, or workspace status.
+- Add paste summarization for long pasted text so large clipboard content does
+  not flood the composer while still expanding to raw text on submit.
+- Reduce footer/header noise in the Agent chat once the help dialog and command
+  palette cover discoverability. Keep status visible but avoid making every
+  shortcut permanent chrome.
+- Improve copy-first rendering of assistant output: raw transcript/session data
+  remains Markdown, rendered mode is visual only, and raw/rendered toggling must
+  stay cheap.
+- Add focused rendering tests for any visual transformation that affects copied
+  text, especially fenced code, tool calls, progress/thought rows, and Markdown
+  raw-mode fallback.
 
 ### Child-session sub-agent model
 
@@ -76,73 +176,21 @@ Ready implementation slices:
 - Define an inspectable parent-to-child grant record with parent id, child id,
   action, resource, effect, source, and session scope.
 
-### Better UI
-  - one example is the background highlight for blocks needs to highlight such that if forms a rectangle. Just don't highlight only if characters are present
-  - Is there a way we can look at the opencode repo (~/Projects/opencode/opencode/) and inherit their ui where it makes sense. It looks and feels much better
-
 ## Needs a decision before implementation
 
 These are useful directions, but implementing them now would risk locking in the
 wrong product shape.
 
-### Djinn versus Coven orchestration ownership
+### Djinn/Coven interop transport
 
-`~/Projects/coven` already has a file-backed multi-agent workspace model with
-agents, tasks, checkpoints, messages/events JSONL, dashboard projection, and
-Herdr/tmux launch support. Before putting all multi-agent parent/child UI into
-Djinn, decide whether:
+The ownership direction is decided in
+[`agent-design-decisions.md`](./agent-design-decisions.md) and specified in
+[`coven-djinn-interop.md`](./coven-djinn-interop.md): Coven is the rich
+multi-agent control plane; Djinn owns Djinn sessions, runtime policy, native
+transcripts, memory, and tools. What remains before coding the bridge is the
+smallest concrete transport and recovery slice.
 
-- Djinn owns only the agent runtime/session backend, policy, memory, and local
-  tool execution;
-- Coven owns multi-agent orchestration, family state, lifecycle projection,
-  checkpoint UX, and multiplexer-specific presentation; or
-- Djinn keeps a minimal child-session surface while Coven becomes the richer
-  multi-agent control plane.
-
-Evaluate this through concrete constraints: source of truth, session identity,
-permission boundaries, multiplexer dependency, restart/recovery behavior,
-foreground/background UX, and whether users need one integrated assistant UI or a
-separate orchestration surface.
-
-Additional constraints from the current design discussion:
-
-- Coven's source of truth depends on the agents/harnesses involved. For mixed
-  providers, Coven should likely own cross-harness family/workspace state while
-  each harness keeps its native transcript/session store.
-- Session identity depends on that source-of-truth split. Djinn sessions need
-  stable ids that Coven can reference; non-Djinn agents need adapter-specific ids
-  mapped into Coven family state.
-- Coven can act on behalf of the user and pass explicit scoped grants to Djinn,
-  but Djinn should remain authoritative for hard guardrails unless a future
-  dangerous human override exists.
-- Multiplexer support should stay adapter-based. Herdr and tmux are current
-  targets; Kitsune, as a personal Herdr fork, should be another adapter target
-  rather than a core dependency.
-- Restart/recovery is required. Coven family state and Djinn session logs should
-  be sufficient to reconstruct active/completed children after process death.
-- UX may need both modes: small sibling sets in terminal quadrants, and larger
-  workspaces with one agent per tab/window.
-- Coven should publish events that Djinn and other harnesses can interpret, rather
-  than requiring all agents to run inside Coven-specific code.
-
-Preferred direction:
-
-- Use a federated source-of-truth model. Coven owns orchestration state across
-  heterogeneous agents; Djinn owns Djinn transcripts, runtime policy, native
-  sessions, memory, and tool execution; other harnesses own their native
-  transcripts.
-- Make Coven the rich multi-agent control plane. Djinn should keep a minimal
-  native child-session surface for direct one-assistant workflows and for cases
-  where Coven is not running.
-- Treat Coven-to-Djinn control as user-delegated requests with explicit scoped
-  capabilities. Djinn may accept policy overrides from Coven for normal profile
-  and session policy, but hard guardrails remain Djinn-enforced unless a future
-  break-glass human confirmation path is designed.
-- See [`coven-djinn-interop.md`](./coven-djinn-interop.md) for the proposed event
-  envelope, identity reference, request/fact split, grant shape, layout hints,
-  recovery semantics, and first implementation slice.
-
-Interop implementation slices to define before coding the integration:
+Interop details to choose before coding the integration:
 
 - Define a stable cross-harness agent/session reference envelope with a neutral
   orchestration id, Coven task/agent id, harness kind, provider/model identity

@@ -803,6 +803,15 @@ The first non-interactive agent slice is implemented as:
     conflicting active rows by default and requires `--force` to replace rows
     with matching IDs or source/source-id pairs. Archive removal should require
     `--force` and refuse to delete files outside Djinn's chat archive directory.
+44. Agent chat rendered Markdown is a display mode over raw Markdown transcript
+    text. Ctrl+R toggles rendered/raw display so visual polish does not replace
+    copy/export fidelity. Fenced code blocks should render as quiet rectangular
+    background-highlighted rows padded to the transcript width, including empty
+    code rows, without decorative border/header/footer glyphs in the selectable
+    transcript text.
+45. Agent chat scroll affordances should not occupy a persistent selectable text
+    column. Prefer title/footer hints such as `Transcript ↓ End` plus explicit
+    jump keys over a glyph scrollbar that can be copied with terminal selection.
 
 Not in the first slice unless explicitly reopened:
 
