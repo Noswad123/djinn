@@ -6864,6 +6864,13 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                 args.resume = Some(resume.clone());
                 match command {
                     djinn_tui::AgentChatCommand::OpenHelp => {}
+                    djinn_tui::AgentChatCommand::ScrollHalfPageUp
+                    | djinn_tui::AgentChatCommand::ScrollHalfPageDown
+                    | djinn_tui::AgentChatCommand::JumpFirstMessage
+                    | djinn_tui::AgentChatCommand::JumpPreviousMessage
+                    | djinn_tui::AgentChatCommand::JumpNextMessage
+                    | djinn_tui::AgentChatCommand::JumpLastMessage
+                    | djinn_tui::AgentChatCommand::JumpLastUserMessage => {}
                     djinn_tui::AgentChatCommand::NewSession => {
                         let store = agent_session_store();
                         let id = AgentSessionId::new(resume);

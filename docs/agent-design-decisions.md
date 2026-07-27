@@ -824,6 +824,37 @@ The first non-interactive agent slice is implemented as:
     tool results render as a small block preview. Ctrl+T toggles compact/full tool
     output globally for the current TUI session so users can inspect complete
     output without making every long tool result noisy by default.
+48. Agent chat message hierarchy should stay visually scannable without adding
+    copy-hostile chrome. User turns use a subtle panel background/accent,
+    assistant Markdown renders quieter with light indentation, assistant replies
+    show muted profile/model metadata when that context is available, and failure
+    notices render as distinct error rows instead of blending into generic
+    status text. Per-turn duration should be added to the same muted metadata row
+    once reliable per-message timing is available.
+49. Agent chat transcript navigation is keyboard-first and palette-discoverable.
+    Line/page scrolling remains available, while Ctrl+U/Ctrl+D scroll half pages,
+    Alt+Up/Alt+Down jump to previous/next message boundaries, Ctrl+Home/Ctrl+End
+    jump to first/last message boundaries, and Alt+U jumps to the last user turn.
+    The command palette exposes the same navigation actions so these jumps do not
+    have to become permanent footer chrome.
+50. Agent chat composer is a fixed dock rather than an unstructured text box. It
+    keeps a bounded multiline input preview so long prompts do not crowd out the
+    transcript. It should not repeat profile/model metadata from the header or
+    ready/runtime status already visible in the transcript. The cwd remains
+    visible in quiet footer/status chrome instead of reintroducing a large
+    shortcut footer.
+51. The portable OpenCode session-UI patterns for Djinn are message grouping,
+    progressive assistant/tool hierarchy, keyboard-first navigation, quiet footer
+    telemetry, and reusable grouped selection dialogs. Specifically: user turns
+    can be more card-like while assistant prose stays light; simple tools should
+    remain inline and rich/error/diff/shell outputs should use blocks; reasoning
+    and long outputs should stay collapsible; command/dialog search should favor
+    action titles and flatten results after typing; jump-to-latest and
+    message-boundary navigation are more useful than visible scroll chrome; and
+    permission prompts should use explicit action bars with safe defaults. Avoid
+    copying Solid/OpenTUI implementation details, heavy assistant chrome,
+    unbounded output blocks, hover/mouse-primary behavior, or exposing every
+    completed tool detail by default.
 
 Not in the first slice unless explicitly reopened:
 

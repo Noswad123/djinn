@@ -94,18 +94,6 @@ Do not copy these OpenCode details directly:
 
 Ready implementation slices:
 
-- Improve message layout hierarchy: subtle user-turn accent/panel, quiet indented
-  assistant Markdown, muted assistant metadata line with model/profile/duration
-  when available, and visually distinct error rows.
-- Add transcript navigation commands for half-page scroll, first/last message,
-  next/previous message, and last-user-message jumps.
-- Polish the composer into an OpenCode-like dock: bounded height, profile/model
-  metadata row, active spinner/status row, cwd/context/usage hints, and less
-  shortcut noise in the global footer.
-- Audit OpenCode's current session UI for portable patterns worth adapting:
-  message grouping, assistant/tool visual hierarchy, command palette ergonomics,
-  jump-to-latest affordance, and hidden/overlay scroll treatment. Record only
-  patterns that make sense for Ratatui; do not chase web/CSS details directly.
 - Refactor the command palette toward a reusable grouped select dialog so model,
   profile, session, theme, and future agent pickers share one interaction model.
 - Add a central command registry that can feed both the command palette and help
@@ -116,9 +104,6 @@ Ready implementation slices:
   metadata, active tools/children, permissions, memories, or workspace status.
 - Add paste summarization for long pasted text so large clipboard content does
   not flood the composer while still expanding to raw text on submit.
-- Reduce footer/header noise in the Agent chat once the help dialog and command
-  palette cover discoverability. Keep status visible but avoid making every
-  shortcut permanent chrome.
 - Improve copy-first rendering of assistant output: raw transcript/session data
   remains Markdown, rendered mode is visual only, and raw/rendered toggling must
   stay cheap.
@@ -126,6 +111,7 @@ Ready implementation slices:
   text, especially fenced code, tool calls, progress/thought rows, and Markdown
   raw-mode fallback.
 - markdown tables don't get rendered correctly in render mode
+
 ### Child-session sub-agent model
 
 The product model is decided: sub-agents are normal Djinn agent sessions with

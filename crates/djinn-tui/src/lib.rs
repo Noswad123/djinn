@@ -331,6 +331,13 @@ impl CommandPaletteItem for AgentChatCommandEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentChatCommand {
     OpenHelp,
+    ScrollHalfPageUp,
+    ScrollHalfPageDown,
+    JumpFirstMessage,
+    JumpPreviousMessage,
+    JumpNextMessage,
+    JumpLastMessage,
+    JumpLastUserMessage,
     NewSession,
     OpenSessions,
     AddCredential,
@@ -486,6 +493,12 @@ pub enum AgentChatRole {
     Notice,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AgentChatMessageRenderContext<'a> {
+    profile: Option<&'a str>,
+    model: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentChatExit {
     Quit,
@@ -579,7 +592,12 @@ fn run_agent_chat_prompt_loop(
                         }
                         KeyCode::Enter => {
                             if let Some(command) = app.selected_palette_command() {
-                                if !app.handle_local_palette_command(&command) {
+                                let size = terminal.size()?;
+                                if !app.handle_local_palette_command(
+                                    &command,
+                                    size.height,
+                                    size.width,
+                                ) {
                                     app.close_palette();
                                     app.status.notice =
                                         "That command is available in interactive session mode."
@@ -621,6 +639,31 @@ fn run_agent_chat_prompt_loop(
                     }
                     _ if agent_chat_tool_detail_key(key.code, key.modifiers) => {
                         app.toggle_tool_detail_mode();
+                    }
+                    _ if agent_chat_half_page_up_key(key.code, key.modifiers) => {
+                        app.scroll_half_page_up(terminal.size()?.height);
+                    }
+                    _ if agent_chat_half_page_down_key(key.code, key.modifiers) => {
+                        app.scroll_half_page_down(terminal.size()?.height);
+                    }
+                    _ if agent_chat_first_message_key(key.code, key.modifiers) => {
+                        app.jump_to_first_message();
+                    }
+                    _ if agent_chat_previous_message_key(key.code, key.modifiers) => {
+                        let size = terminal.size()?;
+                        app.jump_to_previous_message(size.height, size.width);
+                    }
+                    _ if agent_chat_next_message_key(key.code, key.modifiers) => {
+                        let size = terminal.size()?;
+                        app.jump_to_next_message(size.height, size.width);
+                    }
+                    _ if agent_chat_last_message_key(key.code, key.modifiers) => {
+                        let size = terminal.size()?;
+                        app.jump_to_last_message(size.height, size.width);
+                    }
+                    _ if agent_chat_last_user_message_key(key.code, key.modifiers) => {
+                        let size = terminal.size()?;
+                        app.jump_to_last_user_message(size.height, size.width);
                     }
                     KeyCode::Enter => {
                         if let Some(prompt) = app.submit_prompt() {
@@ -685,7 +728,12 @@ where
                         }
                         KeyCode::Enter => {
                             if let Some(command) = app.selected_palette_command() {
-                                if app.handle_local_palette_command(&command) {
+                                let size = terminal.size()?;
+                                if app.handle_local_palette_command(
+                                    &command,
+                                    size.height,
+                                    size.width,
+                                ) {
                                     continue;
                                 }
                                 return Ok(AgentChatExit::Command(command));
@@ -731,6 +779,31 @@ where
                     }
                     _ if agent_chat_tool_detail_key(key.code, key.modifiers) => {
                         app.toggle_tool_detail_mode();
+                    }
+                    _ if agent_chat_half_page_up_key(key.code, key.modifiers) => {
+                        app.scroll_half_page_up(terminal.size()?.height);
+                    }
+                    _ if agent_chat_half_page_down_key(key.code, key.modifiers) => {
+                        app.scroll_half_page_down(terminal.size()?.height);
+                    }
+                    _ if agent_chat_first_message_key(key.code, key.modifiers) => {
+                        app.jump_to_first_message();
+                    }
+                    _ if agent_chat_previous_message_key(key.code, key.modifiers) => {
+                        let size = terminal.size()?;
+                        app.jump_to_previous_message(size.height, size.width);
+                    }
+                    _ if agent_chat_next_message_key(key.code, key.modifiers) => {
+                        let size = terminal.size()?;
+                        app.jump_to_next_message(size.height, size.width);
+                    }
+                    _ if agent_chat_last_message_key(key.code, key.modifiers) => {
+                        let size = terminal.size()?;
+                        app.jump_to_last_message(size.height, size.width);
+                    }
+                    _ if agent_chat_last_user_message_key(key.code, key.modifiers) => {
+                        let size = terminal.size()?;
+                        app.jump_to_last_user_message(size.height, size.width);
                     }
                     KeyCode::Enter => {
                         let Some(prompt) = app.submit_prompt() else {
@@ -795,6 +868,11 @@ struct AgentChatComposerApp {
     render_mode: AgentChatRenderMode,
     tool_detail_mode: AgentToolDetailMode,
 }
+
+const AGENT_CHAT_HEADER_HEIGHT: u16 = 3;
+const AGENT_CHAT_COMPOSER_HEIGHT: u16 = 6;
+const AGENT_CHAT_FOOTER_HEIGHT: u16 = 1;
+const AGENT_CHAT_COMPOSER_INPUT_MAX_LINES: usize = 4;
 
 impl AgentChatComposerApp {
     fn new(messages: Vec<AgentChatMessage>, status: AgentChatStatus) -> Self {
@@ -870,10 +948,50 @@ impl AgentChatComposerApp {
         command_palette::visible_indices(&self.agent_chat_command_palette(), &self.palette.query)
     }
 
-    fn handle_local_palette_command(&mut self, command: &AgentChatCommand) -> bool {
+    fn handle_local_palette_command(
+        &mut self,
+        command: &AgentChatCommand,
+        terminal_height: u16,
+        terminal_width: u16,
+    ) -> bool {
         match command {
             AgentChatCommand::OpenHelp => {
                 self.open_help();
+                true
+            }
+            AgentChatCommand::ScrollHalfPageUp => {
+                self.scroll_half_page_up(terminal_height);
+                self.close_palette();
+                true
+            }
+            AgentChatCommand::ScrollHalfPageDown => {
+                self.scroll_half_page_down(terminal_height);
+                self.close_palette();
+                true
+            }
+            AgentChatCommand::JumpFirstMessage => {
+                self.jump_to_first_message();
+                self.close_palette();
+                true
+            }
+            AgentChatCommand::JumpPreviousMessage => {
+                self.jump_to_previous_message(terminal_height, terminal_width);
+                self.close_palette();
+                true
+            }
+            AgentChatCommand::JumpNextMessage => {
+                self.jump_to_next_message(terminal_height, terminal_width);
+                self.close_palette();
+                true
+            }
+            AgentChatCommand::JumpLastMessage => {
+                self.jump_to_last_message(terminal_height, terminal_width);
+                self.close_palette();
+                true
+            }
+            AgentChatCommand::JumpLastUserMessage => {
+                self.jump_to_last_user_message(terminal_height, terminal_width);
+                self.close_palette();
                 true
             }
             _ => false,
@@ -881,8 +999,15 @@ impl AgentChatComposerApp {
     }
 
     fn agent_chat_command_palette(&self) -> Vec<AgentChatCommandEntry> {
-        let mut entries = Vec::with_capacity(self.status.command_palette.len().saturating_add(1));
+        let local_entries = agent_chat_local_command_entries();
+        let mut entries = Vec::with_capacity(
+            self.status
+                .command_palette
+                .len()
+                .saturating_add(local_entries.len()),
+        );
         entries.push(agent_chat_help_command_entry());
+        entries.extend(local_entries);
         entries.extend(self.status.command_palette.clone());
         entries
     }
@@ -910,6 +1035,26 @@ impl AgentChatComposerApp {
 
     fn scroll_down(&mut self) {
         self.transcript_scroll = self.transcript_scroll.saturating_add(8);
+    }
+
+    fn scroll_half_page_up(&mut self, terminal_height: u16) {
+        let amount = self.half_page_scroll_amount(terminal_height);
+        self.transcript_scroll = self.transcript_scroll.saturating_sub(amount);
+    }
+
+    fn scroll_half_page_down(&mut self, terminal_height: u16) {
+        let amount = self.half_page_scroll_amount(terminal_height);
+        let max_scroll = self.max_transcript_scroll_for_terminal(terminal_height);
+        self.transcript_scroll = self
+            .transcript_scroll
+            .saturating_add(amount)
+            .min(max_scroll);
+    }
+
+    fn half_page_scroll_amount(&self, terminal_height: u16) -> u16 {
+        self.visible_transcript_lines_for_terminal(terminal_height)
+            .saturating_div(2)
+            .max(1)
     }
 
     fn push_char(&mut self, ch: char) {
@@ -941,24 +1086,113 @@ impl AgentChatComposerApp {
         self.transcript_scroll = 0;
     }
 
+    fn jump_to_first_message(&mut self) {
+        self.transcript_scroll = self
+            .message_start_offsets(None)
+            .first()
+            .map(|(_, offset)| *offset)
+            .unwrap_or(0);
+    }
+
     fn jump_to_end(&mut self, terminal_height: u16) {
         self.transcript_scroll = self.max_transcript_scroll_for_terminal(terminal_height);
     }
 
+    fn jump_to_previous_message(&mut self, terminal_height: u16, terminal_width: u16) {
+        if let Some((_, offset)) = self
+            .message_start_offsets(Some(terminal_width as usize))
+            .into_iter()
+            .rev()
+            .find(|(_, offset)| *offset < self.transcript_scroll)
+        {
+            self.set_transcript_scroll_to_message_offset(offset, terminal_height);
+        }
+    }
+
+    fn jump_to_next_message(&mut self, terminal_height: u16, terminal_width: u16) {
+        if let Some((_, offset)) = self
+            .message_start_offsets(Some(terminal_width as usize))
+            .into_iter()
+            .find(|(_, offset)| *offset > self.transcript_scroll)
+        {
+            self.set_transcript_scroll_to_message_offset(offset, terminal_height);
+        }
+    }
+
+    fn jump_to_last_message(&mut self, terminal_height: u16, terminal_width: u16) {
+        if let Some((_, offset)) = self
+            .message_start_offsets(Some(terminal_width as usize))
+            .last()
+            .copied()
+        {
+            self.set_transcript_scroll_to_message_offset(offset, terminal_height);
+        }
+    }
+
+    fn jump_to_last_user_message(&mut self, terminal_height: u16, terminal_width: u16) {
+        if let Some((_, offset)) = self
+            .message_start_offsets(Some(terminal_width as usize))
+            .into_iter()
+            .rev()
+            .find(|(role, _)| *role == AgentChatRole::User)
+        {
+            self.set_transcript_scroll_to_message_offset(offset, terminal_height);
+        }
+    }
+
+    fn set_transcript_scroll_to_message_offset(&mut self, offset: u16, terminal_height: u16) {
+        self.transcript_scroll =
+            offset.min(self.max_transcript_scroll_for_terminal(terminal_height));
+    }
+
+    fn message_start_offsets(&self, code_block_width: Option<usize>) -> Vec<(AgentChatRole, u16)> {
+        let mut offsets = Vec::new();
+        let mut line_offset = 0usize;
+        let context = self.message_render_context();
+        for message in &self.messages {
+            offsets.push((message.role, line_offset.min(u16::MAX as usize) as u16));
+            line_offset = line_offset.saturating_add(
+                agent_chat_message_lines_with_mode(
+                    message,
+                    self.render_mode,
+                    self.tool_detail_mode,
+                    code_block_width,
+                    Some(context),
+                )
+                .len()
+                .saturating_add(1),
+            );
+        }
+        offsets
+    }
+
+    fn visible_transcript_lines_for_terminal(&self, terminal_height: u16) -> u16 {
+        self.transcript_area_height_for_terminal(terminal_height)
+            .saturating_sub(2)
+            .max(1)
+    }
+
+    fn transcript_area_height_for_terminal(&self, terminal_height: u16) -> u16 {
+        let reserved = AGENT_CHAT_HEADER_HEIGHT
+            .saturating_add(AGENT_CHAT_COMPOSER_HEIGHT)
+            .saturating_add(AGENT_CHAT_FOOTER_HEIGHT);
+        terminal_height.saturating_sub(reserved).max(4)
+    }
+
     fn max_transcript_scroll_for_terminal(&self, terminal_height: u16) -> u16 {
-        let reserved = 3 + 7 + 1;
-        let transcript_area_height = terminal_height.saturating_sub(reserved).max(4);
-        self.max_transcript_scroll(transcript_area_height)
+        self.max_transcript_scroll(self.transcript_area_height_for_terminal(terminal_height))
     }
 
     fn max_transcript_scroll(&self, transcript_area_height: u16) -> u16 {
         let visible_lines = transcript_area_height.saturating_sub(2).max(1) as usize;
+        let context = self.message_render_context();
         agent_chat_transcript_lines_with_mode(
             &self.messages,
             &self.status.notice,
             self.render_mode,
             self.tool_detail_mode,
             None,
+            Some(context),
         )
         .len()
         .saturating_sub(visible_lines)
@@ -969,11 +1203,18 @@ impl AgentChatComposerApp {
         self.transcript_scroll >= self.max_transcript_scroll(transcript_area_height)
     }
 
+    fn message_render_context(&self) -> AgentChatMessageRenderContext<'_> {
+        AgentChatMessageRenderContext {
+            profile: non_empty_context_value(&self.status.profile),
+            model: non_empty_context_value(&self.status.model),
+        }
+    }
+
     fn cursor_position(&self, composer_area: Rect) -> Position {
         let inner_height = composer_area.height.saturating_sub(2).max(1);
-        let lines = self.input.split('\n').collect::<Vec<_>>();
-        let cursor_line = lines.len().saturating_sub(1) as u16;
-        let cursor_col = lines
+        let input_lines = self.visible_composer_input_lines();
+        let cursor_line = input_lines.len().saturating_sub(1) as u16;
+        let cursor_col = input_lines
             .last()
             .map(|line| line.chars().count())
             .unwrap_or_default() as u16;
@@ -987,10 +1228,10 @@ impl AgentChatComposerApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
+                Constraint::Length(AGENT_CHAT_HEADER_HEIGHT),
                 Constraint::Min(4),
-                Constraint::Length(7),
-                Constraint::Length(1),
+                Constraint::Length(AGENT_CHAT_COMPOSER_HEIGHT),
+                Constraint::Length(AGENT_CHAT_FOOTER_HEIGHT),
             ])
             .split(frame.area());
 
@@ -1017,6 +1258,7 @@ impl AgentChatComposerApp {
             self.render_mode,
             self.tool_detail_mode,
             Some(chunks[1].width as usize),
+            Some(self.message_render_context()),
         );
         let transcript_title = if self.at_transcript_end(chunks[1].height) {
             "Transcript"
@@ -1114,6 +1356,22 @@ impl AgentChatComposerApp {
                 Span::raw(" scroll transcript"),
             ]),
             Line::from(vec![
+                Span::styled("Ctrl+U / Ctrl+D", selected_style()),
+                Span::raw(" scroll transcript by half page"),
+            ]),
+            Line::from(vec![
+                Span::styled("Alt+↑ / Alt+↓", selected_style()),
+                Span::raw(" jump previous / next message"),
+            ]),
+            Line::from(vec![
+                Span::styled("Ctrl+Home / Ctrl+End", selected_style()),
+                Span::raw(" jump first / last message"),
+            ]),
+            Line::from(vec![
+                Span::styled("Alt+U", selected_style()),
+                Span::raw(" jump to last user message"),
+            ]),
+            Line::from(vec![
                 Span::styled("Home / End", selected_style()),
                 Span::raw(" jump to transcript top / latest"),
             ]),
@@ -1199,10 +1457,26 @@ impl AgentChatComposerApp {
                 dim_style(),
             ))];
         }
-        self.input
-            .split('\n')
-            .map(|line| Line::from(line.to_string()))
+        self.visible_composer_input_lines()
+            .into_iter()
+            .map(Line::from)
             .collect()
+    }
+
+    fn visible_composer_input_lines(&self) -> Vec<String> {
+        let lines = self
+            .input
+            .split('\n')
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if lines.len() <= AGENT_CHAT_COMPOSER_INPUT_MAX_LINES {
+            return lines;
+        }
+        let keep = AGENT_CHAT_COMPOSER_INPUT_MAX_LINES.saturating_sub(1).max(1);
+        let hidden = lines.len().saturating_sub(keep);
+        let mut visible = vec![format!("… {hidden} earlier lines")];
+        visible.extend(lines[lines.len().saturating_sub(keep)..].iter().cloned());
+        visible
     }
 }
 
@@ -1215,6 +1489,72 @@ fn agent_chat_help_command_entry() -> AgentChatCommandEntry {
     }
 }
 
+fn agent_chat_local_command_entries() -> Vec<AgentChatCommandEntry> {
+    vec![
+        agent_chat_command_entry(
+            "Navigation",
+            "Scroll half page up",
+            "Move the transcript up by half a visible page.",
+            AgentChatCommand::ScrollHalfPageUp,
+        ),
+        agent_chat_command_entry(
+            "Navigation",
+            "Scroll half page down",
+            "Move the transcript down by half a visible page.",
+            AgentChatCommand::ScrollHalfPageDown,
+        ),
+        agent_chat_command_entry(
+            "Navigation",
+            "Jump to first message",
+            "Move to the start of the transcript.",
+            AgentChatCommand::JumpFirstMessage,
+        ),
+        agent_chat_command_entry(
+            "Navigation",
+            "Jump to previous message",
+            "Move to the previous message boundary.",
+            AgentChatCommand::JumpPreviousMessage,
+        ),
+        agent_chat_command_entry(
+            "Navigation",
+            "Jump to next message",
+            "Move to the next message boundary.",
+            AgentChatCommand::JumpNextMessage,
+        ),
+        agent_chat_command_entry(
+            "Navigation",
+            "Jump to last message",
+            "Move to the final message boundary.",
+            AgentChatCommand::JumpLastMessage,
+        ),
+        agent_chat_command_entry(
+            "Navigation",
+            "Jump to last user message",
+            "Move to the most recent user turn.",
+            AgentChatCommand::JumpLastUserMessage,
+        ),
+    ]
+}
+
+fn agent_chat_command_entry(
+    section: &str,
+    label: &str,
+    description: &str,
+    command: AgentChatCommand,
+) -> AgentChatCommandEntry {
+    AgentChatCommandEntry {
+        section: section.to_string(),
+        label: label.to_string(),
+        description: description.to_string(),
+        command,
+    }
+}
+
+fn non_empty_context_value(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
+}
+
 #[cfg(test)]
 fn agent_chat_transcript_lines(messages: &[AgentChatMessage], notice: &str) -> Vec<Line<'static>> {
     agent_chat_transcript_lines_with_mode(
@@ -1222,6 +1562,7 @@ fn agent_chat_transcript_lines(messages: &[AgentChatMessage], notice: &str) -> V
         notice,
         AgentChatRenderMode::Markdown,
         AgentToolDetailMode::Collapsed,
+        None,
         None,
     )
 }
@@ -1232,6 +1573,7 @@ fn agent_chat_transcript_lines_with_mode(
     render_mode: AgentChatRenderMode,
     tool_detail_mode: AgentToolDetailMode,
     code_block_width: Option<usize>,
+    context: Option<AgentChatMessageRenderContext<'_>>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if messages.is_empty() {
@@ -1250,6 +1592,7 @@ fn agent_chat_transcript_lines_with_mode(
                 render_mode,
                 tool_detail_mode,
                 code_block_width,
+                context,
             ));
             lines.push(Line::from(""));
         }
@@ -1308,6 +1651,7 @@ fn agent_chat_message_lines(message: &AgentChatMessage) -> Vec<Line<'static>> {
         AgentChatRenderMode::Markdown,
         AgentToolDetailMode::Collapsed,
         None,
+        None,
     )
 }
 
@@ -1316,6 +1660,7 @@ fn agent_chat_message_lines_with_mode(
     render_mode: AgentChatRenderMode,
     tool_detail_mode: AgentToolDetailMode,
     code_block_width: Option<usize>,
+    context: Option<AgentChatMessageRenderContext<'_>>,
 ) -> Vec<Line<'static>> {
     if matches!(
         message.role,
@@ -1324,15 +1669,16 @@ fn agent_chat_message_lines_with_mode(
         return agent_tool_message_lines(message.role, message.content.trim(), tool_detail_mode);
     }
 
+    let content = message.content.trim();
     let (label, label_style, content_style) = match message.role {
         AgentChatRole::User => (
             "You",
             Style::default().fg(CTP_GREEN).bg(CTP_SURFACE0),
-            Style::default().fg(CTP_TEXT).bg(CTP_BASE),
+            Style::default().fg(CTP_TEXT).bg(CTP_SURFACE0),
         ),
         AgentChatRole::Assistant => (
             "Djinn",
-            title_style().bg(CTP_SURFACE0),
+            title_style().bg(CTP_BASE),
             Style::default().fg(CTP_TEXT).bg(CTP_BASE),
         ),
         AgentChatRole::Thought => (
@@ -1344,15 +1690,25 @@ fn agent_chat_message_lines_with_mode(
         AgentChatRole::ToolOutput => {
             unreachable!("tool output messages return before generic rendering")
         }
+        AgentChatRole::Notice if notice_is_error(content) => (
+            "Error",
+            Style::default()
+                .fg(CTP_RED)
+                .bg(CTP_SURFACE0)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(CTP_RED).bg(CTP_SURFACE0),
+        ),
         AgentChatRole::Notice => ("Notice", dim_style(), dim_style()),
     };
-    let content = message.content.trim();
     let label = agent_chat_message_label(message.role, label, content);
     let mut lines = vec![Line::from(vec![
         Span::styled(" ", label_style),
         Span::styled(label, label_style.add_modifier(Modifier::BOLD)),
         Span::styled(" ", label_style),
     ])];
+    if let Some(metadata) = agent_chat_assistant_metadata_line(message.role, context) {
+        lines.push(metadata);
+    }
     if content.is_empty() {
         lines.push(Line::from(Span::styled(" (empty) ", content_style)));
     } else {
@@ -1365,6 +1721,35 @@ fn agent_chat_message_lines_with_mode(
         ));
     }
     lines
+}
+
+fn agent_chat_assistant_metadata_line(
+    role: AgentChatRole,
+    context: Option<AgentChatMessageRenderContext<'_>>,
+) -> Option<Line<'static>> {
+    if role != AgentChatRole::Assistant {
+        return None;
+    }
+    let context = context?;
+    let mut parts = Vec::new();
+    if let Some(profile) = context.profile {
+        parts.push(format!("profile {profile}"));
+    }
+    if let Some(model) = context.model {
+        parts.push(format!("model {model}"));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(Line::from(Span::styled(
+        format!("  {} ", parts.join(" · ")),
+        dim_style(),
+    )))
+}
+
+fn notice_is_error(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    lower.contains("failed") || lower.contains("error")
 }
 
 fn agent_tool_message_lines(
@@ -1775,9 +2160,10 @@ fn agent_chat_message_body_lines(
     render_mode: AgentChatRenderMode,
     code_block_width: Option<usize>,
 ) -> Vec<Line<'static>> {
+    let prefix = agent_chat_body_prefix(role);
     match role {
         AgentChatRole::Assistant if render_mode == AgentChatRenderMode::Markdown => {
-            render_agent_markdown_body_lines(content, content_style, code_block_width)
+            render_agent_markdown_body_lines(content, content_style, code_block_width, prefix)
         }
         AgentChatRole::User
         | AgentChatRole::Assistant
@@ -1787,14 +2173,30 @@ fn agent_chat_message_body_lines(
         | AgentChatRole::Notice => plain_agent_chat_body_lines(
             content.lines().map(ToOwned::to_owned).collect(),
             content_style,
+            prefix,
         ),
     }
 }
 
-fn plain_agent_chat_body_lines(lines: Vec<String>, style: Style) -> Vec<Line<'static>> {
+fn agent_chat_body_prefix(role: AgentChatRole) -> &'static str {
+    match role {
+        AgentChatRole::Assistant => "  ",
+        AgentChatRole::User
+        | AgentChatRole::Thought
+        | AgentChatRole::Tool
+        | AgentChatRole::ToolOutput
+        | AgentChatRole::Notice => " ",
+    }
+}
+
+fn plain_agent_chat_body_lines(
+    lines: Vec<String>,
+    style: Style,
+    prefix: &'static str,
+) -> Vec<Line<'static>> {
     lines
         .into_iter()
-        .map(|line| Line::from(Span::styled(format!(" {line} "), style)))
+        .map(|line| Line::from(Span::styled(format!("{prefix}{line} "), style)))
         .collect()
 }
 
@@ -1802,6 +2204,7 @@ fn render_agent_markdown_body_lines(
     content: &str,
     base_style: Style,
     code_block_width: Option<usize>,
+    prefix: &'static str,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut in_code_block = false;
@@ -1820,21 +2223,21 @@ fn render_agent_markdown_body_lines(
                 in_code_block = false;
             } else {
                 lines.push(Line::from(Span::styled(
-                    padded_code_block_line(raw_line, code_block_width),
+                    padded_code_block_line(raw_line, code_block_width, prefix),
                     markdown_code_style(),
                 )));
             }
             continue;
         }
 
-        lines.push(render_agent_markdown_line(raw_line, base_style));
+        lines.push(render_agent_markdown_line(raw_line, base_style, prefix));
     }
 
     lines
 }
 
-fn padded_code_block_line(raw_line: &str, code_block_width: Option<usize>) -> String {
-    let mut line = format!(" {raw_line} ");
+fn padded_code_block_line(raw_line: &str, code_block_width: Option<usize>, prefix: &str) -> String {
+    let mut line = format!("{prefix}{raw_line} ");
     let Some(width) = code_block_width else {
         return line;
     };
@@ -1845,10 +2248,14 @@ fn padded_code_block_line(raw_line: &str, code_block_width: Option<usize>) -> St
     line
 }
 
-fn render_agent_markdown_line(raw_line: &str, base_style: Style) -> Line<'static> {
+fn render_agent_markdown_line(
+    raw_line: &str,
+    base_style: Style,
+    prefix: &'static str,
+) -> Line<'static> {
     let trimmed = raw_line.trim_start();
     if trimmed.is_empty() {
-        return Line::from(Span::styled(" ", base_style));
+        return Line::from(Span::styled(prefix.to_string(), base_style));
     }
     if let Some((level, heading)) = markdown_heading(trimmed) {
         let marker = match level {
@@ -1857,23 +2264,30 @@ fn render_agent_markdown_line(raw_line: &str, base_style: Style) -> Line<'static
             _ => "• ",
         };
         return Line::from(Span::styled(
-            format!(" {marker}{heading} "),
+            format!("{prefix}{marker}{heading} "),
             title_style().bg(CTP_BASE),
         ));
     }
     if markdown_horizontal_rule(trimmed) {
-        return Line::from(Span::styled(" ───────────────────────── ", dim_style()));
+        return Line::from(Span::styled(
+            format!("{prefix}───────────────────────── "),
+            dim_style(),
+        ));
     }
     if let Some(item) = markdown_bullet_item(trimmed) {
-        return markdown_prefixed_inline_line(" • ", item, base_style);
+        return markdown_prefixed_inline_line(&format!("{prefix}• "), item, base_style);
     }
     if let Some((number, item)) = markdown_numbered_item(trimmed) {
-        return markdown_prefixed_inline_line(&format!(" {number}. "), item, base_style);
+        return markdown_prefixed_inline_line(&format!("{prefix}{number}. "), item, base_style);
     }
     if let Some(quote) = trimmed.strip_prefix('>') {
-        return markdown_prefixed_inline_line(" │ ", quote.trim_start(), dim_style());
+        return markdown_prefixed_inline_line(
+            &format!("{prefix}│ "),
+            quote.trim_start(),
+            dim_style(),
+        );
     }
-    markdown_prefixed_inline_line(" ", trimmed, base_style)
+    markdown_prefixed_inline_line(prefix, trimmed, base_style)
 }
 
 fn markdown_prefixed_inline_line(prefix: &str, content: &str, style: Style) -> Line<'static> {
@@ -4744,6 +5158,7 @@ mod tests {
             render_mode,
             tool_detail_mode,
             code_block_width,
+            None,
         )
         .into_iter()
         .map(|line| {
@@ -5137,7 +5552,63 @@ mod tests {
         })
         .collect::<Vec<_>>();
 
-        assert_eq!(lines, vec![" Djinn ", " Hello ", " world "]);
+        assert_eq!(lines, vec![" Djinn ", "  Hello ", "  world "]);
+    }
+
+    #[test]
+    fn agent_chat_transcript_adds_muted_assistant_metadata_when_available() {
+        let lines = agent_chat_transcript_lines_with_mode(
+            &[AgentChatMessage {
+                role: AgentChatRole::Assistant,
+                content: "Hello".to_string(),
+            }],
+            "",
+            AgentChatRenderMode::Markdown,
+            AgentToolDetailMode::Collapsed,
+            None,
+            Some(AgentChatMessageRenderContext {
+                profile: Some("architect"),
+                model: Some("openai/gpt-5.5"),
+            }),
+        )
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            lines,
+            vec![
+                " Djinn ",
+                "  profile architect · model openai/gpt-5.5 ",
+                "  Hello ",
+                "",
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_chat_user_turn_uses_subtle_panel_background() {
+        let lines = agent_chat_message_lines(&AgentChatMessage {
+            role: AgentChatRole::User,
+            content: "hello".to_string(),
+        });
+
+        assert_eq!(lines[1].spans[0].style.bg, Some(CTP_SURFACE0));
+    }
+
+    #[test]
+    fn agent_chat_notice_errors_are_visually_distinct() {
+        let lines = rendered_agent_chat_message_lines(AgentChatMessage {
+            role: AgentChatRole::Notice,
+            content: "Agent turn failed: nope".to_string(),
+        });
+
+        assert_eq!(lines, vec![" Error ", " Agent turn failed: nope "]);
     }
 
     #[test]
@@ -5151,10 +5622,10 @@ mod tests {
             lines,
             vec![
                 " Djinn ",
-                " ▌ Plan ",
-                " ",
-                " • Build  thing  ",
-                " fn main() {} ",
+                "  ▌ Plan ",
+                "  ",
+                "  • Build  thing  ",
+                "  fn main() {} ",
             ]
         );
     }
@@ -5172,7 +5643,7 @@ mod tests {
 
         assert_eq!(
             lines,
-            vec![" Djinn ", " x        ", "          ", " y        "]
+            vec![" Djinn ", "  x       ", "          ", "  y       "]
         );
         assert!(lines.iter().all(|line| !line.contains('│')));
         assert!(lines.iter().all(|line| !line.contains('┌')));
@@ -5192,7 +5663,10 @@ mod tests {
             AgentChatRenderMode::Raw,
         );
 
-        assert_eq!(lines, vec![" Djinn ", " # Plan ", " - **Build** `thing` "]);
+        assert_eq!(
+            lines,
+            vec![" Djinn ", "  # Plan ", "  - **Build** `thing` "]
+        );
     }
 
     #[test]
@@ -5350,6 +5824,64 @@ mod tests {
     }
 
     #[test]
+    fn agent_chat_half_page_scrolls_use_visible_transcript_height() {
+        let messages = (0..20)
+            .map(|idx| AgentChatMessage {
+                role: AgentChatRole::Assistant,
+                content: format!("message {idx}"),
+            })
+            .collect::<Vec<_>>();
+        let mut app = AgentChatComposerApp::new(messages, test_agent_chat_status("Ready."));
+
+        app.scroll_half_page_down(31);
+        assert_eq!(app.transcript_scroll, 9);
+
+        app.scroll_half_page_up(31);
+        assert_eq!(app.transcript_scroll, 0);
+    }
+
+    #[test]
+    fn agent_chat_message_navigation_jumps_between_message_offsets() {
+        let mut app = AgentChatComposerApp::new(
+            vec![
+                AgentChatMessage {
+                    role: AgentChatRole::User,
+                    content: "first".to_string(),
+                },
+                AgentChatMessage {
+                    role: AgentChatRole::Assistant,
+                    content: "reply".to_string(),
+                },
+                AgentChatMessage {
+                    role: AgentChatRole::User,
+                    content: "second".to_string(),
+                },
+            ],
+            test_agent_chat_status("Ready."),
+        );
+
+        assert_eq!(
+            app.message_start_offsets(None),
+            vec![
+                (AgentChatRole::User, 0),
+                (AgentChatRole::Assistant, 3),
+                (AgentChatRole::User, 7)
+            ]
+        );
+
+        app.jump_to_next_message(16, 80);
+        assert_eq!(app.transcript_scroll, 3);
+        app.jump_to_next_message(16, 80);
+        assert_eq!(app.transcript_scroll, 7);
+        app.jump_to_previous_message(16, 80);
+        assert_eq!(app.transcript_scroll, 3);
+        app.jump_to_last_user_message(16, 80);
+        assert_eq!(app.transcript_scroll, 7);
+        app.jump_to_first_message();
+        assert_eq!(app.transcript_scroll, 0);
+    }
+
+    #[test]
     fn agent_chat_composer_uses_shift_enter_newline_and_enter_submit_model() {
         let mut app = AgentChatComposerApp::new(Vec::new(), test_agent_chat_status(String::new()));
 
@@ -5376,6 +5908,28 @@ mod tests {
         assert_eq!(rendered, vec!["hi", "there"]);
         assert_eq!(app.submit_prompt().as_deref(), Some("hi\nthere"));
         assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn agent_chat_composer_dock_bounds_input_without_repeating_status() {
+        let mut app = AgentChatComposerApp::new(Vec::new(), test_agent_chat_status("Thinking…"));
+        app.input = "one\ntwo\nthree\nfour\nfive".to_string();
+
+        let rendered = app
+            .composer_lines()
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec!["… 2 earlier lines", "three", "four", "five",]
+        );
     }
 
     #[test]
@@ -5525,6 +6079,42 @@ mod tests {
     }
 
     #[test]
+    fn agent_chat_navigation_keys_use_modified_shortcuts() {
+        assert!(agent_chat_half_page_up_key(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(agent_chat_half_page_down_key(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(agent_chat_previous_message_key(
+            KeyCode::Up,
+            KeyModifiers::ALT
+        ));
+        assert!(agent_chat_next_message_key(
+            KeyCode::Down,
+            KeyModifiers::ALT
+        ));
+        assert!(agent_chat_first_message_key(
+            KeyCode::Home,
+            KeyModifiers::CONTROL
+        ));
+        assert!(agent_chat_last_message_key(
+            KeyCode::End,
+            KeyModifiers::CONTROL
+        ));
+        assert!(agent_chat_last_user_message_key(
+            KeyCode::Char('u'),
+            KeyModifiers::ALT
+        ));
+        assert!(!agent_chat_last_user_message_key(
+            KeyCode::Char('u'),
+            KeyModifiers::NONE
+        ));
+    }
+
+    #[test]
     fn agent_chat_slash_palette_key_only_opens_on_empty_composer() {
         assert!(agent_chat_slash_palette_key(
             KeyCode::Char('/'),
@@ -5568,8 +6158,9 @@ mod tests {
         let mut app = AgentChatComposerApp::new(Vec::new(), status);
 
         app.open_palette();
-        app.next_palette_item();
-        app.next_palette_item();
+        for ch in "model".chars() {
+            app.push_palette_query(ch);
+        }
 
         assert!(app.palette.open);
         assert_eq!(
@@ -5624,11 +6215,11 @@ mod tests {
         let mut app = AgentChatComposerApp::new(Vec::new(), status);
 
         app.open_palette();
-        for ch in "mdl".chars() {
+        for ch in "5.5".chars() {
             app.push_palette_query(ch);
         }
 
-        assert_eq!(app.visible_palette_indices(), vec![3]);
+        assert_eq!(app.visible_palette_indices(), vec![10]);
         assert_eq!(
             app.selected_palette_command(),
             Some(AgentChatCommand::SwitchModel("openai/gpt-5.5".to_string()))

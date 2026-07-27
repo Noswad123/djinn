@@ -20,6 +20,34 @@ pub(crate) fn agent_chat_tool_detail_key(code: KeyCode, modifiers: KeyModifiers)
     modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('t'))
 }
 
+pub(crate) fn agent_chat_half_page_up_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('u'))
+}
+
+pub(crate) fn agent_chat_half_page_down_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('d'))
+}
+
+pub(crate) fn agent_chat_previous_message_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Up)
+}
+
+pub(crate) fn agent_chat_next_message_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Down)
+}
+
+pub(crate) fn agent_chat_first_message_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Home)
+}
+
+pub(crate) fn agent_chat_last_message_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::End)
+}
+
+pub(crate) fn agent_chat_last_user_message_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::ALT) && matches!(code, KeyCode::Char('u'))
+}
+
 pub(crate) fn agent_chat_help_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL)
         && matches!(code, KeyCode::Char('/') | KeyCode::Char('_'))
