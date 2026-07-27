@@ -196,11 +196,7 @@ SQLite only after a real limit appears, such as:
 - high-volume transcripts;
 - complex branch/tree queries;
 - file history/rollback needing relational joins.
-## Repeated text bug
-- Sometimes when start typing double the characters are returned
-Transcript────────────────────────────────────────────────────────────────────────────────────────────────────
- You
- tesstt  ssaayy  hhii
+
 ## Blocked/deferred
 
 These are intentionally out of scope until a concrete need appears.

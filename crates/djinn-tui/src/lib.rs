@@ -486,6 +486,9 @@ fn run_agent_chat_prompt_loop(
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
+                if !actionable_key_event(&key) {
+                    continue;
+                }
                 match key.code {
                     _ if agent_chat_quit_key(key.code, key.modifiers, app.input.is_empty()) => {
                         return Ok(None);
@@ -534,6 +537,9 @@ where
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
+                if !actionable_key_event(&key) {
+                    continue;
+                }
                 if app.help_open {
                     match key.code {
                         _ if agent_chat_help_key(key.code, key.modifiers) => app.close_help(),
@@ -1300,6 +1306,9 @@ fn run_tools_loop(terminal: &mut TuiTerminal, tools: Vec<ToolEntry>) -> Result<(
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
+                if !actionable_key_event(&key) {
+                    continue;
+                }
                 if app.filter.editing {
                     match key.code {
                         KeyCode::Char('/') => app.toggle_filter(),
@@ -1349,6 +1358,9 @@ fn run_dashboard_loop(
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
+                if !actionable_key_event(&key) {
+                    continue;
+                }
                 if app.help_open {
                     match key.code {
                         _ if agent_chat_help_key(key.code, key.modifiers) => app.close_help(),
@@ -2475,6 +2487,9 @@ fn run_chats_loop(
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
+                if !actionable_key_event(&key) {
+                    continue;
+                }
                 match &app.mode {
                     ChatUiMode::Selecting => match key.code {
                         _ if app.filter.editing => match key.code {
@@ -3947,7 +3962,7 @@ fn sanitize_preview(preview: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyModifiers;
+    use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use ratatui::widgets::Borders;
 
     fn rendered_agent_chat_message_lines(message: AgentChatMessage) -> Vec<String> {
@@ -4427,6 +4442,28 @@ mod tests {
             KeyModifiers::CONTROL
         ));
         assert!(!agent_chat_newline_key(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn actionable_key_event_ignores_release_events() {
+        let press = KeyEvent {
+            code: KeyCode::Char('h'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let repeat = KeyEvent {
+            kind: KeyEventKind::Repeat,
+            ..press
+        };
+        let release = KeyEvent {
+            kind: KeyEventKind::Release,
+            ..press
+        };
+
+        assert!(actionable_key_event(&press));
+        assert!(actionable_key_event(&repeat));
+        assert!(!actionable_key_event(&release));
     }
 
     #[test]

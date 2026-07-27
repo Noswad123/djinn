@@ -1,4 +1,8 @@
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+pub(crate) fn actionable_key_event(key: &KeyEvent) -> bool {
+    matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
 
 pub(crate) fn agent_chat_newline_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::SHIFT) && matches!(code, KeyCode::Enter)

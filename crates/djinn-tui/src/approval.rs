@@ -10,6 +10,7 @@ use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph, Wrap};
 use serde_json::Value;
 
 use crate::filter::fuzzy_match;
+use crate::keys::actionable_key_event;
 use crate::style::*;
 use crate::TuiTerminal;
 
@@ -351,6 +352,9 @@ pub(crate) fn run_approval_dialog_loop(
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
+                if !actionable_key_event(&key) {
+                    continue;
+                }
                 if app.preview.filter_editing() {
                     match key.code {
                         KeyCode::Char('/') => app.toggle_filter(),
