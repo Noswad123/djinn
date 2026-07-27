@@ -938,7 +938,7 @@ struct AgentChatComposerApp {
 
 const AGENT_CHAT_HEADER_HEIGHT: u16 = 3;
 const AGENT_CHAT_COMPOSER_HEIGHT: u16 = 6;
-const AGENT_CHAT_FOOTER_HEIGHT: u16 = 1;
+const AGENT_CHAT_FOOTER_HEIGHT: u16 = 0;
 const AGENT_CHAT_COMPOSER_INPUT_MAX_LINES: usize = 4;
 const AGENT_CHAT_SIDEBAR_MIN_WIDTH: u16 = 128;
 const AGENT_CHAT_SIDEBAR_WIDTH: u16 = 34;
@@ -1435,22 +1435,16 @@ impl AgentChatComposerApp {
 
         let input = self.composer_lines();
         let composer = Paragraph::new(input)
-            .block(agent_chat_block("Composer"))
-            .style(base_style())
+            .block(agent_chat_composer_block("Composer"))
+            .style(composer_style())
             .wrap(Wrap { trim: false });
         frame.render_widget(Clear, chunks[2]);
         frame.render_widget(composer, chunks[2]);
         frame.set_cursor_position(self.cursor_position(chunks[2]));
 
-        let footer = format!(
-            "{} transcript • {} tool output • {} • cwd {}",
-            self.render_mode.label(),
-            self.tool_detail_mode.label(),
-            self.thought_detail_mode.label(),
-            self.status.workspace
-        );
-        frame.render_widget(Clear, chunks[3]);
-        frame.render_widget(Paragraph::new(footer).style(dim_style()), chunks[3]);
+        if AGENT_CHAT_FOOTER_HEIGHT > 0 {
+            frame.render_widget(Clear, chunks[3]);
+        }
 
         if let Some(sidebar_area) = sidebar_area {
             self.draw_sidebar(frame, sidebar_area);
@@ -1540,7 +1534,7 @@ impl AgentChatComposerApp {
         if self.input.is_empty() {
             return vec![Line::from(Span::styled(
                 "Type a prompt and press Enter…",
-                dim_style(),
+                composer_dim_style(),
             ))];
         }
         self.visible_composer_input_lines()
@@ -6666,7 +6660,7 @@ mod tests {
         let mut app = AgentChatComposerApp::new(messages, test_agent_chat_status("Ready."));
 
         app.scroll_half_page_down(31);
-        assert_eq!(app.transcript_scroll, 9);
+        assert_eq!(app.transcript_scroll, 10);
 
         app.scroll_half_page_up(31);
         assert_eq!(app.transcript_scroll, 0);
@@ -6704,11 +6698,11 @@ mod tests {
         app.jump_to_next_message(16, 80);
         assert_eq!(app.transcript_scroll, 3);
         app.jump_to_next_message(16, 80);
-        assert_eq!(app.transcript_scroll, 7);
+        assert_eq!(app.transcript_scroll, 6);
         app.jump_to_previous_message(16, 80);
         assert_eq!(app.transcript_scroll, 3);
         app.jump_to_last_user_message(16, 80);
-        assert_eq!(app.transcript_scroll, 7);
+        assert_eq!(app.transcript_scroll, 6);
         app.jump_to_first_message();
         assert_eq!(app.transcript_scroll, 0);
     }
