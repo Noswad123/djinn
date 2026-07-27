@@ -98,44 +98,50 @@ More UI fixes
 - the bacgrkound color for the composer should be: #181926
 - the scroll in opencode is much smoother. In djinn the scroll will keep scrolling and keep rendering blanks. We should scroll more down more than half the screen in blankness.
 - I can't confirm this but it looks like opencode has syntax highlighting
-### Child-session sub-agent model
+### Coven-led orchestration and Djinn worker primitives
 
-The product model is decided: sub-agents are normal Djinn agent sessions with
-`parent_session_id`, role/profile/config-derived policy, and explicit grants from
-the parent/user. Foreground children behave like switching sessions; background
-children run independently and notify the parent when done. Child output is not
-merged into the parent unless the user explicitly imports it.
+The user-facing product direction is **not** manual child-session management.
+For broad goals, Coven should act as the lead-agent orchestration layer: detect
+parallelizable subtasks, launch workers, monitor progress, collect worker
+summaries, and synthesize the final answer. Djinn should stay focused on being a
+local worker runtime with inspectable sessions, tools, policy, and transcripts.
 
-Ready implementation slices:
+Companion roadmap:
 
-- Add conservative background concurrency limits, including maximum active
-  children per parent and maximum active background children per workspace.
-- Add background child-session lifecycle state and commands for start/list/show,
-  foreground/resume, and cancel/stop without changing the JSONL session model.
-- Support multiple children per parent. Background children may run concurrently;
-  foregrounding selects one active child without implying that siblings disappear
-  or merge into the parent.
-- Define a structured child-session event protocol for lifecycle changes. Core
-  events should be multiplexer-agnostic; optional tmux/herdr/tab adapters can
-  subscribe and open panes or tabs when the host supports it.
-- Add a no-multiplexer fallback family state folder/index keyed by root or parent
-  session. It should track child ids, statuses, summary pointers, unread changes,
-  and completion notifications so the parent can inform the user of updates.
-  Treat this as a rebuildable projection over JSONL session logs and lifecycle
-  events, not the source of truth for transcript content.
-- Add parent-visible child status events/notifications for started/completed/
-  failed/cancelled background children, including child session id, status, and a
-  short local summary pointer.
-- Add explicit child-result actions: open child, insert/import child summary into
-  the parent, continue parent with child result as context, and dismiss.
-- Keep child-result import conservative: link child sessions and insert short
-  summaries first; full transcript import must be explicit.
-- Make parent-to-child permission grants explicit and scoped; child sessions must
-  not inherit parent approvals implicitly.
-- Define an inspectable parent-to-child grant record with parent id, child id,
-  action, resource, effect, source, and session scope.
+- `~/Projects/coven/ROADMAP.md`: lead-agent decomposition, worker scheduling,
+  result collection, and synthesis roadmap.
+- [`coven-djinn-interop.md`](./coven-djinn-interop.md): shared identity/event
+  contract for the Coven/Djinn bridge.
 
-Completed implementation slices:
+Djinn-owned primitives that remain useful for Coven:
+
+- Normal agent sessions can represent worker sessions through `parent_session_id`
+  plus optional Coven orchestration/task metadata.
+- Djinn session JSONL remains the authoritative transcript for Djinn workers.
+- Lifecycle events provide selected facts (`running`, `paused`, `completed`,
+  `failed`, `cancelled`) that Coven can mirror into its orchestration ledger.
+- Djinn policy/permissions remain local and scoped; parent/lead approvals do not
+  silently transfer to worker sessions.
+- Manual child/session CLI commands are adapter/debug plumbing, not the primary
+  user workflow.
+
+Ready Djinn implementation slices:
+
+- Add stable Coven metadata on Djinn-created worker sessions: orchestration id,
+  Coven task id, Coven worker/agent id, and result/transcript URI fields or
+  events.
+- Emit a compact worker result artifact or `Summary` event suitable for Coven
+  synthesis: status, summary, findings, files inspected/changed, confidence,
+  follow-ups, and transcript pointer.
+- Provide a small command/adapter surface for Coven to start a Djinn worker with
+  prompt, workspace, role/profile/model, mode, context refs, and scoped grants.
+- Mirror selected Djinn lifecycle/result facts in a shape Coven can append to its
+  own `logs/events.jsonl` without copying full transcripts.
+- Define an inspectable scoped grant record for Coven-to-Djinn worker requests:
+  parent/orchestration id, child/session id, action, resource, effect, source, and
+  session scope.
+
+Completed Djinn worker primitives:
 
 - Foreground child-session launch from Agent chat creates a normal agent session
   with `parent_session_id`, preserving current profile/agent/model context while
@@ -145,7 +151,11 @@ Completed implementation slices:
 - CLI-only lifecycle state is recorded as JSONL session events and derived from
   the latest event, with states `created`, `running`, `paused`, `completed`,
   `failed`, and `cancelled`. Review/notification state remains separate and is
-  not implemented yet.
+  owned by Coven/family projections rather than the execution lifecycle.
+- Foreground chat writes lifecycle events automatically: turns become
+  `running/foreground`, successful turns become `paused/foreground`, failures
+  become `failed/foreground`, and chat exit leaves the session paused rather than
+  pretending the task is complete.
 
 ## Needs a decision before implementation
 
