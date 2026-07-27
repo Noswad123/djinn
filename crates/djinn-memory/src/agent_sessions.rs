@@ -10,6 +10,8 @@ use djinn_core::ensure_parent;
 use serde::{Deserialize, Serialize};
 
 pub const AGENT_SESSION_EVENT_SCHEMA_VERSION: u16 = 1;
+pub const DEFAULT_MAX_ACTIVE_BACKGROUND_CHILDREN_PER_PARENT: usize = 3;
+pub const DEFAULT_MAX_ACTIVE_BACKGROUND_SESSIONS_PER_WORKSPACE: usize = 6;
 
 static AGENT_SESSION_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -358,6 +360,14 @@ pub trait AgentSessionStore {
     fn load_session(&self, session: &AgentSessionId) -> Result<AgentSession>;
     fn list_sessions(&self, filter: AgentSessionFilter) -> Result<Vec<AgentSessionSummary>>;
     fn delete_session(&self, session: &AgentSessionId) -> Result<AgentSession>;
+
+    fn count_active_background_children(&self, parent: &AgentSessionId) -> Result<usize> {
+        count_active_background_children(self, parent)
+    }
+
+    fn count_active_background_sessions_in_workspace(&self, workspace: &str) -> Result<usize> {
+        count_active_background_sessions_in_workspace(self, workspace)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -609,6 +619,44 @@ pub fn lifecycle_for(session: &AgentSession) -> AgentSessionLifecycle {
     lifecycle
 }
 
+pub fn is_active_background_session(summary: &AgentSessionSummary) -> bool {
+    summary.lifecycle.state == AgentSessionLifecycleState::Running
+        && summary.lifecycle.mode == Some(AgentSessionExecutionMode::Background)
+}
+
+pub fn count_active_background_children<S>(
+    store: &S,
+    parent: &AgentSessionId,
+) -> Result<usize>
+where
+    S: AgentSessionStore + ?Sized,
+{
+    Ok(store
+        .list_sessions(AgentSessionFilter {
+            parent_session_id: Some(parent.clone()),
+            lifecycle_state: Some(AgentSessionLifecycleState::Running),
+            ..AgentSessionFilter::default()
+        })?
+        .iter()
+        .filter(|summary| is_active_background_session(summary))
+        .count())
+}
+
+pub fn count_active_background_sessions_in_workspace<S>(store: &S, workspace: &str) -> Result<usize>
+where
+    S: AgentSessionStore + ?Sized,
+{
+    Ok(store
+        .list_sessions(AgentSessionFilter {
+            workspace: Some(workspace.to_string()),
+            lifecycle_state: Some(AgentSessionLifecycleState::Running),
+            ..AgentSessionFilter::default()
+        })?
+        .iter()
+        .filter(|summary| is_active_background_session(summary))
+        .count())
+}
+
 fn matches_filter(session: &AgentSession, filter: &AgentSessionFilter) -> bool {
     filter
         .workspace
@@ -724,6 +772,38 @@ mod tests {
             Local::now().timestamp_nanos_opt().unwrap_or_default()
         ));
         JsonlAgentSessionStore::default_in(&dir)
+    }
+
+    fn create_session_with_lifecycle(
+        store: &JsonlAgentSessionStore,
+        title: &str,
+        workspace: &str,
+        parent_session_id: Option<AgentSessionId>,
+        state: AgentSessionLifecycleState,
+        mode: Option<AgentSessionExecutionMode>,
+    ) -> AgentSessionId {
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: title.to_string(),
+                workspace: workspace.to_string(),
+                profile: "default".to_string(),
+                parent_session_id,
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
+                    state,
+                    mode,
+                    reason: None,
+                    note: None,
+                }),
+            )
+            .unwrap();
+        id
     }
 
     #[test]
@@ -928,6 +1008,116 @@ mod tests {
             })
             .unwrap();
         assert!(running.is_empty());
+    }
+
+    #[test]
+    fn counts_only_running_background_children_for_parent() {
+        let store = temp_store("active-background-children");
+        let parent = AgentSessionId::new("agt_parent");
+        let other_parent = AgentSessionId::new("agt_other_parent");
+
+        create_session_with_lifecycle(
+            &store,
+            "running background child 1",
+            "/tmp/project",
+            Some(parent.clone()),
+            AgentSessionLifecycleState::Running,
+            Some(AgentSessionExecutionMode::Background),
+        );
+        create_session_with_lifecycle(
+            &store,
+            "running background child 2",
+            "/tmp/project",
+            Some(parent.clone()),
+            AgentSessionLifecycleState::Running,
+            Some(AgentSessionExecutionMode::Background),
+        );
+        create_session_with_lifecycle(
+            &store,
+            "running foreground child",
+            "/tmp/project",
+            Some(parent.clone()),
+            AgentSessionLifecycleState::Running,
+            Some(AgentSessionExecutionMode::Foreground),
+        );
+        create_session_with_lifecycle(
+            &store,
+            "completed background child",
+            "/tmp/project",
+            Some(parent.clone()),
+            AgentSessionLifecycleState::Completed,
+            Some(AgentSessionExecutionMode::Background),
+        );
+        create_session_with_lifecycle(
+            &store,
+            "other parent running background child",
+            "/tmp/project",
+            Some(other_parent),
+            AgentSessionLifecycleState::Running,
+            Some(AgentSessionExecutionMode::Background),
+        );
+
+        assert_eq!(count_active_background_children(&store, &parent).unwrap(), 2);
+        assert_eq!(store.count_active_background_children(&parent).unwrap(), 2);
+        assert_eq!(DEFAULT_MAX_ACTIVE_BACKGROUND_CHILDREN_PER_PARENT, 3);
+    }
+
+    #[test]
+    fn counts_only_running_background_sessions_in_workspace() {
+        let store = temp_store("active-background-workspace");
+
+        create_session_with_lifecycle(
+            &store,
+            "running background 1",
+            "/tmp/project",
+            None,
+            AgentSessionLifecycleState::Running,
+            Some(AgentSessionExecutionMode::Background),
+        );
+        create_session_with_lifecycle(
+            &store,
+            "running background 2",
+            "/tmp/project",
+            None,
+            AgentSessionLifecycleState::Running,
+            Some(AgentSessionExecutionMode::Background),
+        );
+        create_session_with_lifecycle(
+            &store,
+            "running foreground",
+            "/tmp/project",
+            None,
+            AgentSessionLifecycleState::Running,
+            Some(AgentSessionExecutionMode::Foreground),
+        );
+        create_session_with_lifecycle(
+            &store,
+            "paused background",
+            "/tmp/project",
+            None,
+            AgentSessionLifecycleState::Paused,
+            Some(AgentSessionExecutionMode::Background),
+        );
+        create_session_with_lifecycle(
+            &store,
+            "other workspace running background",
+            "/tmp/other-project",
+            None,
+            AgentSessionLifecycleState::Running,
+            Some(AgentSessionExecutionMode::Background),
+        );
+
+        assert_eq!(
+            count_active_background_sessions_in_workspace(&store, "/tmp/project").unwrap(),
+            2
+        );
+        assert_eq!(
+            store
+                .count_active_background_sessions_in_workspace("/tmp/project")
+                .unwrap(),
+            2
+        );
+        assert_eq!(DEFAULT_MAX_ACTIVE_BACKGROUND_SESSIONS_PER_WORKSPACE, 6);
     }
 
     #[test]

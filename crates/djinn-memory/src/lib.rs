@@ -10,11 +10,13 @@ use serde::{Deserialize, Serialize};
 pub mod agent_sessions;
 pub mod file_history;
 pub use agent_sessions::{
-    lifecycle_for, AgentSession, AgentSessionCostEstimate, AgentSessionEvent,
-    AgentSessionEventKind, AgentSessionExecutionMode, AgentSessionFilter, AgentSessionId,
-    AgentSessionLifecycle, AgentSessionLifecycleState, AgentSessionMeta, AgentSessionPolicyRule,
-    AgentSessionPolicySnapshot, AgentSessionRuntimeConfig, AgentSessionStore, AgentSessionSummary,
-    AgentSessionTokenUsage, JsonlAgentSessionStore,
+    count_active_background_children, count_active_background_sessions_in_workspace, lifecycle_for,
+    AgentSession, AgentSessionCostEstimate, AgentSessionEvent, AgentSessionEventKind,
+    AgentSessionExecutionMode, AgentSessionFilter, AgentSessionId, AgentSessionLifecycle,
+    AgentSessionLifecycleState, AgentSessionMeta, AgentSessionPolicyRule, AgentSessionPolicySnapshot,
+    AgentSessionRuntimeConfig, AgentSessionStore, AgentSessionSummary, AgentSessionTokenUsage,
+    JsonlAgentSessionStore, DEFAULT_MAX_ACTIVE_BACKGROUND_CHILDREN_PER_PARENT,
+    DEFAULT_MAX_ACTIVE_BACKGROUND_SESSIONS_PER_WORKSPACE,
 };
 pub use file_history::{
     FileHistoryEntry, FileHistoryEntryId, FileHistoryFilter, FileHistoryInput,
