@@ -330,6 +330,7 @@ impl CommandPaletteItem for AgentChatCommandEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentChatCommand {
+    OpenHelp,
     NewSession,
     OpenSessions,
     AddCredential,
@@ -554,6 +555,47 @@ fn run_agent_chat_prompt_loop(
                 if !actionable_key_event(&key) {
                     continue;
                 }
+                if app.help_open {
+                    match key.code {
+                        _ if agent_chat_help_key(key.code, key.modifiers) => app.close_help(),
+                        KeyCode::Esc | KeyCode::Enter => app.close_help(),
+                        _ if agent_chat_quit_key(key.code, key.modifiers, app.input.is_empty()) => {
+                            return Ok(None);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                if app.palette.open {
+                    match key.code {
+                        _ if agent_chat_help_key(key.code, key.modifiers) => app.open_help(),
+                        KeyCode::Esc => app.close_palette(),
+                        KeyCode::Backspace => app.backspace_palette_query_or_close(),
+                        _ if agent_chat_palette_next_key(key.code, key.modifiers) => {
+                            app.next_palette_item()
+                        }
+                        _ if agent_chat_palette_previous_key(key.code, key.modifiers) => {
+                            app.previous_palette_item()
+                        }
+                        KeyCode::Enter => {
+                            if let Some(command) = app.selected_palette_command() {
+                                if !app.handle_local_palette_command(&command) {
+                                    app.close_palette();
+                                    app.status.notice =
+                                        "That command is available in interactive session mode."
+                                            .to_string();
+                                }
+                            } else {
+                                app.close_palette();
+                            }
+                        }
+                        KeyCode::Char(ch) if palette_text_key(key.modifiers) => {
+                            app.push_palette_query(ch)
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 match key.code {
                     _ if agent_chat_quit_key(key.code, key.modifiers, app.input.is_empty()) => {
                         return Ok(None);
@@ -643,6 +685,9 @@ where
                         }
                         KeyCode::Enter => {
                             if let Some(command) = app.selected_palette_command() {
+                                if app.handle_local_palette_command(&command) {
+                                    continue;
+                                }
                                 return Ok(AgentChatExit::Command(command));
                             }
                             app.close_palette();
@@ -785,10 +830,6 @@ impl AgentChatComposerApp {
     }
 
     fn open_palette(&mut self) {
-        if self.status.command_palette.is_empty() {
-            self.status.notice = "No command palette actions available.".to_string();
-            return;
-        }
         self.palette.open();
         self.normalize_palette_selection();
     }
@@ -818,17 +859,32 @@ impl AgentChatComposerApp {
     }
 
     fn selected_palette_command(&self) -> Option<AgentChatCommand> {
+        let entries = self.agent_chat_command_palette();
         let visible = self.visible_palette_indices();
-        command_palette::selected_command(
-            &self.status.command_palette,
-            &visible,
-            self.palette.selected,
-            |entry| entry.command.clone(),
-        )
+        command_palette::selected_command(&entries, &visible, self.palette.selected, |entry| {
+            entry.command.clone()
+        })
     }
 
     fn visible_palette_indices(&self) -> Vec<usize> {
-        command_palette::visible_indices(&self.status.command_palette, &self.palette.query)
+        command_palette::visible_indices(&self.agent_chat_command_palette(), &self.palette.query)
+    }
+
+    fn handle_local_palette_command(&mut self, command: &AgentChatCommand) -> bool {
+        match command {
+            AgentChatCommand::OpenHelp => {
+                self.open_help();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn agent_chat_command_palette(&self) -> Vec<AgentChatCommandEntry> {
+        let mut entries = Vec::with_capacity(self.status.command_palette.len().saturating_add(1));
+        entries.push(agent_chat_help_command_entry());
+        entries.extend(self.status.command_palette.clone());
+        entries
     }
 
     fn normalize_palette_selection(&mut self) {
@@ -837,12 +893,9 @@ impl AgentChatComposerApp {
     }
 
     fn palette_body_lines_and_selected_row(&self) -> (Vec<Line<'static>>, Option<usize>) {
+        let entries = self.agent_chat_command_palette();
         let visible = self.visible_palette_indices();
-        command_palette::body_lines_and_selected_row(
-            &self.status.command_palette,
-            &visible,
-            self.palette.selected,
-        )
+        command_palette::body_lines_and_selected_row(&entries, &visible, self.palette.selected)
     }
 
     fn ensure_palette_selection_visible(
@@ -988,7 +1041,7 @@ impl AgentChatComposerApp {
         frame.set_cursor_position(self.cursor_position(chunks[2]));
 
         let footer = format!(
-            "Ctrl+/ help • Ctrl+R {} • Ctrl+T {} • cwd {}",
+            "{} transcript • {} tool output • cwd {}",
             self.render_mode.label(),
             self.tool_detail_mode.label(),
             self.status.workspace
@@ -1150,6 +1203,15 @@ impl AgentChatComposerApp {
             .split('\n')
             .map(|line| Line::from(line.to_string()))
             .collect()
+    }
+}
+
+fn agent_chat_help_command_entry() -> AgentChatCommandEntry {
+    AgentChatCommandEntry {
+        section: "Help".to_string(),
+        label: "Show keybindings".to_string(),
+        description: "View agent chat shortcuts and navigation keys.".to_string(),
+        command: AgentChatCommand::OpenHelp,
     }
 }
 
@@ -5507,12 +5569,33 @@ mod tests {
 
         app.open_palette();
         app.next_palette_item();
+        app.next_palette_item();
 
         assert!(app.palette.open);
         assert_eq!(
             app.selected_palette_command(),
             Some(AgentChatCommand::SwitchModel("test".to_string()))
         );
+    }
+
+    #[test]
+    fn agent_chat_palette_includes_local_keybindings_command() {
+        let status = test_agent_chat_status("Ready.");
+        let mut app = AgentChatComposerApp::new(Vec::new(), status);
+
+        app.open_palette();
+
+        assert!(app.palette.open);
+        assert_eq!(
+            app.selected_palette_command(),
+            Some(AgentChatCommand::OpenHelp)
+        );
+
+        let (lines, _) = app.palette_body_lines_and_selected_row();
+        assert!(lines.iter().any(|line| line
+            .spans
+            .iter()
+            .any(|span| span.content.contains("Show keybindings"))));
     }
 
     #[test]
@@ -5545,7 +5628,7 @@ mod tests {
             app.push_palette_query(ch);
         }
 
-        assert_eq!(app.visible_palette_indices(), vec![2]);
+        assert_eq!(app.visible_palette_indices(), vec![3]);
         assert_eq!(
             app.selected_palette_command(),
             Some(AgentChatCommand::SwitchModel("openai/gpt-5.5".to_string()))

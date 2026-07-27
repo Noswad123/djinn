@@ -6863,6 +6863,7 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
             AgentChatOutcome::Command { resume, command } => {
                 args.resume = Some(resume.clone());
                 match command {
+                    djinn_tui::AgentChatCommand::OpenHelp => {}
                     djinn_tui::AgentChatCommand::NewSession => {
                         let store = agent_session_store();
                         let id = AgentSessionId::new(resume);
