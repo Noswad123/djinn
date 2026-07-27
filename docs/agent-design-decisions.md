@@ -920,6 +920,15 @@ The first non-interactive agent slice is implemented as:
     Future review states such as unread/dismissed/imported should live in a
     family projection or notification layer, not overload the execution lifecycle
     event.
+62. Foreground agent chat now writes lifecycle events automatically. A submitted
+    prompt marks the session `running/foreground`; a successful turn marks it
+    `paused/foreground` with a ready-for-next-prompt note; a failed turn marks it
+    `failed/foreground`; exiting a non-failed/non-cancelled chat marks it
+    `paused/foreground`, not completed. Completion remains explicit, or automatic
+    only for non-interactive/background success paths. This gives foreground child
+    sessions an inspectable status through `djinn agent session lifecycle show`
+    and `djinn agent session children` without pretending that closing a chat means
+    the delegated task is complete.
 
 Not in the first slice unless explicitly reopened:
 

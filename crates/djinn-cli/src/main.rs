@@ -5978,6 +5978,87 @@ fn agent_session_child_run(args: AgentSessionChildRunArgs) -> Result<()> {
     Ok(())
 }
 
+fn append_agent_session_lifecycle_event(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    state: AgentSessionLifecycleState,
+    mode: AgentSessionExecutionMode,
+    reason: impl Into<String>,
+    note: Option<String>,
+) -> Result<()> {
+    store.append_event(
+        id,
+        AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
+            state,
+            mode: Some(mode),
+            reason: Some(reason.into()),
+            note,
+        }),
+    )
+}
+
+fn append_foreground_session_lifecycle_event(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    state: AgentSessionLifecycleState,
+    reason: impl Into<String>,
+    note: Option<String>,
+) -> Result<()> {
+    append_agent_session_lifecycle_event(
+        store,
+        id,
+        state,
+        AgentSessionExecutionMode::Foreground,
+        reason,
+        note,
+    )
+}
+
+fn mark_foreground_session_paused_on_quit(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+) -> Result<()> {
+    let session = store.load_session(id)?;
+    let lifecycle = lifecycle_for(&session);
+    if matches!(
+        lifecycle.state,
+        AgentSessionLifecycleState::Failed | AgentSessionLifecycleState::Cancelled
+    ) {
+        return Ok(());
+    }
+    append_foreground_session_lifecycle_event(
+        store,
+        id,
+        AgentSessionLifecycleState::Paused,
+        "chat exited",
+        None,
+    )
+}
+
+fn mark_foreground_session_paused_if_not_terminal(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    reason: impl Into<String>,
+) -> Result<()> {
+    let session = store.load_session(id)?;
+    let lifecycle = lifecycle_for(&session);
+    if matches!(
+        lifecycle.state,
+        AgentSessionLifecycleState::Completed
+            | AgentSessionLifecycleState::Failed
+            | AgentSessionLifecycleState::Cancelled
+    ) {
+        return Ok(());
+    }
+    append_foreground_session_lifecycle_event(
+        store,
+        id,
+        AgentSessionLifecycleState::Paused,
+        reason,
+        None,
+    )
+}
+
 fn append_child_session_status_event(
     store: &JsonlAgentSessionStore,
     parent_session_id: &AgentSessionId,
@@ -7334,7 +7415,14 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
             content: prompt.clone(),
         }),
     )?;
-    let response = complete_openai_prompt(
+    append_foreground_session_lifecycle_event(
+        &store,
+        &id,
+        AgentSessionLifecycleState::Running,
+        "agent prompt started",
+        None,
+    )?;
+    let response = match complete_openai_prompt(
         &store,
         &id,
         prompt,
@@ -7346,7 +7434,28 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
         &system_instructions,
         selection.tools,
         !args.json,
-    )?;
+    ) {
+        Ok(response) => {
+            append_foreground_session_lifecycle_event(
+                &store,
+                &id,
+                AgentSessionLifecycleState::Completed,
+                "agent prompt completed",
+                None,
+            )?;
+            response
+        }
+        Err(error) => {
+            let _ = append_foreground_session_lifecycle_event(
+                &store,
+                &id,
+                AgentSessionLifecycleState::Failed,
+                "agent prompt failed",
+                Some(error.to_string()),
+            );
+            return Err(error);
+        }
+    };
     let session = store.load_session(&id)?;
     if args.json {
         println!(
@@ -7658,6 +7767,13 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                     content: prompt.clone(),
                 }),
             )?;
+            append_foreground_session_lifecycle_event(
+                &store,
+                &id,
+                AgentSessionLifecycleState::Running,
+                "agent turn started",
+                None,
+            )?;
             maybe_auto_title_agent_session(&store, &id, &prompt)?;
             let session = store.load_session(&id)?;
             progress(
@@ -7708,6 +7824,13 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
             );
             match completion {
                 Ok(_) => {
+                    append_foreground_session_lifecycle_event(
+                        &store,
+                        &id,
+                        AgentSessionLifecycleState::Paused,
+                        "agent turn completed",
+                        Some("ready for next prompt".to_string()),
+                    )?;
                     if let Some(reporter) = &kitsune_reporter {
                         reporter.report_state(
                             KitsuneAgentReportState::Idle,
@@ -7717,6 +7840,13 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                     }
                 }
                 Err(error) => {
+                    let _ = append_foreground_session_lifecycle_event(
+                        &store,
+                        &id,
+                        AgentSessionLifecycleState::Failed,
+                        "agent turn failed",
+                        Some(error.to_string()),
+                    );
                     if let Some(reporter) = &kitsune_reporter {
                         reporter.report_state(
                             KitsuneAgentReportState::Blocked,
@@ -7733,18 +7863,25 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
     )?;
 
     if let djinn_tui::AgentChatExit::Dashboard { initial_tab } = exit {
+        mark_foreground_session_paused_if_not_terminal(
+            &store,
+            &id,
+            "chat suspended for dashboard",
+        )?;
         return Ok(AgentChatOutcome::Dashboard {
             resume: id_string,
             initial_tab,
         });
     }
     if let djinn_tui::AgentChatExit::Command(command) = exit {
+        mark_foreground_session_paused_if_not_terminal(&store, &id, "chat suspended for command")?;
         return Ok(AgentChatOutcome::Command {
             resume: id_string,
             command,
         });
     }
 
+    mark_foreground_session_paused_on_quit(&store, &id)?;
     let session = store.load_session(&id)?;
     Ok(AgentChatOutcome::Quit {
         session_id: id_string,
@@ -16354,6 +16491,60 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["lifecycle"]["state"], "failed");
         assert_eq!(value["lifecycle"]["mode"], "background");
+    }
+
+    #[test]
+    fn foreground_lifecycle_helpers_pause_on_quit_without_overriding_failures() {
+        let store = temp_agent_store("foreground-lifecycle");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Foreground child".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+
+        append_foreground_session_lifecycle_event(
+            &store,
+            &id,
+            AgentSessionLifecycleState::Running,
+            "agent turn started",
+            None,
+        )
+        .unwrap();
+        append_foreground_session_lifecycle_event(
+            &store,
+            &id,
+            AgentSessionLifecycleState::Paused,
+            "agent turn completed",
+            Some("ready for next prompt".to_string()),
+        )
+        .unwrap();
+        mark_foreground_session_paused_on_quit(&store, &id).unwrap();
+
+        let lifecycle = lifecycle_for(&store.load_session(&id).unwrap());
+        assert_eq!(lifecycle.state, AgentSessionLifecycleState::Paused);
+        assert_eq!(lifecycle.mode, Some(AgentSessionExecutionMode::Foreground));
+        assert_eq!(lifecycle.reason.as_deref(), Some("chat exited"));
+
+        let failed_id = store
+            .create_session(AgentSessionMeta {
+                title: "Failed foreground child".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        append_foreground_session_lifecycle_event(
+            &store,
+            &failed_id,
+            AgentSessionLifecycleState::Failed,
+            "agent turn failed",
+            Some("boom".to_string()),
+        )
+        .unwrap();
+        mark_foreground_session_paused_on_quit(&store, &failed_id).unwrap();
+
+        let lifecycle = lifecycle_for(&store.load_session(&failed_id).unwrap());
+        assert_eq!(lifecycle.state, AgentSessionLifecycleState::Failed);
+        assert_eq!(lifecycle.reason.as_deref(), Some("agent turn failed"));
     }
 
     #[test]
