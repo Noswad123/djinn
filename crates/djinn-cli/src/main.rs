@@ -7776,14 +7776,12 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
             )?;
             maybe_auto_title_agent_session(&store, &id, &prompt)?;
             let session = store.load_session(&id)?;
+            let mut progress_timeline = vec![agent_thought_message(initial_agent_thought_detail(
+                &prompt,
+                max_tool_rounds,
+            ))];
             progress(
-                agent_chat_messages(&session)
-                    .into_iter()
-                    .chain([agent_thought_message(initial_agent_thought_detail(
-                        &prompt,
-                        max_tool_rounds,
-                    ))])
-                    .collect(),
+                agent_chat_messages_with_progress(&session, &progress_timeline),
                 "Waiting for model response…".to_string(),
             )?;
             if let Some(reporter) = &kitsune_reporter {
@@ -7807,7 +7805,6 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                 kitsune_reporter.clone(),
                 |event| {
                     let session = store.load_session(&id)?;
-                    let mut messages = agent_chat_messages(&session);
                     let notice = agent_progress_notice(&event, max_tool_rounds);
                     if let Some(reporter) = &kitsune_reporter {
                         reporter.report_state(
@@ -7817,8 +7814,9 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                         );
                     }
                     if let Some(message) = agent_progress_message(&event, max_tool_rounds) {
-                        messages.push(message);
+                        progress_timeline.push(message);
                     }
+                    let messages = agent_chat_messages_with_progress(&session, &progress_timeline);
                     progress(messages, notice)
                 },
             );
@@ -11407,6 +11405,15 @@ fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessag
             | AgentSessionEventKind::AssistantMessage { .. } => {}
         }
     }
+    messages
+}
+
+fn agent_chat_messages_with_progress(
+    session: &AgentSession,
+    progress_timeline: &[djinn_tui::AgentChatMessage],
+) -> Vec<djinn_tui::AgentChatMessage> {
+    let mut messages = agent_chat_messages(session);
+    messages.extend(progress_timeline.iter().cloned());
     messages
 }
 
@@ -18163,6 +18170,31 @@ mod tests {
             notice,
             "Planning next step (round 6) · tool-round cap 5/12…"
         );
+    }
+
+    #[test]
+    fn agent_chat_messages_with_progress_preserves_timeline_order() {
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_progress"),
+            meta: AgentSessionMeta::default(),
+            events: vec![AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                content: "audit the tui".to_string(),
+            })],
+        };
+        let progress = vec![
+            agent_thought_message("Waiting for model response…"),
+            agent_thought_message("Planning next step…"),
+            agent_thought_message("Planned 1 tool call · 2.1s"),
+        ];
+
+        let messages = agent_chat_messages_with_progress(&session, &progress);
+
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, djinn_tui::AgentChatRole::User);
+        assert_eq!(messages[1].role, djinn_tui::AgentChatRole::Thought);
+        assert_eq!(messages[1].content, "Waiting for model response…");
+        assert_eq!(messages[2].content, "Planning next step…");
+        assert_eq!(messages[3].content, "Planned 1 tool call · 2.1s");
     }
 
     #[test]

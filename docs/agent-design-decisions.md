@@ -706,9 +706,12 @@ The first non-interactive agent slice is implemented as:
     current agent session. Chat/dashboard transitions keep one terminal session
     alive to avoid alternate-screen flicker.
 27. Agent chat rich progress is rendered in-place during model turns. The runtime
-    emits model/tool progress events, and the transcript uses distinct colored
-    blocks for thoughts/progress, `▶ Tool Request · <tool>` invocations, and
-    `✓/✗ Tool Execution · <tool> · <status>` results so the turn shape and
+    emits model/tool progress events, and the live transcript preserves the turn's
+    progress timeline instead of replacing each status with the latest generic
+    message. Thought/progress entries render as compact `Thought: …` rows in
+    compact mode and reveal additional tool-round details in detailed mode. Tool
+    requests/results remain distinct rows/blocks such as `▶ Tool Request · <tool>`
+    and `✓/✗ Tool Execution · <tool> · <status>` so the turn shape and
     success/failure state are visible at a glance without dumping raw JSON.
     Mutation tools (`apply_patch`, `write_file`, and `edit_file`) summarize
     operation/path/line counts from their shared mutation result payloads rather

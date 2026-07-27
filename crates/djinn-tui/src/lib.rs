@@ -2275,6 +2275,9 @@ fn agent_chat_message_lines_with_mode(
     ) {
         return agent_tool_message_lines(message.role, message.content.trim(), tool_detail_mode);
     }
+    if message.role == AgentChatRole::Thought {
+        return agent_chat_thought_lines(message.content.trim(), thought_detail_mode);
+    }
 
     let content = agent_chat_display_content(message.role, &message.content, thought_detail_mode);
     let (label, label_style, content_style) = match message.role {
@@ -2324,6 +2327,32 @@ fn agent_chat_message_lines_with_mode(
             code_block_width,
         ));
     }
+    lines
+}
+
+fn agent_chat_thought_lines(
+    content: &str,
+    thought_detail_mode: AgentThoughtDetailMode,
+) -> Vec<Line<'static>> {
+    let mut content_lines = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let first = content_lines.next().unwrap_or("empty");
+    let theme = theme_tokens();
+    let label_style = Style::default().fg(theme.accent).bg(theme.app_bg);
+    let content_style = dim_style();
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" Thought: ", label_style.add_modifier(Modifier::BOLD)),
+        Span::styled(first.to_string(), content_style),
+    ])];
+
+    if thought_detail_mode == AgentThoughtDetailMode::Detailed {
+        lines.extend(
+            content_lines.map(|line| Line::from(Span::styled(format!("   {line}"), dim_style()))),
+        );
+    }
+
     lines
 }
 
@@ -6303,13 +6332,12 @@ mod tests {
             None,
         );
 
-        assert_eq!(compact, vec![" Thought ", " Planning next step… "]);
+        assert_eq!(compact, vec![" Thought: Planning next step…"]);
         assert_eq!(
             detailed,
             vec![
-                " Thought ",
-                " Planning next step… ",
-                " Tool-round safety cap: model request 2 of 13 ",
+                " Thought: Planning next step…",
+                "   Tool-round safety cap: model request 2 of 13",
             ]
         );
     }

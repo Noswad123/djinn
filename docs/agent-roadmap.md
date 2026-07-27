@@ -92,22 +92,12 @@ Do not copy these OpenCode details directly:
   expansion path.
 - Fixed widths without adapting to terminal size and copy/paste constraints.
 
-More UI fixes
-- I can't confirm this but it looks like opencode has syntax highlighting
-### better thought text
-below is opencode's thoughts
+Remaining ready UI slices:
 
-Thought: Planning external editor integration · 8.2s
-Thought: Designing markdown transcript export · 1.5s
-Thought: Refining editor temp file handling · 2.7s
-Thought: Updating editor open behavior and help text · 27ms
+- **Code fence syntax highlighting:** add terminal-safe syntax highlighting for
+  rendered Markdown code fences while preserving raw Markdown mode and
+  copy-friendly rectangular code-block rows.
 
-djinn's thought just says planning then it allows itself to be overwritten
-
-→Read crates/djinn-tui/src/lib.rs [offset=1788, limit=35]
-Thought: Planning roadmap and design updates · 7.9s
-Thought: Designing transcript export text function · 1.7s
-Thought: Implementing transcript editor integration · 15ms
 ### Coven-led orchestration and Djinn worker primitives
 
 The user-facing product direction is **not** manual child-session management.
