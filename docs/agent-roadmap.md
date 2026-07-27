@@ -93,7 +93,6 @@ Do not copy these OpenCode details directly:
 - Fixed widths without adapting to terminal size and copy/paste constraints.
 
 More UI fixes
-- the scroll in opencode is much smoother. In djinn the scroll will keep scrolling and keep rendering blanks. We should scroll more down more than half the screen in blankness.
 - I can't confirm this but it looks like opencode has syntax highlighting
 
 ### Coven-led orchestration and Djinn worker primitives

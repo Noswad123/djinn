@@ -835,11 +835,13 @@ The first non-interactive agent slice is implemented as:
     status text. Per-turn duration should be added to the same muted metadata row
     once reliable per-message timing is available.
 49. Agent chat transcript navigation is keyboard-first and palette-discoverable.
-    Line/page scrolling remains available, while Ctrl+U/Ctrl+D scroll half pages,
-    Alt+Up/Alt+Down jump to previous/next message boundaries, Ctrl+Home/Ctrl+End
-    jump to first/last message boundaries, and Alt+U jumps to the last user turn.
-    The command palette exposes the same navigation actions so these jumps do not
-    have to become permanent footer chrome.
+    Down/Up scroll by one line for smoother reading, PageDown/PageUp scroll by a
+    visible page with overlap, Ctrl+U/Ctrl+D scroll half pages, Alt+Up/Alt+Down
+    jump to previous/next message boundaries, Ctrl+Home/Ctrl+End jump to
+    first/last message boundaries, and Alt+U jumps to the last user turn.
+    Transcript scroll is clamped to the current content height so users cannot
+    overscroll into blank space. The command palette exposes the same navigation
+    actions so these jumps do not have to become permanent footer chrome.
 50. Agent chat composer is a fixed dock rather than an unstructured text box. It
     keeps a bounded multiline input preview so long prompts do not crowd out the
     transcript. It should not repeat profile/model metadata from the header or

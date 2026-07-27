@@ -724,9 +724,9 @@ fn run_agent_chat_prompt_loop(
                     KeyCode::Char(ch) => app.push_char(ch),
                     KeyCode::End => app.jump_to_end(terminal.size()?.height),
                     KeyCode::Home => app.jump_to_top(),
-                    KeyCode::PageDown => app.scroll_down(),
-                    KeyCode::PageUp => app.scroll_up(),
-                    KeyCode::Down => app.scroll_down(),
+                    KeyCode::PageDown => app.scroll_page_down(terminal.size()?.height),
+                    KeyCode::PageUp => app.scroll_page_up(terminal.size()?.height),
+                    KeyCode::Down => app.scroll_down(terminal.size()?.height),
                     KeyCode::Up => app.scroll_up(),
                     _ => {}
                 }
@@ -911,9 +911,9 @@ where
                     KeyCode::Char(ch) => app.push_char(ch),
                     KeyCode::End => app.jump_to_end(terminal.size()?.height),
                     KeyCode::Home => app.jump_to_top(),
-                    KeyCode::PageDown => app.scroll_down(),
-                    KeyCode::PageUp => app.scroll_up(),
-                    KeyCode::Down => app.scroll_down(),
+                    KeyCode::PageDown => app.scroll_page_down(terminal.size()?.height),
+                    KeyCode::PageUp => app.scroll_page_up(terminal.size()?.height),
+                    KeyCode::Down => app.scroll_down(terminal.size()?.height),
                     KeyCode::Up => app.scroll_up(),
                     _ => {}
                 }
@@ -940,6 +940,7 @@ const AGENT_CHAT_HEADER_HEIGHT: u16 = 3;
 const AGENT_CHAT_COMPOSER_HEIGHT: u16 = 6;
 const AGENT_CHAT_FOOTER_HEIGHT: u16 = 0;
 const AGENT_CHAT_COMPOSER_INPUT_MAX_LINES: usize = 4;
+const AGENT_CHAT_LINE_SCROLL_AMOUNT: u16 = 1;
 const AGENT_CHAT_SIDEBAR_MIN_WIDTH: u16 = 128;
 const AGENT_CHAT_SIDEBAR_WIDTH: u16 = 34;
 const COMPOSER_PASTE_SUMMARY_MIN_BYTES: usize = 2048;
@@ -1137,8 +1138,26 @@ impl AgentChatComposerApp {
             .ensure_selection_visible(body_height, selected_row, total_lines);
     }
 
-    fn scroll_down(&mut self) {
-        self.transcript_scroll = self.transcript_scroll.saturating_add(8);
+    fn scroll_down(&mut self, terminal_height: u16) {
+        self.scroll_down_by(AGENT_CHAT_LINE_SCROLL_AMOUNT, terminal_height);
+    }
+
+    fn scroll_down_by(&mut self, amount: u16, terminal_height: u16) {
+        let max_scroll = self.max_transcript_scroll_for_terminal(terminal_height);
+        self.transcript_scroll = self
+            .transcript_scroll
+            .saturating_add(amount)
+            .min(max_scroll);
+    }
+
+    fn scroll_page_up(&mut self, terminal_height: u16) {
+        let amount = self.page_scroll_amount(terminal_height);
+        self.transcript_scroll = self.transcript_scroll.saturating_sub(amount);
+    }
+
+    fn scroll_page_down(&mut self, terminal_height: u16) {
+        let amount = self.page_scroll_amount(terminal_height);
+        self.scroll_down_by(amount, terminal_height);
     }
 
     fn scroll_half_page_up(&mut self, terminal_height: u16) {
@@ -1148,11 +1167,13 @@ impl AgentChatComposerApp {
 
     fn scroll_half_page_down(&mut self, terminal_height: u16) {
         let amount = self.half_page_scroll_amount(terminal_height);
-        let max_scroll = self.max_transcript_scroll_for_terminal(terminal_height);
-        self.transcript_scroll = self
-            .transcript_scroll
-            .saturating_add(amount)
-            .min(max_scroll);
+        self.scroll_down_by(amount, terminal_height);
+    }
+
+    fn page_scroll_amount(&self, terminal_height: u16) -> u16 {
+        self.visible_transcript_lines_for_terminal(terminal_height)
+            .saturating_sub(1)
+            .max(1)
     }
 
     fn half_page_scroll_amount(&self, terminal_height: u16) -> u16 {
@@ -1216,7 +1237,9 @@ impl AgentChatComposerApp {
     }
 
     fn scroll_up(&mut self) {
-        self.transcript_scroll = self.transcript_scroll.saturating_sub(8);
+        self.transcript_scroll = self
+            .transcript_scroll
+            .saturating_sub(AGENT_CHAT_LINE_SCROLL_AMOUNT);
     }
 
     fn jump_to_top(&mut self) {
@@ -1393,6 +1416,10 @@ impl AgentChatComposerApp {
                 Constraint::Length(AGENT_CHAT_FOOTER_HEIGHT),
             ])
             .split(main_area);
+
+        self.transcript_scroll = self
+            .transcript_scroll
+            .min(self.max_transcript_scroll(chunks[1].height));
 
         let header_title = format!(
             "session {} • profile {} • model {}",
@@ -1906,7 +1933,7 @@ fn agent_chat_command_specs() -> Vec<AgentChatCommandSpec> {
         agent_chat_command_spec(
             "Navigation",
             "Scroll transcript",
-            "scroll transcript",
+            "scroll transcript by line or page",
             Some("↑/↓ or PgUp/PgDn"),
             Some("Navigation"),
             None,
@@ -6543,20 +6570,43 @@ mod tests {
 
     #[test]
     fn agent_chat_composer_keeps_status_and_scroll_state() {
-        let mut app = AgentChatComposerApp::new(
-            vec![AgentChatMessage {
+        let messages = (0..20)
+            .map(|idx| AgentChatMessage {
                 role: AgentChatRole::User,
-                content: "hello".to_string(),
-            }],
-            test_agent_chat_status("Djinn is thinking…"),
-        );
+                content: format!("message {idx}"),
+            })
+            .collect::<Vec<_>>();
+        let mut app =
+            AgentChatComposerApp::new(messages, test_agent_chat_status("Djinn is thinking…"));
 
         assert_eq!(app.status.notice, "Djinn is thinking…");
-        assert_eq!(app.messages.len(), 1);
-        app.scroll_down();
-        assert_eq!(app.transcript_scroll, 8);
+        assert_eq!(app.messages.len(), 20);
+        app.scroll_down(17);
+        assert_eq!(app.transcript_scroll, 1);
         app.scroll_up();
         assert_eq!(app.transcript_scroll, 0);
+    }
+
+    #[test]
+    fn agent_chat_scroll_down_clamps_at_transcript_end() {
+        let messages = (0..6)
+            .map(|idx| AgentChatMessage {
+                role: AgentChatRole::Assistant,
+                content: format!("message {idx}"),
+            })
+            .collect::<Vec<_>>();
+        let mut app = AgentChatComposerApp::new(messages, test_agent_chat_status("Ready."));
+        let terminal_height = 17;
+        let max_scroll = app.max_transcript_scroll_for_terminal(terminal_height);
+
+        assert!(max_scroll > 0);
+        for _ in 0..100 {
+            app.scroll_down(terminal_height);
+        }
+
+        assert_eq!(app.transcript_scroll, max_scroll);
+        app.scroll_page_down(terminal_height);
+        assert_eq!(app.transcript_scroll, max_scroll);
     }
 
     #[test]
