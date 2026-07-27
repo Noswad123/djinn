@@ -76,6 +76,10 @@ Ready implementation slices:
 - Define an inspectable parent-to-child grant record with parent id, child id,
   action, resource, effect, source, and session scope.
 
+### Better UI
+  - one example is the background highlight for blocks needs to highlight such that if forms a rectangle. Just don't highlight only if characters are present
+  - Is there a way we can look at the opencode repo (~/Projects/opencode/opencode/) and inherit their ui where it makes sense. It looks and feels much better
+
 ## Needs a decision before implementation
 
 These are useful directions, but implementing them now would risk locking in the

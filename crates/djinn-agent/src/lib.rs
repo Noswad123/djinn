@@ -624,10 +624,10 @@ fn parse_openai_responses_stream_response(text: &str) -> Result<ModelResponse> {
                     let final_response = parse_openai_responses_value(response)?;
                     if !final_response.message.content.is_empty()
                         || !final_response.tool_calls.is_empty()
-                        || final_response.usage.is_some()
                     {
                         return Ok(final_response);
                     }
+                    usage = final_response.usage.or(usage);
                 }
             }
             Some("response.usage") => {
@@ -5536,7 +5536,7 @@ data: [DONE]
             r#"data: {"type":"response.output_text.delta","delta":"P"}
 data: {"type":"response.output_text.delta","delta":"ONG"}
 data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"PONG"}]}}
-data: {"type":"response.completed","response":{"output":[]}}
+data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}
 data: [DONE]
 "#,
         )
@@ -5544,6 +5544,7 @@ data: [DONE]
 
         assert_eq!(response.message.content, "PONG");
         assert!(response.tool_calls.is_empty());
+        assert_eq!(response.usage.unwrap().total_tokens, Some(3));
     }
 
     #[test]
