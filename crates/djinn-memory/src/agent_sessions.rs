@@ -304,6 +304,16 @@ pub enum AgentSessionEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    ChildSessionStatusChanged {
+        child_session_id: AgentSessionId,
+        state: AgentSessionLifecycleState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<AgentSessionExecutionMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary_pointer: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -624,10 +634,7 @@ pub fn is_active_background_session(summary: &AgentSessionSummary) -> bool {
         && summary.lifecycle.mode == Some(AgentSessionExecutionMode::Background)
 }
 
-pub fn count_active_background_children<S>(
-    store: &S,
-    parent: &AgentSessionId,
-) -> Result<usize>
+pub fn count_active_background_children<S>(store: &S, parent: &AgentSessionId) -> Result<usize>
 where
     S: AgentSessionStore + ?Sized,
 {
@@ -1057,7 +1064,10 @@ mod tests {
             Some(AgentSessionExecutionMode::Background),
         );
 
-        assert_eq!(count_active_background_children(&store, &parent).unwrap(), 2);
+        assert_eq!(
+            count_active_background_children(&store, &parent).unwrap(),
+            2
+        );
         assert_eq!(store.count_active_background_children(&parent).unwrap(), 2);
         assert_eq!(DEFAULT_MAX_ACTIVE_BACKGROUND_CHILDREN_PER_PARENT, 3);
     }

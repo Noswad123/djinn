@@ -5778,7 +5778,8 @@ fn agent_session_child_start(args: AgentSessionChildStartArgs) -> Result<()> {
             .as_ref()
             .and_then(|config| nonempty_string(&config.model))
     });
-    let selection = resolve_agent_role_selection(requested_agent, requested_profile, requested_model)?;
+    let selection =
+        resolve_agent_role_selection(requested_agent, requested_profile, requested_model)?;
     let model = resolve_agent_model(selection.model.clone(), &selection.profile)?;
     let effective_config = agent_effective_config_from_parts(
         workspace.clone(),
@@ -5803,9 +5804,7 @@ fn agent_session_child_start(args: AgentSessionChildStartArgs) -> Result<()> {
     })?;
     store.append_event(
         &child_id,
-        AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
-            content: prompt,
-        }),
+        AgentSessionEvent::new(AgentSessionEventKind::UserMessage { content: prompt }),
     )?;
     store.append_event(
         &child_id,
@@ -5815,6 +5814,15 @@ fn agent_session_child_start(args: AgentSessionChildStartArgs) -> Result<()> {
             reason: Some("spawned".to_string()),
             note: Some(format!("parent session {parent_session_id}")),
         }),
+    )?;
+    append_child_session_status_event(
+        &store,
+        &parent_session_id,
+        &child_id,
+        AgentSessionLifecycleState::Running,
+        Some(AgentSessionExecutionMode::Background),
+        Some("started".to_string()),
+        None,
     )?;
 
     spawn_agent_session_child_worker(&child_id)?;
@@ -5827,9 +5835,11 @@ fn agent_session_child_start(args: AgentSessionChildStartArgs) -> Result<()> {
         profile: selection.profile,
         agent_name: selection.agent_name,
         active_background_children_for_parent: active_children + 1,
-        max_active_background_children_per_parent: DEFAULT_MAX_ACTIVE_BACKGROUND_CHILDREN_PER_PARENT,
+        max_active_background_children_per_parent:
+            DEFAULT_MAX_ACTIVE_BACKGROUND_CHILDREN_PER_PARENT,
         active_background_sessions_in_workspace: active_workspace + 1,
-        max_active_background_sessions_per_workspace: DEFAULT_MAX_ACTIVE_BACKGROUND_SESSIONS_PER_WORKSPACE,
+        max_active_background_sessions_per_workspace:
+            DEFAULT_MAX_ACTIVE_BACKGROUND_SESSIONS_PER_WORKSPACE,
         path: store.session_file_path(&child_id).display().to_string(),
     };
     if args.json {
@@ -5862,13 +5872,7 @@ fn agent_session_child_start(args: AgentSessionChildStartArgs) -> Result<()> {
 fn spawn_agent_session_child_worker(child_id: &AgentSessionId) -> Result<()> {
     let exe = env::current_exe().with_context(|| "resolving current djinn executable")?;
     ProcessCommand::new(exe)
-        .args([
-            "agent",
-            "session",
-            "child",
-            "run",
-            child_id.as_str(),
-        ])
+        .args(["agent", "session", "child", "run", child_id.as_str()])
         .env("DJINN_BACKGROUND_CHILD", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -5882,6 +5886,7 @@ fn agent_session_child_run(args: AgentSessionChildRunArgs) -> Result<()> {
     let store = agent_session_store();
     let id = AgentSessionId::new(args.id);
     let session = store.load_session(&id)?;
+    let parent_session_id = session.meta.parent_session_id.clone();
     let prompt = first_user_prompt(&session)
         .ok_or_else(|| anyhow::anyhow!("child session {id} has no user prompt"))?;
     let profile = if session.meta.profile.trim().is_empty() {
@@ -5923,15 +5928,28 @@ fn agent_session_child_run(args: AgentSessionChildRunArgs) -> Result<()> {
         false,
     );
     match result {
-        Ok(_) => store.append_event(
-            &id,
-            AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
-                state: AgentSessionLifecycleState::Completed,
-                mode: Some(AgentSessionExecutionMode::Background),
-                reason: Some("completed".to_string()),
-                note: None,
-            }),
-        )?,
+        Ok(_) => {
+            store.append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
+                    state: AgentSessionLifecycleState::Completed,
+                    mode: Some(AgentSessionExecutionMode::Background),
+                    reason: Some("completed".to_string()),
+                    note: None,
+                }),
+            )?;
+            if let Some(parent_session_id) = &parent_session_id {
+                append_child_session_status_event(
+                    &store,
+                    parent_session_id,
+                    &id,
+                    AgentSessionLifecycleState::Completed,
+                    Some(AgentSessionExecutionMode::Background),
+                    Some("completed".to_string()),
+                    Some(format!("agent session {id}")),
+                )?;
+            }
+        }
         Err(error) => {
             let message = error.to_string();
             let _ = store.append_event(
@@ -5943,10 +5961,42 @@ fn agent_session_child_run(args: AgentSessionChildRunArgs) -> Result<()> {
                     note: Some(message.clone()),
                 }),
             );
+            if let Some(parent_session_id) = &parent_session_id {
+                let _ = append_child_session_status_event(
+                    &store,
+                    parent_session_id,
+                    &id,
+                    AgentSessionLifecycleState::Failed,
+                    Some(AgentSessionExecutionMode::Background),
+                    Some(message.clone()),
+                    Some(format!("agent session {id}")),
+                );
+            }
             return Err(error).with_context(|| format!("running background child session {id}"));
         }
     }
     Ok(())
+}
+
+fn append_child_session_status_event(
+    store: &JsonlAgentSessionStore,
+    parent_session_id: &AgentSessionId,
+    child_session_id: &AgentSessionId,
+    state: AgentSessionLifecycleState,
+    mode: Option<AgentSessionExecutionMode>,
+    reason: Option<String>,
+    summary_pointer: Option<String>,
+) -> Result<()> {
+    store.append_event(
+        parent_session_id,
+        AgentSessionEvent::new(AgentSessionEventKind::ChildSessionStatusChanged {
+            child_session_id: child_session_id.clone(),
+            state,
+            mode,
+            reason,
+            summary_pointer,
+        }),
+    )
 }
 
 fn first_user_prompt(session: &AgentSession) -> Option<String> {
@@ -6916,7 +6966,8 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
             | AgentSessionEventKind::SessionModelUpdated { .. }
             | AgentSessionEventKind::Summary { .. }
             | AgentSessionEventKind::Checkpoint { .. }
-            | AgentSessionEventKind::SessionLifecycleUpdated { .. } => {}
+            | AgentSessionEventKind::SessionLifecycleUpdated { .. }
+            | AgentSessionEventKind::ChildSessionStatusChanged { .. } => {}
         }
     }
 
@@ -10847,7 +10898,40 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
                 format_agent_session_lifecycle_inline(&lifecycle)
             )
         }
+        AgentSessionEventKind::ChildSessionStatusChanged {
+            child_session_id,
+            state,
+            mode,
+            reason,
+            summary_pointer,
+        } => format_child_session_status_event(
+            child_session_id,
+            state,
+            mode.as_ref(),
+            reason.as_deref(),
+            summary_pointer.as_deref(),
+        ),
     }
+}
+
+fn format_child_session_status_event(
+    child_session_id: &AgentSessionId,
+    state: &AgentSessionLifecycleState,
+    mode: Option<&AgentSessionExecutionMode>,
+    reason: Option<&str>,
+    summary_pointer: Option<&str>,
+) -> String {
+    let mut parts = vec![format!("child {child_session_id}: {state}")];
+    if let Some(mode) = mode {
+        parts.push(mode.to_string());
+    }
+    if let Some(reason) = reason.filter(|value| !value.trim().is_empty()) {
+        parts.push(reason.to_string());
+    }
+    if let Some(summary_pointer) = summary_pointer.filter(|value| !value.trim().is_empty()) {
+        parts.push(format!("summary: {summary_pointer}"));
+    }
+    parts.join(" • ")
 }
 
 fn format_agent_model_metadata_event(
@@ -11182,6 +11266,7 @@ fn agent_chat_messages(session: &AgentSession) -> Vec<djinn_tui::AgentChatMessag
             | AgentSessionEventKind::ModelResponseMetadata { .. }
             | AgentSessionEventKind::ToolExecutionMetadata { .. }
             | AgentSessionEventKind::SessionLifecycleUpdated { .. }
+            | AgentSessionEventKind::ChildSessionStatusChanged { .. }
             | AgentSessionEventKind::AssistantMessage { .. } => {}
         }
     }
