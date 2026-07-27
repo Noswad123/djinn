@@ -94,8 +94,6 @@ Do not copy these OpenCode details directly:
 
 Ready implementation slices:
 
-- Add collapsed-output budgets and expansion state for shell/generic tools. Start
-  with conservative keyboard controls and keep full details inspectable.
 - Improve message layout hierarchy: subtle user-turn accent/panel, quiet indented
   assistant Markdown, muted assistant metadata line with model/profile/duration
   when available, and visually distinct error rows.

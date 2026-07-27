@@ -443,6 +443,32 @@ impl AgentChatRenderMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentToolDetailMode {
+    Collapsed,
+    Full,
+}
+
+impl AgentToolDetailMode {
+    fn toggle(self) -> Self {
+        match self {
+            Self::Collapsed => Self::Full,
+            Self::Full => Self::Collapsed,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Collapsed => "compact tools",
+            Self::Full => "full tools",
+        }
+    }
+
+    fn is_full(self) -> bool {
+        self == Self::Full
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentChatMessage {
     pub role: AgentChatRole,
@@ -551,6 +577,9 @@ fn run_agent_chat_prompt_loop(
                     _ if agent_chat_render_mode_key(key.code, key.modifiers) => {
                         app.toggle_render_mode();
                     }
+                    _ if agent_chat_tool_detail_key(key.code, key.modifiers) => {
+                        app.toggle_tool_detail_mode();
+                    }
                     KeyCode::Enter => {
                         if let Some(prompt) = app.submit_prompt() {
                             return Ok(Some(prompt));
@@ -655,6 +684,9 @@ where
                     _ if agent_chat_render_mode_key(key.code, key.modifiers) => {
                         app.toggle_render_mode();
                     }
+                    _ if agent_chat_tool_detail_key(key.code, key.modifiers) => {
+                        app.toggle_tool_detail_mode();
+                    }
                     KeyCode::Enter => {
                         let Some(prompt) = app.submit_prompt() else {
                             continue;
@@ -716,6 +748,7 @@ struct AgentChatComposerApp {
     palette: CommandPaletteState,
     help_open: bool,
     render_mode: AgentChatRenderMode,
+    tool_detail_mode: AgentToolDetailMode,
 }
 
 impl AgentChatComposerApp {
@@ -728,12 +761,18 @@ impl AgentChatComposerApp {
             palette: CommandPaletteState::default(),
             help_open: false,
             render_mode: AgentChatRenderMode::Markdown,
+            tool_detail_mode: AgentToolDetailMode::Collapsed,
         }
     }
 
     fn toggle_render_mode(&mut self) {
         self.render_mode = self.render_mode.toggle();
         self.status.notice = format!("Transcript display: {}.", self.render_mode.label());
+    }
+
+    fn toggle_tool_detail_mode(&mut self) {
+        self.tool_detail_mode = self.tool_detail_mode.toggle();
+        self.status.notice = format!("Tool output display: {}.", self.tool_detail_mode.label());
     }
 
     fn open_help(&mut self) {
@@ -865,6 +904,7 @@ impl AgentChatComposerApp {
             &self.messages,
             &self.status.notice,
             self.render_mode,
+            self.tool_detail_mode,
             None,
         )
         .len()
@@ -922,6 +962,7 @@ impl AgentChatComposerApp {
             &self.messages,
             &self.status.notice,
             self.render_mode,
+            self.tool_detail_mode,
             Some(chunks[1].width as usize),
         );
         let transcript_title = if self.at_transcript_end(chunks[1].height) {
@@ -947,8 +988,9 @@ impl AgentChatComposerApp {
         frame.set_cursor_position(self.cursor_position(chunks[2]));
 
         let footer = format!(
-            "Ctrl+/ help • Ctrl+R {} • cwd {}",
+            "Ctrl+/ help • Ctrl+R {} • Ctrl+T {} • cwd {}",
             self.render_mode.label(),
+            self.tool_detail_mode.label(),
             self.status.workspace
         );
         frame.render_widget(Clear, chunks[3]);
@@ -982,6 +1024,10 @@ impl AgentChatComposerApp {
             Line::from(vec![
                 Span::styled("Ctrl+R", selected_style()),
                 Span::raw(" toggle rendered/raw Markdown transcript"),
+            ]),
+            Line::from(vec![
+                Span::styled("Ctrl+T", selected_style()),
+                Span::raw(" toggle compact/full tool output"),
             ]),
             Line::from(vec![
                 Span::styled("Esc", selected_style()),
@@ -1109,13 +1155,20 @@ impl AgentChatComposerApp {
 
 #[cfg(test)]
 fn agent_chat_transcript_lines(messages: &[AgentChatMessage], notice: &str) -> Vec<Line<'static>> {
-    agent_chat_transcript_lines_with_mode(messages, notice, AgentChatRenderMode::Markdown, None)
+    agent_chat_transcript_lines_with_mode(
+        messages,
+        notice,
+        AgentChatRenderMode::Markdown,
+        AgentToolDetailMode::Collapsed,
+        None,
+    )
 }
 
 fn agent_chat_transcript_lines_with_mode(
     messages: &[AgentChatMessage],
     notice: &str,
     render_mode: AgentChatRenderMode,
+    tool_detail_mode: AgentToolDetailMode,
     code_block_width: Option<usize>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -1133,6 +1186,7 @@ fn agent_chat_transcript_lines_with_mode(
             lines.extend(agent_chat_message_lines_with_mode(
                 message,
                 render_mode,
+                tool_detail_mode,
                 code_block_width,
             ));
             lines.push(Line::from(""));
@@ -1187,19 +1241,25 @@ fn edit_agent_chat_input(terminal: &mut TuiTerminal, app: &mut AgentChatComposer
 
 #[cfg(test)]
 fn agent_chat_message_lines(message: &AgentChatMessage) -> Vec<Line<'static>> {
-    agent_chat_message_lines_with_mode(message, AgentChatRenderMode::Markdown, None)
+    agent_chat_message_lines_with_mode(
+        message,
+        AgentChatRenderMode::Markdown,
+        AgentToolDetailMode::Collapsed,
+        None,
+    )
 }
 
 fn agent_chat_message_lines_with_mode(
     message: &AgentChatMessage,
     render_mode: AgentChatRenderMode,
+    tool_detail_mode: AgentToolDetailMode,
     code_block_width: Option<usize>,
 ) -> Vec<Line<'static>> {
     if matches!(
         message.role,
         AgentChatRole::Tool | AgentChatRole::ToolOutput
     ) {
-        return agent_tool_message_lines(message.role, message.content.trim());
+        return agent_tool_message_lines(message.role, message.content.trim(), tool_detail_mode);
     }
 
     let (label, label_style, content_style) = match message.role {
@@ -1245,13 +1305,17 @@ fn agent_chat_message_lines_with_mode(
     lines
 }
 
-fn agent_tool_message_lines(role: AgentChatRole, content: &str) -> Vec<Line<'static>> {
+fn agent_tool_message_lines(
+    role: AgentChatRole,
+    content: &str,
+    detail_mode: AgentToolDetailMode,
+) -> Vec<Line<'static>> {
     if content.is_empty() {
         return vec![Line::from(Span::styled(" ⚙ Tool · empty ", dim_style()))];
     }
     match role {
         AgentChatRole::Tool => agent_tool_request_lines(content),
-        AgentChatRole::ToolOutput => agent_tool_output_lines(content),
+        AgentChatRole::ToolOutput => agent_tool_output_lines(content, detail_mode),
         AgentChatRole::User
         | AgentChatRole::Assistant
         | AgentChatRole::Thought
@@ -1274,7 +1338,7 @@ fn agent_tool_request_lines(content: &str) -> Vec<Line<'static>> {
     )]
 }
 
-fn agent_tool_output_lines(content: &str) -> Vec<Line<'static>> {
+fn agent_tool_output_lines(content: &str, detail_mode: AgentToolDetailMode) -> Vec<Line<'static>> {
     let mut lines = content.lines();
     let Some(first) = lines.next() else {
         return vec![inline_tool_line("⚙", "Tool", "empty result", dim_style())];
@@ -1284,10 +1348,23 @@ fn agent_tool_output_lines(content: &str) -> Vec<Line<'static>> {
         return vec![inline_tool_line("⚙", "Tool", content, dim_style())];
     };
     if name == "shell" {
-        return shell_tool_output_lines(status, &body);
+        return shell_tool_output_lines(status, &body, detail_mode);
     }
     if matches!(name, "apply_patch" | "write_file" | "edit_file") {
-        return block_tool_output_lines(name, status, &body);
+        return block_tool_output_lines(name, status, &body, AgentToolDetailMode::Full, None);
+    }
+    if !matches!(
+        name,
+        "read_file" | "list_dir" | "find_files" | "search_files" | "webfetch" | "websearch"
+    ) && body.len() > GENERIC_TOOL_OUTPUT_COLLAPSED_LINES
+    {
+        return block_tool_output_lines(
+            name,
+            status,
+            &body,
+            detail_mode,
+            Some(GENERIC_TOOL_OUTPUT_COLLAPSED_LINES),
+        );
     }
     let mut rendered = vec![inline_tool_line(
         tool_status_icon(status),
@@ -1366,6 +1443,9 @@ fn body_value<'a>(body: &'a [&str], key: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
+const SHELL_OUTPUT_COLLAPSED_LINES: usize = 8;
+const GENERIC_TOOL_OUTPUT_COLLAPSED_LINES: usize = 3;
+
 fn shell_tool_request_lines(workdir: &str, command: &str) -> Vec<Line<'static>> {
     let mut lines = vec![block_tool_header_line(
         "$",
@@ -1380,61 +1460,157 @@ fn shell_tool_request_lines(workdir: &str, command: &str) -> Vec<Line<'static>> 
     lines
 }
 
-fn shell_tool_output_lines(status: &str, body: &[&str]) -> Vec<Line<'static>> {
+fn shell_tool_output_lines(
+    status: &str,
+    body: &[&str],
+    detail_mode: AgentToolDetailMode,
+) -> Vec<Line<'static>> {
     let mut lines = vec![block_tool_header_line(
         tool_status_icon(status),
         "Shell",
         status,
         tool_status_style(status),
     )];
-    let mut in_output = false;
-    for raw in body {
-        let line = raw.trim_end();
-        if let Some(command) = line
-            .strip_prefix("command: `")
-            .and_then(|line| line.strip_suffix('`'))
-        {
-            lines.push(Line::from(Span::styled(
-                format!(" $ {command} "),
-                shell_tool_block_style(),
-            )));
-            continue;
-        }
-        if matches!(line, "stdout:" | "stderr:") {
-            in_output = true;
-            lines.push(Line::from(Span::styled(
-                format!(" {} ", line.trim_end_matches(':')),
-                dim_style().bg(CTP_SURFACE1),
-            )));
-            continue;
-        }
-        let style = if in_output {
-            shell_tool_block_style()
-        } else {
-            dim_style().bg(CTP_SURFACE0)
-        };
-        lines.push(Line::from(Span::styled(format!(" {line} "), style)));
+    let parsed = parse_shell_output_body(body);
+    if let Some(command) = parsed.command {
+        lines.push(Line::from(Span::styled(
+            format!(" $ {command} "),
+            shell_tool_block_style(),
+        )));
     }
+    lines.extend(parsed.meta.into_iter().map(|line| {
+        Line::from(Span::styled(
+            format!(" {line} "),
+            dim_style().bg(CTP_SURFACE0),
+        ))
+    }));
+    push_tool_output_section(
+        &mut lines,
+        "stdout",
+        &parsed.stdout,
+        detail_mode,
+        SHELL_OUTPUT_COLLAPSED_LINES,
+        shell_tool_block_style(),
+    );
+    push_tool_output_section(
+        &mut lines,
+        "stderr",
+        &parsed.stderr,
+        detail_mode,
+        SHELL_OUTPUT_COLLAPSED_LINES,
+        shell_tool_block_style(),
+    );
     lines
 }
 
-fn block_tool_output_lines(name: &str, status: &str, body: &[&str]) -> Vec<Line<'static>> {
+#[derive(Debug, Default)]
+struct ShellOutputBody<'a> {
+    command: Option<String>,
+    meta: Vec<&'a str>,
+    stdout: Vec<&'a str>,
+    stderr: Vec<&'a str>,
+}
+
+fn parse_shell_output_body<'a>(body: &'a [&str]) -> ShellOutputBody<'a> {
+    let mut parsed = ShellOutputBody::default();
+    let mut section: Option<&str> = None;
+    for raw in body {
+        let line = raw.trim_end();
+        if line == "stdout:" {
+            section = Some("stdout");
+            continue;
+        }
+        if line == "stderr:" {
+            section = Some("stderr");
+            continue;
+        }
+        if let Some(command) = line.strip_prefix("command: ") {
+            parsed.command = Some(command.trim().trim_matches('`').to_string());
+            continue;
+        }
+        match section {
+            Some("stdout") => parsed.stdout.push(line),
+            Some("stderr") => parsed.stderr.push(line),
+            _ => parsed.meta.push(line),
+        }
+    }
+    parsed
+}
+
+fn push_tool_output_section(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    values: &[&str],
+    detail_mode: AgentToolDetailMode,
+    budget: usize,
+    style: Style,
+) {
+    if values.is_empty() {
+        return;
+    }
+    lines.push(Line::from(Span::styled(
+        format!(" {label} "),
+        dim_style().bg(CTP_SURFACE1),
+    )));
+    let limit = if detail_mode.is_full() {
+        values.len()
+    } else {
+        budget.min(values.len())
+    };
+    lines.extend(
+        values
+            .iter()
+            .take(limit)
+            .map(|line| Line::from(Span::styled(format!(" {line} "), style))),
+    );
+    if limit < values.len() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                " … {} more lines (Ctrl+T full tool output) ",
+                values.len() - limit
+            ),
+            dim_style().bg(CTP_SURFACE1),
+        )));
+    }
+}
+
+fn block_tool_output_lines(
+    name: &str,
+    status: &str,
+    body: &[&str],
+    detail_mode: AgentToolDetailMode,
+    collapsed_budget: Option<usize>,
+) -> Vec<Line<'static>> {
     let mut lines = vec![block_tool_header_line(
         tool_status_icon(status),
         tool_display_name(name),
         status,
         tool_status_style(status),
     )];
-    lines.extend(
-        body.iter()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                Line::from(Span::styled(
-                    format!(" {} ", line.trim()),
-                    Style::default().fg(CTP_TEXT).bg(CTP_SURFACE0),
-                ))
-            }),
-    );
+    let body = body
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let limit = collapsed_budget
+        .filter(|_| !detail_mode.is_full())
+        .map(|budget| budget.min(body.len()))
+        .unwrap_or(body.len());
+    lines.extend(body.iter().take(limit).map(|line| {
+        Line::from(Span::styled(
+            format!(" {line} "),
+            Style::default().fg(CTP_TEXT).bg(CTP_SURFACE0),
+        ))
+    }));
+    if limit < body.len() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                " … {} more lines (Ctrl+T full tool output) ",
+                body.len() - limit
+            ),
+            dim_style().bg(CTP_SURFACE1),
+        )));
+    }
     lines
 }
 
@@ -4474,7 +4650,12 @@ mod tests {
         message: AgentChatMessage,
         render_mode: AgentChatRenderMode,
     ) -> Vec<String> {
-        rendered_agent_chat_message_lines_with_mode_and_width(message, render_mode, None)
+        rendered_agent_chat_message_lines_with_modes(
+            message,
+            render_mode,
+            AgentToolDetailMode::Collapsed,
+            None,
+        )
     }
 
     fn rendered_agent_chat_message_lines_with_mode_and_width(
@@ -4482,15 +4663,34 @@ mod tests {
         render_mode: AgentChatRenderMode,
         code_block_width: Option<usize>,
     ) -> Vec<String> {
-        agent_chat_message_lines_with_mode(&message, render_mode, code_block_width)
-            .into_iter()
-            .map(|line| {
-                line.spans
-                    .into_iter()
-                    .map(|span| span.content.into_owned())
-                    .collect::<String>()
-            })
-            .collect()
+        rendered_agent_chat_message_lines_with_modes(
+            message,
+            render_mode,
+            AgentToolDetailMode::Collapsed,
+            code_block_width,
+        )
+    }
+
+    fn rendered_agent_chat_message_lines_with_modes(
+        message: AgentChatMessage,
+        render_mode: AgentChatRenderMode,
+        tool_detail_mode: AgentToolDetailMode,
+        code_block_width: Option<usize>,
+    ) -> Vec<String> {
+        agent_chat_message_lines_with_mode(
+            &message,
+            render_mode,
+            tool_detail_mode,
+            code_block_width,
+        )
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect::<String>()
+        })
+        .collect()
     }
 
     fn test_agent_chat_status(notice: impl Into<String>) -> AgentChatStatus {
@@ -5012,6 +5212,64 @@ mod tests {
     }
 
     #[test]
+    fn agent_chat_shell_output_collapses_long_sections_by_default() {
+        let stdout = (1..=10)
+            .map(|idx| format!("line {idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = rendered_agent_chat_message_lines(AgentChatMessage {
+            role: AgentChatRole::ToolOutput,
+            content: format!("shell result: ok\nstdout:\n{stdout}"),
+        });
+
+        assert_eq!(lines[0], " ✓ Shell · ok ");
+        assert_eq!(lines[1], " stdout ");
+        assert!(lines.contains(&" line 8 ".to_string()));
+        assert!(!lines.contains(&" line 9 ".to_string()));
+        assert!(lines.contains(&" … 2 more lines (Ctrl+T full tool output) ".to_string()));
+    }
+
+    #[test]
+    fn agent_chat_full_tool_mode_shows_long_shell_sections() {
+        let stdout = (1..=10)
+            .map(|idx| format!("line {idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = rendered_agent_chat_message_lines_with_modes(
+            AgentChatMessage {
+                role: AgentChatRole::ToolOutput,
+                content: format!("shell result: ok\nstdout:\n{stdout}"),
+            },
+            AgentChatRenderMode::Markdown,
+            AgentToolDetailMode::Full,
+            None,
+        );
+
+        assert!(lines.contains(&" line 9 ".to_string()));
+        assert!(lines.contains(&" line 10 ".to_string()));
+        assert!(!lines.iter().any(|line| line.contains("more lines (Ctrl+T")));
+    }
+
+    #[test]
+    fn agent_chat_generic_tool_output_collapses_when_long() {
+        let lines = rendered_agent_chat_message_lines(AgentChatMessage {
+            role: AgentChatRole::ToolOutput,
+            content: "custom_tool result: ok\none\ntwo\nthree\nfour".to_string(),
+        });
+
+        assert_eq!(
+            lines,
+            vec![
+                " ✓ Tool · ok ",
+                " one ",
+                " two ",
+                " three ",
+                " … 1 more lines (Ctrl+T full tool output) ",
+            ]
+        );
+    }
+
+    #[test]
     fn agent_chat_composer_keeps_status_and_scroll_state() {
         let mut app = AgentChatComposerApp::new(
             vec![AgentChatMessage {
@@ -5122,6 +5380,22 @@ mod tests {
         ));
         assert!(!agent_chat_render_mode_key(
             KeyCode::Char('e'),
+            KeyModifiers::CONTROL
+        ));
+    }
+
+    #[test]
+    fn agent_chat_tool_detail_key_uses_ctrl_t() {
+        assert!(agent_chat_tool_detail_key(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(!agent_chat_tool_detail_key(
+            KeyCode::Char('t'),
+            KeyModifiers::NONE
+        ));
+        assert!(!agent_chat_tool_detail_key(
+            KeyCode::Char('r'),
             KeyModifiers::CONTROL
         ));
     }

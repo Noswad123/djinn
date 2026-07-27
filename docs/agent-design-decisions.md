@@ -819,6 +819,11 @@ The first non-interactive agent slice is implemented as:
     stdout, and stderr separated visually. Mutation tools such as patch/write/edit
     render as block-style results so file operations remain prominent and
     inspectable.
+47. Long shell and generic tool output is collapsed by default in the Agent chat
+    transcript. Shell stdout/stderr sections show a bounded preview; long generic
+    tool results render as a small block preview. Ctrl+T toggles compact/full tool
+    output globally for the current TUI session so users can inspect complete
+    output without making every long tool result noisy by default.
 
 Not in the first slice unless explicitly reopened:
 

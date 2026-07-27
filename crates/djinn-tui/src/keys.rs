@@ -16,6 +16,10 @@ pub(crate) fn agent_chat_render_mode_key(code: KeyCode, modifiers: KeyModifiers)
     modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('r'))
 }
 
+pub(crate) fn agent_chat_tool_detail_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('t'))
+}
+
 pub(crate) fn agent_chat_help_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL)
         && matches!(code, KeyCode::Char('/') | KeyCode::Char('_'))
