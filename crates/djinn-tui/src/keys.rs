@@ -21,6 +21,16 @@ pub(crate) fn agent_chat_palette_key(code: KeyCode, modifiers: KeyModifiers) -> 
     modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('p'))
 }
 
+pub(crate) fn agent_chat_slash_palette_key(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    input_empty: bool,
+) -> bool {
+    input_empty
+        && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && matches!(code, KeyCode::Char('/'))
+}
+
 pub(crate) fn agent_chat_palette_next_key(code: KeyCode, modifiers: KeyModifiers) -> bool {
     matches!(code, KeyCode::Down)
         || (modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('n')))

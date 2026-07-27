@@ -34,7 +34,7 @@ use editor::{edit_text_in_external_editor, normalize_editor_text};
 use filter::{fuzzy_match, selected_visible_position, FilterState};
 use keys::*;
 use style::*;
-use terminal::{enter_terminal, leave_terminal, TuiTerminal};
+use terminal::{enter_terminal, leave_terminal, resume_terminal, suspend_terminal, TuiTerminal};
 
 pub type AgentChatProgressHandler<'a> = dyn FnMut(Vec<AgentChatMessage>, String) -> Result<()> + 'a;
 
@@ -111,6 +111,22 @@ impl TuiSession {
         if self.active {
             leave_terminal(&mut self.terminal)?;
             self.active = false;
+        }
+        Ok(())
+    }
+
+    pub fn suspend(&mut self) -> Result<()> {
+        if self.active {
+            suspend_terminal(&mut self.terminal)?;
+            self.active = false;
+        }
+        Ok(())
+    }
+
+    pub fn resume(&mut self) -> Result<()> {
+        if !self.active {
+            resume_terminal(&mut self.terminal)?;
+            self.active = true;
         }
         Ok(())
     }
@@ -316,6 +332,7 @@ impl CommandPaletteItem for AgentChatCommandEntry {
 pub enum AgentChatCommand {
     NewSession,
     OpenSessions,
+    LoginOpenAiWithOpenCode,
     OpenDashboardTab(DashboardTab),
     SwitchProfile(String),
     SwitchModel(String),
@@ -493,6 +510,14 @@ fn run_agent_chat_prompt_loop(
                     _ if agent_chat_quit_key(key.code, key.modifiers, app.input.is_empty()) => {
                         return Ok(None);
                     }
+                    _ if agent_chat_slash_palette_key(
+                        key.code,
+                        key.modifiers,
+                        app.input.is_empty(),
+                    ) =>
+                    {
+                        app.open_palette();
+                    }
                     _ if agent_chat_newline_key(key.code, key.modifiers) => {
                         app.insert_newline();
                     }
@@ -578,6 +603,14 @@ where
                 match key.code {
                     _ if agent_chat_help_key(key.code, key.modifiers) => app.open_help(),
                     _ if agent_chat_palette_key(key.code, key.modifiers) => app.open_palette(),
+                    _ if agent_chat_slash_palette_key(
+                        key.code,
+                        key.modifiers,
+                        app.input.is_empty(),
+                    ) =>
+                    {
+                        app.open_palette();
+                    }
                     _ if agent_chat_dashboard_target(key.code).is_some() => {
                         return Ok(AgentChatExit::Dashboard {
                             initial_tab: agent_chat_dashboard_target(key.code).unwrap(),
@@ -923,6 +956,10 @@ impl AgentChatComposerApp {
             Line::from(vec![
                 Span::styled("Ctrl+P", selected_style()),
                 Span::raw(" open command palette"),
+            ]),
+            Line::from(vec![
+                Span::styled("/", selected_style()),
+                Span::raw(" open command palette when composer is empty"),
             ]),
             Line::from(vec![
                 Span::styled("Ctrl+/", selected_style()),
@@ -4541,6 +4578,30 @@ mod tests {
         assert!(!agent_chat_palette_key(
             KeyCode::Char('e'),
             KeyModifiers::CONTROL
+        ));
+    }
+
+    #[test]
+    fn agent_chat_slash_palette_key_only_opens_on_empty_composer() {
+        assert!(agent_chat_slash_palette_key(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+            true
+        ));
+        assert!(!agent_chat_slash_palette_key(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+            false
+        ));
+        assert!(!agent_chat_slash_palette_key(
+            KeyCode::Char('/'),
+            KeyModifiers::CONTROL,
+            true
+        ));
+        assert!(!agent_chat_slash_palette_key(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+            true
         ));
     }
 

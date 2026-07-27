@@ -6808,6 +6808,9 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                             }
                         }
                     }
+                    djinn_tui::AgentChatCommand::LoginOpenAiWithOpenCode => {
+                        run_opencode_openai_login_in_terminal(&mut tui)?;
+                    }
                     djinn_tui::AgentChatCommand::OpenDashboardTab(initial_tab) => {
                         match run_tui_in_session(&mut tui, &default_tui_args(), initial_tab)? {
                             TuiRunOutcome::OpenAgentChat { resume } => {
@@ -6853,6 +6856,10 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
     let store = agent_session_store();
     let selection = resolve_agent_role_selection(args.agent, &args.profile, args.model)?;
     let profile = selection.profile;
+    let resumed = args
+        .resume
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
     let chat_session = prepare_agent_chat_session(
         &store,
         args.resume.as_deref(),
@@ -6866,6 +6873,7 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
         parent_session_id_from_arg(args.parent_session),
     )?;
     let id = chat_session.id;
+    let id_string = id.to_string();
     let workspace = chat_session.workspace;
     let profile = chat_session.profile;
     let session = store.load_session(&id)?;
@@ -6879,11 +6887,20 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
     let base_url = args.base_url;
     let max_tool_rounds = args.max_tool_rounds;
     let allowed_tools = selection.tools;
+    let mut kitsune_reporter = KitsuneAgentReporter::from_env();
+    if let Some(reporter) = kitsune_reporter.as_mut() {
+        reporter.report_session(&id_string, if resumed { "resume" } else { "new" });
+        reporter.report_state(
+            KitsuneAgentReportState::Idle,
+            &id_string,
+            Some("Agent session ready"),
+        );
+    }
 
     let exit = tui.run_agent_chat_with_progress_handler(
         agent_chat_messages(&session),
         djinn_tui::AgentChatStatus {
-            session_id: id.to_string(),
+            session_id: id_string.clone(),
             workspace: workspace.clone(),
             profile: profile.clone(),
             model: model.clone(),
@@ -6906,7 +6923,14 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                     .collect(),
                 "Waiting for model response…".to_string(),
             )?;
-            complete_openai_messages_with_progress(
+            if let Some(reporter) = kitsune_reporter.as_mut() {
+                reporter.report_state(
+                    KitsuneAgentReportState::Working,
+                    &id_string,
+                    Some("Waiting for model response"),
+                );
+            }
+            let completion = complete_openai_messages_with_progress(
                 &store,
                 &id,
                 agent_model_messages(&session, &workspace, &system_instructions),
@@ -6920,12 +6944,41 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                 |event| {
                     let session = store.load_session(&id)?;
                     let mut messages = agent_chat_messages(&session);
+                    let notice = agent_progress_notice(&event);
+                    if let Some(reporter) = kitsune_reporter.as_mut() {
+                        reporter.report_state(
+                            KitsuneAgentReportState::Working,
+                            &id_string,
+                            Some(&notice),
+                        );
+                    }
                     if let Some(message) = agent_progress_message(&event) {
                         messages.push(message);
                     }
-                    progress(messages, agent_progress_notice(&event))
+                    progress(messages, notice)
                 },
-            )?;
+            );
+            match completion {
+                Ok(_) => {
+                    if let Some(reporter) = kitsune_reporter.as_mut() {
+                        reporter.report_state(
+                            KitsuneAgentReportState::Idle,
+                            &id_string,
+                            Some("Ready for prompt"),
+                        );
+                    }
+                }
+                Err(error) => {
+                    if let Some(reporter) = kitsune_reporter.as_mut() {
+                        reporter.report_state(
+                            KitsuneAgentReportState::Blocked,
+                            &id_string,
+                            Some("Agent turn failed"),
+                        );
+                    }
+                    return Err(error);
+                }
+            }
             let session = store.load_session(&id)?;
             Ok(agent_chat_messages(&session))
         },
@@ -6933,23 +6986,164 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
 
     if let djinn_tui::AgentChatExit::Dashboard { initial_tab } = exit {
         return Ok(AgentChatOutcome::Dashboard {
-            resume: id.to_string(),
+            resume: id_string,
             initial_tab,
         });
     }
     if let djinn_tui::AgentChatExit::Command(command) = exit {
         return Ok(AgentChatOutcome::Command {
-            resume: id.to_string(),
+            resume: id_string,
             command,
         });
     }
 
     let session = store.load_session(&id)?;
     Ok(AgentChatOutcome::Quit {
-        session_id: id.to_string(),
+        session_id: id_string,
         title: session.meta.title,
         path: store.session_file_path(&id),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KitsuneAgentReportState {
+    Idle,
+    Working,
+    Blocked,
+}
+
+impl KitsuneAgentReportState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct KitsuneAgentReporter {
+    bin: String,
+    pane_id: String,
+    seq: u64,
+}
+
+impl KitsuneAgentReporter {
+    fn from_env() -> Option<Self> {
+        if env::var("DJINN_KITSUNE_REPORT_DISABLED").ok().as_deref() == Some("1") {
+            return None;
+        }
+        if env::var("KITSUNE_ENV").ok().as_deref() != Some("1") {
+            return None;
+        }
+        let pane_id = env::var("KITSUNE_PANE_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())?;
+        let bin = env::var("KITSUNE_BIN_PATH")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "kitsune".to_string());
+        Some(Self {
+            bin,
+            pane_id,
+            seq: 0,
+        })
+    }
+
+    fn report_session(&mut self, session_id: &str, session_start_source: &str) {
+        let seq = self.next_seq();
+        self.run(kitsune_agent_session_report_args(
+            &self.pane_id,
+            seq,
+            session_id,
+            session_start_source,
+        ));
+    }
+
+    fn report_state(
+        &mut self,
+        state: KitsuneAgentReportState,
+        session_id: &str,
+        message: Option<&str>,
+    ) {
+        let seq = self.next_seq();
+        self.run(kitsune_agent_state_report_args(
+            &self.pane_id,
+            state,
+            seq,
+            session_id,
+            message,
+        ));
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        self.seq = self.seq.saturating_add(1);
+        self.seq
+    }
+
+    fn run(&self, args: Vec<String>) {
+        let _ = ProcessCommand::new(&self.bin)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+fn kitsune_agent_session_report_args(
+    pane_id: &str,
+    seq: u64,
+    session_id: &str,
+    session_start_source: &str,
+) -> Vec<String> {
+    vec![
+        "pane".to_string(),
+        "report-agent-session".to_string(),
+        pane_id.to_string(),
+        "--source".to_string(),
+        "kitsune:djinn".to_string(),
+        "--agent".to_string(),
+        "djinn".to_string(),
+        "--seq".to_string(),
+        seq.to_string(),
+        "--agent-session-id".to_string(),
+        session_id.to_string(),
+        "--session-start-source".to_string(),
+        session_start_source.to_string(),
+    ]
+}
+
+fn kitsune_agent_state_report_args(
+    pane_id: &str,
+    state: KitsuneAgentReportState,
+    seq: u64,
+    session_id: &str,
+    message: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec![
+        "pane".to_string(),
+        "report-agent".to_string(),
+        pane_id.to_string(),
+        "--source".to_string(),
+        "kitsune:djinn".to_string(),
+        "--agent".to_string(),
+        "djinn".to_string(),
+        "--state".to_string(),
+        state.as_str().to_string(),
+        "--seq".to_string(),
+        seq.to_string(),
+        "--agent-session-id".to_string(),
+        session_id.to_string(),
+    ];
+    if let Some(message) = message.map(str::trim).filter(|value| !value.is_empty()) {
+        args.push("--message".to_string());
+        args.push(message.to_string());
+    }
+    args
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7096,6 +7290,14 @@ fn agent_chat_command_palette(
             description: "Open the Sessions picker".to_string(),
             command: djinn_tui::AgentChatCommand::OpenSessions,
         },
+        djinn_tui::AgentChatCommandEntry {
+            section: "Auth".to_string(),
+            label: "Login to OpenAI with OpenCode…".to_string(),
+            description:
+                "Run `opencode providers login`; Djinn can reuse OpenCode OpenAI OAuth auth"
+                    .to_string(),
+            command: djinn_tui::AgentChatCommand::LoginOpenAiWithOpenCode,
+        },
     ];
     for (label, tab) in [
         ("Open Tools", djinn_tui::DashboardTab::Tools),
@@ -7146,6 +7348,22 @@ fn agent_chat_command_palette(
         });
     }
     Ok(entries)
+}
+
+fn run_opencode_openai_login_in_terminal(tui: &mut djinn_tui::TuiSession) -> Result<()> {
+    tui.suspend()?;
+    println!("Starting OpenCode provider login. Choose OpenAI if prompted.");
+    let status = ProcessCommand::new("opencode")
+        .args(["providers", "login"])
+        .status()
+        .with_context(|| "running `opencode providers login`")?;
+    if !status.success() {
+        eprintln!("`opencode providers login` exited with {status}");
+        eprintln!("Press Enter to return to Djinn.");
+        let _ = io::stdin().read_line(&mut String::new());
+    }
+    tui.resume()?;
+    Ok(())
 }
 
 fn update_agent_session_profile(
@@ -8114,8 +8332,11 @@ fn resolve_openai_auth(explicit: Option<String>) -> Result<OpenAiAuth> {
     if let Some(auth) = djinn_config_openai_auth()? {
         return Ok(auth);
     }
+    if let Some(auth) = opencode_auth_openai_auth()? {
+        return Ok(auth);
+    }
     Err(anyhow::anyhow!(
-        "OpenAI auth is required; pass --api-key, set OPENAI_API_KEY, or configure providers.openai.auth in Djinn config"
+        "OpenAI auth is required; use / then `Login to OpenAI with OpenCode…`, pass --api-key, set OPENAI_API_KEY, configure providers.openai.auth in Djinn config, or run `opencode providers login`"
     ))
 }
 
@@ -13996,6 +14217,82 @@ mod tests {
     }
 
     #[test]
+    fn kitsune_session_report_args_match_pane_api_contract() {
+        assert_eq!(
+            kitsune_agent_session_report_args("w1:p2", 7, "djinn-session", "new"),
+            vec![
+                "pane",
+                "report-agent-session",
+                "w1:p2",
+                "--source",
+                "kitsune:djinn",
+                "--agent",
+                "djinn",
+                "--seq",
+                "7",
+                "--agent-session-id",
+                "djinn-session",
+                "--session-start-source",
+                "new",
+            ]
+        );
+    }
+
+    #[test]
+    fn kitsune_state_report_args_match_pane_api_contract() {
+        assert_eq!(
+            kitsune_agent_state_report_args(
+                "w1:p2",
+                KitsuneAgentReportState::Working,
+                8,
+                "djinn-session",
+                Some("Running tool"),
+            ),
+            vec![
+                "pane",
+                "report-agent",
+                "w1:p2",
+                "--source",
+                "kitsune:djinn",
+                "--agent",
+                "djinn",
+                "--state",
+                "working",
+                "--seq",
+                "8",
+                "--agent-session-id",
+                "djinn-session",
+                "--message",
+                "Running tool",
+            ]
+        );
+        assert_eq!(
+            kitsune_agent_state_report_args(
+                "w1:p2",
+                KitsuneAgentReportState::Idle,
+                9,
+                "djinn-session",
+                Some("   "),
+            ),
+            vec![
+                "pane",
+                "report-agent",
+                "w1:p2",
+                "--source",
+                "kitsune:djinn",
+                "--agent",
+                "djinn",
+                "--state",
+                "idle",
+                "--seq",
+                "9",
+                "--agent-session-id",
+                "djinn-session",
+            ]
+        );
+    }
+
+    #[test]
     fn format_permission_preview_renders_full_hunks() {
         let rendered = format_permission_preview(&serde_json::json!({
             "preview": [
@@ -16563,6 +16860,11 @@ mod tests {
             entry.section == "Session"
                 && entry.label == "New session"
                 && entry.command == djinn_tui::AgentChatCommand::NewSession
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.section == "Auth"
+                && entry.label == "Login to OpenAI with OpenCode…"
+                && entry.command == djinn_tui::AgentChatCommand::LoginOpenAiWithOpenCode
         }));
         assert!(entries.iter().any(|entry| {
             entry.section == "Navigation"
