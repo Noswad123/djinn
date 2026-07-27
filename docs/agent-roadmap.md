@@ -94,8 +94,6 @@ Do not copy these OpenCode details directly:
 
 Ready implementation slices:
 
-- Add optional wide-terminal sidebar support for contextual state such as session
-  metadata, active tools/children, permissions, memories, or workspace status.
 - Add paste summarization for long pasted text so large clipboard content does
   not flood the composer while still expanding to raw text on submit.
 - Improve copy-first rendering of assistant output: raw transcript/session data

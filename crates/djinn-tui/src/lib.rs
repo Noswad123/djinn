@@ -341,6 +341,7 @@ impl GroupedSelectItem for AgentChatCommandEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentChatCommand {
     OpenHelp,
+    ToggleSidebar,
     ScrollHalfPageUp,
     ScrollHalfPageDown,
     JumpFirstMessage,
@@ -875,6 +876,7 @@ struct AgentChatComposerApp {
     transcript_scroll: u16,
     palette: GroupedSelectState,
     help_open: bool,
+    sidebar_open: bool,
     render_mode: AgentChatRenderMode,
     tool_detail_mode: AgentToolDetailMode,
 }
@@ -883,6 +885,8 @@ const AGENT_CHAT_HEADER_HEIGHT: u16 = 3;
 const AGENT_CHAT_COMPOSER_HEIGHT: u16 = 6;
 const AGENT_CHAT_FOOTER_HEIGHT: u16 = 1;
 const AGENT_CHAT_COMPOSER_INPUT_MAX_LINES: usize = 4;
+const AGENT_CHAT_SIDEBAR_MIN_WIDTH: u16 = 128;
+const AGENT_CHAT_SIDEBAR_WIDTH: u16 = 34;
 
 impl AgentChatComposerApp {
     fn new(messages: Vec<AgentChatMessage>, status: AgentChatStatus) -> Self {
@@ -893,6 +897,7 @@ impl AgentChatComposerApp {
             transcript_scroll: 0,
             palette: GroupedSelectState::default(),
             help_open: false,
+            sidebar_open: false,
             render_mode: AgentChatRenderMode::Markdown,
             tool_detail_mode: AgentToolDetailMode::Collapsed,
         }
@@ -958,6 +963,15 @@ impl AgentChatComposerApp {
         grouped_select::visible_indices(&self.agent_chat_command_palette(), &self.palette.query)
     }
 
+    fn toggle_sidebar(&mut self) {
+        self.sidebar_open = !self.sidebar_open;
+        self.status.notice = if self.sidebar_open {
+            "Context sidebar shown.".to_string()
+        } else {
+            "Context sidebar hidden.".to_string()
+        };
+    }
+
     fn handle_local_palette_command(
         &mut self,
         command: &AgentChatCommand,
@@ -967,6 +981,11 @@ impl AgentChatComposerApp {
         match command {
             AgentChatCommand::OpenHelp => {
                 self.open_help();
+                true
+            }
+            AgentChatCommand::ToggleSidebar => {
+                self.toggle_sidebar();
+                self.close_palette();
                 true
             }
             AgentChatCommand::ScrollHalfPageUp => {
@@ -1234,6 +1253,8 @@ impl AgentChatComposerApp {
     }
 
     fn draw(&mut self, frame: &mut ratatui::Frame) {
+        let (main_area, sidebar_area) =
+            agent_chat_main_and_sidebar_areas(frame.area(), self.sidebar_open);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -1242,7 +1263,7 @@ impl AgentChatComposerApp {
                 Constraint::Length(AGENT_CHAT_COMPOSER_HEIGHT),
                 Constraint::Length(AGENT_CHAT_FOOTER_HEIGHT),
             ])
-            .split(frame.area());
+            .split(main_area);
 
         let header_title = format!(
             "session {} • profile {} • model {}",
@@ -1300,12 +1321,30 @@ impl AgentChatComposerApp {
         frame.render_widget(Clear, chunks[3]);
         frame.render_widget(Paragraph::new(footer).style(dim_style()), chunks[3]);
 
+        if let Some(sidebar_area) = sidebar_area {
+            self.draw_sidebar(frame, sidebar_area);
+        }
+
         if self.palette.open {
             self.draw_palette(frame);
         }
         if self.help_open {
             self.draw_help(frame);
         }
+    }
+
+    fn draw_sidebar(&self, frame: &mut ratatui::Frame, area: Rect) {
+        let sidebar = Paragraph::new(agent_chat_sidebar_lines(
+            &self.status,
+            &self.messages,
+            self.render_mode,
+            self.tool_detail_mode,
+        ))
+        .block(block("Context"))
+        .style(base_style())
+        .wrap(Wrap { trim: false });
+        frame.render_widget(Clear, area);
+        frame.render_widget(sidebar, area);
     }
 
     fn draw_help(&self, frame: &mut ratatui::Frame) {
@@ -1393,6 +1432,94 @@ impl AgentChatComposerApp {
         let mut visible = vec![format!("… {hidden} earlier lines")];
         visible.extend(lines[lines.len().saturating_sub(keep)..].iter().cloned());
         visible
+    }
+}
+
+fn agent_chat_main_and_sidebar_areas(area: Rect, sidebar_open: bool) -> (Rect, Option<Rect>) {
+    if !sidebar_open || area.width < AGENT_CHAT_SIDEBAR_MIN_WIDTH {
+        return (area, None);
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(80),
+            Constraint::Length(AGENT_CHAT_SIDEBAR_WIDTH),
+        ])
+        .split(area);
+    (chunks[0], Some(chunks[1]))
+}
+
+fn agent_chat_sidebar_lines(
+    status: &AgentChatStatus,
+    messages: &[AgentChatMessage],
+    render_mode: AgentChatRenderMode,
+    tool_detail_mode: AgentToolDetailMode,
+) -> Vec<Line<'static>> {
+    let counts = AgentChatMessageCounts::from_messages(messages);
+    vec![
+        Line::from(Span::styled("Session", title_style())),
+        Line::from(Span::styled(
+            format!("id {}", status.session_id),
+            dim_style(),
+        )),
+        Line::from(Span::styled(
+            format!("profile {}", status.profile),
+            dim_style(),
+        )),
+        Line::from(Span::styled(format!("model {}", status.model), dim_style())),
+        Line::from(""),
+        Line::from(Span::styled("Workspace", title_style())),
+        Line::from(Span::styled(status.workspace.clone(), dim_style())),
+        Line::from(""),
+        Line::from(Span::styled("Display", title_style())),
+        Line::from(Span::styled(
+            format!("transcript {}", render_mode.label()),
+            dim_style(),
+        )),
+        Line::from(Span::styled(
+            format!("tools {}", tool_detail_mode.label()),
+            dim_style(),
+        )),
+        Line::from(""),
+        Line::from(Span::styled("Messages", title_style())),
+        Line::from(Span::styled(
+            format!(
+                "{} total · {} user · {} assistant",
+                counts.total, counts.user, counts.assistant
+            ),
+            dim_style(),
+        )),
+        Line::from(Span::styled(
+            format!("{} tool · {} notice", counts.tool, counts.notice),
+            dim_style(),
+        )),
+    ]
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct AgentChatMessageCounts {
+    total: usize,
+    user: usize,
+    assistant: usize,
+    tool: usize,
+    notice: usize,
+}
+
+impl AgentChatMessageCounts {
+    fn from_messages(messages: &[AgentChatMessage]) -> Self {
+        let mut counts = Self {
+            total: messages.len(),
+            ..Self::default()
+        };
+        for message in messages {
+            match message.role {
+                AgentChatRole::User => counts.user += 1,
+                AgentChatRole::Assistant => counts.assistant += 1,
+                AgentChatRole::Tool | AgentChatRole::ToolOutput => counts.tool += 1,
+                AgentChatRole::Thought | AgentChatRole::Notice => counts.notice += 1,
+            }
+        }
+        counts
     }
 }
 
@@ -1490,6 +1617,14 @@ fn agent_chat_command_specs() -> Vec<AgentChatCommandSpec> {
             Some("Ctrl+T"),
             Some("Composer"),
             None,
+        ),
+        agent_chat_command_spec(
+            "View",
+            "Toggle context sidebar",
+            "Show or hide the wide-terminal context sidebar",
+            None,
+            None,
+            Some(AgentChatCommand::ToggleSidebar),
         ),
         agent_chat_command_spec(
             "Session",
@@ -5981,6 +6116,86 @@ mod tests {
         assert_eq!(app.transcript_scroll, 8);
         app.scroll_up();
         assert_eq!(app.transcript_scroll, 0);
+    }
+
+    #[test]
+    fn agent_chat_sidebar_is_hidden_by_default_and_only_appears_on_wide_terminals() {
+        let narrow = Rect::new(0, 0, 100, 30);
+        let wide = Rect::new(0, 0, 140, 30);
+
+        assert_eq!(agent_chat_main_and_sidebar_areas(wide, false), (wide, None));
+        assert_eq!(
+            agent_chat_main_and_sidebar_areas(narrow, true),
+            (narrow, None)
+        );
+
+        let (main, sidebar) = agent_chat_main_and_sidebar_areas(wide, true);
+        assert_eq!(main.width, 106);
+        assert_eq!(sidebar.unwrap().width, AGENT_CHAT_SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn agent_chat_sidebar_toggle_is_palette_runnable() {
+        let mut app = AgentChatComposerApp::new(Vec::new(), test_agent_chat_status("Ready."));
+
+        assert!(!app.sidebar_open);
+        assert!(app.handle_local_palette_command(&AgentChatCommand::ToggleSidebar, 30, 140));
+        assert!(app.sidebar_open);
+        assert_eq!(app.status.notice, "Context sidebar shown.");
+        assert!(app.handle_local_palette_command(&AgentChatCommand::ToggleSidebar, 30, 140));
+        assert!(!app.sidebar_open);
+        assert_eq!(app.status.notice, "Context sidebar hidden.");
+
+        let entries = agent_chat_builtin_command_entries();
+        assert!(entries.iter().any(|entry| {
+            entry.section == "View"
+                && entry.label == "Toggle context sidebar"
+                && entry.command == AgentChatCommand::ToggleSidebar
+        }));
+    }
+
+    #[test]
+    fn agent_chat_sidebar_surfaces_context_without_changing_transcript() {
+        let messages = vec![
+            AgentChatMessage {
+                role: AgentChatRole::User,
+                content: "hello".to_string(),
+            },
+            AgentChatMessage {
+                role: AgentChatRole::Assistant,
+                content: "hi".to_string(),
+            },
+            AgentChatMessage {
+                role: AgentChatRole::Tool,
+                content: "read_file: Cargo.toml".to_string(),
+            },
+            AgentChatMessage {
+                role: AgentChatRole::Notice,
+                content: "Ready".to_string(),
+            },
+        ];
+        let lines = agent_chat_sidebar_lines(
+            &test_agent_chat_status("Ready."),
+            &messages,
+            AgentChatRenderMode::Markdown,
+            AgentToolDetailMode::Collapsed,
+        )
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+        assert!(lines.contains(&"Session".to_string()));
+        assert!(lines.contains(&"profile default".to_string()));
+        assert!(lines.contains(&"model openai/gpt-5.5".to_string()));
+        assert!(lines.contains(&"transcript rendered Markdown".to_string()));
+        assert!(lines.contains(&"tools compact tools".to_string()));
+        assert!(lines.contains(&"4 total · 1 user · 1 assistant".to_string()));
+        assert!(lines.contains(&"1 tool · 1 notice".to_string()));
     }
 
     #[test]

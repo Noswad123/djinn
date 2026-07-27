@@ -875,6 +875,14 @@ The first non-interactive agent slice is implemented as:
     instead of hard-coding palette constants at each call site. Catppuccin
     constants remain the default palette values and can still support legacy code
     during incremental migration.
+55. Agent chat has an optional right-side Context sidebar, hidden by default and
+    toggleable from the command palette. It only renders on wide terminals so the
+    transcript remains copy-friendly by default and the main transcript/composer
+    layout remains unchanged on narrower terminals. The initial sidebar projection
+    is read-only session context: session id, profile/model, workspace, display
+    modes, and message counts. Future active tools, child sessions, permissions,
+    memories, or workspace health can extend that sidebar without adding more
+    persistent footer/header noise.
 
 Not in the first slice unless explicitly reopened:
 
