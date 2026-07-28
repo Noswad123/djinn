@@ -135,6 +135,13 @@ status <dir>`. Status reports manifest/native-session linkage, profile/model /
 workspace defaults, repo symlink health, expected file presence, turn count, and
 the same shallow-context ingest/skip summary used by `djinn ask --session-dir`.
 
+Bare session names are cache-backed for lightweight exploratory work: `djinn
+session init small-question` resolves to Djinn's cache session root
+(`$DJINN_CACHE_DIR/sessions/small-question`, or the default cache dir equivalent).
+Explicit absolute paths, `./relative` paths, and paths containing separators stay
+filesystem paths. Durable context that should survive a session should graduate
+into repo docs, AGENTS.md, or another repo/harness-owned context location.
+
 Ready follow-up slices:
 
 - Continue removing `agent` from non-chat user-facing paths while keeping legacy

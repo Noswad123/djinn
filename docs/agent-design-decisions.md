@@ -1007,6 +1007,14 @@ The first non-interactive agent slice is implemented as:
     manifest defaults, repo symlink health, expected file presence, turn count,
     and shallow context ingest/skip counts without running a model or mutating the
     session folder.
+71. Bare folder-session names resolve under Djinn's cache directory, not the
+    current working directory. For example `djinn session init small-question` and
+    `djinn ask --session-dir small-question` target
+    `$DJINN_CACHE_DIR/sessions/small-question` (or Djinn's default cache dir when
+    `DJINN_CACHE_DIR` is unset). Absolute paths, `./relative` paths, and paths
+    containing separators remain explicit filesystem paths. This keeps lightweight
+    exploratory sessions from piling up in repos while preserving explicit path
+    control for durable/project-owned session folders.
 
 Not in the first slice unless explicitly reopened:
 

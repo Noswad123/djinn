@@ -4,7 +4,7 @@ use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, IsTerminal, Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -149,7 +149,7 @@ enum SessionCommand {
 
 #[derive(Debug, Args)]
 struct SessionInitArgs {
-    /// Session directory to create or update.
+    /// Session name or directory to create or update. Bare names live under Djinn's cache session root.
     dir: PathBuf,
     /// Target repository to link into context/<repo-name> and use for repo-local config.
     #[arg(long = "link-repo")]
@@ -173,7 +173,7 @@ struct SessionInitArgs {
 
 #[derive(Debug, Args)]
 struct SessionCompactArgs {
-    /// Folder-backed session directory containing turns/ and context/.
+    /// Folder-backed session name or directory containing turns/ and context/.
     #[arg(long = "session-dir")]
     session_dir: PathBuf,
     /// Output path. Defaults to <session-dir>/context/compacted.md.
@@ -186,7 +186,7 @@ struct SessionCompactArgs {
 
 #[derive(Debug, Args)]
 struct SessionStatusArgs {
-    /// Folder-backed session directory to inspect.
+    /// Folder-backed session name or directory to inspect.
     dir: PathBuf,
     /// Output JSON instead of text.
     #[arg(long)]
@@ -1568,7 +1568,7 @@ struct AgentAskArgs {
     /// Existing Djinn agent session id to append this ask turn to.
     #[arg(long = "session-id")]
     session_id: Option<String>,
-    /// Folder-backed session directory. If prompt is omitted, reads request.md from this directory.
+    /// Folder-backed session name or directory. Bare names live under Djinn's cache session root.
     #[arg(long = "session-dir")]
     session_dir: Option<PathBuf>,
     /// Human-friendly session title. Defaults to a trimmed prompt preview.
@@ -8313,9 +8313,24 @@ fn resolve_agent_request_prompt(
 
 fn resolve_session_dir(path: &Path) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {
-        bail!("session directory path cannot be empty");
+        bail!("session name or directory path cannot be empty");
+    }
+    if is_named_folder_session_reference(path) {
+        return Ok(default_folder_session_root().join(path));
     }
     Ok(path.to_path_buf())
+}
+
+fn default_folder_session_root() -> PathBuf {
+    djinn_core::default_cache_dir().join("sessions")
+}
+
+fn is_named_folder_session_reference(path: &Path) -> bool {
+    if path.is_absolute() {
+        return false;
+    }
+    let mut components = path.components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8489,11 +8504,15 @@ fn resolve_session_reference_id(value: &str) -> Result<AgentSessionId> {
         bail!("session id or directory cannot be empty");
     }
     let path = Path::new(trimmed);
-    if path.join("djinn.toml").exists() {
-        if let Some(id) = session_id_from_session_dir(path)? {
+    let session_dir = resolve_session_dir(path)?;
+    if session_dir.join("djinn.toml").exists() {
+        if let Some(id) = session_id_from_session_dir(&session_dir)? {
             return Ok(id);
         }
-        bail!("session directory has no session_id: {}", path.display());
+        bail!(
+            "session directory has no session_id: {}",
+            session_dir.display()
+        );
     }
     Ok(AgentSessionId::new(trimmed.to_string()))
 }
@@ -20357,6 +20376,22 @@ link = "context/repo"
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_dir_resolution_uses_cache_root_for_bare_names_only() {
+        assert_eq!(
+            resolve_session_dir(Path::new("small-question")).unwrap(),
+            default_folder_session_root().join("small-question")
+        );
+        assert_eq!(
+            resolve_session_dir(Path::new("./small-question")).unwrap(),
+            PathBuf::from("./small-question")
+        );
+        assert_eq!(
+            resolve_session_dir(Path::new("nested/small-question")).unwrap(),
+            PathBuf::from("nested/small-question")
+        );
     }
 
     #[test]
