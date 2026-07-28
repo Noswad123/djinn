@@ -1031,6 +1031,12 @@ The first non-interactive agent slice is implemented as:
     default. Supported targets are `summary`, `request`, `context`, `compacted`,
     `turns`, `manifest`, and `repo`; `repo` resolves through `[context.repo]` in
     `djinn.toml` or a unique repo symlink under `context/`.
+75. `djinn session rm <name-or-path>` removes the folder-backed session without a
+    `--force` ceremony. If `djinn.toml` records a native `session_id`, Djinn also
+    removes that native JSONL session. To avoid accidental arbitrary directory
+    deletion, explicit directories without `djinn.toml` are rejected; cache-backed
+    bare-name session folders remain easy to remove because they live under the
+    disposable session cache root.
 
 Not in the first slice unless explicitly reopened:
 

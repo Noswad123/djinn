@@ -151,6 +151,9 @@ scaffolded metadata with `--force`; Djinn does not auto-suffix duplicate names.
 `djinn session open <name-or-path> [summary|request|context|compacted|turns|manifest|repo]`
 opens the common session artifacts in `$VISUAL`, `$EDITOR`, or `nvim`, completing
 the file-first loop without adding chat behavior.
+`djinn session rm <name-or-path>` removes the folder-backed session and its linked
+native session id when present, without requiring `--force`; explicit directories
+without `djinn.toml` are refused as a safety guard.
 
 Ready follow-up slices:
 
