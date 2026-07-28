@@ -1019,7 +1019,10 @@ The first non-interactive agent slice is implemented as:
     cache session root. Djinn does not keep a separate persistent folder-session
     index; external explicit-path sessions are discoverable by their filesystem
     location and can be inspected directly with `djinn session status <path>`.
-    This avoids stale index state when users manually move or rename folders.
+    This avoids stale index state when users manually move or rename folders. The
+    listing includes created/updated timestamps, using native session metadata
+    when available and folder metadata as a fallback, so duplicate-looking prompt
+    names can be distinguished.
 73. Cache-backed folder session names are unique by resolved path. Re-running
     `djinn session init <name>` is idempotent when the existing `djinn.toml`
     identity matches the requested profile/agent/model/workspace/repo. If the

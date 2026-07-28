@@ -5642,11 +5642,14 @@ struct FolderSessionSummary {
     manifest_exists: bool,
     session_id: Option<String>,
     native_session_exists: bool,
+    created_at: Option<String>,
+    updated_at: Option<String>,
     workspace: Option<String>,
     repo_path: Option<String>,
     request_md: bool,
     summary_md: bool,
     turn_count: usize,
+    modified_at: Option<String>,
     modified_at_ms: Option<i64>,
 }
 
@@ -6042,9 +6045,23 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
     let session_id = manifest
         .as_ref()
         .and_then(|manifest| manifest.session_id.clone());
-    let native_session_exists = session_id
+    let native_session = session_id
         .as_ref()
-        .is_some_and(|id| agent_session_store().load_session(id).is_ok());
+        .and_then(|id| agent_session_store().load_session(id).ok());
+    let native_session_exists = native_session.is_some();
+    let created_at = native_session
+        .as_ref()
+        .and_then(|session| non_empty_string(&session.meta.created_at))
+        .or_else(|| {
+            manifest
+                .as_ref()
+                .and_then(|manifest| non_empty_string(manifest.created_at.as_deref().unwrap_or("")))
+        });
+    let updated_at = native_session
+        .as_ref()
+        .and_then(latest_agent_session_event_created_at)
+        .or_else(|| created_at.clone())
+        .or_else(|| folder_session_modified_at(path));
     Ok(FolderSessionSummary {
         name: path
             .file_name()
@@ -6055,6 +6072,8 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         manifest_exists: path.join("djinn.toml").exists(),
         session_id: session_id.map(|id| id.to_string()),
         native_session_exists,
+        created_at,
+        updated_at,
         workspace: manifest
             .as_ref()
             .and_then(|manifest| manifest.workspace.clone()),
@@ -6064,8 +6083,37 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         request_md: path.join("request.md").exists(),
         summary_md: path.join("summary.md").exists(),
         turn_count: read_folder_session_turns(&path.join("turns"))?.len(),
+        modified_at: folder_session_modified_at(path),
         modified_at_ms: folder_session_modified_at_ms(path),
     })
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn latest_agent_session_event_created_at(session: &AgentSession) -> Option<String> {
+    session
+        .events
+        .iter()
+        .rev()
+        .map(|event| event.created_at.trim().to_string())
+        .find(|created_at| !created_at.is_empty())
+}
+
+fn folder_session_modified_at(path: &Path) -> Option<String> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .map(|modified| {
+            let datetime: chrono::DateTime<chrono::Local> = modified.into();
+            datetime.to_rfc3339()
+        })
 }
 
 fn folder_session_modified_at_ms(path: &Path) -> Option<i64> {
@@ -6101,6 +6149,23 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
         } else if let Some(repo_path) = &session.repo_path {
             details.push(format!("repo: {repo_path}"));
         }
+        if let Some(created_at) = &session.created_at {
+            details.push(format!(
+                "created: {}",
+                compact_session_list_datetime(created_at)
+            ));
+        }
+        if let Some(updated_at) = &session.updated_at {
+            details.push(format!(
+                "updated: {}",
+                compact_session_list_datetime(updated_at)
+            ));
+        } else if let Some(modified_at) = &session.modified_at {
+            details.push(format!(
+                "modified: {}",
+                compact_session_list_datetime(modified_at)
+            ));
+        }
         details.push(format!("turns: {}", session.turn_count));
         lines.push(format!(
             "  {}. {}{} — {}",
@@ -6121,6 +6186,24 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
     ));
     lines.push(String::new());
     lines.join("\n")
+}
+
+fn compact_session_list_datetime(value: &str) -> String {
+    value
+        .split_once('.')
+        .map(|(prefix, suffix)| {
+            let timezone = if suffix.ends_with('Z') {
+                "Z"
+            } else {
+                suffix
+                    .rfind('+')
+                    .or_else(|| suffix.rfind('-'))
+                    .map(|idx| &suffix[idx..])
+                    .unwrap_or("")
+            };
+            format!("{prefix}{timezone}")
+        })
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn resolve_folder_session_open_target(dir: &Path, target: SessionOpenTarget) -> Result<PathBuf> {
@@ -8861,6 +8944,12 @@ fn write_agent_session_toml(session_dir: &Path, session: &AgentSession) -> Resul
         "session_id = {}\n",
         toml_string(&session.id.to_string())?
     ));
+    if !session.meta.created_at.trim().is_empty() {
+        output.push_str(&format!(
+            "created_at = {}\n",
+            toml_string(&session.meta.created_at)?
+        ));
+    }
     output.push_str(&format!("title = {}\n", toml_string(&session.meta.title)?));
     output.push_str(&format!(
         "workspace = {}\n",
@@ -8936,6 +9025,7 @@ fn agent_session_turn_dir_name() -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct FolderSessionManifest {
     session_id: Option<AgentSessionId>,
+    created_at: Option<String>,
     profile: Option<String>,
     agent: Option<String>,
     model: Option<String>,
@@ -8957,6 +9047,7 @@ fn read_folder_session_manifest(session_dir: &Path) -> Result<Option<FolderSessi
 fn parse_folder_session_manifest(manifest: &str) -> FolderSessionManifest {
     FolderSessionManifest {
         session_id: manifest_root_string_value(manifest, "session_id").map(AgentSessionId::new),
+        created_at: manifest_root_string_value(manifest, "created_at"),
         profile: manifest_root_string_value(manifest, "profile"),
         agent: manifest_root_string_value(manifest, "agent"),
         model: manifest_root_string_value(manifest, "model"),
@@ -20798,7 +20889,7 @@ link = "context/repo"
         fs::create_dir_all(beta.join("turns")).unwrap();
         fs::write(
             alpha.join("djinn.toml"),
-            "session_id = \"agt_alpha\"\nworkspace = \"/tmp/workspace\"\n\n[context.repo]\npath = \"/tmp/repo\"\n",
+            "session_id = \"agt_alpha\"\ncreated_at = \"2026-07-27T12:34:56.123-04:00\"\nworkspace = \"/tmp/workspace\"\n\n[context.repo]\npath = \"/tmp/repo\"\n",
         )
         .unwrap();
         fs::write(alpha.join("request.md"), "request\n").unwrap();
@@ -20811,6 +20902,10 @@ link = "context/repo"
         assert_eq!(report.sessions.len(), 2);
         assert_eq!(report.sessions[0].name, "alpha");
         assert_eq!(report.sessions[0].session_id.as_deref(), Some("agt_alpha"));
+        assert_eq!(
+            report.sessions[0].created_at.as_deref(),
+            Some("2026-07-27T12:34:56.123-04:00")
+        );
         assert_eq!(report.sessions[0].turn_count, 1);
         assert!(report.sessions[0].request_md);
         assert!(report.sessions[0].summary_md);
@@ -20818,12 +20913,25 @@ link = "context/repo"
         assert!(!report.sessions[1].manifest_exists);
         assert!(text.contains("Cache folder sessions:"));
         assert!(text.contains("alpha"));
+        assert!(text.contains("created: 2026-07-27T12:34:56-04:00"));
         assert!(text.contains("beta (no manifest)"));
 
         let limited = list_folder_sessions_in_root(&root, Some(1)).unwrap();
         assert_eq!(limited.sessions.len(), 1);
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_list_datetime_compaction_removes_fractional_seconds() {
+        assert_eq!(
+            compact_session_list_datetime("2026-07-27T12:34:56.123-04:00"),
+            "2026-07-27T12:34:56-04:00"
+        );
+        assert_eq!(
+            compact_session_list_datetime("2026-07-27T16:34:56.123Z"),
+            "2026-07-27T16:34:56Z"
+        );
     }
 
     #[test]
