@@ -154,6 +154,10 @@ the file-first loop without adding chat behavior.
 `djinn session rm <name-or-path>` removes the folder-backed session and its linked
 native session id when present, without requiring `--force`; explicit directories
 without `djinn.toml` are refused as a safety guard.
+Plain `djinn ask "..."` now creates a cache-backed folder session automatically
+with a prompt slug plus native session id. `--session-dir` and its friendlier
+`--session` alias keep explicit folder control; `--session-id` appends to an
+existing native session without creating a new folder.
 
 Ready follow-up slices:
 

@@ -1617,7 +1617,7 @@ struct AgentAskArgs {
     #[arg(long = "session-id")]
     session_id: Option<String>,
     /// Folder-backed session name or directory. Bare names live under Djinn's cache session root.
-    #[arg(long = "session-dir")]
+    #[arg(long = "session-dir", alias = "session")]
     session_dir: Option<PathBuf>,
     /// Human-friendly session title. Defaults to a trimmed prompt preview.
     #[arg(long)]
@@ -2569,7 +2569,7 @@ fn main() -> Result<()> {
         Command::Open(args) => run_open(args),
         Command::Config(args) => run_config(args),
         Command::Auth(args) => run_auth(args),
-        Command::Ask(args) => agent_ask(args),
+        Command::Ask(args) => top_level_ask(args),
         Command::Session(args) => run_session(args),
         Command::Agent(args) => run_agent(args),
         Command::Agents(args) => run_agents(args),
@@ -5538,7 +5538,7 @@ fn run_agent(args: AgentArgs) -> Result<()> {
         AgentCommand::Policy(args) => run_agent_policy(args),
         AgentCommand::Session(args) => run_agent_session(args),
         AgentCommand::FileHistory(args) => run_agent_file_history(args),
-        AgentCommand::Ask(args) => agent_ask(args),
+        AgentCommand::Ask(args) => legacy_agent_ask(args),
         AgentCommand::Chat(args) => run_interactive_app(args),
     }
 }
@@ -8749,6 +8749,46 @@ fn default_folder_session_root() -> PathBuf {
     djinn_core::default_cache_dir().join("sessions")
 }
 
+fn auto_folder_session_dir(prompt: &str, id: &AgentSessionId) -> PathBuf {
+    let title = prompt_title(prompt, "session");
+    default_folder_session_root().join(format!("{}-{}", folder_session_slug(&title), id))
+}
+
+fn folder_session_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash && !slug.is_empty() {
+            slug.push('-');
+            last_dash = true;
+        }
+        if slug.len() >= 48 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "session".to_string()
+    } else {
+        slug
+    }
+}
+
+fn ensure_folder_session_readme(session_dir: &Path) -> Result<()> {
+    let context_dir = session_dir.join("context");
+    let readme_path = context_dir.join("README.md");
+    if readme_path.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(&context_dir)
+        .with_context(|| format!("creating context directory {}", context_dir.display()))?;
+    fs::write(&readme_path, session_context_readme(None, Path::new("")))
+        .with_context(|| format!("writing {}", readme_path.display()))
+}
+
 fn is_named_folder_session_reference(path: &Path) -> bool {
     if path.is_absolute() {
         return false;
@@ -8830,6 +8870,14 @@ fn write_agent_session_toml(session_dir: &Path, session: &AgentSession) -> Resul
         "profile = {}\n",
         toml_string(&session.meta.profile)?
     ));
+    if let Some(runtime_config) = &session.meta.runtime_config {
+        if !runtime_config.model.trim().is_empty() {
+            output.push_str(&format!(
+                "model = {}\n",
+                toml_string(&runtime_config.model)?
+            ));
+        }
+    }
     if let Some(agent_name) = &session.meta.agent_name {
         output.push_str(&format!("agent = {}\n", toml_string(agent_name)?));
     }
@@ -9127,12 +9175,28 @@ fn is_folder_session_context_text_file(path: &Path) -> bool {
     )
 }
 
-fn agent_ask(args: AgentAskArgs) -> Result<()> {
+fn top_level_ask(args: AgentAskArgs) -> Result<()> {
+    agent_ask(args, true)
+}
+
+fn legacy_agent_ask(args: AgentAskArgs) -> Result<()> {
+    agent_ask(args, false)
+}
+
+fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
     let session_dir = args
         .session_dir
         .as_deref()
         .map(resolve_session_dir)
         .transpose()?;
+    let should_auto_folder_session = auto_folder_session
+        && session_dir.is_none()
+        && args
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .is_none();
     let folder_manifest = session_dir
         .as_deref()
         .map(read_folder_session_manifest)
@@ -9344,13 +9408,17 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
         }
     };
     let session = store.load_session(&id)?;
-    if let Some(session_dir) = &session_dir {
+    let projected_session_dir = session_dir
+        .clone()
+        .or_else(|| should_auto_folder_session.then(|| auto_folder_session_dir(&prompt, &id)));
+    if let Some(session_dir) = &projected_session_dir {
         project_agent_session_dir(
             session_dir,
             &session,
             &prompt,
             response.message.content.trim_end(),
         )?;
+        ensure_folder_session_readme(session_dir)?;
     }
     if args.json {
         println!(
@@ -9361,12 +9429,16 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
                 "model": model,
                 "response": response,
                 "session": session,
+                "session_dir": projected_session_dir,
             }))?
         );
     } else {
         println!("{}", response.message.content);
         println!("\nAgent session [{}]: {}", id, session.meta.title);
         println!("Path: {}", store.session_file_path(&id).display());
+        if let Some(session_dir) = &projected_session_dir {
+            println!("Session dir: {}", session_dir.display());
+        }
     }
     Ok(())
 }
@@ -18779,6 +18851,12 @@ mod tests {
             Some(Path::new("/tmp/folder-session"))
         );
 
+        let cli = Cli::try_parse_from(["djinn", "ask", "hi", "--session", "quick-note"]).unwrap();
+        let Some(Command::Ask(args)) = cli.command else {
+            panic!("expected top-level ask command");
+        };
+        assert_eq!(args.session_dir.as_deref(), Some(Path::new("quick-note")));
+
         let cli = Cli::try_parse_from(["djinn", "session", "list", "--limit", "5"]).unwrap();
         let Some(Command::Session(session_args)) = cli.command else {
             panic!("expected session command");
@@ -21017,6 +21095,16 @@ link = "context/repo"
             resolve_session_dir(Path::new("nested/small-question")).unwrap(),
             PathBuf::from("nested/small-question")
         );
+    }
+
+    #[test]
+    fn auto_folder_session_dir_uses_prompt_slug_and_session_id_under_cache_root() {
+        let id = AgentSessionId::new("agt_auto_123");
+        assert_eq!(
+            auto_folder_session_dir("Small question: explain Rust?", &id),
+            default_folder_session_root().join("small-question-explain-rust-agt_auto_123")
+        );
+        assert_eq!(folder_session_slug("🧠"), "session");
     }
 
     #[test]

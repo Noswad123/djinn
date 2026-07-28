@@ -1037,6 +1037,13 @@ The first non-interactive agent slice is implemented as:
     deletion, explicit directories without `djinn.toml` are rejected; cache-backed
     bare-name session folders remain easy to remove because they live under the
     disposable session cache root.
+76. Plain top-level `djinn ask "..."` creates and projects a cache-backed folder
+    session automatically, using a prompt slug plus native session id under the
+    cache session root. Explicit `--session-dir` / `--session <name-or-path>` keep
+    using the requested folder, and explicit `--session-id` appends to the native
+    session without inventing a new folder. Legacy `djinn agent ask` keeps its
+    compatibility behavior and only projects a folder when `--session-dir` is
+    supplied.
 
 Not in the first slice unless explicitly reopened:
 
