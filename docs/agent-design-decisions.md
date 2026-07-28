@@ -971,6 +971,14 @@ The first non-interactive agent slice is implemented as:
     the strongest explicit context. The repo appears as a symlink under
     `context/<repo-name>` and is recorded in `djinn.toml` as a live reference, not
     as a command to ingest the whole tree.
+66. The CLI should gradually remove the user-facing need to type `agent` for the
+    common path. `djinn ask` is the preferred shorthand for `djinn agent ask` and
+    creates a native Djinn session by default using the effective global +
+    repo-local config for the current workspace. `--session-id` appends a turn to
+    an existing native session. `--session-dir` reads/writes the folder-backed
+    capsule and, when its `djinn.toml` already records a `session_id`, resumes that
+    existing native session; otherwise a successful ask can create/project the
+    folder as a new session capsule.
 
 Not in the first slice unless explicitly reopened:
 

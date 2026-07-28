@@ -7846,6 +7846,10 @@ fn project_agent_session_dir(
 }
 
 fn write_agent_session_toml(session_dir: &Path, session: &AgentSession) -> Result<()> {
+    let manifest_path = session_dir.join("djinn.toml");
+    let preserved_context = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|content| preserve_manifest_context_sections(&content));
     let mut output = String::new();
     output.push_str(&format!(
         "session_id = {}\n",
@@ -7867,8 +7871,30 @@ fn write_agent_session_toml(session_dir: &Path, session: &AgentSession) -> Resul
         "source = {}\n",
         toml_string(&session.meta.source)?
     ));
-    fs::write(session_dir.join("djinn.toml"), output)
-        .with_context(|| format!("writing {}", session_dir.join("djinn.toml").display()))
+    if let Some(context) = preserved_context {
+        output.push('\n');
+        output.push_str(&context);
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+    fs::write(&manifest_path, output)
+        .with_context(|| format!("writing {}", manifest_path.display()))
+}
+
+fn preserve_manifest_context_sections(manifest: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    let mut preserving = false;
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[context") {
+            preserving = true;
+        }
+        if preserving {
+            lines.push(line.to_string());
+        }
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 fn toml_string(value: &str) -> Result<String> {
@@ -7939,66 +7965,85 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
             .flatten(),
     };
 
-    let (id, workspace, profile, model, system_instructions, allowed_tools) =
-        if let Some(id) = requested_session_id {
-            let session = store
-                .load_session(&id)
-                .with_context(|| format!("loading agent session {id}"))?;
-            let workspace = if session.meta.workspace.trim().is_empty() {
-                resolve_agent_workspace(None)?
-            } else {
-                session.meta.workspace.clone()
-            };
-            let requested_profile = if session.meta.profile.trim().is_empty() {
-                args.profile.clone()
-            } else {
-                session.meta.profile.clone()
-            };
-            let selection = resolve_agent_role_selection(
-                args.agent.clone().or_else(|| session.meta.agent_name.clone()),
-                &requested_profile,
-                args.model.clone().or_else(|| latest_session_model(&session)),
-            )?;
-            let profile = selection.profile;
-            let model = resolve_agent_model(selection.model.clone(), &profile)?;
-            let system_instructions =
-                resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
-            (id, workspace, profile, model, system_instructions, selection.tools)
+    let (id, workspace, profile, model, system_instructions, allowed_tools) = if let Some(id) =
+        requested_session_id
+    {
+        let session = store
+            .load_session(&id)
+            .with_context(|| format!("loading agent session {id}"))?;
+        let workspace = if session.meta.workspace.trim().is_empty() {
+            resolve_agent_workspace(None)?
         } else {
-            let selection =
-                resolve_agent_role_selection(args.agent.clone(), &args.profile, args.model.clone())?;
-            let profile = selection.profile;
-            let model = resolve_agent_model(selection.model.clone(), &profile)?;
-            let parent_session_id = parent_session_id_from_arg(args.parent_session.clone());
-            validate_agent_child_session_depth(&store, parent_session_id.as_ref())?;
-            let title = args
-                .title
-                .clone()
-                .unwrap_or_else(|| prompt_title(&prompt, "Djinn prompt"));
-            let workspace = resolve_agent_workspace(args.workspace.clone())?;
-            let system_instructions =
-                resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
-            let effective_config = agent_effective_config_from_parts(
-                workspace.clone(),
-                profile.clone(),
-                model.clone(),
-                selection.agent_name.clone(),
-                selection.instructions.clone(),
-                selection.tools.clone(),
-            )?;
-            let meta = AgentSessionMeta {
-                title,
-                workspace: workspace.clone(),
-                profile: profile.clone(),
-                agent_name: selection.agent_name,
-                parent_session_id,
-                source: "djinn".to_string(),
-                runtime_config: Some(agent_session_runtime_config(&effective_config)),
-                ..AgentSessionMeta::default()
-            };
-            let id = store.create_session(meta)?;
-            (id, workspace, profile, model, system_instructions, selection.tools)
+            session.meta.workspace.clone()
         };
+        let requested_profile = if session.meta.profile.trim().is_empty() {
+            args.profile.clone()
+        } else {
+            session.meta.profile.clone()
+        };
+        let selection = resolve_agent_role_selection(
+            args.agent
+                .clone()
+                .or_else(|| session.meta.agent_name.clone()),
+            &requested_profile,
+            args.model
+                .clone()
+                .or_else(|| latest_session_model(&session)),
+        )?;
+        let profile = selection.profile;
+        let model = resolve_agent_model(selection.model.clone(), &profile)?;
+        let system_instructions =
+            resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
+        (
+            id,
+            workspace,
+            profile,
+            model,
+            system_instructions,
+            selection.tools,
+        )
+    } else {
+        let selection =
+            resolve_agent_role_selection(args.agent.clone(), &args.profile, args.model.clone())?;
+        let profile = selection.profile;
+        let model = resolve_agent_model(selection.model.clone(), &profile)?;
+        let parent_session_id = parent_session_id_from_arg(args.parent_session.clone());
+        validate_agent_child_session_depth(&store, parent_session_id.as_ref())?;
+        let title = args
+            .title
+            .clone()
+            .unwrap_or_else(|| prompt_title(&prompt, "Djinn prompt"));
+        let workspace = resolve_agent_workspace(args.workspace.clone())?;
+        let system_instructions =
+            resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
+        let effective_config = agent_effective_config_from_parts(
+            workspace.clone(),
+            profile.clone(),
+            model.clone(),
+            selection.agent_name.clone(),
+            selection.instructions.clone(),
+            selection.tools.clone(),
+        )?;
+        let meta = AgentSessionMeta {
+            title,
+            workspace: workspace.clone(),
+            profile: profile.clone(),
+            agent_name: selection.agent_name,
+            parent_session_id,
+            source: "djinn".to_string(),
+            runtime_config: Some(agent_session_runtime_config(&effective_config)),
+            ..AgentSessionMeta::default()
+        };
+        let id = store.create_session(meta)?;
+        (
+            id,
+            workspace,
+            profile,
+            model,
+            system_instructions,
+            selection.tools,
+        )
+    };
 
     store.append_event(
         &id,
@@ -17444,6 +17489,26 @@ mod tests {
         assert_eq!(args.model.as_deref(), Some("repo-model"));
         assert!(args.force);
         assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "ask",
+            "continue here",
+            "--session-id",
+            "agt_existing",
+            "--session-dir",
+            "/tmp/folder-session",
+        ])
+        .unwrap();
+        let Some(Command::Ask(args)) = cli.command else {
+            panic!("expected top-level ask command");
+        };
+        assert_eq!(args.prompt.as_deref(), Some("continue here"));
+        assert_eq!(args.session_id.as_deref(), Some("agt_existing"));
+        assert_eq!(
+            args.session_dir.as_deref(),
+            Some(Path::new("/tmp/folder-session"))
+        );
     }
 
     #[test]
@@ -19144,6 +19209,46 @@ mod tests {
         assert!(!dir.join("logs/summary-history.md").exists());
         assert!(!dir.join("logs/events.jsonl").exists());
         assert!(!dir.join("logs/transcript.md").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_backed_session_projection_preserves_context_manifest_sections() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-folder-manifest-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("djinn.toml"),
+            "version = 1\nprofile = \"work\"\n\n[context]\npath = \"context\"\n\n[context.repo]\npath = \"/tmp/repo\"\nlink = \"context/repo\"\n",
+        )
+        .unwrap();
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_manifest"),
+            meta: AgentSessionMeta {
+                title: "Folder session".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "work".to_string(),
+                source: "djinn".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: Vec::new(),
+        };
+
+        project_agent_session_dir(&dir, &session, "request", "summary").unwrap();
+        let manifest = fs::read_to_string(dir.join("djinn.toml")).unwrap();
+
+        assert!(manifest.contains("session_id = \"agt_manifest\""));
+        assert!(manifest.contains("[context]\npath = \"context\""));
+        assert!(manifest.contains("[context.repo]\npath = \"/tmp/repo\""));
+        assert_eq!(
+            session_id_from_session_dir(&dir).unwrap(),
+            Some(AgentSessionId::new("agt_manifest"))
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
