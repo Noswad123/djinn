@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -127,7 +127,15 @@ struct AuthArgs {
 #[derive(Debug, Args)]
 struct SessionArgs {
     #[command(subcommand)]
-    command: SessionCommand,
+    command: Option<SessionCommand>,
+    /// Folder-backed session name or directory for convenience actions.
+    dir: Option<PathBuf>,
+    /// Open the session summary without spelling `session open`.
+    #[arg(long)]
+    open: bool,
+    /// Editor command for --open. Defaults to VISUAL, then EDITOR, then nvim.
+    #[arg(long)]
+    editor: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -5311,6 +5319,23 @@ fn warn_legacy_agent_command(command: &str, replacement: Option<&str>) {
 
 fn run_session(args: SessionArgs) -> Result<()> {
     match args.command {
+        Some(command) => run_session_command(command),
+        None if args.open => {
+            let dir = args
+                .dir
+                .ok_or_else(|| anyhow!("session name or directory is required for --open"))?;
+            session_open(SessionOpenArgs {
+                dir,
+                target: SessionOpenTarget::Summary,
+                editor: args.editor,
+            })
+        }
+        None => bail!("expected a session command or `djinn session <name-or-path> --open`"),
+    }
+}
+
+fn run_session_command(command: SessionCommand) -> Result<()> {
+    match command {
         SessionCommand::Init(args) => session_init(args),
         SessionCommand::Compact(args) => session_compact(args),
         SessionCommand::Status(args) => session_status(args),
@@ -5411,6 +5436,7 @@ struct FolderSessionSummary {
     repo_path: Option<String>,
     request_md: bool,
     summary_md: bool,
+    summary_preview: Option<String>,
     turn_count: usize,
     modified_at: Option<String>,
     modified_at_ms: Option<i64>,
@@ -5782,9 +5808,10 @@ fn list_folder_sessions_in_root(root: &Path, limit: Option<usize>) -> Result<Ses
                 continue;
             }
             summaries.push(folder_session_summary(&path)?);
-            if limit.is_some_and(|limit| summaries.len() >= limit) {
-                break;
-            }
+        }
+        summaries.sort_by(folder_session_summary_order);
+        if let Some(limit) = limit {
+            summaries.truncate(limit);
         }
     }
     Ok(SessionLsReport {
@@ -5835,10 +5862,53 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
             .and_then(|manifest| manifest.repo_path.clone()),
         request_md: path.join("request.md").exists(),
         summary_md: path.join("summary.md").exists(),
+        summary_preview: folder_session_summary_preview(path),
         turn_count: read_folder_session_turns(&path.join("turns"))?.len(),
         modified_at: folder_session_modified_at(path),
         modified_at_ms: folder_session_modified_at_ms(path),
     })
+}
+
+fn folder_session_summary_order(
+    left: &FolderSessionSummary,
+    right: &FolderSessionSummary,
+) -> std::cmp::Ordering {
+    folder_session_repo_sort_key(left)
+        .cmp(&folder_session_repo_sort_key(right))
+        .then_with(|| {
+            folder_session_recency_sort_key(right).cmp(&folder_session_recency_sort_key(left))
+        })
+        .then_with(|| left.name.cmp(&right.name))
+}
+
+fn folder_session_repo_sort_key(session: &FolderSessionSummary) -> String {
+    session
+        .repo_path
+        .as_deref()
+        .or(session.workspace.as_deref())
+        .unwrap_or("~")
+        .to_ascii_lowercase()
+}
+
+fn folder_session_recency_sort_key(session: &FolderSessionSummary) -> i64 {
+    session
+        .updated_at
+        .as_deref()
+        .and_then(parse_session_list_datetime_ms)
+        .or(session.modified_at_ms)
+        .unwrap_or(0)
+}
+
+fn folder_session_summary_preview(path: &Path) -> Option<String> {
+    let summary = fs::read_to_string(path.join("summary.md")).ok()?;
+    let preview = summary
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?
+        .chars()
+        .take(80)
+        .collect::<String>();
+    Some(preview)
 }
 
 fn load_folder_native_agent_session(
@@ -5945,6 +6015,12 @@ fn folder_session_modified_at_ms(path: &Path) -> Option<i64> {
         .map(|duration| duration.as_millis() as i64)
 }
 
+fn parse_session_list_datetime_ms(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value.trim())
+        .ok()
+        .map(|datetime| datetime.timestamp_millis())
+}
+
 fn format_folder_session_ls(report: &SessionLsReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!("Cache folder sessions: {}", report.root));
@@ -5953,53 +6029,44 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
         lines.push(String::new());
         return lines.join("\n");
     }
-    for (index, session) in report.sessions.iter().enumerate() {
-        let mut details = Vec::new();
-        if let Some(session_id) = &session.session_id {
-            details.push(format!(
-                "native: {session_id} ({})",
-                if session.native_session_exists {
-                    "found"
-                } else {
-                    "missing"
-                }
-            ));
-        }
-        if let Some(workspace) = &session.workspace {
-            details.push(format!("workspace: {workspace}"));
-        } else if let Some(repo_path) = &session.repo_path {
-            details.push(format!("repo: {repo_path}"));
-        }
-        if let Some(created_at) = &session.created_at {
-            details.push(format!(
-                "created: {}",
-                compact_session_list_datetime(created_at)
-            ));
-        }
-        if let Some(updated_at) = &session.updated_at {
-            details.push(format!(
-                "updated: {}",
-                compact_session_list_datetime(updated_at)
-            ));
-        } else if let Some(modified_at) = &session.modified_at {
-            details.push(format!(
-                "modified: {}",
-                compact_session_list_datetime(modified_at)
-            ));
-        }
-        details.push(format!("turns: {}", session.turn_count));
+    lines.push(format!(
+        "  {:<24} {:<20} {:>5}  {:<32} {}",
+        "REPO", "UPDATED", "TURNS", "NAME", "SUMMARY"
+    ));
+    lines.push(format!("  {}", "-".repeat(100)));
+    for session in &report.sessions {
+        let repo = session
+            .repo_path
+            .as_deref()
+            .or(session.workspace.as_deref())
+            .map(short_folder_session_path)
+            .unwrap_or_else(|| "-".to_string());
+        let updated = session
+            .updated_at
+            .as_deref()
+            .or(session.modified_at.as_deref())
+            .map(compact_session_list_datetime)
+            .unwrap_or_else(|| "-".to_string());
+        let summary = session.summary_preview.as_deref().unwrap_or("");
         lines.push(format!(
-            "  {}. {}{} — {}",
-            index + 1,
-            session.name,
-            if session.manifest_exists {
-                ""
-            } else {
-                " (no manifest)"
-            },
-            details.join(", ")
+            "  {:<24} {:<20} {:>5}  {:<32} {}",
+            truncate_table_cell(&repo, 24),
+            truncate_table_cell(&updated, 20),
+            session.turn_count,
+            truncate_table_cell(
+                &format!(
+                    "{}{}",
+                    session.name,
+                    if session.manifest_exists {
+                        ""
+                    } else {
+                        " (no manifest)"
+                    }
+                ),
+                32,
+            ),
+            summary
         ));
-        lines.push(format!("     {}", session.path));
     }
     lines.push(format!(
         "\nTotal: {} folder sessions",
@@ -6007,6 +6074,27 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
     ));
     lines.push(String::new());
     lines.join("\n")
+}
+
+fn short_folder_session_path(value: &str) -> String {
+    Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(value)
+        .to_string()
+}
+
+fn truncate_table_cell(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".to_string();
+    }
+    let mut truncated = value.chars().take(max_chars - 1).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 fn compact_session_list_datetime(value: &str) -> String {
@@ -17145,7 +17233,7 @@ mod tests {
         let Some(Command::Session(session_args)) = cli.command else {
             panic!("expected session command");
         };
-        let SessionCommand::Init(args) = session_args.command else {
+        let Some(SessionCommand::Init(args)) = session_args.command else {
             panic!("expected session init command");
         };
         assert_eq!(args.dir, PathBuf::from("/tmp/folder-session"));
@@ -17204,7 +17292,7 @@ mod tests {
         let Some(Command::Session(session_args)) = cli.command else {
             panic!("expected session command");
         };
-        let SessionCommand::Compact(args) = session_args.command else {
+        let Some(SessionCommand::Compact(args)) = session_args.command else {
             panic!("expected session compact command");
         };
         assert_eq!(args.session_dir, PathBuf::from("/tmp/folder-session"));
@@ -17215,7 +17303,7 @@ mod tests {
         let Some(Command::Session(session_args)) = cli.command else {
             panic!("expected session command");
         };
-        let SessionCommand::Status(args) = session_args.command else {
+        let Some(SessionCommand::Status(args)) = session_args.command else {
             panic!("expected session status command");
         };
         assert_eq!(args.dir, PathBuf::from("/tmp/folder-session"));
@@ -17224,7 +17312,7 @@ mod tests {
         let Some(Command::Session(session_args)) = cli.command else {
             panic!("expected session command");
         };
-        let SessionCommand::Ls(args) = session_args.command else {
+        let Some(SessionCommand::Ls(args)) = session_args.command else {
             panic!("expected session ls command");
         };
         assert_eq!(args.limit, Some(10));
@@ -17242,19 +17330,39 @@ mod tests {
         let Some(Command::Session(session_args)) = cli.command else {
             panic!("expected session command");
         };
-        let SessionCommand::Open(args) = session_args.command else {
+        let Some(SessionCommand::Open(args)) = session_args.command else {
             panic!("expected session open command");
         };
         assert_eq!(args.dir, PathBuf::from("small-question"));
         assert_eq!(args.target, SessionOpenTarget::Compacted);
         assert_eq!(args.editor.as_deref(), Some("nvim"));
 
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "small-question",
+            "--open",
+            "--editor",
+            "nvim",
+        ])
+        .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        assert!(session_args.command.is_none());
+        assert_eq!(
+            session_args.dir.as_deref(),
+            Some(Path::new("small-question"))
+        );
+        assert!(session_args.open);
+        assert_eq!(session_args.editor.as_deref(), Some("nvim"));
+
         let cli =
             Cli::try_parse_from(["djinn", "session", "rm", "small-question", "--json"]).unwrap();
         let Some(Command::Session(session_args)) = cli.command else {
             panic!("expected session command");
         };
-        let SessionCommand::Rm(args) = session_args.command else {
+        let Some(SessionCommand::Rm(args)) = session_args.command else {
             panic!("expected session rm command");
         };
         assert_eq!(args.dir, PathBuf::from("small-question"));
@@ -19040,39 +19148,69 @@ link = "context/repo"
         ));
         let alpha = root.join("alpha");
         let beta = root.join("beta");
+        let gamma = root.join("gamma");
+        let delta = root.join("delta");
         fs::create_dir_all(alpha.join("turns/turn-a")).unwrap();
         fs::create_dir_all(beta.join("turns")).unwrap();
+        fs::create_dir_all(gamma.join("turns/turn-g")).unwrap();
+        fs::create_dir_all(delta.join("turns/turn-d")).unwrap();
         fs::write(
             alpha.join("djinn.toml"),
-            "session_id = \"agt_alpha\"\ncreated_at = \"2026-07-27T12:34:56.123-04:00\"\nworkspace = \"/tmp/workspace\"\n\n[context.repo]\npath = \"/tmp/repo\"\n",
+            "session_id = \"agt_alpha\"\ncreated_at = \"2026-07-27T12:34:56.123-04:00\"\nworkspace = \"/tmp/workspace\"\n\n[context.repo]\npath = \"/tmp/repo-b\"\n",
         )
         .unwrap();
         fs::write(alpha.join("request.md"), "request\n").unwrap();
         fs::write(alpha.join("summary.md"), "summary\n").unwrap();
         fs::write(alpha.join("turns/turn-a/response.md"), "response\n").unwrap();
+        fs::write(
+            gamma.join("djinn.toml"),
+            "created_at = \"2026-07-28T12:34:56.123-04:00\"\n\n[context.repo]\npath = \"/tmp/repo-a\"\n",
+        )
+        .unwrap();
+        fs::write(gamma.join("summary.md"), "newer repo-a summary\n").unwrap();
+        fs::write(
+            delta.join("djinn.toml"),
+            "created_at = \"2026-07-27T12:34:56.123-04:00\"\n\n[context.repo]\npath = \"/tmp/repo-a\"\n",
+        )
+        .unwrap();
+        fs::write(delta.join("summary.md"), "older repo-a summary\n").unwrap();
 
         let report = list_folder_sessions_in_root(&root, None).unwrap();
         let text = format_folder_session_ls(&report);
 
-        assert_eq!(report.sessions.len(), 2);
-        assert_eq!(report.sessions[0].name, "alpha");
-        assert_eq!(report.sessions[0].session_id.as_deref(), Some("agt_alpha"));
+        assert_eq!(report.sessions.len(), 4);
         assert_eq!(
-            report.sessions[0].created_at.as_deref(),
+            report
+                .sessions
+                .iter()
+                .map(|session| session.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gamma", "delta", "alpha", "beta"]
+        );
+        assert_eq!(report.sessions[2].session_id.as_deref(), Some("agt_alpha"));
+        assert_eq!(
+            report.sessions[2].created_at.as_deref(),
             Some("2026-07-27T12:34:56.123-04:00")
         );
-        assert_eq!(report.sessions[0].turn_count, 1);
-        assert!(report.sessions[0].request_md);
-        assert!(report.sessions[0].summary_md);
-        assert_eq!(report.sessions[1].name, "beta");
-        assert!(!report.sessions[1].manifest_exists);
+        assert_eq!(report.sessions[2].turn_count, 1);
+        assert!(report.sessions[2].request_md);
+        assert!(report.sessions[2].summary_md);
+        assert_eq!(
+            report.sessions[0].summary_preview.as_deref(),
+            Some("newer repo-a summary")
+        );
+        assert!(!report.sessions[3].manifest_exists);
         assert!(text.contains("Cache folder sessions:"));
+        assert!(text.contains("REPO"));
         assert!(text.contains("alpha"));
-        assert!(text.contains("created: 2026-07-27T12:34:56-04:00"));
+        assert!(text.contains("2026-07-27T12:34:56…"));
         assert!(text.contains("beta (no manifest)"));
+        assert!(text.contains("newer repo-a summary"));
+        assert!(!text.contains("native: agt_alpha"));
 
         let limited = list_folder_sessions_in_root(&root, Some(1)).unwrap();
         assert_eq!(limited.sessions.len(), 1);
+        assert_eq!(limited.sessions[0].name, "gamma");
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -19086,6 +19224,10 @@ link = "context/repo"
         assert_eq!(
             compact_session_list_datetime("2026-07-27T16:34:56.123Z"),
             "2026-07-27T16:34:56Z"
+        );
+        assert_eq!(
+            parse_session_list_datetime_ms("2026-07-27T16:34:56.123Z"),
+            Some(1_785_170_096_123)
         );
     }
 

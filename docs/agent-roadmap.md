@@ -165,6 +165,14 @@ existing native session without creating a new folder. For folder-backed asks, t
 native JSONL is colocated in the session folder under `.djinn/<session-id>.jsonl`,
 and the default top-level command output is just the session directory path; read
 the answer from `summary.md` or the latest `turns/` entry.
+The next UX polish keeps that mental model intact: `djinn ask "..." --print`
+prints the produced answer, `djinn ask "..." --open` opens the produced
+`summary.md`, while opening an existing session uses the session surface via
+`djinn session <name-or-path> --open`. `djinn session open ... latest` is not a
+planned target; `summary.md` and `turns/` are the cleaner navigation points.
+`djinn session ls` should be easier to scan by grouping/sorting cache-backed work
+by target repo when known, then recency, with concise metadata that helps choose a
+session without opening every folder.
 
 Ready follow-up slices:
 

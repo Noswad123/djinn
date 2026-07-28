@@ -1084,6 +1084,20 @@ The first non-interactive agent slice is implemented as:
     `agent session` command tree. The corresponding CLI-only helper/reporting
     code is pruned rather than kept behind hidden commands; JSONL remains a
     runtime-private event artifact used by folder-backed execution.
+81. The folder-backed UX north star is: ask creates or continues a working
+    folder; the folder is the session; commands help navigate, continue, compact,
+    and clean it up. `djinn ask` runs the model, `djinn session ...` manages or
+    opens the folder, and files are the user-facing state. Convenience flags on
+    `djinn ask` should stay output-oriented: `--print` may print the answer and
+    `--open` may open the produced `summary.md` after completion. Opening an
+    existing session belongs to the session surface, with `djinn session
+    <name-or-path> --open` as concise sugar for opening the session summary;
+    avoid `djinn ask --session <name> --open` as a navigation command. Do not add
+    a `latest` open target unless a concrete workflow proves that it is clearer
+    than opening `summary.md` or the `turns/` directory. `djinn session ls` should
+    be optimized for choosing recent work: group/sort by target repo when known,
+    then by recency within each repo, and show enough summary metadata to avoid
+    opening folders blindly.
 
 Not in the first slice unless explicitly reopened:
 
