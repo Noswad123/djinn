@@ -1089,15 +1089,16 @@ The first non-interactive agent slice is implemented as:
     and clean it up. `djinn ask` runs the model, `djinn session ...` manages or
     opens the folder, and files are the user-facing state. Convenience flags on
     `djinn ask` stay output-oriented: `--print` prints the answer and `--open`
-    opens the produced `summary.md` after completion. Opening an
-    existing session belongs to the session surface, with `djinn session
+    opens the produced `summary.md` for an auto-created folder-backed ask. Opening
+    an existing session belongs to the session surface, with `djinn session
     <name-or-path> --open` as concise sugar for opening the session summary;
-    avoid `djinn ask --session <name> --open` as a navigation command. Do not add
+    reject `djinn ask --session <name> --open` as a navigation command. Do not add
     a `latest` open target unless a concrete workflow proves that it is clearer
     than opening `summary.md` or the `turns/` directory. `djinn session ls` should
     be optimized for choosing recent work: group/sort by target repo when known,
     then by recency within each repo, and show enough summary metadata to avoid
-    opening folders blindly.
+    opening folders blindly. JSON output preserves the flat session list for
+    scripts and also includes grouped repo sections for UI consumers.
 
 Not in the first slice unless explicitly reopened:
 

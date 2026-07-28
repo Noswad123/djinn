@@ -167,12 +167,15 @@ and the default top-level command output is just the session directory path; rea
 the answer from `summary.md` or the latest `turns/` entry.
 The current UX polish keeps that mental model intact: `djinn ask "..." --print`
 prints the produced answer, `djinn ask "..." --open` opens the produced
-`summary.md`, while opening an existing session uses the session surface via
-`djinn session <name-or-path> --open`. `djinn session open ... latest` is not a
-planned target; `summary.md` and `turns/` are the cleaner navigation points.
+`summary.md` for an auto-created folder-backed ask, while opening an existing
+session uses the session surface via `djinn session <name-or-path> --open`.
+`djinn session open ... latest` is not a planned target; `summary.md` and
+`turns/` are the cleaner navigation points.
 `djinn session ls` should be easier to scan by grouping/sorting cache-backed work
 by target repo when known, then recency, with concise metadata that helps choose a
-session without opening every folder.
+session without opening every folder. `djinn session ls --json` keeps the flat
+`sessions` array and adds grouped repo sections for consumers that want the same
+shape as the text UI.
 
 Ready follow-up slices:
 

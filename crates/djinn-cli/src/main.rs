@@ -1358,7 +1358,7 @@ struct AgentAskArgs {
     #[arg(long = "session-id")]
     session_id: Option<String>,
     /// Folder-backed session name or directory. Bare names live under Djinn's cache session root.
-    #[arg(long = "session-dir", alias = "session")]
+    #[arg(long = "session-dir", visible_alias = "session")]
     session_dir: Option<PathBuf>,
     /// Human-friendly session title. Defaults to a trimmed prompt preview.
     #[arg(long)]
@@ -1393,8 +1393,8 @@ struct AgentAskArgs {
     /// Print the produced answer instead of the default folder path output.
     #[arg(long, conflicts_with = "json")]
     print: bool,
-    /// Open the produced summary.md after a folder-backed ask completes.
-    #[arg(long)]
+    /// Open the produced summary.md after an auto-created folder-backed ask completes.
+    #[arg(long, conflicts_with_all = ["json", "session_id", "session_dir"])]
     open: bool,
 }
 
@@ -5427,6 +5427,13 @@ fn session_status(args: SessionStatusArgs) -> Result<()> {
 struct SessionLsReport {
     root: String,
     sessions: Vec<FolderSessionSummary>,
+    groups: Vec<FolderSessionGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct FolderSessionGroup {
+    repo: String,
+    sessions: Vec<FolderSessionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -5820,9 +5827,11 @@ fn list_folder_sessions_in_root(root: &Path, limit: Option<usize>) -> Result<Ses
             summaries.truncate(limit);
         }
     }
+    let groups = group_folder_session_summaries(&summaries);
     Ok(SessionLsReport {
         root: root.display().to_string(),
         sessions: summaries,
+        groups,
     })
 }
 
@@ -5891,7 +5900,6 @@ fn folder_session_repo_sort_key(session: &FolderSessionSummary) -> String {
     session
         .repo_path
         .as_deref()
-        .or(session.workspace.as_deref())
         .unwrap_or("~")
         .to_ascii_lowercase()
 }
@@ -5915,6 +5923,30 @@ fn folder_session_summary_preview(path: &Path) -> Option<String> {
         .take(80)
         .collect::<String>();
     Some(preview)
+}
+
+fn group_folder_session_summaries(sessions: &[FolderSessionSummary]) -> Vec<FolderSessionGroup> {
+    let mut groups = Vec::<FolderSessionGroup>::new();
+    for session in sessions {
+        let repo = folder_session_repo_label(session);
+        if let Some(group) = groups.last_mut().filter(|group| group.repo == repo) {
+            group.sessions.push(session.clone());
+        } else {
+            groups.push(FolderSessionGroup {
+                repo,
+                sessions: vec![session.clone()],
+            });
+        }
+    }
+    groups
+}
+
+fn folder_session_repo_label(session: &FolderSessionSummary) -> String {
+    session
+        .repo_path
+        .as_deref()
+        .map(short_folder_session_path)
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn load_folder_native_agent_session(
@@ -6035,44 +6067,43 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
         lines.push(String::new());
         return lines.join("\n");
     }
-    lines.push(format!(
-        "  {:<24} {:<20} {:>5}  {:<32} {}",
-        "REPO", "UPDATED", "TURNS", "NAME", "SUMMARY"
-    ));
-    lines.push(format!("  {}", "-".repeat(100)));
-    for session in &report.sessions {
-        let repo = session
-            .repo_path
-            .as_deref()
-            .or(session.workspace.as_deref())
-            .map(short_folder_session_path)
-            .unwrap_or_else(|| "-".to_string());
-        let updated = session
-            .updated_at
-            .as_deref()
-            .or(session.modified_at.as_deref())
-            .map(compact_session_list_datetime)
-            .unwrap_or_else(|| "-".to_string());
-        let summary = session.summary_preview.as_deref().unwrap_or("");
+    for (index, group) in report.groups.iter().enumerate() {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.push(format!("Repo: {}", group.repo));
         lines.push(format!(
-            "  {:<24} {:<20} {:>5}  {:<32} {}",
-            truncate_table_cell(&repo, 24),
-            truncate_table_cell(&updated, 20),
-            session.turn_count,
-            truncate_table_cell(
-                &format!(
-                    "{}{}",
-                    session.name,
-                    if session.manifest_exists {
-                        ""
-                    } else {
-                        " (no manifest)"
-                    }
-                ),
-                32,
-            ),
-            summary
+            "  {:<20} {:>5}  {:<32} {}",
+            "UPDATED", "TURNS", "NAME", "SUMMARY"
         ));
+        lines.push(format!("  {}", "-".repeat(78)));
+        for session in &group.sessions {
+            let updated = session
+                .updated_at
+                .as_deref()
+                .or(session.modified_at.as_deref())
+                .map(compact_session_list_datetime)
+                .unwrap_or_else(|| "-".to_string());
+            let summary = session.summary_preview.as_deref().unwrap_or("");
+            lines.push(format!(
+                "  {:<20} {:>5}  {:<32} {}",
+                truncate_table_cell(&updated, 20),
+                session.turn_count,
+                truncate_table_cell(
+                    &format!(
+                        "{}{}",
+                        session.name,
+                        if session.manifest_exists {
+                            ""
+                        } else {
+                            " (no manifest)"
+                        }
+                    ),
+                    32,
+                ),
+                summary
+            ));
+        }
     }
     lines.push(format!(
         "\nTotal: {} folder sessions",
@@ -8221,8 +8252,8 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
     let projected_session_dir = session_dir
         .clone()
         .or_else(|| should_auto_folder_session.then(|| auto_folder_session_dir(&prompt, &id)));
-    if args.open && projected_session_dir.is_none() {
-        bail!("`djinn ask --open` requires a folder-backed session; omit --session-id or pass --session <name-or-path>");
+    if args.open && !should_auto_folder_session {
+        bail!("`djinn ask --open` opens only the auto-created folder for a new ask; use `djinn session <name-or-path> --open` for existing sessions");
     }
     if let Some(session_dir) = &projected_session_dir {
         store = relocate_agent_session_into_folder(&store, session_dir, &id)?;
@@ -17288,23 +17319,36 @@ mod tests {
         assert!(!args.print);
         assert!(!args.open);
 
-        let cli = Cli::try_parse_from([
-            "djinn",
-            "ask",
-            "hi",
-            "--session",
-            "quick-note",
-            "--print",
-            "--open",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["djinn", "ask", "hi", "--session", "quick-note", "--print"])
+            .unwrap();
         let Some(Command::Ask(args)) = cli.command else {
             panic!("expected top-level ask command");
         };
         assert_eq!(args.session_dir.as_deref(), Some(Path::new("quick-note")));
         assert!(args.print);
+        assert!(!args.open);
+
+        let cli = Cli::try_parse_from(["djinn", "ask", "hi", "--print", "--open"]).unwrap();
+        let Some(Command::Ask(args)) = cli.command else {
+            panic!("expected top-level ask command");
+        };
+        assert!(args.print);
         assert!(args.open);
         assert!(Cli::try_parse_from(["djinn", "ask", "hi", "--print", "--json"]).is_err());
+        assert!(Cli::try_parse_from(["djinn", "ask", "hi", "--open", "--json"]).is_err());
+        assert!(
+            Cli::try_parse_from(["djinn", "ask", "hi", "--session", "quick-note", "--open",])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "djinn",
+            "ask",
+            "hi",
+            "--session-id",
+            "agt_existing",
+            "--open",
+        ])
+        .is_err());
 
         assert!(Cli::try_parse_from(["djinn", "session", "list", "--limit", "5"]).is_err());
         assert!(Cli::try_parse_from(["djinn", "session", "show", "/tmp/folder-session"]).is_err());
@@ -19232,18 +19276,38 @@ link = "context/repo"
             report.sessions[0].summary_preview.as_deref(),
             Some("newer repo-a summary")
         );
+        assert_eq!(report.groups.len(), 3);
+        assert_eq!(report.groups[0].repo, "repo-a");
+        assert_eq!(
+            report.groups[0]
+                .sessions
+                .iter()
+                .map(|session| session.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gamma", "delta"]
+        );
+        assert_eq!(report.groups[1].repo, "repo-b");
+        assert_eq!(report.groups[2].repo, "-");
         assert!(!report.sessions[3].manifest_exists);
         assert!(text.contains("Cache folder sessions:"));
-        assert!(text.contains("REPO"));
+        assert!(text.contains("Repo: repo-a"));
+        assert!(text.contains("Repo: repo-b"));
+        assert!(text.contains("Repo: -"));
+        assert!(text.contains("UPDATED"));
         assert!(text.contains("alpha"));
         assert!(text.contains("2026-07-27T12:34:56…"));
         assert!(text.contains("beta (no manifest)"));
         assert!(text.contains("newer repo-a summary"));
         assert!(!text.contains("native: agt_alpha"));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["groups"][0]["repo"], "repo-a");
+        assert_eq!(json["groups"][0]["sessions"][0]["name"], "gamma");
 
         let limited = list_folder_sessions_in_root(&root, Some(1)).unwrap();
         assert_eq!(limited.sessions.len(), 1);
         assert_eq!(limited.sessions[0].name, "gamma");
+        assert_eq!(limited.groups.len(), 1);
+        assert_eq!(limited.groups[0].repo, "repo-a");
 
         let _ = fs::remove_dir_all(&root);
     }
