@@ -48,6 +48,8 @@ const FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES: u64 = 32 * 1024;
 const FOLDER_SESSION_CONTEXT_MAX_TOTAL_BYTES: usize = 96 * 1024;
 const FOLDER_SESSION_CONTEXT_MAX_FILES: usize = 16;
 const FOLDER_SESSION_COMPACT_SNIPPET_CHARS: usize = 1_200;
+const FOLDER_SESSION_COMPACT_START_MARKER: &str = "<!-- djinn:generated:start -->";
+const FOLDER_SESSION_COMPACT_END_MARKER: &str = "<!-- djinn:generated:end -->";
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -5690,7 +5692,9 @@ fn compact_folder_session(
     }
 
     let turns = read_folder_session_turns(&turns_dir)?;
-    let content = render_folder_session_compaction(&session_dir, &turns);
+    let generated = render_folder_session_compaction_generated(&session_dir, &turns);
+    let existing = fs::read_to_string(&output_path).ok();
+    let content = merge_folder_session_compaction_document(existing.as_deref(), &generated);
     fs::write(&output_path, content)
         .with_context(|| format!("writing {}", output_path.display()))?;
 
@@ -5769,13 +5773,11 @@ fn read_optional_markdown_file(path: &Path) -> Result<Option<String>> {
     Ok((!content.trim().is_empty()).then_some(content))
 }
 
-fn render_folder_session_compaction(
+fn render_folder_session_compaction_generated(
     session_dir: &Path,
     turns: &[FolderSessionTurnDigest],
 ) -> String {
     let mut output = String::new();
-    output.push_str("# Compacted session context\n\n");
-    output.push_str("Generated deterministically by `djinn session compact`. Edit or split this note as durable context evolves.\n\n");
     output.push_str(&format!("Session: `{}`\n", session_dir.display()));
     output.push_str(&format!(
         "Generated: `{}`\n\n",
@@ -5816,6 +5818,47 @@ fn render_folder_session_compaction(
         }
     }
     output
+}
+
+fn merge_folder_session_compaction_document(existing: Option<&str>, generated: &str) -> String {
+    let generated_block = format!(
+        "{FOLDER_SESSION_COMPACT_START_MARKER}\n{}\n{FOLDER_SESSION_COMPACT_END_MARKER}",
+        generated.trim_end()
+    );
+    let Some(existing) = existing else {
+        return initial_folder_session_compaction_document(&generated_block);
+    };
+    if let Some(start) = existing.find(FOLDER_SESSION_COMPACT_START_MARKER) {
+        if let Some(relative_end) = existing[start..].find(FOLDER_SESSION_COMPACT_END_MARKER) {
+            let end = start + relative_end + FOLDER_SESSION_COMPACT_END_MARKER.len();
+            let mut output = String::new();
+            output.push_str(existing[..start].trim_end());
+            output.push_str("\n");
+            output.push_str(&generated_block);
+            let suffix = existing[end..].trim_start_matches(|ch| ch == '\r' || ch == '\n');
+            if !suffix.trim().is_empty() {
+                output.push_str("\n\n");
+                output.push_str(suffix.trim_end());
+            }
+            output.push('\n');
+            return output;
+        }
+    }
+
+    let mut output = existing.trim_end().to_string();
+    if !output.is_empty() {
+        output.push_str("\n\n");
+    }
+    output.push_str("## Generated digest\n\n");
+    output.push_str(&generated_block);
+    output.push('\n');
+    output
+}
+
+fn initial_folder_session_compaction_document(generated_block: &str) -> String {
+    format!(
+        "# Compacted session context\n\n## User notes\n\nAdd durable facts, decisions, open questions, and edited summaries here. Djinn preserves this section when regenerating the digest.\n\n## Generated digest\n\n{generated_block}\n"
+    )
 }
 
 fn compact_text_snippet(value: &str, max_chars: usize) -> String {
@@ -19921,12 +19964,59 @@ link = "context/repo"
         assert_eq!(report.turn_count, 1);
         assert_eq!(report.turns[0].id, "20260727T120000-1");
         assert!(compacted.contains("# Compacted session context"));
+        assert!(compacted.contains("## User notes"));
+        assert!(compacted.contains(FOLDER_SESSION_COMPACT_START_MARKER));
+        assert!(compacted.contains(FOLDER_SESSION_COMPACT_END_MARKER));
         assert!(compacted.contains("### 20260727T120000-1"));
         assert!(compacted.contains("> Decide storage shape"));
         assert!(compacted.contains("> Use context for durable notes"));
         assert!(compacted.contains("[request](../turns/20260727T120000-1/request.md)"));
         assert!(compacted.contains("[response](../turns/20260727T120000-1/response.md)"));
         assert!(!dir.join("logs/transcript.md").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_compact_replaces_generated_block_and_preserves_user_notes() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-compact-preserve-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let turn = dir.join("turns/20260727T120000-1");
+        let context = dir.join("context");
+        fs::create_dir_all(&turn).unwrap();
+        fs::create_dir_all(&context).unwrap();
+        fs::write(turn.join("request.md"), "Initial request\n").unwrap();
+        fs::write(turn.join("response.md"), "Fresh response\n").unwrap();
+        fs::write(
+            context.join("compacted.md"),
+            format!(
+                "# Compacted session context\n\n## User notes\n\nKeep this decision.\n\n## Generated digest\n\n{FOLDER_SESSION_COMPACT_START_MARKER}\nOld generated response\n{FOLDER_SESSION_COMPACT_END_MARKER}\n\n## User appendix\n\nKeep appendix.\n"
+            ),
+        )
+        .unwrap();
+
+        compact_folder_session(&dir, None).unwrap();
+        let compacted = fs::read_to_string(context.join("compacted.md")).unwrap();
+
+        assert!(compacted.contains("Keep this decision."));
+        assert!(compacted.contains("Keep appendix."));
+        assert!(compacted.contains("> Fresh response"));
+        assert!(!compacted.contains("Old generated response"));
+        assert_eq!(
+            compacted
+                .matches(FOLDER_SESSION_COMPACT_START_MARKER)
+                .count(),
+            1
+        );
+        assert_eq!(
+            compacted.matches(FOLDER_SESSION_COMPACT_END_MARKER).count(),
+            1
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

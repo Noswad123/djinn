@@ -125,7 +125,10 @@ requiring the legacy `agent` prefix. Do not create `summary-history.md`, mirrore
 Manual deterministic compaction is available through `djinn session compact
 --session-dir <dir>`. It reads `turns/<id>/request.md` and `response.md` and
 rewrites `context/compacted.md` as a bounded turn digest with evidence links back
-to the original turn files. This is intentionally model-free for the first slice.
+to the original turn files. The file is append-safe: user notes outside
+`<!-- djinn:generated:start -->` / `<!-- djinn:generated:end -->` are preserved
+while the generated digest block is replaced. This is intentionally model-free
+for the first slice.
 
 Ready follow-up slices:
 

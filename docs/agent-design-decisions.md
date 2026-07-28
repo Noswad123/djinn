@@ -996,9 +996,12 @@ The first non-interactive agent slice is implemented as:
 69. `djinn session compact --session-dir <dir>` is initially deterministic and
     model-free. It reads per-turn `request.md`/`response.md` files under `turns/`
     and rewrites `context/compacted.md` as a bounded digest with evidence links
-    back to `../turns/<id>/...`. It must not create transcript/history logs; later
-    model-assisted compaction can turn this digest into cleaner durable facts,
-    decisions, and open questions.
+    back to `../turns/<id>/...`. Compaction preserves user-owned edits outside the
+    generated marker block delimited by `<!-- djinn:generated:start -->` and
+    `<!-- djinn:generated:end -->`, replacing only the generated block on rerun.
+    It must not create transcript/history logs; later model-assisted compaction
+    can turn this digest into cleaner durable facts, decisions, and open
+    questions.
 
 Not in the first slice unless explicitly reopened:
 
