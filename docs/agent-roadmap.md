@@ -165,7 +165,7 @@ existing native session without creating a new folder. For folder-backed asks, t
 native JSONL is colocated in the session folder under `.djinn/<session-id>.jsonl`,
 and the default top-level command output is just the session directory path; read
 the answer from `summary.md` or the latest `turns/` entry.
-The next UX polish keeps that mental model intact: `djinn ask "..." --print`
+The current UX polish keeps that mental model intact: `djinn ask "..." --print`
 prints the produced answer, `djinn ask "..." --open` opens the produced
 `summary.md`, while opening an existing session uses the session surface via
 `djinn session <name-or-path> --open`. `djinn session open ... latest` is not a

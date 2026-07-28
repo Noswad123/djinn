@@ -1088,8 +1088,8 @@ The first non-interactive agent slice is implemented as:
     folder; the folder is the session; commands help navigate, continue, compact,
     and clean it up. `djinn ask` runs the model, `djinn session ...` manages or
     opens the folder, and files are the user-facing state. Convenience flags on
-    `djinn ask` should stay output-oriented: `--print` may print the answer and
-    `--open` may open the produced `summary.md` after completion. Opening an
+    `djinn ask` stay output-oriented: `--print` prints the answer and `--open`
+    opens the produced `summary.md` after completion. Opening an
     existing session belongs to the session surface, with `djinn session
     <name-or-path> --open` as concise sugar for opening the session summary;
     avoid `djinn ask --session <name> --open` as a navigation command. Do not add

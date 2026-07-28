@@ -1390,6 +1390,12 @@ struct AgentAskArgs {
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
+    /// Print the produced answer instead of the default folder path output.
+    #[arg(long, conflicts_with = "json")]
+    print: bool,
+    /// Open the produced summary.md after a folder-backed ask completes.
+    #[arg(long)]
+    open: bool,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -8215,6 +8221,9 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
     let projected_session_dir = session_dir
         .clone()
         .or_else(|| should_auto_folder_session.then(|| auto_folder_session_dir(&prompt, &id)));
+    if args.open && projected_session_dir.is_none() {
+        bail!("`djinn ask --open` requires a folder-backed session; omit --session-id or pass --session <name-or-path>");
+    }
     if let Some(session_dir) = &projected_session_dir {
         store = relocate_agent_session_into_folder(&store, session_dir, &id)?;
     }
@@ -8268,15 +8277,18 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
         }
     };
     let session = store.load_session(&id)?;
-    if let Some(session_dir) = &projected_session_dir {
-        project_agent_session_dir(
+    let projection = if let Some(session_dir) = &projected_session_dir {
+        let projection = project_agent_session_dir(
             session_dir,
             &session,
             &prompt,
             response.message.content.trim_end(),
         )?;
         ensure_folder_session_readme(session_dir)?;
-    }
+        Some(projection)
+    } else {
+        None
+    };
     let folder_path_output = auto_folder_session && projected_session_dir.is_some();
     if args.json && folder_path_output {
         println!(
@@ -8297,6 +8309,8 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
                 "session_dir": projected_session_dir,
             }))?
         );
+    } else if args.print {
+        println!("{}", response.message.content);
     } else if folder_path_output {
         if let Some(session_dir) = &projected_session_dir {
             println!("{}", session_dir.display());
@@ -8307,6 +8321,11 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
         println!("Path: {}", store.session_file_path(&id).display());
         if let Some(session_dir) = &projected_session_dir {
             println!("Session dir: {}", session_dir.display());
+        }
+    }
+    if args.open {
+        if let Some(projection) = &projection {
+            open_editor_path(&projection.summary_path, None)?;
         }
     }
     Ok(())
@@ -17266,12 +17285,26 @@ mod tests {
             args.session_dir.as_deref(),
             Some(Path::new("/tmp/folder-session"))
         );
+        assert!(!args.print);
+        assert!(!args.open);
 
-        let cli = Cli::try_parse_from(["djinn", "ask", "hi", "--session", "quick-note"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "ask",
+            "hi",
+            "--session",
+            "quick-note",
+            "--print",
+            "--open",
+        ])
+        .unwrap();
         let Some(Command::Ask(args)) = cli.command else {
             panic!("expected top-level ask command");
         };
         assert_eq!(args.session_dir.as_deref(), Some(Path::new("quick-note")));
+        assert!(args.print);
+        assert!(args.open);
+        assert!(Cli::try_parse_from(["djinn", "ask", "hi", "--print", "--json"]).is_err());
 
         assert!(Cli::try_parse_from(["djinn", "session", "list", "--limit", "5"]).is_err());
         assert!(Cli::try_parse_from(["djinn", "session", "show", "/tmp/folder-session"]).is_err());
