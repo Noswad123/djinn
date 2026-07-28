@@ -112,7 +112,7 @@ enum Command {
     Ask(AgentAskArgs),
     /// Manage folder-backed Djinn work sessions.
     Session(SessionArgs),
-    /// Run or inspect Djinn-native agent sessions.
+    /// Deprecated compatibility shim for old agent-prefixed commands.
     Agent(AgentArgs),
     /// Inspect configured Djinn agent roles.
     Agents(AgentsArgs),
@@ -146,12 +146,6 @@ enum SessionCommand {
     Open(SessionOpenArgs),
     /// Remove a folder-backed session and its linked native session when present.
     Rm(SessionRmArgs),
-    /// List native Djinn sessions.
-    List(AgentSessionListArgs),
-    /// Show one native session by id, or by a folder-backed session directory.
-    Show(AgentSessionShowArgs),
-    /// Delete one native session by id, or by a folder-backed session directory.
-    Delete(AgentSessionDeleteArgs),
 }
 
 #[derive(Debug, Args)]
@@ -961,13 +955,13 @@ enum AgentCommand {
     Tools(AgentToolsArgs),
     /// Inspect, audit, and revoke effective agent policy grants.
     Policy(AgentPolicyArgs),
-    /// Manage Djinn-native agent sessions.
+    /// Deprecated: manage legacy native agent sessions.
     Session(AgentSessionArgs),
     /// Inspect or restore apply_patch file-history entries.
     FileHistory(AgentFileHistoryArgs),
-    /// Record a non-interactive prompt in an agent session.
+    /// Deprecated alias for top-level `djinn ask`.
     Ask(AgentAskArgs),
-    /// Open an interactive terminal chat with the Djinn agent runtime.
+    /// Deprecated legacy interactive chat surface.
     Chat(AgentChatArgs),
 }
 
@@ -5534,14 +5528,51 @@ fn push_config_finding_lines(
 
 fn run_agent(args: AgentArgs) -> Result<()> {
     match args.command {
-        AgentCommand::Config(args) => run_agent_config(args),
-        AgentCommand::Tools(args) => run_agent_tools(args),
-        AgentCommand::Policy(args) => run_agent_policy(args),
-        AgentCommand::Session(args) => run_agent_session(args),
-        AgentCommand::FileHistory(args) => run_agent_file_history(args),
+        AgentCommand::Config(args) => {
+            warn_legacy_agent_command(
+                "agent config",
+                Some("prefer `djinn agents ...`, `djinn ask`, and `djinn session ...`"),
+            );
+            run_agent_config(args)
+        }
+        AgentCommand::Tools(args) => {
+            warn_legacy_agent_command(
+                "agent tools",
+                Some("prefer top-level tool inspection commands"),
+            );
+            run_agent_tools(args)
+        }
+        AgentCommand::Policy(args) => {
+            warn_legacy_agent_command("agent policy", Some("policy remains legacy-only for now"));
+            run_agent_policy(args)
+        }
+        AgentCommand::Session(args) => {
+            warn_legacy_agent_command("agent session", Some("use `djinn session ...`"));
+            run_agent_session(args)
+        }
+        AgentCommand::FileHistory(args) => {
+            warn_legacy_agent_command(
+                "agent file-history",
+                Some("file history remains legacy-only for now"),
+            );
+            run_agent_file_history(args)
+        }
         AgentCommand::Ask(args) => legacy_agent_ask(args),
-        AgentCommand::Chat(args) => run_interactive_app(args),
+        AgentCommand::Chat(args) => {
+            warn_legacy_agent_command(
+                "agent chat",
+                Some("use folder-backed `djinn ask` and `djinn session ...`"),
+            );
+            run_interactive_app(args)
+        }
     }
+}
+
+fn warn_legacy_agent_command(command: &str, replacement: Option<&str>) {
+    let replacement = replacement
+        .map(|replacement| format!("; {replacement}"))
+        .unwrap_or_default();
+    eprintln!("warning: `djinn {command}` is deprecated compatibility surface{replacement}");
 }
 
 fn run_session(args: SessionArgs) -> Result<()> {
@@ -5552,9 +5583,6 @@ fn run_session(args: SessionArgs) -> Result<()> {
         SessionCommand::Ls(args) => session_ls(args),
         SessionCommand::Open(args) => session_open(args),
         SessionCommand::Rm(args) => session_rm(args),
-        SessionCommand::List(args) => agent_session_list(args),
-        SessionCommand::Show(args) => session_show(args),
-        SessionCommand::Delete(args) => session_delete(args),
     }
 }
 
@@ -7221,11 +7249,11 @@ fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
         AgentSessionCommand::Child(args) => agent_session_child(args),
         AgentSessionCommand::List(args) => agent_session_list(args),
         AgentSessionCommand::Children(args) => agent_session_children(args),
-        AgentSessionCommand::Show(args) => agent_session_show(args),
+        AgentSessionCommand::Show(args) => session_show(args),
         AgentSessionCommand::Stats(args) => agent_session_stats(args),
         AgentSessionCommand::Lifecycle(args) => agent_session_lifecycle(args),
         AgentSessionCommand::Rename(args) => agent_session_rename(args),
-        AgentSessionCommand::Delete(args) => agent_session_delete(args),
+        AgentSessionCommand::Delete(args) => session_delete(args),
     }
 }
 
@@ -8167,12 +8195,6 @@ fn format_agent_session_children_report(report: &AgentSessionChildrenReport) -> 
     out
 }
 
-fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
-    let id = AgentSessionId::new(args.id);
-    let session = agent_session_store().load_session(&id)?;
-    print_agent_session_show(&session, args.json)
-}
-
 fn print_agent_session_show(session: &AgentSession, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&session)?);
@@ -8796,40 +8818,6 @@ fn agent_session_rename(args: AgentSessionRenameArgs) -> Result<()> {
     Ok(())
 }
 
-fn agent_session_delete(args: AgentSessionDeleteArgs) -> Result<()> {
-    if !args.force {
-        bail!("refusing to delete agent session without --force");
-    }
-
-    let id = AgentSessionId::new(args.id);
-    let store = agent_session_store();
-    let path = store.session_file_path(&id);
-    let session = store.delete_session(&id)?;
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "id": session.id,
-                "title": session.meta.title,
-                "deleted": true,
-                "path": path,
-            }))?
-        );
-    } else {
-        println!(
-            "Deleted agent session [{}]: {}",
-            id,
-            if session.meta.title.is_empty() {
-                "Untitled agent session"
-            } else {
-                &session.meta.title
-            }
-        );
-        println!("Path: {}", path.display());
-    }
-    Ok(())
-}
-
 fn agent_file_history_list(args: AgentFileHistoryListArgs) -> Result<()> {
     let entries = file_history_store().list_entries(FileHistoryFilter {
         patch_id: args.patch_id,
@@ -9400,7 +9388,8 @@ fn top_level_ask(args: AgentAskArgs) -> Result<()> {
 }
 
 fn legacy_agent_ask(args: AgentAskArgs) -> Result<()> {
-    agent_ask(args, false)
+    warn_legacy_agent_command("agent ask", Some("use top-level `djinn ask`"));
+    agent_ask(args, true)
 }
 
 fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
@@ -19101,34 +19090,12 @@ mod tests {
         };
         assert_eq!(args.session_dir.as_deref(), Some(Path::new("quick-note")));
 
-        let cli = Cli::try_parse_from(["djinn", "session", "list", "--limit", "5"]).unwrap();
-        let Some(Command::Session(session_args)) = cli.command else {
-            panic!("expected session command");
-        };
-        let SessionCommand::List(args) = session_args.command else {
-            panic!("expected session list command");
-        };
-        assert_eq!(args.limit, Some(5));
-
-        let cli = Cli::try_parse_from(["djinn", "session", "show", "/tmp/folder-session"]).unwrap();
-        let Some(Command::Session(session_args)) = cli.command else {
-            panic!("expected session command");
-        };
-        let SessionCommand::Show(args) = session_args.command else {
-            panic!("expected session show command");
-        };
-        assert_eq!(args.id, "/tmp/folder-session");
-
-        let cli =
-            Cli::try_parse_from(["djinn", "session", "delete", "agt_existing", "--force"]).unwrap();
-        let Some(Command::Session(session_args)) = cli.command else {
-            panic!("expected session command");
-        };
-        let SessionCommand::Delete(args) = session_args.command else {
-            panic!("expected session delete command");
-        };
-        assert_eq!(args.id, "agt_existing");
-        assert!(args.force);
+        assert!(Cli::try_parse_from(["djinn", "session", "list", "--limit", "5"]).is_err());
+        assert!(Cli::try_parse_from(["djinn", "session", "show", "/tmp/folder-session"]).is_err());
+        assert!(
+            Cli::try_parse_from(["djinn", "session", "delete", "agt_existing", "--force",])
+                .is_err()
+        );
 
         let cli = Cli::try_parse_from([
             "djinn",

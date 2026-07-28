@@ -110,16 +110,18 @@ ask` can read `request.md` when no prompt is provided, successful `agent ask` an
 unstructured `context/` folder, and keep per-turn request/response files under
 `turns/`. `djinn session init <dir> --link-repo <path>` scaffolds the same
 folder shape ahead of a run and links the repo into `context/` as an explicit
-live reference. `djinn ask` is the preferred top-level spelling for the common
-non-interactive path; `djinn agent ask` remains a compatibility spelling. `djinn
-ask --session-dir <dir>` now consumes `djinn.toml` defaults (`session_id`,
+live reference. `djinn ask` is the canonical spelling for the common
+non-interactive path; `djinn agent ask` is a deprecated alias that warns and
+delegates to the same folder-backed behavior. `djinn ask --session-dir <dir>` now
+consumes `djinn.toml` defaults (`session_id`,
 `profile`, `agent`, `model`, `workspace`, and `[context.repo].path`) and can
 create/project a new folder-backed capsule when the directory has no native
 session id yet. It also ingests bounded shallow session context from
 `request.md`, `summary.md`, and small Markdown/text files directly under
-`context/`, while skipping symlinked directories and deep trees. Top-level `djinn
-session list/show/delete` wrap existing native session inspection without
-requiring the legacy `agent` prefix. Do not create `summary-history.md`, mirrored
+`context/`, while skipping symlinked directories and deep trees. Top-level
+`djinn session` intentionally keeps the folder-native verbs (`ls`, `status`,
+`open`, `rm`, `compact`, `init`) and does not support legacy-style
+`list`/`show`/`delete` aliases. Do not create `summary-history.md`, mirrored
 `events.jsonl`, or `transcript.md` by default.
 
 Manual deterministic compaction is available through `djinn session compact

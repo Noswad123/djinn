@@ -1045,9 +1045,9 @@ The first non-interactive agent slice is implemented as:
     session automatically, using a prompt slug plus native session id under the
     cache session root. Explicit `--session-dir` / `--session <name-or-path>` keep
     using the requested folder, and explicit `--session-id` appends to the native
-    session without inventing a new folder. Legacy `djinn agent ask` keeps its
-    compatibility behavior and only projects a folder when `--session-dir` is
-    supplied.
+    session without inventing a new folder. Legacy `djinn agent ask` is now a
+    deprecated alias that delegates to the same folder-backed behavior when it can
+    create or use a folder session.
 77. For folder-backed `djinn ask` runs, the native append-only JSONL is stored
     inside the session folder under `.djinn/<session-id>.jsonl` instead of as a
     second primary artifact under `~/.config/djinn/agent-sessions`. Existing
@@ -1063,6 +1063,10 @@ The first non-interactive agent slice is implemented as:
     folders; native event details are private implementation files inside those
     folders; legacy commands either delegate to the canonical path or emit a clear
     deprecation/migration message.
+79. Top-level `djinn session` does not need legacy-style `list`, `show`, or
+    `delete` aliases. The folder-native verbs are clearer and sufficient:
+    `ls`, `status`, and `rm` respectively. Removing the aliases keeps the command
+    surface opinionated instead of carrying two vocabularies for the same actions.
 
 Not in the first slice unless explicitly reopened:
 
