@@ -1099,6 +1099,14 @@ The first non-interactive agent slice is implemented as:
     then by recency within each repo, and show enough summary metadata to avoid
     opening folders blindly. JSON output preserves the flat session list for
     scripts and also includes grouped repo sections for UI consumers.
+82. Session-local context management is file/link-first, not ingest-first.
+    `djinn session context ls <session>` shows the entries under `context/` and
+    whether the current shallow ingestion rules will use or skip each one.
+    `djinn session context add <session> <path> [--name <name>]` symlinks an
+    existing file or directory into `context/`, rejecting replacement unless
+    `--force` is provided. `djinn session context rm <session> <name>` removes
+    only a single validated entry under `context/`. Directory links remain
+    explicit durable references but are not blindly ingested by `djinn ask`.
 
 Not in the first slice unless explicitly reopened:
 

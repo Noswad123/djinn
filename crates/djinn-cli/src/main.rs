@@ -144,6 +144,8 @@ enum SessionCommand {
     Init(SessionInitArgs),
     /// Deterministically compact turn request/response evidence into context/compacted.md.
     Compact(SessionCompactArgs),
+    /// Manage session-local context files and links.
+    Context(SessionContextArgs),
     /// Inspect a folder-backed Djinn work session without running a model.
     Status(SessionStatusArgs),
     /// List cache-backed named folder sessions.
@@ -186,6 +188,59 @@ struct SessionCompactArgs {
     /// Output path. Defaults to <session-dir>/context/compacted.md.
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionContextArgs {
+    #[command(subcommand)]
+    command: SessionContextCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionContextCommand {
+    /// List session-local context entries and ingestion status.
+    Ls(SessionContextLsArgs),
+    /// Link a file or directory into session-local context.
+    Add(SessionContextAddArgs),
+    /// Remove one session-local context entry.
+    Rm(SessionContextRmArgs),
+}
+
+#[derive(Debug, Args)]
+struct SessionContextLsArgs {
+    /// Folder-backed session name or directory to inspect.
+    session: PathBuf,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionContextAddArgs {
+    /// Folder-backed session name or directory to update.
+    session: PathBuf,
+    /// File or directory to link into context/.
+    path: PathBuf,
+    /// Context entry name. Defaults to the source basename.
+    #[arg(long)]
+    name: Option<String>,
+    /// Replace an existing file/link/directory under context/.
+    #[arg(long)]
+    force: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionContextRmArgs {
+    /// Folder-backed session name or directory to update.
+    session: PathBuf,
+    /// Context entry name to remove.
+    name: String,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -5344,10 +5399,19 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
     match command {
         SessionCommand::Init(args) => session_init(args),
         SessionCommand::Compact(args) => session_compact(args),
+        SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
         SessionCommand::Ls(args) => session_ls(args),
         SessionCommand::Open(args) => session_open(args),
         SessionCommand::Rm(args) => session_rm(args),
+    }
+}
+
+fn session_context(args: SessionContextArgs) -> Result<()> {
+    match args.command {
+        SessionContextCommand::Ls(args) => session_context_ls(args),
+        SessionContextCommand::Add(args) => session_context_add(args),
+        SessionContextCommand::Rm(args) => session_context_rm(args),
     }
 }
 
@@ -5413,12 +5477,84 @@ struct SessionStatusFileReport {
     turns_dir: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionContextLsReport {
+    session_dir: String,
+    context_dir: String,
+    entries: Vec<SessionContextEntryReport>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionContextEntryReport {
+    name: String,
+    path: String,
+    kind: String,
+    symlink: bool,
+    target: Option<String>,
+    broken: bool,
+    ingestible: bool,
+    skip_reason: Option<String>,
+    bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionContextAddReport {
+    session_dir: String,
+    context_dir: String,
+    name: String,
+    path: String,
+    target: String,
+    replaced: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionContextRmReport {
+    session_dir: String,
+    context_dir: String,
+    name: String,
+    path: String,
+    removed: bool,
+}
+
 fn session_status(args: SessionStatusArgs) -> Result<()> {
     let report = folder_session_status(&args.dir)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", format_folder_session_status(&report));
+    }
+    Ok(())
+}
+
+fn session_context_ls(args: SessionContextLsArgs) -> Result<()> {
+    let report = list_folder_session_context(&args.session)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_folder_session_context_ls(&report));
+    }
+    Ok(())
+}
+
+fn session_context_add(args: SessionContextAddArgs) -> Result<()> {
+    let report = add_folder_session_context_entry(&args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Linked context: {} -> {}", report.path, report.target);
+        if report.replaced {
+            println!("Replaced existing context entry: {}", report.name);
+        }
+    }
+    Ok(())
+}
+
+fn session_context_rm(args: SessionContextRmArgs) -> Result<()> {
+    let report = remove_folder_session_context_entry(&args.session, &args.name)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Removed context entry: {}", report.path);
     }
     Ok(())
 }
@@ -6276,6 +6412,226 @@ fn named_reference_under_cache_root(path: &Path) -> bool {
     path.parent().is_some_and(|parent| parent == root)
 }
 
+fn resolve_existing_folder_session_dir(dir: &Path) -> Result<PathBuf> {
+    let session_dir = resolve_session_dir(dir)?;
+    if !session_dir.exists() {
+        bail!(
+            "folder session does not exist: {} (run `djinn session init {}` first)",
+            session_dir.display(),
+            dir.display()
+        );
+    }
+    if !session_dir.is_dir() {
+        bail!(
+            "folder session path is not a directory: {}",
+            session_dir.display()
+        );
+    }
+    Ok(session_dir)
+}
+
+fn list_folder_session_context(session: &Path) -> Result<SessionContextLsReport> {
+    let session_dir = resolve_existing_folder_session_dir(session)?;
+    let context_dir = session_dir.join("context");
+    let entries = inspect_folder_session_context_entries(&context_dir)?;
+    Ok(SessionContextLsReport {
+        session_dir: session_dir.display().to_string(),
+        context_dir: context_dir.display().to_string(),
+        entries,
+    })
+}
+
+fn add_folder_session_context_entry(
+    args: &SessionContextAddArgs,
+) -> Result<SessionContextAddReport> {
+    let session_dir = resolve_existing_folder_session_dir(&args.session)?;
+    let context_dir = session_dir.join("context");
+    fs::create_dir_all(&context_dir)
+        .with_context(|| format!("creating context directory {}", context_dir.display()))?;
+    let target = args
+        .path
+        .canonicalize()
+        .with_context(|| format!("resolving context source {}", args.path.display()))?;
+    let name = match args.name.as_deref() {
+        Some(name) => validate_context_entry_name(name)?.to_string(),
+        None => target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(validate_context_entry_name)
+            .transpose()?
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow!(
+                    "context source has no usable basename: {}",
+                    target.display()
+                )
+            })?,
+    };
+    let link_path = context_dir.join(&name);
+    let replaced = replace_existing_context_entry_if_needed(&link_path, args.force)?;
+    create_context_symlink(&target, &link_path)?;
+    Ok(SessionContextAddReport {
+        session_dir: session_dir.display().to_string(),
+        context_dir: context_dir.display().to_string(),
+        name,
+        path: link_path.display().to_string(),
+        target: target.display().to_string(),
+        replaced,
+    })
+}
+
+fn remove_folder_session_context_entry(
+    session: &Path,
+    name: &str,
+) -> Result<SessionContextRmReport> {
+    let session_dir = resolve_existing_folder_session_dir(session)?;
+    let context_dir = session_dir.join("context");
+    let name = validate_context_entry_name(name)?.to_string();
+    let path = context_dir.join(&name);
+    if fs::symlink_metadata(&path).is_err() {
+        bail!("context entry does not exist: {}", path.display());
+    }
+    remove_context_entry_path(&path)?;
+    Ok(SessionContextRmReport {
+        session_dir: session_dir.display().to_string(),
+        context_dir: context_dir.display().to_string(),
+        name,
+        path: path.display().to_string(),
+        removed: true,
+    })
+}
+
+fn validate_context_entry_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    if name.is_empty() || matches!(name, "." | "..") {
+        bail!("context entry name cannot be empty, `.` or `..`");
+    }
+    let path = Path::new(name);
+    let mut components = path.components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        bail!("context entry name must be a single path component: {name}");
+    }
+    Ok(name)
+}
+
+fn replace_existing_context_entry_if_needed(path: &Path, force: bool) -> Result<bool> {
+    if fs::symlink_metadata(path).is_err() {
+        return Ok(false);
+    }
+    if !force {
+        bail!(
+            "context entry already exists: {} (use --force to replace)",
+            path.display()
+        );
+    }
+    remove_context_entry_path(path)?;
+    Ok(true)
+}
+
+fn remove_context_entry_path(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("reading context entry metadata {}", path.display()))?;
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        fs::remove_file(path).with_context(|| format!("removing context entry {}", path.display()))
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(path)
+            .with_context(|| format!("removing context directory {}", path.display()))
+    } else {
+        bail!(
+            "context entry is not a file, directory, or symlink: {}",
+            path.display()
+        )
+    }
+}
+
+fn inspect_folder_session_context_entries(
+    context_dir: &Path,
+) -> Result<Vec<SessionContextEntryReport>> {
+    if !context_dir.exists() {
+        return Ok(Vec::new());
+    }
+    if !context_dir.is_dir() {
+        bail!("context path is not a directory: {}", context_dir.display());
+    }
+    let mut entries = fs::read_dir(context_dir)
+        .with_context(|| {
+            format!(
+                "reading session context directory {}",
+                context_dir.display()
+            )
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    entries
+        .into_iter()
+        .map(|entry| inspect_folder_session_context_entry(&entry.path()))
+        .collect()
+}
+
+fn inspect_folder_session_context_entry(path: &Path) -> Result<SessionContextEntryReport> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("context")
+        .to_string();
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("reading context entry metadata {}", path.display()))?;
+    let symlink = metadata.file_type().is_symlink();
+    let target = symlink.then(|| fs::read_link(path).ok()).flatten();
+    let target_metadata = fs::metadata(path).ok();
+    let broken = symlink && target_metadata.is_none();
+    let kind = context_entry_kind(&metadata, target_metadata.as_ref());
+    let bytes = if metadata.is_file() {
+        Some(metadata.len())
+    } else {
+        target_metadata
+            .as_ref()
+            .filter(|metadata| metadata.is_file())
+            .map(|metadata| metadata.len())
+    };
+    let mut skipped = Vec::new();
+    let ingestible = if broken {
+        skipped.push(format!("context/{name}: broken symlink"));
+        false
+    } else {
+        read_folder_session_context_file(path, &format!("context/{name}"), &mut skipped)?.is_some()
+    };
+    Ok(SessionContextEntryReport {
+        name,
+        path: path.display().to_string(),
+        kind,
+        symlink,
+        target: target.map(|target| target.display().to_string()),
+        broken,
+        ingestible,
+        skip_reason: skipped.into_iter().next(),
+        bytes,
+    })
+}
+
+fn context_entry_kind(metadata: &fs::Metadata, target_metadata: Option<&fs::Metadata>) -> String {
+    if metadata.file_type().is_symlink() {
+        if let Some(target_metadata) = target_metadata {
+            if target_metadata.is_dir() {
+                "symlink_dir"
+            } else if target_metadata.is_file() {
+                "symlink_file"
+            } else {
+                "symlink_other"
+            }
+        } else {
+            "symlink_broken"
+        }
+    } else if metadata.is_dir() {
+        "directory"
+    } else if metadata.is_file() {
+        "file"
+    } else {
+        "other"
+    }
+    .to_string()
+}
+
 fn inspect_folder_session_context_dir(context_dir: &Path) -> Result<(usize, Vec<String>)> {
     if !context_dir.is_dir() {
         return Ok((0, Vec::new()));
@@ -6406,12 +6762,58 @@ fn format_folder_session_status(report: &SessionStatusReport) -> String {
         "Ingestible context files: {}",
         report.context_ingestible_count
     ));
+    lines.push(format!(
+        "Manage context: djinn session context ls {}",
+        report.session_dir
+    ));
     if !report.context_skipped.is_empty() {
         lines.push("Skipped context:".to_string());
         for skipped in &report.context_skipped {
             lines.push(format!("  - {skipped}"));
         }
     }
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn format_folder_session_context_ls(report: &SessionContextLsReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Session context: {}", report.context_dir));
+    if report.entries.is_empty() {
+        lines.push("No context entries found.".to_string());
+        lines.push(String::new());
+        return lines.join("\n");
+    }
+    lines.push(format!(
+        "  {:<28} {:<14} {:<10} {}",
+        "NAME", "KIND", "INGEST", "TARGET / REASON"
+    ));
+    lines.push(format!("  {}", "-".repeat(86)));
+    for entry in &report.entries {
+        let ingest = if entry.ingestible { "yes" } else { "no" };
+        let detail = entry
+            .target
+            .as_deref()
+            .or(entry.skip_reason.as_deref())
+            .unwrap_or("");
+        lines.push(format!(
+            "  {:<28} {:<14} {:<10} {}",
+            truncate_table_cell(&entry.name, 28),
+            truncate_table_cell(&entry.kind, 14),
+            ingest,
+            detail
+        ));
+        if entry.target.is_some() && entry.skip_reason.is_some() {
+            lines.push(format!(
+                "  {:<28} {:<14} {:<10} {}",
+                "",
+                "",
+                "",
+                entry.skip_reason.as_deref().unwrap_or("")
+            ));
+        }
+    }
+    lines.push(format!("\nTotal: {} context entries", report.entries.len()));
     lines.push(String::new());
     lines.join("\n")
 }
@@ -6715,6 +7117,27 @@ fn create_dir_symlink(target: &Path, link: &Path) -> Result<()> {
 #[cfg(not(any(unix, windows)))]
 fn create_dir_symlink(_target: &Path, _link: &Path) -> Result<()> {
     bail!("directory symlinks are not supported on this platform")
+}
+
+#[cfg(unix)]
+fn create_context_symlink(target: &Path, link: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, link)
+        .with_context(|| format!("linking {} -> {}", link.display(), target.display()))
+}
+
+#[cfg(windows)]
+fn create_context_symlink(target: &Path, link: &Path) -> Result<()> {
+    if target.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+    .with_context(|| format!("linking {} -> {}", link.display(), target.display()))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_context_symlink(_target: &Path, _link: &Path) -> Result<()> {
+    bail!("context symlinks are not supported on this platform")
 }
 
 fn render_session_manifest(
@@ -17375,6 +17798,78 @@ mod tests {
         assert_eq!(args.session_dir, PathBuf::from("/tmp/folder-session"));
         assert!(args.json);
 
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "context",
+            "ls",
+            "small-question",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Context(context_args)) = session_args.command else {
+            panic!("expected session context command");
+        };
+        let SessionContextCommand::Ls(args) = context_args.command else {
+            panic!("expected session context ls command");
+        };
+        assert_eq!(args.session, PathBuf::from("small-question"));
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "context",
+            "add",
+            "small-question",
+            "/tmp/notes.md",
+            "--name",
+            "notes.md",
+            "--force",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Context(context_args)) = session_args.command else {
+            panic!("expected session context command");
+        };
+        let SessionContextCommand::Add(args) = context_args.command else {
+            panic!("expected session context add command");
+        };
+        assert_eq!(args.session, PathBuf::from("small-question"));
+        assert_eq!(args.path, PathBuf::from("/tmp/notes.md"));
+        assert_eq!(args.name.as_deref(), Some("notes.md"));
+        assert!(args.force);
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "context",
+            "rm",
+            "small-question",
+            "notes.md",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Context(context_args)) = session_args.command else {
+            panic!("expected session context command");
+        };
+        let SessionContextCommand::Rm(args) = context_args.command else {
+            panic!("expected session context rm command");
+        };
+        assert_eq!(args.session, PathBuf::from("small-question"));
+        assert_eq!(args.name, "notes.md");
+        assert!(args.json);
+
         let cli =
             Cli::try_parse_from(["djinn", "session", "status", "/tmp/folder-session"]).unwrap();
         let Some(Command::Session(session_args)) = cli.command else {
@@ -19556,6 +20051,121 @@ link = "context/repo"
             compacted.matches(FOLDER_SESSION_COMPACT_END_MARKER).count(),
             1
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_context_commands_link_list_and_remove_entries() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-context-cmd-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session = root.join("session");
+        let source = root.join("source");
+        let repo = root.join("repo");
+        fs::create_dir_all(&session).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&repo).unwrap();
+        let notes = source.join("notes.md");
+        let updated_notes = source.join("updated-notes.md");
+        fs::write(&notes, "durable note\n").unwrap();
+        fs::write(&updated_notes, "updated durable note\n").unwrap();
+        fs::write(source.join("data.bin"), "binary-ish\n").unwrap();
+
+        let add = add_folder_session_context_entry(&SessionContextAddArgs {
+            session: session.clone(),
+            path: notes.clone(),
+            name: Some("notes.md".to_string()),
+            force: false,
+            json: false,
+        })
+        .unwrap();
+
+        assert_eq!(add.name, "notes.md");
+        assert!(!add.replaced);
+        assert_eq!(
+            fs::read_link(session.join("context/notes.md")).unwrap(),
+            notes.canonicalize().unwrap()
+        );
+        assert!(add_folder_session_context_entry(&SessionContextAddArgs {
+            session: session.clone(),
+            path: source.join("data.bin"),
+            name: Some("notes.md".to_string()),
+            force: false,
+            json: false,
+        })
+        .is_err());
+
+        let replaced = add_folder_session_context_entry(&SessionContextAddArgs {
+            session: session.clone(),
+            path: repo.clone(),
+            name: Some("repo".to_string()),
+            force: true,
+            json: false,
+        })
+        .unwrap();
+        assert!(!replaced.replaced);
+        let replaced_notes = add_folder_session_context_entry(&SessionContextAddArgs {
+            session: session.clone(),
+            path: updated_notes,
+            name: Some("notes.md".to_string()),
+            force: true,
+            json: false,
+        })
+        .unwrap();
+        assert!(replaced_notes.replaced);
+        let binary = add_folder_session_context_entry(&SessionContextAddArgs {
+            session: session.clone(),
+            path: source.join("data.bin"),
+            name: Some("data.bin".to_string()),
+            force: false,
+            json: false,
+        })
+        .unwrap();
+        assert_eq!(binary.name, "data.bin");
+
+        let report = list_folder_session_context(&session).unwrap();
+        let rendered = format_folder_session_context_ls(&report);
+        let notes_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "notes.md")
+            .unwrap();
+        assert_eq!(notes_entry.kind, "symlink_file");
+        assert!(notes_entry.ingestible);
+        let binary_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "data.bin")
+            .unwrap();
+        assert_eq!(binary_entry.kind, "symlink_file");
+        assert!(!binary_entry.ingestible);
+        assert!(binary_entry
+            .skip_reason
+            .as_deref()
+            .unwrap()
+            .contains("unsupported file type"));
+        let repo_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "repo")
+            .unwrap();
+        assert_eq!(repo_entry.kind, "symlink_dir");
+        assert!(!repo_entry.ingestible);
+        assert!(rendered.contains("Session context:"));
+        assert!(rendered.contains("notes.md"));
+        assert!(rendered.contains("data.bin"));
+        assert!(rendered.contains("repo"));
+
+        assert!(validate_context_entry_name("nested/name").is_err());
+        assert!(remove_folder_session_context_entry(&session, "../notes.md").is_err());
+        let removed = remove_folder_session_context_entry(&session, "notes.md").unwrap();
+        assert!(removed.removed);
+        assert!(!session.join("context/notes.md").exists());
+        assert!(repo.exists());
 
         let _ = fs::remove_dir_all(&root);
     }

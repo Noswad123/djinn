@@ -176,6 +176,15 @@ by target repo when known, then recency, with concise metadata that helps choose
 session without opening every folder. `djinn session ls --json` keeps the flat
 `sessions` array and adds grouped repo sections for consumers that want the same
 shape as the text UI.
+Session context has first-class file/link management:
+
+- `djinn session context ls <session>` reports entries and ingestion status.
+- `djinn session context add <session> <path> [--name <name>]` links a file or
+  directory into `context/`.
+- `djinn session context rm <session> <name>` removes one validated context entry.
+
+This keeps durable working memory explicit and reversible while preserving the
+rule that linked directories are references, not blindly ingested context.
 
 Ready follow-up slices:
 
