@@ -1098,7 +1098,13 @@ The first non-interactive agent slice is implemented as:
     be optimized for choosing recent work: group/sort by target repo when known,
     then by recency within each repo, and show enough summary metadata to avoid
     opening folders blindly. JSON output preserves the flat session list for
-    scripts and also includes grouped repo sections for UI consumers.
+    scripts and also includes grouped repo sections for UI consumers. Long native
+    id suffixes in cache folder names are implementation details. Newly
+    auto-created cache folders should use short copy-pasteable names such as
+    `agent-chat-1785201849-abcd`; legacy long `...-agt_...` folders should remain
+    resolvable through the same short reference shape and can be renamed in place
+    with `djinn session shorten-names`. JSON preserves exact folder name/path and
+    also exposes friendly display/reference names.
 82. Session-local context management is file/link-first, not ingest-first.
     `djinn session context ls <session>` shows the entries under `context/` and
     whether the current shallow ingestion rules will use or skip each one.

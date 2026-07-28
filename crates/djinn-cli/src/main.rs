@@ -152,6 +152,8 @@ enum SessionCommand {
     Ls(SessionLsArgs),
     /// Open a folder-backed session artifact in $VISUAL/$EDITOR.
     Open(SessionOpenArgs),
+    /// Rename legacy long cache folder names to short copy-pasteable names.
+    ShortenNames(SessionShortenNamesArgs),
     /// Remove a folder-backed session and its linked native session when present.
     Rm(SessionRmArgs),
 }
@@ -260,6 +262,16 @@ struct SessionLsArgs {
     /// Maximum folder sessions to list.
     #[arg(long)]
     limit: Option<usize>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionShortenNamesArgs {
+    /// Show planned renames without changing folder names.
+    #[arg(long = "dry-run")]
+    dry_run: bool,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -5403,6 +5415,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Status(args) => session_status(args),
         SessionCommand::Ls(args) => session_ls(args),
         SessionCommand::Open(args) => session_open(args),
+        SessionCommand::ShortenNames(args) => session_shorten_names(args),
         SessionCommand::Rm(args) => session_rm(args),
     }
 }
@@ -5575,6 +5588,8 @@ struct FolderSessionGroup {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct FolderSessionSummary {
     name: String,
+    display_name: String,
+    reference_name: String,
     path: String,
     manifest_exists: bool,
     session_id: Option<String>,
@@ -5591,12 +5606,42 @@ struct FolderSessionSummary {
     modified_at_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionShortenNamesReport {
+    root: String,
+    dry_run: bool,
+    renamed: Vec<SessionShortenNameEntry>,
+    skipped: Vec<SessionShortenNameSkip>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionShortenNameEntry {
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionShortenNameSkip {
+    path: String,
+    reason: String,
+}
+
 fn session_ls(args: SessionLsArgs) -> Result<()> {
     let report = list_cache_folder_sessions(args.limit)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", format_folder_session_ls(&report));
+    }
+    Ok(())
+}
+
+fn session_shorten_names(args: SessionShortenNamesArgs) -> Result<()> {
+    let report = shorten_cache_folder_session_names(args.dry_run)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_shorten_names_report(&report));
     }
     Ok(())
 }
@@ -5971,6 +6016,63 @@ fn list_folder_sessions_in_root(root: &Path, limit: Option<usize>) -> Result<Ses
     })
 }
 
+fn shorten_cache_folder_session_names(dry_run: bool) -> Result<SessionShortenNamesReport> {
+    let root = default_folder_session_root();
+    shorten_folder_session_names_in_root(&root, dry_run)
+}
+
+fn shorten_folder_session_names_in_root(
+    root: &Path,
+    dry_run: bool,
+) -> Result<SessionShortenNamesReport> {
+    let mut renamed = Vec::new();
+    let mut skipped = Vec::new();
+    if root.is_dir() {
+        let mut entries = fs::read_dir(root)
+            .with_context(|| format!("reading folder session root {}", root.display()))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let from = entry.path();
+            if !from.is_dir() {
+                continue;
+            }
+            let Some(name) = from.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !name.contains("-agt_") {
+                continue;
+            }
+            let target_name = folder_session_reference_name(name);
+            if target_name == name {
+                continue;
+            }
+            let to = root.join(&target_name);
+            if to.exists() {
+                skipped.push(SessionShortenNameSkip {
+                    path: from.display().to_string(),
+                    reason: format!("target already exists: {}", to.display()),
+                });
+                continue;
+            }
+            renamed.push(SessionShortenNameEntry {
+                from: from.display().to_string(),
+                to: to.display().to_string(),
+            });
+            if !dry_run {
+                fs::rename(&from, &to)
+                    .with_context(|| format!("renaming {} to {}", from.display(), to.display()))?;
+            }
+        }
+    }
+    Ok(SessionShortenNamesReport {
+        root: root.display().to_string(),
+        dry_run,
+        renamed,
+        skipped,
+    })
+}
+
 fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
     let manifest = read_folder_session_manifest(path)?;
     let session_id = manifest
@@ -5993,12 +6095,15 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         .and_then(latest_agent_session_event_created_at)
         .or_else(|| created_at.clone())
         .or_else(|| folder_session_modified_at(path));
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("session")
+        .to_string();
     Ok(FolderSessionSummary {
-        name: path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("session")
-            .to_string(),
+        display_name: folder_session_display_name(&name),
+        reference_name: folder_session_reference_name(&name),
+        name,
         path: path.display().to_string(),
         manifest_exists: path.join("djinn.toml").exists(),
         session_id: session_id.map(|id| id.to_string()),
@@ -6030,6 +6135,61 @@ fn folder_session_summary_order(
             folder_session_recency_sort_key(right).cmp(&folder_session_recency_sort_key(left))
         })
         .then_with(|| left.name.cmp(&right.name))
+}
+
+fn folder_session_display_name(name: &str) -> String {
+    let stripped = name
+        .split_once("-agt_")
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(name)
+        .trim_matches('-')
+        .trim();
+    if stripped.is_empty() {
+        "session".to_string()
+    } else {
+        stripped.to_string()
+    }
+}
+
+fn folder_session_reference_name(name: &str) -> String {
+    let display = folder_session_display_name(name);
+    let Some((_, suffix)) = name.split_once("-agt_") else {
+        return display;
+    };
+    format!(
+        "{display}-{}",
+        short_agent_session_suffix_from_str(&format!("agt_{suffix}"))
+    )
+}
+
+fn short_agent_session_suffix(id: &AgentSessionId) -> String {
+    short_agent_session_suffix_from_str(&id.to_string())
+}
+
+fn short_agent_session_suffix_from_str(value: &str) -> String {
+    let raw = value.strip_prefix("agt_").unwrap_or(value);
+    let token = raw.split('_').next().unwrap_or(raw);
+    let prefix = token
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .take(10)
+        .collect::<String>();
+    let prefix = if prefix.is_empty() {
+        folder_session_slug(token)
+            .chars()
+            .take(10)
+            .collect::<String>()
+    } else {
+        prefix
+    };
+    let prefix = if prefix.is_empty() {
+        "session".to_string()
+    } else {
+        prefix
+    };
+    let digest = Sha256::digest(value.as_bytes());
+    let digest = format!("{digest:x}");
+    format!("{}-{}", prefix, &digest[..4])
 }
 
 fn folder_session_repo_sort_key(session: &FolderSessionSummary) -> String {
@@ -6228,7 +6388,7 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
                 truncate_table_cell(
                     &format!(
                         "{}{}",
-                        session.name,
+                        session.reference_name,
                         if session.manifest_exists {
                             ""
                         } else {
@@ -6245,6 +6405,46 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
         "\nTotal: {} folder sessions",
         report.sessions.len()
     ));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn format_session_shorten_names_report(report: &SessionShortenNamesReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Cache folder sessions: {}", report.root));
+    if report.dry_run {
+        lines.push("Dry run: no folders renamed.".to_string());
+    }
+    if report.renamed.is_empty() {
+        lines.push("No legacy long folder names to shorten.".to_string());
+    } else {
+        lines.push(format!(
+            "{} folder name{}:",
+            if report.dry_run {
+                "Would rename"
+            } else {
+                "Renamed"
+            },
+            plural_suffix(report.renamed.len())
+        ));
+        for entry in &report.renamed {
+            let from = Path::new(&entry.from)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&entry.from);
+            let to = Path::new(&entry.to)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&entry.to);
+            lines.push(format!("  {from} -> {to}"));
+        }
+    }
+    if !report.skipped.is_empty() {
+        lines.push("Skipped:".to_string());
+        for skipped in &report.skipped {
+            lines.push(format!("  {}: {}", skipped.path, skipped.reason));
+        }
+    }
     lines.push(String::new());
     lines.join("\n")
 }
@@ -8059,9 +8259,51 @@ fn resolve_session_dir(path: &Path) -> Result<PathBuf> {
         bail!("session name or directory path cannot be empty");
     }
     if is_named_folder_session_reference(path) {
-        return Ok(default_folder_session_root().join(path));
+        let root = default_folder_session_root();
+        let direct = root.join(path);
+        if direct.exists() {
+            return Ok(direct);
+        }
+        if let Some(resolved) = resolve_folder_session_reference_name(&root, path)? {
+            return Ok(resolved);
+        }
+        return Ok(direct);
     }
     Ok(path.to_path_buf())
+}
+
+fn resolve_folder_session_reference_name(root: &Path, path: &Path) -> Result<Option<PathBuf>> {
+    let Some(reference) = path.to_str() else {
+        return Ok(None);
+    };
+    if !root.is_dir() {
+        return Ok(None);
+    }
+    let mut matches = Vec::new();
+    let entries = fs::read_dir(root)
+        .with_context(|| format!("reading folder session root {}", root.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for entry in entries {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if folder_session_reference_name(name) == reference {
+            matches.push(path);
+        }
+    }
+    matches.sort();
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.pop()),
+        _ => bail!(
+            "ambiguous folder session reference `{reference}` matched {} sessions; use the full folder name or path",
+            matches.len()
+        ),
+    }
 }
 
 fn default_folder_session_root() -> PathBuf {
@@ -8070,7 +8312,11 @@ fn default_folder_session_root() -> PathBuf {
 
 fn auto_folder_session_dir(prompt: &str, id: &AgentSessionId) -> PathBuf {
     let title = prompt_title(prompt, "session");
-    default_folder_session_root().join(format!("{}-{}", folder_session_slug(&title), id))
+    default_folder_session_root().join(format!(
+        "{}-{}",
+        folder_session_slug(&title),
+        short_agent_session_suffix(id)
+    ))
 }
 
 fn folder_session_slug(value: &str) -> String {
@@ -17870,6 +18116,17 @@ mod tests {
         assert_eq!(args.name, "notes.md");
         assert!(args.json);
 
+        let cli = Cli::try_parse_from(["djinn", "session", "shorten-names", "--dry-run", "--json"])
+            .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::ShortenNames(args)) = session_args.command else {
+            panic!("expected session shorten-names command");
+        };
+        assert!(args.dry_run);
+        assert!(args.json);
+
         let cli =
             Cli::try_parse_from(["djinn", "session", "status", "/tmp/folder-session"]).unwrap();
         let Some(Command::Session(session_args)) = cli.command else {
@@ -19722,10 +19979,12 @@ link = "context/repo"
         let beta = root.join("beta");
         let gamma = root.join("gamma");
         let delta = root.join("delta");
+        let long = root.join("session-agt_1785201896467199000_123_0");
         fs::create_dir_all(alpha.join("turns/turn-a")).unwrap();
         fs::create_dir_all(beta.join("turns")).unwrap();
         fs::create_dir_all(gamma.join("turns/turn-g")).unwrap();
         fs::create_dir_all(delta.join("turns/turn-d")).unwrap();
+        fs::create_dir_all(long.join("turns/turn-long")).unwrap();
         fs::write(
             alpha.join("djinn.toml"),
             "session_id = \"agt_alpha\"\ncreated_at = \"2026-07-27T12:34:56.123-04:00\"\nworkspace = \"/tmp/workspace\"\n\n[context.repo]\npath = \"/tmp/repo-b\"\n",
@@ -19746,27 +20005,44 @@ link = "context/repo"
         )
         .unwrap();
         fs::write(delta.join("summary.md"), "older repo-a summary\n").unwrap();
+        fs::write(
+            long.join("djinn.toml"),
+            "created_at = \"2026-07-27T11:34:56.123-04:00\"\n\n[context.repo]\npath = \"/tmp/repo-a\"\n",
+        )
+        .unwrap();
+        fs::write(long.join("summary.md"), "long folder summary\n").unwrap();
 
         let report = list_folder_sessions_in_root(&root, None).unwrap();
         let text = format_folder_session_ls(&report);
 
-        assert_eq!(report.sessions.len(), 4);
+        assert_eq!(report.sessions.len(), 5);
         assert_eq!(
             report
                 .sessions
                 .iter()
                 .map(|session| session.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["gamma", "delta", "alpha", "beta"]
+            vec![
+                "gamma",
+                "delta",
+                "session-agt_1785201896467199000_123_0",
+                "alpha",
+                "beta"
+            ]
         );
-        assert_eq!(report.sessions[2].session_id.as_deref(), Some("agt_alpha"));
+        assert_eq!(report.sessions[2].display_name, "session");
         assert_eq!(
-            report.sessions[2].created_at.as_deref(),
+            report.sessions[2].reference_name,
+            folder_session_reference_name("session-agt_1785201896467199000_123_0")
+        );
+        assert_eq!(report.sessions[3].session_id.as_deref(), Some("agt_alpha"));
+        assert_eq!(
+            report.sessions[3].created_at.as_deref(),
             Some("2026-07-27T12:34:56.123-04:00")
         );
-        assert_eq!(report.sessions[2].turn_count, 1);
-        assert!(report.sessions[2].request_md);
-        assert!(report.sessions[2].summary_md);
+        assert_eq!(report.sessions[3].turn_count, 1);
+        assert!(report.sessions[3].request_md);
+        assert!(report.sessions[3].summary_md);
         assert_eq!(
             report.sessions[0].summary_preview.as_deref(),
             Some("newer repo-a summary")
@@ -19779,17 +20055,23 @@ link = "context/repo"
                 .iter()
                 .map(|session| session.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["gamma", "delta"]
+            vec!["gamma", "delta", "session-agt_1785201896467199000_123_0"]
         );
         assert_eq!(report.groups[1].repo, "repo-b");
         assert_eq!(report.groups[2].repo, "-");
-        assert!(!report.sessions[3].manifest_exists);
+        assert!(!report.sessions[4].manifest_exists);
         assert!(text.contains("Cache folder sessions:"));
         assert!(text.contains("Repo: repo-a"));
         assert!(text.contains("Repo: repo-b"));
         assert!(text.contains("Repo: -"));
         assert!(text.contains("UPDATED"));
         assert!(text.contains("alpha"));
+        assert!(text.contains("2026-07-27T11:34:56…"));
+        assert!(text.contains(&folder_session_reference_name(
+            "session-agt_1785201896467199000_123_0"
+        )));
+        assert!(text.contains("long folder summary"));
+        assert!(!text.contains("session-agt_1785201896467199000"));
         assert!(text.contains("2026-07-27T12:34:56…"));
         assert!(text.contains("beta (no manifest)"));
         assert!(text.contains("newer repo-a summary"));
@@ -19797,6 +20079,11 @@ link = "context/repo"
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["groups"][0]["repo"], "repo-a");
         assert_eq!(json["groups"][0]["sessions"][0]["name"], "gamma");
+        assert_eq!(json["groups"][0]["sessions"][2]["display_name"], "session");
+        assert_eq!(
+            json["groups"][0]["sessions"][2]["reference_name"],
+            folder_session_reference_name("session-agt_1785201896467199000_123_0")
+        );
 
         let limited = list_folder_sessions_in_root(&root, Some(1)).unwrap();
         assert_eq!(limited.sessions.len(), 1);
@@ -19821,6 +20108,97 @@ link = "context/repo"
             parse_session_list_datetime_ms("2026-07-27T16:34:56.123Z"),
             Some(1_785_170_096_123)
         );
+    }
+
+    #[test]
+    fn folder_session_display_name_hides_native_id_suffix() {
+        assert_eq!(
+            folder_session_display_name("write-plan-agt_1785201896467199000_123_0"),
+            "write-plan"
+        );
+        assert_eq!(
+            folder_session_reference_name("write-plan-agt_1785201896467199000_123_0"),
+            format!(
+                "write-plan-{}",
+                short_agent_session_suffix_from_str("agt_1785201896467199000_123_0")
+            )
+        );
+        assert_eq!(
+            folder_session_display_name("session-agt_1785201896467199000_123_0"),
+            "session"
+        );
+        assert_eq!(
+            folder_session_reference_name("session-agt_1785201896467199000_123_0"),
+            format!(
+                "session-{}",
+                short_agent_session_suffix_from_str("agt_1785201896467199000_123_0")
+            )
+        );
+        assert_eq!(folder_session_display_name("manual-notes"), "manual-notes");
+        assert_eq!(
+            folder_session_reference_name("manual-notes"),
+            "manual-notes"
+        );
+    }
+
+    #[test]
+    fn folder_session_reference_name_resolves_to_full_cache_folder() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-ref-name-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session = root.join("agent-chat-agt_1785201849270486000_123_0");
+        fs::create_dir_all(&session).unwrap();
+
+        assert_eq!(
+            resolve_folder_session_reference_name(
+                &root,
+                Path::new(&folder_session_reference_name(
+                    "agent-chat-agt_1785201849270486000_123_0"
+                ))
+            )
+            .unwrap(),
+            Some(session.clone())
+        );
+        assert_eq!(
+            resolve_folder_session_reference_name(&root, Path::new("missing")).unwrap(),
+            None
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shorten_folder_session_names_renames_legacy_long_cache_folders() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-shorten-names-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let legacy_name = "agent-chat-agt_1785201849270486000_123_0";
+        let short_name = folder_session_reference_name(legacy_name);
+        let legacy = root.join(legacy_name);
+        fs::create_dir_all(&legacy).unwrap();
+
+        let dry = shorten_folder_session_names_in_root(&root, true).unwrap();
+        assert!(legacy.exists());
+        assert_eq!(dry.renamed.len(), 1);
+        assert_eq!(
+            Path::new(&dry.renamed[0].to)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(short_name.as_str())
+        );
+
+        let report = shorten_folder_session_names_in_root(&root, false).unwrap();
+        assert_eq!(report.renamed.len(), 1);
+        assert!(!legacy.exists());
+        assert!(root.join(&short_name).exists());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -20191,7 +20569,10 @@ link = "context/repo"
         let id = AgentSessionId::new("agt_auto_123");
         assert_eq!(
             auto_folder_session_dir("Small question: explain Rust?", &id),
-            default_folder_session_root().join("small-question-explain-rust-agt_auto_123")
+            default_folder_session_root().join(format!(
+                "small-question-explain-rust-{}",
+                short_agent_session_suffix(&id)
+            ))
         );
         assert_eq!(folder_session_slug("🧠"), "session");
     }

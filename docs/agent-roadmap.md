@@ -175,7 +175,10 @@ session uses the session surface via `djinn session <name-or-path> --open`.
 by target repo when known, then recency, with concise metadata that helps choose a
 session without opening every folder. `djinn session ls --json` keeps the flat
 `sessions` array and adds grouped repo sections for consumers that want the same
-shape as the text UI.
+shape as the text UI. Auto-created cache folders use short copy-pasteable names;
+legacy long `...-agt_...` folders remain selectable through the same short
+reference shape and can be renamed with `djinn session shorten-names`. JSON keeps
+exact folder names, paths, display names, and reference names.
 Session context has first-class file/link management:
 
 - `djinn session context ls <session>` reports entries and ingestion status.
