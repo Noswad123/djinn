@@ -1015,6 +1015,11 @@ The first non-interactive agent slice is implemented as:
     containing separators remain explicit filesystem paths. This keeps lightweight
     exploratory sessions from piling up in repos while preserving explicit path
     control for durable/project-owned session folders.
+72. `djinn session ls` lists cache-backed named folder sessions by scanning the
+    cache session root. Djinn does not keep a separate persistent folder-session
+    index; external explicit-path sessions are discoverable by their filesystem
+    location and can be inspected directly with `djinn session status <path>`.
+    This avoids stale index state when users manually move or rename folders.
 
 Not in the first slice unless explicitly reopened:
 

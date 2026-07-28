@@ -139,6 +139,8 @@ enum SessionCommand {
     Compact(SessionCompactArgs),
     /// Inspect a folder-backed Djinn work session without running a model.
     Status(SessionStatusArgs),
+    /// List cache-backed named folder sessions.
+    Ls(SessionLsArgs),
     /// List native Djinn sessions.
     List(AgentSessionListArgs),
     /// Show one native session by id, or by a folder-backed session directory.
@@ -188,6 +190,16 @@ struct SessionCompactArgs {
 struct SessionStatusArgs {
     /// Folder-backed session name or directory to inspect.
     dir: PathBuf,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionLsArgs {
+    /// Maximum folder sessions to list.
+    #[arg(long)]
+    limit: Option<usize>,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -5500,6 +5512,7 @@ fn run_session(args: SessionArgs) -> Result<()> {
         SessionCommand::Init(args) => session_init(args),
         SessionCommand::Compact(args) => session_compact(args),
         SessionCommand::Status(args) => session_status(args),
+        SessionCommand::Ls(args) => session_ls(args),
         SessionCommand::List(args) => agent_session_list(args),
         SessionCommand::Show(args) => session_show(args),
         SessionCommand::Delete(args) => session_delete(args),
@@ -5574,6 +5587,37 @@ fn session_status(args: SessionStatusArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", format_folder_session_status(&report));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionLsReport {
+    root: String,
+    sessions: Vec<FolderSessionSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct FolderSessionSummary {
+    name: String,
+    path: String,
+    manifest_exists: bool,
+    session_id: Option<String>,
+    native_session_exists: bool,
+    workspace: Option<String>,
+    repo_path: Option<String>,
+    request_md: bool,
+    summary_md: bool,
+    turn_count: usize,
+    modified_at_ms: Option<i64>,
+}
+
+fn session_ls(args: SessionLsArgs) -> Result<()> {
+    let report = list_cache_folder_sessions(args.limit)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_folder_session_ls(&report));
     }
     Ok(())
 }
@@ -5818,6 +5862,121 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
         context_ingestible_count,
         context_skipped,
     })
+}
+
+fn list_cache_folder_sessions(limit: Option<usize>) -> Result<SessionLsReport> {
+    let root = default_folder_session_root();
+    list_folder_sessions_in_root(&root, limit)
+}
+
+fn list_folder_sessions_in_root(root: &Path, limit: Option<usize>) -> Result<SessionLsReport> {
+    let mut summaries = Vec::new();
+    if root.is_dir() {
+        let mut entries = fs::read_dir(root)
+            .with_context(|| format!("reading folder session root {}", root.display()))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            summaries.push(folder_session_summary(&path)?);
+            if limit.is_some_and(|limit| summaries.len() >= limit) {
+                break;
+            }
+        }
+    }
+    Ok(SessionLsReport {
+        root: root.display().to_string(),
+        sessions: summaries,
+    })
+}
+
+fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
+    let manifest = read_folder_session_manifest(path)?;
+    let session_id = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.session_id.clone());
+    let native_session_exists = session_id
+        .as_ref()
+        .is_some_and(|id| agent_session_store().load_session(id).is_ok());
+    Ok(FolderSessionSummary {
+        name: path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("session")
+            .to_string(),
+        path: path.display().to_string(),
+        manifest_exists: path.join("djinn.toml").exists(),
+        session_id: session_id.map(|id| id.to_string()),
+        native_session_exists,
+        workspace: manifest
+            .as_ref()
+            .and_then(|manifest| manifest.workspace.clone()),
+        repo_path: manifest
+            .as_ref()
+            .and_then(|manifest| manifest.repo_path.clone()),
+        request_md: path.join("request.md").exists(),
+        summary_md: path.join("summary.md").exists(),
+        turn_count: read_folder_session_turns(&path.join("turns"))?.len(),
+        modified_at_ms: folder_session_modified_at_ms(path),
+    })
+}
+
+fn folder_session_modified_at_ms(path: &Path) -> Option<i64> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64)
+}
+
+fn format_folder_session_ls(report: &SessionLsReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Cache folder sessions: {}", report.root));
+    if report.sessions.is_empty() {
+        lines.push("No cache-backed folder sessions found.".to_string());
+        lines.push(String::new());
+        return lines.join("\n");
+    }
+    for (index, session) in report.sessions.iter().enumerate() {
+        let mut details = Vec::new();
+        if let Some(session_id) = &session.session_id {
+            details.push(format!(
+                "native: {session_id} ({})",
+                if session.native_session_exists {
+                    "found"
+                } else {
+                    "missing"
+                }
+            ));
+        }
+        if let Some(workspace) = &session.workspace {
+            details.push(format!("workspace: {workspace}"));
+        } else if let Some(repo_path) = &session.repo_path {
+            details.push(format!("repo: {repo_path}"));
+        }
+        details.push(format!("turns: {}", session.turn_count));
+        lines.push(format!(
+            "  {}. {}{} — {}",
+            index + 1,
+            session.name,
+            if session.manifest_exists {
+                ""
+            } else {
+                " (no manifest)"
+            },
+            details.join(", ")
+        ));
+        lines.push(format!("     {}", session.path));
+    }
+    lines.push(format!(
+        "\nTotal: {} folder sessions",
+        report.sessions.len()
+    ));
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 fn inspect_folder_session_context_dir(context_dir: &Path) -> Result<(usize, Vec<String>)> {
@@ -18397,6 +18556,15 @@ mod tests {
             panic!("expected session status command");
         };
         assert_eq!(args.dir, PathBuf::from("/tmp/folder-session"));
+
+        let cli = Cli::try_parse_from(["djinn", "session", "ls", "--limit", "10"]).unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let SessionCommand::Ls(args) = session_args.command else {
+            panic!("expected session ls command");
+        };
+        assert_eq!(args.limit, Some(10));
     }
 
     #[test]
@@ -20224,6 +20392,48 @@ link = "context/repo"
         assert!(text.contains("Skipped context:"));
         assert!(text.contains("context/data.bin: unsupported file type"));
         assert!(text.contains("context/repo: symlink directory not ingested"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_ls_scans_cache_root_without_external_index() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-ls-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        fs::create_dir_all(alpha.join("turns/turn-a")).unwrap();
+        fs::create_dir_all(beta.join("turns")).unwrap();
+        fs::write(
+            alpha.join("djinn.toml"),
+            "session_id = \"agt_alpha\"\nworkspace = \"/tmp/workspace\"\n\n[context.repo]\npath = \"/tmp/repo\"\n",
+        )
+        .unwrap();
+        fs::write(alpha.join("request.md"), "request\n").unwrap();
+        fs::write(alpha.join("summary.md"), "summary\n").unwrap();
+        fs::write(alpha.join("turns/turn-a/response.md"), "response\n").unwrap();
+
+        let report = list_folder_sessions_in_root(&root, None).unwrap();
+        let text = format_folder_session_ls(&report);
+
+        assert_eq!(report.sessions.len(), 2);
+        assert_eq!(report.sessions[0].name, "alpha");
+        assert_eq!(report.sessions[0].session_id.as_deref(), Some("agt_alpha"));
+        assert_eq!(report.sessions[0].turn_count, 1);
+        assert!(report.sessions[0].request_md);
+        assert!(report.sessions[0].summary_md);
+        assert_eq!(report.sessions[1].name, "beta");
+        assert!(!report.sessions[1].manifest_exists);
+        assert!(text.contains("Cache folder sessions:"));
+        assert!(text.contains("alpha"));
+        assert!(text.contains("beta (no manifest)"));
+
+        let limited = list_folder_sessions_in_root(&root, Some(1)).unwrap();
+        assert_eq!(limited.sessions.len(), 1);
 
         let _ = fs::remove_dir_all(&root);
     }

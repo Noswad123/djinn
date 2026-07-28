@@ -141,6 +141,9 @@ session init small-question` resolves to Djinn's cache session root
 Explicit absolute paths, `./relative` paths, and paths containing separators stay
 filesystem paths. Durable context that should survive a session should graduate
 into repo docs, AGENTS.md, or another repo/harness-owned context location.
+`djinn session ls` lists cache-backed named sessions by scanning that cache root;
+there is no persistent external session index, so manually moved/renamed explicit
+path sessions do not require index maintenance.
 
 Ready follow-up slices:
 
