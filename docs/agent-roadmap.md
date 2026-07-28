@@ -115,14 +115,20 @@ non-interactive path; `djinn agent ask` remains a compatibility spelling. `djinn
 ask --session-dir <dir>` now consumes `djinn.toml` defaults (`session_id`,
 `profile`, `agent`, `model`, `workspace`, and `[context.repo].path`) and can
 create/project a new folder-backed capsule when the directory has no native
-session id yet. Top-level `djinn session list/show/delete` wrap existing native
-session inspection without requiring the legacy `agent` prefix. Do not create
-`summary-history.md`, mirrored `events.jsonl`, or `transcript.md` by default.
+session id yet. It also ingests bounded shallow session context from
+`request.md`, `summary.md`, and small Markdown/text files directly under
+`context/`, while skipping symlinked directories and deep trees. Top-level `djinn
+session list/show/delete` wrap existing native session inspection without
+requiring the legacy `agent` prefix. Do not create `summary-history.md`, mirrored
+`events.jsonl`, or `transcript.md` by default.
 
 Ready follow-up slices:
 
 - Continue removing `agent` from non-chat user-facing paths while keeping legacy
   `djinn agent ...` aliases until the new folder/session UX settles.
+- Later: discover context from the same configured locations other harnesses use
+  (for example repo/harness instruction files) and fold those into the same
+  precedence model; table this until folder-native context behavior is stable.
 - Add `djinn agent session compact --session-dir <dir>` to distill older turns
   into durable `context/` notes with evidence links back to `turns/<id>/` files.
   Compaction should be threshold-friendly (manual first, later after N turns) and

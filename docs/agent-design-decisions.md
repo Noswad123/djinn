@@ -986,6 +986,13 @@ The first non-interactive agent slice is implemented as:
     `djinn session show <id-or-folder>`, and `djinn session delete <id-or-folder>`.
     Folder references are resolved through `djinn.toml` `session_id`; the legacy
     `djinn agent session ...` commands remain compatibility aliases.
+68. `djinn ask --session-dir` ingests folder context shallowly and with hard
+    bounds: `request.md`, `summary.md`, and small Markdown/text files directly
+    under `context/` are added to the system context; `turns/`, nested folders,
+    binary/unsupported files, oversized files, and symlinked directories are not
+    ingested by default. Djinn should eventually also look for context wherever
+    other configured harnesses look, but that harness-context discovery is a later
+    slice.
 
 Not in the first slice unless explicitly reopened:
 

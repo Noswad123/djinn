@@ -44,6 +44,9 @@ use sha2::{Digest, Sha256};
 
 const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
 const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
+const FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES: u64 = 32 * 1024;
+const FOLDER_SESSION_CONTEXT_MAX_TOTAL_BYTES: usize = 96 * 1024;
+const FOLDER_SESSION_CONTEXT_MAX_FILES: usize = 16;
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -8046,6 +8049,134 @@ fn nonempty_owned_string(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn resolve_folder_session_context_instructions(
+    session_dir: Option<&Path>,
+) -> Result<Vec<ResolvedAgentInstruction>> {
+    let Some(session_dir) = session_dir else {
+        return Ok(Vec::new());
+    };
+    if !session_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut candidates = Vec::<(PathBuf, String)>::new();
+    candidates.push((session_dir.join("request.md"), "request.md".to_string()));
+    candidates.push((session_dir.join("summary.md"), "summary.md".to_string()));
+    let context_dir = session_dir.join("context");
+    if context_dir.is_dir() {
+        let mut entries = fs::read_dir(&context_dir)
+            .with_context(|| {
+                format!(
+                    "reading session context directory {}",
+                    context_dir.display()
+                )
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("context")
+                .to_string();
+            candidates.push((path, format!("context/{name}")));
+        }
+    }
+
+    let mut resolved = Vec::new();
+    let mut skipped = Vec::new();
+    let mut total_bytes = 0usize;
+    for (path, label) in candidates {
+        if resolved.len() >= FOLDER_SESSION_CONTEXT_MAX_FILES {
+            skipped.push(format!("{label}: file limit reached"));
+            continue;
+        }
+        let Some(content) = read_folder_session_context_file(&path, &label, &mut skipped)? else {
+            continue;
+        };
+        let content_bytes = content.len();
+        if total_bytes + content_bytes > FOLDER_SESSION_CONTEXT_MAX_TOTAL_BYTES {
+            skipped.push(format!("{label}: total context byte limit reached"));
+            continue;
+        }
+        total_bytes += content_bytes;
+        resolved.push(ResolvedAgentInstruction {
+            source: format!("session-context:{label}"),
+            content,
+        });
+    }
+    if !skipped.is_empty() {
+        resolved.push(ResolvedAgentInstruction {
+            source: "session-context:skipped".to_string(),
+            content: skipped.join("\n"),
+        });
+    }
+    Ok(resolved)
+}
+
+fn read_folder_session_context_file(
+    path: &Path,
+    label: &str,
+    skipped: &mut Vec<String>,
+) -> Result<Option<String>> {
+    let Ok(symlink_metadata) = fs::symlink_metadata(path) else {
+        return Ok(None);
+    };
+    if symlink_metadata.is_dir() {
+        skipped.push(format!("{label}: directory not ingested"));
+        return Ok(None);
+    }
+    if symlink_metadata.file_type().is_symlink() {
+        let target_metadata = fs::metadata(path)
+            .with_context(|| format!("reading symlink target metadata {}", path.display()))?;
+        if target_metadata.is_dir() {
+            skipped.push(format!("{label}: symlink directory not ingested"));
+            return Ok(None);
+        }
+    } else if !symlink_metadata.is_file() {
+        skipped.push(format!("{label}: not a regular file"));
+        return Ok(None);
+    }
+    if !is_folder_session_context_text_file(path) {
+        skipped.push(format!("{label}: unsupported file type"));
+        return Ok(None);
+    }
+    let metadata =
+        fs::metadata(path).with_context(|| format!("reading metadata {}", path.display()))?;
+    if metadata.len() > FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES {
+        skipped.push(format!(
+            "{label}: {} bytes exceeds {} byte limit",
+            metadata.len(),
+            FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES
+        ));
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading session context file {}", path.display()))?;
+    let content = content.trim_end().to_string();
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(content))
+}
+
+fn is_folder_session_context_text_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if matches!(name, "README" | "NOTES" | "TODO") {
+        return true;
+    }
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("md" | "markdown" | "txt" | "text")
+    )
+}
+
 fn agent_ask(args: AgentAskArgs) -> Result<()> {
     let session_dir = args
         .session_dir
@@ -8058,6 +8189,8 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
         .transpose()?
         .flatten();
     let prompt = resolve_agent_request_prompt(args.prompt.clone(), session_dir.as_deref())?;
+    let folder_context_instructions =
+        resolve_folder_session_context_instructions(session_dir.as_deref())?;
     let store = agent_session_store();
     let requested_session_id = args
         .session_id
@@ -8127,8 +8260,9 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
                 &config_report.effective,
                 &profile,
             );
-            let system_instructions =
+            let mut system_instructions =
                 resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
+            system_instructions.extend(folder_context_instructions.clone());
             (
                 id,
                 workspace,
@@ -8179,8 +8313,9 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
                 .title
                 .clone()
                 .unwrap_or_else(|| prompt_title(&prompt, "Djinn prompt"));
-            let system_instructions =
+            let mut system_instructions =
                 resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
+            system_instructions.extend(folder_context_instructions.clone());
             let effective_config = agent_effective_config_from_parts(
                 workspace.clone(),
                 profile.clone(),
@@ -19481,6 +19616,52 @@ link = "context/repo"
             session_manifest_workspace_path(Some(&parsed)),
             Some(PathBuf::from("/tmp/workspace"))
         );
+    }
+
+    #[test]
+    fn folder_session_context_ingestion_is_shallow_bounded_and_textual() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-context-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let context = dir.join("context");
+        let repo = root.join("repo");
+        fs::create_dir_all(&context).unwrap();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(dir.join("request.md"), "current request\n").unwrap();
+        fs::write(dir.join("summary.md"), "previous summary\n").unwrap();
+        fs::write(context.join("notes.md"), "curated note\n").unwrap();
+        fs::write(context.join("large.md"), "x".repeat(40 * 1024)).unwrap();
+        fs::write(context.join("data.bin"), "not text\n").unwrap();
+        fs::write(
+            repo.join("secret.md"),
+            "do not ingest through repo symlink\n",
+        )
+        .unwrap();
+        create_dir_symlink(&repo, &context.join("repo")).unwrap();
+
+        let instructions = resolve_folder_session_context_instructions(Some(&dir)).unwrap();
+        let rendered = instructions
+            .iter()
+            .map(|instruction| format!("{}\n{}", instruction.source, instruction.content))
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+
+        assert!(rendered.contains("session-context:request.md"));
+        assert!(rendered.contains("current request"));
+        assert!(rendered.contains("session-context:summary.md"));
+        assert!(rendered.contains("previous summary"));
+        assert!(rendered.contains("session-context:context/notes.md"));
+        assert!(rendered.contains("curated note"));
+        assert!(!rendered.contains("do not ingest through repo symlink"));
+        assert!(rendered.contains("context/repo: symlink directory not ingested"));
+        assert!(rendered.contains("context/large.md: 40960 bytes exceeds 32768 byte limit"));
+        assert!(rendered.contains("context/data.bin: unsupported file type"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
