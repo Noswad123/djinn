@@ -281,16 +281,20 @@ Working interpretation:
   named roles, while singular `djinn agent ...` remains the runtime/session
   command family. The first slice is read-only inspection:
   `djinn agents list` and `djinn agents show <name>`.
-- Explicit role selection is supported with `--agent <name>` on `djinn agent ask`,
-  `djinn agent chat`, and `djinn agent session new`. A selected role supplies the
-  profile/model defaults for that invocation, and the session metadata records
-  `agent_name` plus optional `parent_session_id` for related-session workflows.
-- `djinn agent session list` supports relationship filters with `--agent <name>`
-  and `--parent-session <id>` so explicit related-session workflows can be
-  inspected without adding autonomous delegation.
-- `djinn agent session children <session-id>` is a focused manual inspection
-  shortcut over `parent_session_id`, returning the immediate child sessions for a
-  parent without implying model-driven task delegation.
+- Explicit role selection is supported with `--agent <name>` on runtime entry
+  points such as `djinn ask` and the legacy `djinn agent ask` / `djinn agent chat`
+  surfaces. Earlier `djinn agent session new` role-selection behavior is
+  superseded by the folder-backed session workflow in decisions 66-80. A selected
+  role supplies the profile/model defaults for that invocation, and session
+  metadata records `agent_name` plus optional `parent_session_id` for related
+  session workflows.
+- Superseded by decisions 79-80: early `djinn agent session list` relationship
+  filters with `--agent <name>` and `--parent-session <id>` provided manual
+  inspection without adding autonomous delegation.
+- Superseded by decisions 79-80: early `djinn agent session children
+  <session-id>` was a focused manual inspection shortcut over
+  `parent_session_id`, returning immediate child sessions for a parent without
+  implying model-driven task delegation.
 - `djinn agent config show --agent <name>` explains the role-resolved effective
   runtime config. `djinn agent tools list/show --agent <name>` applies the role
   tool allowlist, and runtime execution uses the same allowlist when present.
@@ -654,7 +658,8 @@ The first non-interactive agent slice is implemented as:
     built-in runtime tool set using the same registry construction as agent runs.
     Text output lists names/summaries or a single tool description/schema; JSON
     output includes full tool specs and input schemas.
-16. CLI commands for session creation/list/show/stats/rename/delete and one-shot prompting:
+16. Superseded by decisions 66-80: the early JSONL-first CLI commands for
+    session creation/list/show/stats/rename/delete and one-shot prompting were:
     `djinn agent session new`, `djinn agent session list`,
     `djinn agent session show`, `djinn agent session stats`,
     `djinn agent session rename`, `djinn agent session delete`, and
@@ -662,7 +667,9 @@ The first non-interactive agent slice is implemented as:
     per-model/provider breakdowns, tool outcomes, and error phases from the
     existing JSONL metadata events without changing the session log. Rename
     appends a `SessionTitleUpdated` metadata event and skips no-op updates.
-    Delete requires `--force` and removes the session JSONL file.
+    Delete required `--force` and removed the session JSONL file. These native
+    session inspection commands are no longer the user-facing surface; folder
+    sessions and `djinn ask` / `djinn session ...` are canonical.
 17. A dashboard pane that only browses JSONL agent sessions overlaps with the
     Sessions picker and should not be treated as the Agent UI. The Agent UI must
     be an interactive chat/composer/runtime surface, with history/session picking
@@ -938,10 +945,11 @@ The first non-interactive agent slice is implemented as:
     `paused/foreground` with a ready-for-next-prompt note; a failed turn marks it
     `failed/foreground`; exiting a non-failed/non-cancelled chat marks it
     `paused/foreground`, not completed. Completion remains explicit, or automatic
-    only for non-interactive/background success paths. This gives foreground child
-    sessions an inspectable status through `djinn agent session lifecycle show`
-    and `djinn agent session children` without pretending that closing a chat means
-    the delegated task is complete.
+    only for non-interactive/background success paths. This originally gave
+    foreground child sessions an inspectable status through `djinn agent session
+    lifecycle show` and `djinn agent session children`; those JSONL-first
+    inspection commands are superseded by the folder-backed direction in
+    decisions 66-80.
 63. Djinn supports folder-backed session projections as a pivot away from making
     the terminal transcript the primary workspace. `djinn agent ask --session-dir`
     can read `request.md` when no prompt is provided; `djinn agent chat
@@ -982,10 +990,11 @@ The first non-interactive agent slice is implemented as:
     session `djinn.toml`, then repo-local `.djinn.json`, then global config, then
     built-ins. Do not add new behavior to `djinn chat` / `djinn agent chat` while
     this file-first ask/session flow is settling.
-67. Native session inspection also has top-level spellings: `djinn session list`,
-    `djinn session show <id-or-folder>`, and `djinn session delete <id-or-folder>`.
-    Folder references are resolved through `djinn.toml` `session_id`; the legacy
-    `djinn agent session ...` commands remain compatibility aliases.
+67. Superseded by decisions 79-80: native session inspection briefly had
+    top-level spellings: `djinn session list`, `djinn session show
+    <id-or-folder>`, and `djinn session delete <id-or-folder>`. Folder references
+    were resolved through `djinn.toml` `session_id`; the legacy
+    `djinn agent session ...` commands remained compatibility aliases.
 68. `djinn ask --session-dir` ingests folder context shallowly and with hard
     bounds: `request.md`, `summary.md`, and small Markdown/text files directly
     under `context/` are added to the system context; `turns/`, nested folders,
@@ -1072,7 +1081,9 @@ The first non-interactive agent slice is implemented as:
     first JSONL workflow and should not remain as a supported legacy path. Any
     future access to old global JSONL data should be implemented as explicit
     migration/import tooling that produces folder sessions, not as a restored
-    `agent session` command tree.
+    `agent session` command tree. The corresponding CLI-only helper/reporting
+    code is pruned rather than kept behind hidden commands; JSONL remains a
+    runtime-private event artifact used by folder-backed execution.
 
 Not in the first slice unless explicitly reopened:
 

@@ -222,8 +222,9 @@ Djinn-owned primitives that remain useful for Coven:
   `failed`, `cancelled`) that Coven can mirror into its orchestration ledger.
 - Djinn policy/permissions remain local and scoped; parent/lead approvals do not
   silently transfer to worker sessions.
-- Manual child/session CLI commands are adapter/debug plumbing, not the primary
-  user workflow.
+- Any future manual child/session CLI affordances should be adapter/debug
+  plumbing, not the primary user workflow; removed legacy native-session command
+  trees should not be restored as product surfaces.
 
 Ready Djinn implementation slices:
 
