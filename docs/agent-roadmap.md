@@ -159,12 +159,21 @@ without `djinn.toml` are refused as a safety guard.
 Plain `djinn ask "..."` now creates a cache-backed folder session automatically
 with a prompt slug plus native session id. `--session-dir` and its friendlier
 `--session` alias keep explicit folder control; `--session-id` appends to an
-existing native session without creating a new folder.
+existing native session without creating a new folder. For folder-backed asks, the
+native JSONL is colocated in the session folder under `.djinn/<session-id>.jsonl`,
+and the default top-level command output is just the session directory path; read
+the answer from `summary.md` or the latest `turns/` entry.
 
 Ready follow-up slices:
 
-- Continue removing `agent` from non-chat user-facing paths while keeping legacy
-  `djinn agent ...` aliases until the new folder/session UX settles.
+- Treat the folder-backed top-level UX as canonical. New work should target
+  `djinn ask` and `djinn session ...`; legacy `djinn agent ...` commands and the
+  global `agent-sessions` JSONL root should only receive migration, delegation,
+  or safe-removal work. Do not add new capabilities to the legacy surface unless
+  they directly unblock migrating users/sessions to folder-backed capsules.
+- Add explicit deprecation/migration affordances for legacy commands: clear help
+  text, warnings where appropriate, and one-way import/move helpers that leave the
+  folder session as the only user-facing artifact.
 - Later: discover context from the same configured locations other harnesses use
   (for example repo/harness instruction files) and fold those into the same
   precedence model; table this until folder-native context behavior is stable.

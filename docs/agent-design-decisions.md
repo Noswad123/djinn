@@ -1036,10 +1036,11 @@ The first non-interactive agent slice is implemented as:
     `djinn.toml` or a unique repo symlink under `context/`.
 75. `djinn session rm <name-or-path>` removes the folder-backed session without a
     `--force` ceremony. If `djinn.toml` records a native `session_id`, Djinn also
-    removes that native JSONL session. To avoid accidental arbitrary directory
-    deletion, explicit directories without `djinn.toml` are rejected; cache-backed
-    bare-name session folders remain easy to remove because they live under the
-    disposable session cache root.
+    removes or accounts for that native JSONL session, including JSONL stored
+    inside the folder itself. To avoid accidental arbitrary directory deletion,
+    explicit directories without `djinn.toml` are rejected; cache-backed bare-name
+    session folders remain easy to remove because they live under the disposable
+    session cache root.
 76. Plain top-level `djinn ask "..."` creates and projects a cache-backed folder
     session automatically, using a prompt slug plus native session id under the
     cache session root. Explicit `--session-dir` / `--session <name-or-path>` keep
@@ -1047,6 +1048,21 @@ The first non-interactive agent slice is implemented as:
     session without inventing a new folder. Legacy `djinn agent ask` keeps its
     compatibility behavior and only projects a folder when `--session-dir` is
     supplied.
+77. For folder-backed `djinn ask` runs, the native append-only JSONL is stored
+    inside the session folder under `.djinn/<session-id>.jsonl` instead of as a
+    second primary artifact under `~/.config/djinn/agent-sessions`. Existing
+    global JSONL is treated as a legacy fallback and is moved into the folder when
+    the folder session is resumed. The default top-level `djinn ask` stdout is the
+    session directory path; the answer is read from `summary.md` / `turns/`.
+78. New agent/session work targets the folder-backed top-level UX only. Legacy
+    `djinn agent ...` commands and the global `agent-sessions` JSONL root are
+    compatibility/migration shims, not parallel products. They may continue to
+    exist long enough to import, resume, or delete old sessions safely, but new
+    features should not be added there unless they unblock migration. The desired
+    steady state is: `djinn ask` and `djinn session ...` operate on session
+    folders; native event details are private implementation files inside those
+    folders; legacy commands either delegate to the canonical path or emit a clear
+    deprecation/migration message.
 
 Not in the first slice unless explicitly reopened:
 

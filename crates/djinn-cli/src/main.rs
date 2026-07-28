@@ -50,6 +50,7 @@ const FOLDER_SESSION_CONTEXT_MAX_FILES: usize = 16;
 const FOLDER_SESSION_COMPACT_SNIPPET_CHARS: usize = 1_200;
 const FOLDER_SESSION_COMPACT_START_MARKER: &str = "<!-- djinn:generated:start -->";
 const FOLDER_SESSION_COMPACT_END_MARKER: &str = "<!-- djinn:generated:end -->";
+const FOLDER_NATIVE_SESSION_DIR: &str = ".djinn";
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -5696,14 +5697,42 @@ fn session_rm(args: SessionRmArgs) -> Result<()> {
     Ok(())
 }
 
-fn session_show(mut args: AgentSessionShowArgs) -> Result<()> {
-    args.id = resolve_session_reference_id(&args.id)?.to_string();
-    agent_session_show(args)
+fn session_show(args: AgentSessionShowArgs) -> Result<()> {
+    let (id, store) = resolve_session_reference_store(&args.id)?;
+    let session = store.load_session(&id)?;
+    print_agent_session_show(&session, args.json)
 }
 
-fn session_delete(mut args: AgentSessionDeleteArgs) -> Result<()> {
-    args.id = resolve_session_reference_id(&args.id)?.to_string();
-    agent_session_delete(args)
+fn session_delete(args: AgentSessionDeleteArgs) -> Result<()> {
+    if !args.force {
+        bail!("refusing to delete agent session without --force");
+    }
+    let (id, store) = resolve_session_reference_store(&args.id)?;
+    let path = store.session_file_path(&id);
+    let deleted = store.delete_session(&id)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": deleted.id,
+                "title": deleted.meta.title,
+                "deleted": true,
+                "path": path,
+            }))?
+        );
+    } else {
+        println!(
+            "Deleted agent session [{}]: {}",
+            deleted.id,
+            if deleted.meta.title.is_empty() {
+                "Untitled agent session"
+            } else {
+                &deleted.meta.title
+            }
+        );
+        println!("Path: {}", path.display());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -5971,7 +6000,7 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
         .and_then(|manifest| manifest.session_id.clone());
     let native_session_exists = session_id
         .as_ref()
-        .is_some_and(|id| agent_session_store().load_session(id).is_ok());
+        .is_some_and(|id| load_folder_native_agent_session(&session_dir, id).is_some());
     let context_dir = session_dir.join("context");
     let turns_dir = session_dir.join("turns");
     let (context_ingestible_count, context_skipped) =
@@ -6047,7 +6076,7 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         .and_then(|manifest| manifest.session_id.clone());
     let native_session = session_id
         .as_ref()
-        .and_then(|id| agent_session_store().load_session(id).ok());
+        .and_then(|id| load_folder_native_agent_session(path, id));
     let native_session_exists = native_session.is_some();
     let created_at = native_session
         .as_ref()
@@ -6086,6 +6115,74 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         modified_at: folder_session_modified_at(path),
         modified_at_ms: folder_session_modified_at_ms(path),
     })
+}
+
+fn load_folder_native_agent_session(
+    session_dir: &Path,
+    id: &AgentSessionId,
+) -> Option<AgentSession> {
+    folder_agent_session_store(session_dir)
+        .load_session(id)
+        .ok()
+        .or_else(|| agent_session_store().load_session(id).ok())
+}
+
+fn agent_session_store_for_folder_session(
+    session_dir: &Path,
+    id: &AgentSessionId,
+) -> JsonlAgentSessionStore {
+    let folder_store = folder_agent_session_store(session_dir);
+    if folder_store.load_session(id).is_ok() {
+        folder_store
+    } else {
+        agent_session_store()
+    }
+}
+
+fn relocate_agent_session_into_folder(
+    source_store: &JsonlAgentSessionStore,
+    session_dir: &Path,
+    id: &AgentSessionId,
+) -> Result<JsonlAgentSessionStore> {
+    let folder_store = folder_agent_session_store(session_dir);
+    let target_path = folder_store.session_file_path(id);
+    if target_path.exists() {
+        return Ok(folder_store);
+    }
+
+    let source_path = source_store.session_file_path(id);
+    if !source_path.exists() {
+        source_store
+            .load_session(id)
+            .with_context(|| format!("loading agent session {id} before moving into folder"))?;
+        bail!(
+            "agent session {id} exists but its JSONL path is missing: {}",
+            source_path.display()
+        );
+    }
+
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating native session directory {}", parent.display()))?;
+    }
+    fs::rename(&source_path, &target_path).or_else(|rename_error| {
+        fs::copy(&source_path, &target_path).with_context(|| {
+            format!(
+                "copying agent session {} to {} after rename failed: {rename_error}",
+                source_path.display(),
+                target_path.display()
+            )
+        })?;
+        fs::remove_file(&source_path).with_context(|| {
+            format!(
+                "removing original agent session {} after copying to {}",
+                source_path.display(),
+                target_path.display()
+            )
+        })?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(folder_store)
 }
 
 fn non_empty_string(value: &str) -> Option<String> {
@@ -6303,7 +6400,10 @@ fn remove_folder_session_with_store(
     }
     let session_id = session_id_from_session_dir(&session_dir)?;
     let removed_native_session = if let Some(id) = &session_id {
-        if store.load_session(id).is_ok() {
+        let folder_store = folder_agent_session_store(&session_dir);
+        if folder_store.load_session(id).is_ok() {
+            true
+        } else if store.load_session(id).is_ok() {
             store.delete_session(id)?;
             true
         } else {
@@ -8070,7 +8170,11 @@ fn format_agent_session_children_report(report: &AgentSessionChildrenReport) -> 
 fn agent_session_show(args: AgentSessionShowArgs) -> Result<()> {
     let id = AgentSessionId::new(args.id);
     let session = agent_session_store().load_session(&id)?;
-    if args.json {
+    print_agent_session_show(&session, args.json)
+}
+
+fn print_agent_session_show(session: &AgentSession, json: bool) -> Result<()> {
+    if json {
         println!("{}", serde_json::to_string_pretty(&session)?);
         return Ok(());
     }
@@ -9080,6 +9184,31 @@ fn resolve_session_reference_id(value: &str) -> Result<AgentSessionId> {
     Ok(AgentSessionId::new(trimmed.to_string()))
 }
 
+fn resolve_session_reference_store(
+    value: &str,
+) -> Result<(AgentSessionId, JsonlAgentSessionStore)> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("session id or directory cannot be empty");
+    }
+    let path = Path::new(trimmed);
+    let session_dir = resolve_session_dir(path)?;
+    if session_dir.join("djinn.toml").exists() {
+        let id = session_id_from_session_dir(&session_dir)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "session directory has no session_id: {}",
+                session_dir.display()
+            )
+        })?;
+        let store = agent_session_store_for_folder_session(&session_dir, &id);
+        return Ok((id, store));
+    }
+    Ok((
+        resolve_session_reference_id(trimmed)?,
+        agent_session_store(),
+    ))
+}
+
 fn manifest_root_string_value(manifest: &str, key: &str) -> Option<String> {
     let prefix = format!("{key} =");
     manifest.lines().find_map(|line| {
@@ -9296,7 +9425,7 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
     let prompt = resolve_agent_request_prompt(args.prompt.clone(), session_dir.as_deref())?;
     let folder_context_instructions =
         resolve_folder_session_context_instructions(session_dir.as_deref())?;
-    let store = agent_session_store();
+    let mut store = agent_session_store();
     let requested_session_id = args
         .session_id
         .as_deref()
@@ -9309,6 +9438,10 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
             .as_ref()
             .and_then(|manifest| manifest.session_id.clone()),
     };
+
+    if let (Some(session_dir), Some(id)) = (session_dir.as_deref(), requested_session_id.as_ref()) {
+        store = agent_session_store_for_folder_session(session_dir, id);
+    }
 
     let (id, workspace, profile, model, system_instructions, allowed_tools) =
         if let Some(id) = requested_session_id {
@@ -9450,6 +9583,13 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
             )
         };
 
+    let projected_session_dir = session_dir
+        .clone()
+        .or_else(|| should_auto_folder_session.then(|| auto_folder_session_dir(&prompt, &id)));
+    if let Some(session_dir) = &projected_session_dir {
+        store = relocate_agent_session_into_folder(&store, session_dir, &id)?;
+    }
+
     store.append_event(
         &id,
         AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
@@ -9499,9 +9639,6 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
         }
     };
     let session = store.load_session(&id)?;
-    let projected_session_dir = session_dir
-        .clone()
-        .or_else(|| should_auto_folder_session.then(|| auto_folder_session_dir(&prompt, &id)));
     if let Some(session_dir) = &projected_session_dir {
         project_agent_session_dir(
             session_dir,
@@ -9511,7 +9648,15 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
         )?;
         ensure_folder_session_readme(session_dir)?;
     }
-    if args.json {
+    let folder_path_output = auto_folder_session && projected_session_dir.is_some();
+    if args.json && folder_path_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "session_dir": projected_session_dir,
+            }))?
+        );
+    } else if args.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -9523,6 +9668,10 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
                 "session_dir": projected_session_dir,
             }))?
         );
+    } else if folder_path_output {
+        if let Some(session_dir) = &projected_session_dir {
+            println!("{}", session_dir.display());
+        }
     } else {
         println!("{}", response.message.content);
         println!("\nAgent session [{}]: {}", id, session.meta.title);
@@ -18077,6 +18226,10 @@ fn agent_session_store() -> JsonlAgentSessionStore {
     JsonlAgentSessionStore::default_in(&djinn_core::default_data_dir())
 }
 
+fn folder_agent_session_store(session_dir: &Path) -> JsonlAgentSessionStore {
+    JsonlAgentSessionStore::new(session_dir.join(FOLDER_NATIVE_SESSION_DIR))
+}
+
 fn file_history_store() -> JsonlFileHistoryStore {
     JsonlFileHistoryStore::default_in(&djinn_core::default_data_dir())
 }
@@ -20871,6 +21024,44 @@ link = "context/repo"
         assert!(text.contains("Skipped context:"));
         assert!(text.contains("context/data.bin: unsupported file type"));
         assert!(text.contains("context/repo: symlink directory not ingested"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn relocates_native_jsonl_into_folder_session() {
+        let store = temp_agent_store("folder-native-relocate");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Move me".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "test".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        let source_path = store.session_file_path(&id);
+        let root = std::env::temp_dir().join(format!(
+            "djinn-folder-native-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("session");
+
+        let folder_store = relocate_agent_session_into_folder(&store, &session_dir, &id).unwrap();
+        let target_path = folder_store.session_file_path(&id);
+
+        assert!(!source_path.exists());
+        assert_eq!(
+            target_path,
+            session_dir.join(".djinn").join(format!("{id}.jsonl"))
+        );
+        assert!(target_path.exists());
+        assert_eq!(
+            folder_store.load_session(&id).unwrap().meta.title,
+            "Move me"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
