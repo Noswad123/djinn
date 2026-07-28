@@ -955,8 +955,6 @@ enum AgentCommand {
     Tools(AgentToolsArgs),
     /// Inspect, audit, and revoke effective agent policy grants.
     Policy(AgentPolicyArgs),
-    /// Deprecated: manage legacy native agent sessions.
-    Session(AgentSessionArgs),
     /// Inspect or restore apply_patch file-history entries.
     FileHistory(AgentFileHistoryArgs),
     /// Deprecated alias for top-level `djinn ask`.
@@ -5546,10 +5544,6 @@ fn run_agent(args: AgentArgs) -> Result<()> {
             warn_legacy_agent_command("agent policy", Some("policy remains legacy-only for now"));
             run_agent_policy(args)
         }
-        AgentCommand::Session(args) => {
-            warn_legacy_agent_command("agent session", Some("use `djinn session ...`"));
-            run_agent_session(args)
-        }
         AgentCommand::FileHistory(args) => {
             warn_legacy_agent_command(
                 "agent file-history",
@@ -5721,44 +5715,6 @@ fn session_rm(args: SessionRmArgs) -> Result<()> {
                 }
             );
         }
-    }
-    Ok(())
-}
-
-fn session_show(args: AgentSessionShowArgs) -> Result<()> {
-    let (id, store) = resolve_session_reference_store(&args.id)?;
-    let session = store.load_session(&id)?;
-    print_agent_session_show(&session, args.json)
-}
-
-fn session_delete(args: AgentSessionDeleteArgs) -> Result<()> {
-    if !args.force {
-        bail!("refusing to delete agent session without --force");
-    }
-    let (id, store) = resolve_session_reference_store(&args.id)?;
-    let path = store.session_file_path(&id);
-    let deleted = store.delete_session(&id)?;
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "id": deleted.id,
-                "title": deleted.meta.title,
-                "deleted": true,
-                "path": path,
-            }))?
-        );
-    } else {
-        println!(
-            "Deleted agent session [{}]: {}",
-            deleted.id,
-            if deleted.meta.title.is_empty() {
-                "Untitled agent session"
-            } else {
-                &deleted.meta.title
-            }
-        );
-        println!("Path: {}", path.display());
     }
     Ok(())
 }
@@ -7055,6 +7011,7 @@ fn resolve_agent_role<'a>(roles: &'a [AgentRoleView], name: &str) -> Result<&'a 
     }
 }
 
+#[allow(dead_code)]
 fn resolve_agent_role_filter_name(
     config: &DjinnConfig,
     agent: Option<String>,
@@ -7243,20 +7200,7 @@ fn run_agent_policy(args: AgentPolicyArgs) -> Result<()> {
     }
 }
 
-fn run_agent_session(args: AgentSessionArgs) -> Result<()> {
-    match args.command {
-        AgentSessionCommand::New(args) => agent_session_new(args),
-        AgentSessionCommand::Child(args) => agent_session_child(args),
-        AgentSessionCommand::List(args) => agent_session_list(args),
-        AgentSessionCommand::Children(args) => agent_session_children(args),
-        AgentSessionCommand::Show(args) => session_show(args),
-        AgentSessionCommand::Stats(args) => agent_session_stats(args),
-        AgentSessionCommand::Lifecycle(args) => agent_session_lifecycle(args),
-        AgentSessionCommand::Rename(args) => agent_session_rename(args),
-        AgentSessionCommand::Delete(args) => session_delete(args),
-    }
-}
-
+#[allow(dead_code)]
 fn agent_session_child(args: AgentSessionChildArgs) -> Result<()> {
     match args.command {
         AgentSessionChildCommand::Start(args) => agent_session_child_start(args),
@@ -7265,6 +7209,7 @@ fn agent_session_child(args: AgentSessionChildArgs) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[allow(dead_code)]
 struct AgentSessionChildStartReport {
     parent_session_id: AgentSessionId,
     child_session_id: AgentSessionId,
@@ -7279,6 +7224,7 @@ struct AgentSessionChildStartReport {
     path: String,
 }
 
+#[allow(dead_code)]
 fn agent_session_child_start(args: AgentSessionChildStartArgs) -> Result<()> {
     let prompt = args.prompt.trim().to_string();
     if prompt.is_empty() {
@@ -7416,6 +7362,7 @@ fn agent_session_child_start(args: AgentSessionChildStartArgs) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn spawn_agent_session_child_worker(child_id: &AgentSessionId) -> Result<()> {
     let exe = env::current_exe().with_context(|| "resolving current djinn executable")?;
     ProcessCommand::new(exe)
@@ -7429,6 +7376,7 @@ fn spawn_agent_session_child_worker(child_id: &AgentSessionId) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn agent_session_child_run(args: AgentSessionChildRunArgs) -> Result<()> {
     let store = agent_session_store();
     let id = AgentSessionId::new(args.id);
@@ -7606,6 +7554,7 @@ fn mark_foreground_session_paused_if_not_terminal(
     )
 }
 
+#[allow(dead_code)]
 fn append_child_session_status_event(
     store: &JsonlAgentSessionStore,
     parent_session_id: &AgentSessionId,
@@ -7627,6 +7576,7 @@ fn append_child_session_status_event(
     )
 }
 
+#[allow(dead_code)]
 fn first_user_prompt(session: &AgentSession) -> Option<String> {
     session.events.iter().find_map(|event| match &event.kind {
         AgentSessionEventKind::UserMessage { content } if !content.trim().is_empty() => {
@@ -8046,6 +7996,7 @@ fn agent_tool_specs(
     Ok(registry.specs())
 }
 
+#[allow(dead_code)]
 fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
     let selection = resolve_agent_role_selection(args.agent, &args.profile, None)?;
     let workspace = resolve_agent_workspace(args.workspace)?;
@@ -8091,6 +8042,7 @@ fn agent_session_new(args: AgentSessionNewArgs) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn agent_session_list(args: AgentSessionListArgs) -> Result<()> {
     let agent_name = if args.agent.is_some() {
         let config = effective_djinn_config()?;
@@ -8118,6 +8070,7 @@ fn agent_session_list(args: AgentSessionListArgs) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn agent_session_children(args: AgentSessionChildrenArgs) -> Result<()> {
     let parent_session_id = AgentSessionId::new(args.id);
     let children = agent_session_store().list_sessions(AgentSessionFilter {
@@ -8139,11 +8092,13 @@ fn agent_session_children(args: AgentSessionChildrenArgs) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[allow(dead_code)]
 struct AgentSessionChildrenReport {
     parent_session_id: String,
     children: Vec<AgentSessionSummary>,
 }
 
+#[allow(dead_code)]
 fn print_agent_session_summary_rows(sessions: &[AgentSessionSummary]) {
     for (idx, session) in sessions.iter().enumerate() {
         println!(
@@ -8162,6 +8117,7 @@ fn print_agent_session_summary_rows(sessions: &[AgentSessionSummary]) {
     }
 }
 
+#[allow(dead_code)]
 fn format_agent_session_children_report(report: &AgentSessionChildrenReport) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -8195,6 +8151,7 @@ fn format_agent_session_children_report(report: &AgentSessionChildrenReport) -> 
     out
 }
 
+#[allow(dead_code)]
 fn print_agent_session_show(session: &AgentSession, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&session)?);
@@ -8236,6 +8193,7 @@ fn print_agent_session_show(session: &AgentSession, json: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn agent_session_lifecycle(args: AgentSessionLifecycleArgs) -> Result<()> {
     match args.command {
         AgentSessionLifecycleCommand::Show(args) => agent_session_lifecycle_show(args),
@@ -8244,12 +8202,14 @@ fn agent_session_lifecycle(args: AgentSessionLifecycleArgs) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[allow(dead_code)]
 struct AgentSessionLifecycleReport {
     id: AgentSessionId,
     title: String,
     lifecycle: AgentSessionLifecycle,
 }
 
+#[allow(dead_code)]
 fn agent_session_lifecycle_show(args: AgentSessionLifecycleShowArgs) -> Result<()> {
     let id = AgentSessionId::new(args.id);
     let session = agent_session_store().load_session(&id)?;
@@ -8265,6 +8225,7 @@ fn agent_session_lifecycle_show(args: AgentSessionLifecycleShowArgs) -> Result<(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn agent_session_lifecycle_set(args: AgentSessionLifecycleSetArgs) -> Result<()> {
     let id = AgentSessionId::new(args.id);
     let store = agent_session_store();
@@ -8291,6 +8252,7 @@ fn agent_session_lifecycle_set(args: AgentSessionLifecycleSetArgs) -> Result<()>
     Ok(())
 }
 
+#[allow(dead_code)]
 fn format_agent_session_lifecycle_report(
     report: &AgentSessionLifecycleReport,
     json: bool,
@@ -8329,6 +8291,7 @@ fn format_agent_session_lifecycle_report(
     Ok(lines.join("\n"))
 }
 
+#[allow(dead_code)]
 fn format_agent_session_lifecycle_inline(lifecycle: &AgentSessionLifecycle) -> String {
     let mut parts = vec![lifecycle.state.to_string()];
     if let Some(mode) = &lifecycle.mode {
@@ -8340,12 +8303,14 @@ fn format_agent_session_lifecycle_inline(lifecycle: &AgentSessionLifecycle) -> S
     parts.join(", ")
 }
 
+#[allow(dead_code)]
 fn nonempty_cli_value(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
 
+#[allow(dead_code)]
 fn format_agent_session_summary_suffix(session: &AgentSessionSummary) -> String {
     let mut parts = vec![format!("state: {}", session.lifecycle.state)];
     if let Some(mode) = &session.lifecycle.mode {
@@ -8364,6 +8329,7 @@ fn format_agent_session_summary_suffix(session: &AgentSessionSummary) -> String 
     }
 }
 
+#[allow(dead_code)]
 fn agent_session_stats(args: AgentSessionStatsArgs) -> Result<()> {
     let id = AgentSessionId::new(args.id);
     let session = agent_session_store().load_session(&id)?;
@@ -8377,6 +8343,7 @@ fn agent_session_stats(args: AgentSessionStatsArgs) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[allow(dead_code)]
 struct AgentSessionStats {
     id: String,
     title: String,
@@ -8407,6 +8374,7 @@ struct AgentSessionStats {
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[allow(dead_code)]
 struct AgentModelStats {
     model: String,
     provider: Option<String>,
@@ -8422,6 +8390,7 @@ struct AgentModelStats {
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[allow(dead_code)]
 struct AgentToolStats {
     name: String,
     calls: usize,
@@ -8436,11 +8405,13 @@ struct AgentToolStats {
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[allow(dead_code)]
 struct AgentErrorStats {
     phase: String,
     count: usize,
 }
 
+#[allow(dead_code)]
 fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
     let mut stats = AgentSessionStats {
         id: session.id.to_string(),
@@ -8606,12 +8577,14 @@ fn summarize_agent_session_stats(session: &AgentSession) -> AgentSessionStats {
     stats
 }
 
+#[allow(dead_code)]
 fn merge_token_usage(target: &mut AgentSessionTokenUsage, source: &AgentSessionTokenUsage) {
     target.input_tokens = merge_optional_u64(target.input_tokens, source.input_tokens);
     target.output_tokens = merge_optional_u64(target.output_tokens, source.output_tokens);
     target.total_tokens = merge_optional_u64(target.total_tokens, source.total_tokens);
 }
 
+#[allow(dead_code)]
 fn merge_usd_cost(target: &mut Option<u64>, source: Option<&AgentSessionCostEstimate>) {
     let Some(source) = source else {
         return;
@@ -8621,6 +8594,7 @@ fn merge_usd_cost(target: &mut Option<u64>, source: Option<&AgentSessionCostEsti
     }
 }
 
+#[allow(dead_code)]
 fn merge_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     match (left, right) {
         (Some(left), Some(right)) => Some(left.saturating_add(right)),
@@ -8629,6 +8603,7 @@ fn merge_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     }
 }
 
+#[allow(dead_code)]
 fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
     let mut out = String::new();
     out.push_str("# Agent Session Stats\n\n");
@@ -8788,6 +8763,7 @@ fn format_agent_session_stats(stats: &AgentSessionStats) -> String {
     out
 }
 
+#[allow(dead_code)]
 fn agent_session_rename(args: AgentSessionRenameArgs) -> Result<()> {
     let id = AgentSessionId::new(args.id);
     let title = args.title.trim().to_string();
@@ -9153,6 +9129,7 @@ fn session_id_from_session_dir(session_dir: &Path) -> Result<Option<AgentSession
     Ok(read_folder_session_manifest(session_dir)?.and_then(|manifest| manifest.session_id))
 }
 
+#[allow(dead_code)]
 fn resolve_session_reference_id(value: &str) -> Result<AgentSessionId> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -9170,31 +9147,6 @@ fn resolve_session_reference_id(value: &str) -> Result<AgentSessionId> {
         );
     }
     Ok(AgentSessionId::new(trimmed.to_string()))
-}
-
-fn resolve_session_reference_store(
-    value: &str,
-) -> Result<(AgentSessionId, JsonlAgentSessionStore)> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        bail!("session id or directory cannot be empty");
-    }
-    let path = Path::new(trimmed);
-    let session_dir = resolve_session_dir(path)?;
-    if session_dir.join("djinn.toml").exists() {
-        let id = session_id_from_session_dir(&session_dir)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "session directory has no session_id: {}",
-                session_dir.display()
-            )
-        })?;
-        let store = agent_session_store_for_folder_session(&session_dir, &id);
-        return Ok((id, store));
-    }
-    Ok((
-        resolve_session_reference_id(trimmed)?,
-        agent_session_store(),
-    ))
 }
 
 fn manifest_root_string_value(manifest: &str, key: &str) -> Option<String> {
@@ -11156,6 +11108,7 @@ fn update_agent_session_model(
     Ok(true)
 }
 
+#[allow(dead_code)]
 fn update_agent_session_title(
     store: &JsonlAgentSessionStore,
     id: &AgentSessionId,
@@ -13149,6 +13102,7 @@ fn prompt_title(prompt: &str, fallback: &str) -> String {
     title.chars().take(80).collect()
 }
 
+#[allow(dead_code)]
 fn format_agent_event(event: &AgentSessionEvent) -> String {
     match &event.kind {
         AgentSessionEventKind::SessionCreated { .. } => "session created".to_string(),
@@ -13257,6 +13211,7 @@ fn format_agent_event(event: &AgentSessionEvent) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn format_child_session_status_event(
     child_session_id: &AgentSessionId,
     state: &AgentSessionLifecycleState,
@@ -13277,6 +13232,7 @@ fn format_child_session_status_event(
     parts.join(" • ")
 }
 
+#[allow(dead_code)]
 fn format_agent_model_metadata_event(
     model: &str,
     provider: Option<&str>,
@@ -13329,6 +13285,7 @@ fn format_agent_model_metadata_event(
     parts.join(" · ")
 }
 
+#[allow(dead_code)]
 fn format_agent_token_usage(usage: &AgentSessionTokenUsage) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(input) = usage.input_tokens {
@@ -13347,12 +13304,14 @@ fn format_agent_token_usage(usage: &AgentSessionTokenUsage) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 fn format_usd_micros(micros: u64) -> String {
     let dollars = micros / 1_000_000;
     let fractional = micros % 1_000_000;
     format!("${dollars}.{fractional:06}")
 }
 
+#[allow(dead_code)]
 fn format_agent_tool_metadata_event(
     id: &str,
     name: &str,
@@ -18570,44 +18529,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_agent_session_delete_command() {
-        let cli = Cli::try_parse_from([
+    fn rejects_removed_agent_session_command() {
+        assert!(Cli::try_parse_from(["djinn", "agent", "session"]).is_err());
+        assert!(Cli::try_parse_from([
             "djinn", "agent", "session", "delete", "agt_test", "--force", "--json",
         ])
-        .unwrap();
-
-        let Some(Command::Agent(agent_args)) = cli.command else {
-            panic!("expected agent command");
-        };
-        let AgentCommand::Session(session_args) = agent_args.command else {
-            panic!("expected agent session command");
-        };
-        let AgentSessionCommand::Delete(delete_args) = session_args.command else {
-            panic!("expected agent session delete command");
-        };
-
-        assert_eq!(delete_args.id, "agt_test");
-        assert!(delete_args.force);
-        assert!(delete_args.json);
-    }
-
-    #[test]
-    fn parses_agent_session_stats_command() {
-        let cli = Cli::try_parse_from(["djinn", "agent", "session", "stats", "agt_test", "--json"])
-            .unwrap();
-
-        let Some(Command::Agent(agent_args)) = cli.command else {
-            panic!("expected agent command");
-        };
-        let AgentCommand::Session(session_args) = agent_args.command else {
-            panic!("expected agent session command");
-        };
-        let AgentSessionCommand::Stats(stats_args) = session_args.command else {
-            panic!("expected agent session stats command");
-        };
-
-        assert_eq!(stats_args.id, "agt_test");
-        assert!(stats_args.json);
+        .is_err());
+        assert!(
+            Cli::try_parse_from(["djinn", "agent", "session", "stats", "agt_test", "--json",])
+                .is_err()
+        );
     }
 
     #[test]
@@ -18664,8 +18595,8 @@ mod tests {
     }
 
     #[test]
-    fn parses_agent_session_list_relationship_filters() {
-        let cli = Cli::try_parse_from([
+    fn rejects_removed_agent_session_relationship_and_child_commands() {
+        assert!(Cli::try_parse_from([
             "djinn",
             "agent",
             "session",
@@ -18678,30 +18609,8 @@ mod tests {
             "running",
             "--json",
         ])
-        .unwrap();
-
-        let Some(Command::Agent(agent_args)) = cli.command else {
-            panic!("expected agent command");
-        };
-        let AgentCommand::Session(session_args) = agent_args.command else {
-            panic!("expected agent session command");
-        };
-        let AgentSessionCommand::List(args) = session_args.command else {
-            panic!("expected agent session list command");
-        };
-
-        assert_eq!(args.agent.as_deref(), Some("reviewer"));
-        assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
-        assert!(matches!(
-            args.state,
-            Some(AgentSessionLifecycleStateValue::Running)
-        ));
-        assert!(args.json);
-    }
-
-    #[test]
-    fn parses_agent_session_children_command() {
-        let cli = Cli::try_parse_from([
+        .is_err());
+        assert!(Cli::try_parse_from([
             "djinn",
             "agent",
             "session",
@@ -18713,30 +18622,8 @@ mod tests {
             "completed",
             "--json",
         ])
-        .unwrap();
-
-        let Some(Command::Agent(agent_args)) = cli.command else {
-            panic!("expected agent command");
-        };
-        let AgentCommand::Session(session_args) = agent_args.command else {
-            panic!("expected agent session command");
-        };
-        let AgentSessionCommand::Children(args) = session_args.command else {
-            panic!("expected agent session children command");
-        };
-
-        assert_eq!(args.id, "agt_parent");
-        assert_eq!(args.limit, Some(5));
-        assert!(matches!(
-            args.state,
-            Some(AgentSessionLifecycleStateValue::Completed)
-        ));
-        assert!(args.json);
-    }
-
-    #[test]
-    fn parses_agent_session_child_start_command() {
-        let cli = Cli::try_parse_from([
+        .is_err());
+        assert!(Cli::try_parse_from([
             "djinn",
             "agent",
             "session",
@@ -18751,31 +18638,8 @@ mod tests {
             "Review diff",
             "--json",
         ])
-        .unwrap();
-
-        let Some(Command::Agent(agent_args)) = cli.command else {
-            panic!("expected agent command");
-        };
-        let AgentCommand::Session(session_args) = agent_args.command else {
-            panic!("expected agent session command");
-        };
-        let AgentSessionCommand::Child(child_args) = session_args.command else {
-            panic!("expected agent session child command");
-        };
-        let AgentSessionChildCommand::Start(args) = child_args.command else {
-            panic!("expected agent session child start command");
-        };
-
-        assert_eq!(args.parent_session_id, "agt_parent");
-        assert_eq!(args.prompt, "review this diff");
-        assert_eq!(args.agent.as_deref(), Some("reviewer"));
-        assert_eq!(args.title.as_deref(), Some("Review diff"));
-        assert!(args.json);
-    }
-
-    #[test]
-    fn parses_agent_session_lifecycle_commands() {
-        let cli = Cli::try_parse_from([
+        .is_err());
+        assert!(Cli::try_parse_from([
             "djinn",
             "agent",
             "session",
@@ -18784,63 +18648,7 @@ mod tests {
             "agt_child",
             "--json",
         ])
-        .unwrap();
-        let Some(Command::Agent(agent_args)) = cli.command else {
-            panic!("expected agent command");
-        };
-        let AgentCommand::Session(session_args) = agent_args.command else {
-            panic!("expected agent session command");
-        };
-        let AgentSessionCommand::Lifecycle(args) = session_args.command else {
-            panic!("expected lifecycle command");
-        };
-        let AgentSessionLifecycleCommand::Show(args) = args.command else {
-            panic!("expected lifecycle show command");
-        };
-        assert_eq!(args.id, "agt_child");
-        assert!(args.json);
-
-        let cli = Cli::try_parse_from([
-            "djinn",
-            "agent",
-            "session",
-            "lifecycle",
-            "set",
-            "agt_child",
-            "completed",
-            "--mode",
-            "background",
-            "--reason",
-            "done",
-            "--note",
-            "summary ready",
-            "--json",
-        ])
-        .unwrap();
-        let Some(Command::Agent(agent_args)) = cli.command else {
-            panic!("expected agent command");
-        };
-        let AgentCommand::Session(session_args) = agent_args.command else {
-            panic!("expected agent session command");
-        };
-        let AgentSessionCommand::Lifecycle(args) = session_args.command else {
-            panic!("expected lifecycle command");
-        };
-        let AgentSessionLifecycleCommand::Set(args) = args.command else {
-            panic!("expected lifecycle set command");
-        };
-        assert_eq!(args.id, "agt_child");
-        assert!(matches!(
-            args.state,
-            AgentSessionLifecycleStateValue::Completed
-        ));
-        assert!(matches!(
-            args.mode,
-            Some(AgentSessionExecutionModeValue::Background)
-        ));
-        assert_eq!(args.reason.as_deref(), Some("done"));
-        assert_eq!(args.note.as_deref(), Some("summary ready"));
-        assert!(args.json);
+        .is_err());
     }
 
     #[test]
@@ -19163,34 +18971,6 @@ mod tests {
             panic!("expected session rm command");
         };
         assert_eq!(args.dir, PathBuf::from("small-question"));
-        assert!(args.json);
-    }
-
-    #[test]
-    fn parses_agent_session_new_agent_metadata_flags() {
-        let cli = Cli::try_parse_from([
-            "djinn",
-            "agent",
-            "session",
-            "new",
-            "--agent",
-            "reviewer",
-            "--parent-session",
-            "agt_parent",
-            "--json",
-        ])
-        .unwrap();
-        let Some(Command::Agent(agent_args)) = cli.command else {
-            panic!("expected agent command");
-        };
-        let AgentCommand::Session(session_args) = agent_args.command else {
-            panic!("expected agent session command");
-        };
-        let AgentSessionCommand::New(args) = session_args.command else {
-            panic!("expected agent session new command");
-        };
-        assert_eq!(args.agent.as_deref(), Some("reviewer"));
-        assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
         assert!(args.json);
     }
 

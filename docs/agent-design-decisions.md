@@ -1067,6 +1067,12 @@ The first non-interactive agent slice is implemented as:
     `delete` aliases. The folder-native verbs are clearer and sufficient:
     `ls`, `status`, and `rm` respectively. Removing the aliases keeps the command
     surface opinionated instead of carrying two vocabularies for the same actions.
+80. `djinn agent session ...` is removed from the user-facing CLI. Native session
+    lifecycle/list/show/delete/stats/child commands were part of the transcript-
+    first JSONL workflow and should not remain as a supported legacy path. Any
+    future access to old global JSONL data should be implemented as explicit
+    migration/import tooling that produces folder sessions, not as a restored
+    `agent session` command tree.
 
 Not in the first slice unless explicitly reopened:
 
