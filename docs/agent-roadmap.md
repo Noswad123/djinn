@@ -130,6 +130,11 @@ to the original turn files. The file is append-safe: user notes outside
 while the generated digest block is replaced. This is intentionally model-free
 for the first slice.
 
+Folder sessions are inspectable without running a model through `djinn session
+status <dir>`. Status reports manifest/native-session linkage, profile/model /
+workspace defaults, repo symlink health, expected file presence, turn count, and
+the same shallow-context ingest/skip summary used by `djinn ask --session-dir`.
+
 Ready follow-up slices:
 
 - Continue removing `agent` from non-chat user-facing paths while keeping legacy

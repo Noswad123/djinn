@@ -1002,6 +1002,11 @@ The first non-interactive agent slice is implemented as:
     It must not create transcript/history logs; later model-assisted compaction
     can turn this digest into cleaner durable facts, decisions, and open
     questions.
+70. `djinn session status <dir>` is the read-only diagnostic surface for
+    folder-backed sessions. It reports manifest presence, native session linkage,
+    manifest defaults, repo symlink health, expected file presence, turn count,
+    and shallow context ingest/skip counts without running a model or mutating the
+    session folder.
 
 Not in the first slice unless explicitly reopened:
 

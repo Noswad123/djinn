@@ -137,6 +137,8 @@ enum SessionCommand {
     Init(SessionInitArgs),
     /// Deterministically compact turn request/response evidence into context/compacted.md.
     Compact(SessionCompactArgs),
+    /// Inspect a folder-backed Djinn work session without running a model.
+    Status(SessionStatusArgs),
     /// List native Djinn sessions.
     List(AgentSessionListArgs),
     /// Show one native session by id, or by a folder-backed session directory.
@@ -177,6 +179,15 @@ struct SessionCompactArgs {
     /// Output path. Defaults to <session-dir>/context/compacted.md.
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionStatusArgs {
+    /// Folder-backed session directory to inspect.
+    dir: PathBuf,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -5488,6 +5499,7 @@ fn run_session(args: SessionArgs) -> Result<()> {
     match args.command {
         SessionCommand::Init(args) => session_init(args),
         SessionCommand::Compact(args) => session_compact(args),
+        SessionCommand::Status(args) => session_status(args),
         SessionCommand::List(args) => agent_session_list(args),
         SessionCommand::Show(args) => session_show(args),
         SessionCommand::Delete(args) => session_delete(args),
@@ -5516,6 +5528,52 @@ fn session_compact(args: SessionCompactArgs) -> Result<()> {
     } else {
         println!("Compacted {} turns", report.turn_count);
         println!("Output: {}", report.output_path);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionStatusReport {
+    session_dir: String,
+    manifest_exists: bool,
+    session_id: Option<String>,
+    native_session_exists: bool,
+    profile: Option<String>,
+    agent: Option<String>,
+    model: Option<String>,
+    workspace: Option<String>,
+    repo: Option<SessionStatusRepoReport>,
+    files: SessionStatusFileReport,
+    turn_count: usize,
+    context_ingestible_count: usize,
+    context_skipped: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionStatusRepoReport {
+    path: Option<String>,
+    link: Option<String>,
+    link_exists: bool,
+    link_is_symlink: bool,
+    link_target: Option<String>,
+    link_broken: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionStatusFileReport {
+    request_md: bool,
+    summary_md: bool,
+    context_dir: bool,
+    compacted_md: bool,
+    turns_dir: bool,
+}
+
+fn session_status(args: SessionStatusArgs) -> Result<()> {
+    let report = folder_session_status(&args.dir)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_folder_session_status(&report));
     }
     Ok(())
 }
@@ -5711,6 +5769,195 @@ fn compact_folder_session(
             })
             .collect(),
     })
+}
+
+fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
+    let session_dir = resolve_session_dir(dir)?;
+    let manifest_path = session_dir.join("djinn.toml");
+    let manifest = read_folder_session_manifest(&session_dir)?;
+    let session_id = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.session_id.clone());
+    let native_session_exists = session_id
+        .as_ref()
+        .is_some_and(|id| agent_session_store().load_session(id).is_ok());
+    let context_dir = session_dir.join("context");
+    let turns_dir = session_dir.join("turns");
+    let (context_ingestible_count, context_skipped) =
+        inspect_folder_session_context_dir(&context_dir)?;
+    let turn_count = read_folder_session_turns(&turns_dir)?.len();
+
+    Ok(SessionStatusReport {
+        session_dir: session_dir.display().to_string(),
+        manifest_exists: manifest_path.exists(),
+        session_id: session_id.map(|id| id.to_string()),
+        native_session_exists,
+        profile: manifest
+            .as_ref()
+            .and_then(|manifest| manifest.profile.clone()),
+        agent: manifest
+            .as_ref()
+            .and_then(|manifest| manifest.agent.clone()),
+        model: manifest
+            .as_ref()
+            .and_then(|manifest| manifest.model.clone()),
+        workspace: manifest
+            .as_ref()
+            .and_then(|manifest| manifest.workspace.clone()),
+        repo: manifest
+            .as_ref()
+            .and_then(|manifest| session_status_repo(&session_dir, manifest)),
+        files: SessionStatusFileReport {
+            request_md: session_dir.join("request.md").exists(),
+            summary_md: session_dir.join("summary.md").exists(),
+            context_dir: context_dir.is_dir(),
+            compacted_md: context_dir.join("compacted.md").exists(),
+            turns_dir: turns_dir.is_dir(),
+        },
+        turn_count,
+        context_ingestible_count,
+        context_skipped,
+    })
+}
+
+fn inspect_folder_session_context_dir(context_dir: &Path) -> Result<(usize, Vec<String>)> {
+    if !context_dir.is_dir() {
+        return Ok((0, Vec::new()));
+    }
+    let mut entries = fs::read_dir(context_dir)
+        .with_context(|| {
+            format!(
+                "reading session context directory {}",
+                context_dir.display()
+            )
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    let mut count = 0;
+    let mut skipped = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("context")
+            .to_string();
+        if read_folder_session_context_file(&path, &format!("context/{name}"), &mut skipped)?
+            .is_some()
+        {
+            count += 1;
+        }
+    }
+    Ok((count, skipped))
+}
+
+fn session_status_repo(
+    session_dir: &Path,
+    manifest: &FolderSessionManifest,
+) -> Option<SessionStatusRepoReport> {
+    if manifest.repo_path.is_none() && manifest.repo_link.is_none() {
+        return None;
+    }
+    let link_path = manifest
+        .repo_link
+        .as_ref()
+        .map(|link| PathBuf::from(link))
+        .map(|link| {
+            if link.is_absolute() {
+                link
+            } else {
+                session_dir.join(link)
+            }
+        });
+    let (link_exists, link_is_symlink, link_target, link_broken) = link_path
+        .as_ref()
+        .map(|link| match fs::symlink_metadata(link) {
+            Ok(metadata) => {
+                let is_symlink = metadata.file_type().is_symlink();
+                let target = fs::read_link(link)
+                    .ok()
+                    .map(|target| target.display().to_string());
+                let broken = is_symlink && fs::metadata(link).is_err();
+                (true, is_symlink, target, broken)
+            }
+            Err(_) => (false, false, None, false),
+        })
+        .unwrap_or((false, false, None, false));
+    Some(SessionStatusRepoReport {
+        path: manifest.repo_path.clone(),
+        link: link_path.map(|path| path.display().to_string()),
+        link_exists,
+        link_is_symlink,
+        link_target,
+        link_broken,
+    })
+}
+
+fn format_folder_session_status(report: &SessionStatusReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Djinn session: {}", report.session_dir));
+    lines.push(format!("Manifest: {}", yes_no(report.manifest_exists)));
+    if let Some(session_id) = &report.session_id {
+        lines.push(format!(
+            "Native session: {session_id} ({})",
+            if report.native_session_exists {
+                "found"
+            } else {
+                "missing"
+            }
+        ));
+    } else {
+        lines.push("Native session: none recorded".to_string());
+    }
+    if let Some(profile) = &report.profile {
+        lines.push(format!("Profile: {profile}"));
+    }
+    if let Some(agent) = &report.agent {
+        lines.push(format!("Agent: {agent}"));
+    }
+    if let Some(model) = &report.model {
+        lines.push(format!("Model: {model}"));
+    }
+    if let Some(workspace) = &report.workspace {
+        lines.push(format!("Workspace: {workspace}"));
+    }
+    if let Some(repo) = &report.repo {
+        lines.push("Repo:".to_string());
+        if let Some(path) = &repo.path {
+            lines.push(format!("  path: {path}"));
+        }
+        if let Some(link) = &repo.link {
+            lines.push(format!("  link: {link}"));
+            lines.push(format!("  link exists: {}", yes_no(repo.link_exists)));
+            lines.push(format!("  link symlink: {}", yes_no(repo.link_is_symlink)));
+            if let Some(target) = &repo.link_target {
+                lines.push(format!("  target: {target}"));
+            }
+            lines.push(format!("  broken: {}", yes_no(repo.link_broken)));
+        }
+    }
+    lines.push("Files:".to_string());
+    lines.push(format!("  request.md: {}", yes_no(report.files.request_md)));
+    lines.push(format!("  summary.md: {}", yes_no(report.files.summary_md)));
+    lines.push(format!("  context/: {}", yes_no(report.files.context_dir)));
+    lines.push(format!(
+        "  context/compacted.md: {}",
+        yes_no(report.files.compacted_md)
+    ));
+    lines.push(format!("  turns/: {}", yes_no(report.files.turns_dir)));
+    lines.push(format!("Turns: {}", report.turn_count));
+    lines.push(format!(
+        "Ingestible context files: {}",
+        report.context_ingestible_count
+    ));
+    if !report.context_skipped.is_empty() {
+        lines.push("Skipped context:".to_string());
+        for skipped in &report.context_skipped {
+            lines.push(format!("  - {skipped}"));
+        }
+    }
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8207,6 +8454,7 @@ struct FolderSessionManifest {
     model: Option<String>,
     workspace: Option<String>,
     repo_path: Option<String>,
+    repo_link: Option<String>,
 }
 
 fn read_folder_session_manifest(session_dir: &Path) -> Result<Option<FolderSessionManifest>> {
@@ -8227,6 +8475,7 @@ fn parse_folder_session_manifest(manifest: &str) -> FolderSessionManifest {
         model: manifest_root_string_value(manifest, "model"),
         workspace: manifest_root_string_value(manifest, "workspace"),
         repo_path: manifest_section_string_value(manifest, "context.repo", "path"),
+        repo_link: manifest_section_string_value(manifest, "context.repo", "link"),
     }
 }
 
@@ -18119,6 +18368,16 @@ mod tests {
         };
         assert_eq!(args.session_dir, PathBuf::from("/tmp/folder-session"));
         assert!(args.json);
+
+        let cli =
+            Cli::try_parse_from(["djinn", "session", "status", "/tmp/folder-session"]).unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let SessionCommand::Status(args) = session_args.command else {
+            panic!("expected session status command");
+        };
+        assert_eq!(args.dir, PathBuf::from("/tmp/folder-session"));
     }
 
     #[test]
@@ -19888,10 +20147,66 @@ link = "context/repo"
         assert_eq!(parsed.model.as_deref(), Some("repo-model"));
         assert_eq!(parsed.workspace.as_deref(), Some("/tmp/workspace"));
         assert_eq!(parsed.repo_path.as_deref(), Some("/tmp/repo"));
+        assert_eq!(parsed.repo_link.as_deref(), Some("context/repo"));
         assert_eq!(
             session_manifest_workspace_path(Some(&parsed)),
             Some(PathBuf::from("/tmp/workspace"))
         );
+    }
+
+    #[test]
+    fn folder_session_status_reports_manifest_files_turns_and_context_skips() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-status-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let context = dir.join("context");
+        let repo = root.join("repo");
+        fs::create_dir_all(&context).unwrap();
+        fs::create_dir_all(dir.join("turns/turn-1")).unwrap();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(
+            dir.join("djinn.toml"),
+            format!(
+                "session_id = \"agt_missing\"\nprofile = \"work\"\nmodel = \"repo-model\"\nworkspace = \"{}\"\n\n[context.repo]\npath = \"{}\"\nlink = \"context/repo\"\n",
+                repo.display(),
+                repo.display()
+            ),
+        )
+        .unwrap();
+        fs::write(dir.join("request.md"), "request\n").unwrap();
+        fs::write(dir.join("summary.md"), "summary\n").unwrap();
+        fs::write(context.join("notes.md"), "note\n").unwrap();
+        fs::write(context.join("data.bin"), "binary-ish\n").unwrap();
+        fs::write(dir.join("turns/turn-1/request.md"), "turn request\n").unwrap();
+        create_dir_symlink(&repo, &context.join("repo")).unwrap();
+
+        let report = folder_session_status(&dir).unwrap();
+        let text = format_folder_session_status(&report);
+
+        assert!(report.manifest_exists);
+        assert_eq!(report.session_id.as_deref(), Some("agt_missing"));
+        assert!(!report.native_session_exists);
+        assert_eq!(report.profile.as_deref(), Some("work"));
+        assert_eq!(report.model.as_deref(), Some("repo-model"));
+        assert!(report.files.request_md);
+        assert!(report.files.summary_md);
+        assert!(report.files.context_dir);
+        assert!(report.files.turns_dir);
+        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.context_ingestible_count, 1);
+        let repo_status = report.repo.as_ref().unwrap();
+        assert!(repo_status.link_exists);
+        assert!(repo_status.link_is_symlink);
+        assert!(!repo_status.link_broken);
+        assert!(text.contains("Skipped context:"));
+        assert!(text.contains("context/data.bin: unsupported file type"));
+        assert!(text.contains("context/repo: symlink directory not ingested"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
