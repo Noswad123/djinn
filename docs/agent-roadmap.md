@@ -148,6 +148,9 @@ Named sessions are unique by their resolved cache folder. Re-running `djinn
 session init <name>` is idempotent for the same manifest identity, rejects
 profile/agent/model/workspace/repo conflicts by default, and only replaces
 scaffolded metadata with `--force`; Djinn does not auto-suffix duplicate names.
+`djinn session open <name-or-path> [summary|request|context|compacted|turns|manifest|repo]`
+opens the common session artifacts in `$VISUAL`, `$EDITOR`, or `nvim`, completing
+the file-first loop without adding chat behavior.
 
 Ready follow-up slices:
 

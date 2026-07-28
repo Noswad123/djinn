@@ -141,6 +141,8 @@ enum SessionCommand {
     Status(SessionStatusArgs),
     /// List cache-backed named folder sessions.
     Ls(SessionLsArgs),
+    /// Open a folder-backed session artifact in $VISUAL/$EDITOR.
+    Open(SessionOpenArgs),
     /// List native Djinn sessions.
     List(AgentSessionListArgs),
     /// Show one native session by id, or by a folder-backed session directory.
@@ -203,6 +205,29 @@ struct SessionLsArgs {
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionOpenArgs {
+    /// Folder-backed session name or directory to open.
+    dir: PathBuf,
+    /// Session artifact to open. Defaults to summary.md.
+    #[arg(value_enum, default_value_t = SessionOpenTarget::Summary)]
+    target: SessionOpenTarget,
+    /// Editor command. Defaults to VISUAL, then EDITOR, then nvim.
+    #[arg(long)]
+    editor: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SessionOpenTarget {
+    Summary,
+    Request,
+    Context,
+    Compacted,
+    Turns,
+    Manifest,
+    Repo,
 }
 
 #[derive(Debug, Subcommand)]
@@ -5513,6 +5538,7 @@ fn run_session(args: SessionArgs) -> Result<()> {
         SessionCommand::Compact(args) => session_compact(args),
         SessionCommand::Status(args) => session_status(args),
         SessionCommand::Ls(args) => session_ls(args),
+        SessionCommand::Open(args) => session_open(args),
         SessionCommand::List(args) => agent_session_list(args),
         SessionCommand::Show(args) => session_show(args),
         SessionCommand::Delete(args) => session_delete(args),
@@ -5620,6 +5646,11 @@ fn session_ls(args: SessionLsArgs) -> Result<()> {
         print!("{}", format_folder_session_ls(&report));
     }
     Ok(())
+}
+
+fn session_open(args: SessionOpenArgs) -> Result<()> {
+    let target = resolve_folder_session_open_target(&args.dir, args.target)?;
+    open_editor_path(&target, args.editor)
 }
 
 fn session_show(mut args: AgentSessionShowArgs) -> Result<()> {
@@ -6050,6 +6081,75 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
     ));
     lines.push(String::new());
     lines.join("\n")
+}
+
+fn resolve_folder_session_open_target(dir: &Path, target: SessionOpenTarget) -> Result<PathBuf> {
+    let session_dir = resolve_session_dir(dir)?;
+    let path = match target {
+        SessionOpenTarget::Summary => session_dir.join("summary.md"),
+        SessionOpenTarget::Request => session_dir.join("request.md"),
+        SessionOpenTarget::Context => session_dir.join("context"),
+        SessionOpenTarget::Compacted => session_dir.join("context/compacted.md"),
+        SessionOpenTarget::Turns => session_dir.join("turns"),
+        SessionOpenTarget::Manifest => session_dir.join("djinn.toml"),
+        SessionOpenTarget::Repo => resolve_folder_session_repo_open_target(&session_dir)?,
+    };
+    Ok(path)
+}
+
+fn resolve_folder_session_repo_open_target(session_dir: &Path) -> Result<PathBuf> {
+    let manifest = read_folder_session_manifest(session_dir)?;
+    if let Some(manifest) = manifest {
+        if let Some(repo_path) = manifest
+            .repo_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            return Ok(PathBuf::from(repo_path));
+        }
+        if let Some(repo_link) = manifest
+            .repo_link
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            let path = PathBuf::from(repo_link);
+            return Ok(if path.is_absolute() {
+                path
+            } else {
+                session_dir.join(path)
+            });
+        }
+    }
+    let context_dir = session_dir.join("context");
+    if context_dir.is_dir() {
+        let mut symlink_dirs = Vec::new();
+        for entry in fs::read_dir(&context_dir).with_context(|| {
+            format!(
+                "reading session context directory {}",
+                context_dir.display()
+            )
+        })? {
+            let entry = entry?;
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink()
+                && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir())
+            {
+                symlink_dirs.push(path);
+            }
+        }
+        if symlink_dirs.len() == 1 {
+            return Ok(symlink_dirs.remove(0));
+        }
+    }
+    bail!(
+        "session has no repo target in djinn.toml or unique context symlink: {}",
+        session_dir.display()
+    )
 }
 
 fn inspect_folder_session_context_dir(context_dir: &Path) -> Result<(usize, Vec<String>)> {
@@ -16435,6 +16535,18 @@ fn open_skill_entry(entry: &SkillRecord, editor: Option<String>) -> Result<()> {
 }
 
 fn open_editor_at(path: &Path, line: usize, editor: Option<String>) -> Result<()> {
+    open_editor_path_with_line(path, Some(line), editor)
+}
+
+fn open_editor_path(path: &Path, editor: Option<String>) -> Result<()> {
+    open_editor_path_with_line(path, None, editor)
+}
+
+fn open_editor_path_with_line(
+    path: &Path,
+    line: Option<usize>,
+    editor: Option<String>,
+) -> Result<()> {
     let editor = editor.unwrap_or_else(default_editor);
     let mut parts = editor.split_whitespace();
     let Some(program) = parts.next() else {
@@ -16442,7 +16554,9 @@ fn open_editor_at(path: &Path, line: usize, editor: Option<String>) -> Result<()
     };
     let mut cmd = ProcessCommand::new(program);
     cmd.args(parts);
-    cmd.arg(format!("+{}", line));
+    if let Some(line) = line {
+        cmd.arg(format!("+{}", line));
+    }
     cmd.arg(path);
     let status = cmd.status()?;
     if !status.success() {
@@ -18638,6 +18752,26 @@ mod tests {
             panic!("expected session ls command");
         };
         assert_eq!(args.limit, Some(10));
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "open",
+            "small-question",
+            "compacted",
+            "--editor",
+            "nvim",
+        ])
+        .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let SessionCommand::Open(args) = session_args.command else {
+            panic!("expected session open command");
+        };
+        assert_eq!(args.dir, PathBuf::from("small-question"));
+        assert_eq!(args.target, SessionOpenTarget::Compacted);
+        assert_eq!(args.editor.as_deref(), Some("nvim"));
     }
 
     #[test]
@@ -20507,6 +20641,61 @@ link = "context/repo"
 
         let limited = list_folder_sessions_in_root(&root, Some(1)).unwrap();
         assert_eq!(limited.sessions.len(), 1);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_open_resolves_targets_and_repo() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-open-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let repo = root.join("repo");
+        fs::create_dir_all(dir.join("context")).unwrap();
+        fs::create_dir_all(dir.join("turns")).unwrap();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(
+            dir.join("djinn.toml"),
+            format!(
+                "profile = \"default\"\n\n[context.repo]\npath = \"{}\"\nlink = \"context/repo\"\n",
+                repo.display()
+            ),
+        )
+        .unwrap();
+        create_dir_symlink(&repo, &dir.join("context/repo")).unwrap();
+
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Summary).unwrap(),
+            dir.join("summary.md")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Request).unwrap(),
+            dir.join("request.md")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Context).unwrap(),
+            dir.join("context")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Compacted).unwrap(),
+            dir.join("context/compacted.md")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Turns).unwrap(),
+            dir.join("turns")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Manifest).unwrap(),
+            dir.join("djinn.toml")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Repo).unwrap(),
+            PathBuf::from(repo.display().to_string())
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
