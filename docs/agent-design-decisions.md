@@ -1020,6 +1020,11 @@ The first non-interactive agent slice is implemented as:
     index; external explicit-path sessions are discoverable by their filesystem
     location and can be inspected directly with `djinn session status <path>`.
     This avoids stale index state when users manually move or rename folders.
+73. Cache-backed folder session names are unique by resolved path. Re-running
+    `djinn session init <name>` is idempotent when the existing `djinn.toml`
+    identity matches the requested profile/agent/model/workspace/repo. If the
+    existing manifest conflicts, init fails unless `--force` is provided; Djinn
+    should not auto-create numbered sibling names like `<name>-2`.
 
 Not in the first slice unless explicitly reopened:
 

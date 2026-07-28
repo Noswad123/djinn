@@ -144,6 +144,10 @@ into repo docs, AGENTS.md, or another repo/harness-owned context location.
 `djinn session ls` lists cache-backed named sessions by scanning that cache root;
 there is no persistent external session index, so manually moved/renamed explicit
 path sessions do not require index maintenance.
+Named sessions are unique by their resolved cache folder. Re-running `djinn
+session init <name>` is idempotent for the same manifest identity, rejects
+profile/agent/model/workspace/repo conflicts by default, and only replaces
+scaffolded metadata with `--force`; Djinn does not auto-suffix duplicate names.
 
 Ready follow-up slices:
 

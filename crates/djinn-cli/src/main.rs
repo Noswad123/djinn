@@ -5708,6 +5708,7 @@ fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport
         &config_report.effective,
         &selection.profile,
     );
+    validate_session_init_identity(&session_dir, args, &workspace, &selection, &model)?;
 
     let mut created = Vec::new();
     let mut skipped = Vec::new();
@@ -5773,6 +5774,78 @@ fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport
         created,
         skipped,
     })
+}
+
+fn validate_session_init_identity(
+    session_dir: &Path,
+    args: &SessionInitArgs,
+    workspace: &Path,
+    selection: &AgentRoleSelection,
+    model: &str,
+) -> Result<()> {
+    if args.force {
+        return Ok(());
+    }
+    let Some(existing) = read_folder_session_manifest(session_dir)? else {
+        return Ok(());
+    };
+    let mut conflicts = Vec::new();
+    push_session_init_conflict(
+        &mut conflicts,
+        "profile",
+        existing.profile.as_deref(),
+        Some(&selection.profile),
+    );
+    push_session_init_conflict(
+        &mut conflicts,
+        "agent",
+        existing.agent.as_deref(),
+        selection.agent_name.as_deref(),
+    );
+    push_session_init_conflict(
+        &mut conflicts,
+        "model",
+        existing.model.as_deref(),
+        Some(model),
+    );
+    push_session_init_conflict(
+        &mut conflicts,
+        "workspace",
+        existing.workspace.as_deref(),
+        Some(&workspace.display().to_string()),
+    );
+    if let Some(repo_path) = &existing.repo_path {
+        if args.link_repo.is_some() && repo_path != &workspace.display().to_string() {
+            conflicts.push(format!(
+                "repo path existing={} requested={}",
+                repo_path,
+                workspace.display()
+            ));
+        }
+    }
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "session folder already exists with different identity: {} ({}) (use --force to replace scaffolded metadata)",
+        session_dir.display(),
+        conflicts.join(", ")
+    )
+}
+
+fn push_session_init_conflict(
+    conflicts: &mut Vec<String>,
+    field: &str,
+    existing: Option<&str>,
+    requested: Option<&str>,
+) {
+    let existing = existing.map(str::trim).filter(|value| !value.is_empty());
+    let requested = requested.map(str::trim).filter(|value| !value.is_empty());
+    if let (Some(existing), Some(requested)) = (existing, requested) {
+        if existing != requested {
+            conflicts.push(format!("{field} existing={existing} requested={requested}"));
+        }
+    }
 }
 
 fn compact_folder_session(
@@ -20660,6 +20733,54 @@ link = "context/repo"
             link.display().to_string()
         );
         assert_eq!(fs::read_to_string(dir.join("request.md")).unwrap(), "");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_init_is_idempotent_for_same_identity_but_rejects_conflicts() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-init-identity-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+
+        let args = SessionInitArgs {
+            dir: dir.clone(),
+            link_repo: Some(repo.clone()),
+            profile: "default".to_string(),
+            agent: None,
+            model: Some("same-model".to_string()),
+            force: false,
+            json: false,
+        };
+        initialize_folder_session(&args).unwrap();
+        initialize_folder_session(&args).unwrap();
+
+        let conflicting = SessionInitArgs {
+            model: Some("different-model".to_string()),
+            ..args
+        };
+        let error = initialize_folder_session(&conflicting).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("session folder already exists with different identity"));
+        assert!(error
+            .to_string()
+            .contains("model existing=same-model requested=different-model"));
+
+        let forced = SessionInitArgs {
+            force: true,
+            ..conflicting
+        };
+        initialize_folder_session(&forced).unwrap();
+        assert!(fs::read_to_string(dir.join("djinn.toml"))
+            .unwrap()
+            .contains("model = \"different-model\""));
 
         let _ = fs::remove_dir_all(&root);
     }
