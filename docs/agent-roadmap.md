@@ -122,6 +122,11 @@ session list/show/delete` wrap existing native session inspection without
 requiring the legacy `agent` prefix. Do not create `summary-history.md`, mirrored
 `events.jsonl`, or `transcript.md` by default.
 
+Manual deterministic compaction is available through `djinn session compact
+--session-dir <dir>`. It reads `turns/<id>/request.md` and `response.md` and
+rewrites `context/compacted.md` as a bounded turn digest with evidence links back
+to the original turn files. This is intentionally model-free for the first slice.
+
 Ready follow-up slices:
 
 - Continue removing `agent` from non-chat user-facing paths while keeping legacy
@@ -129,10 +134,11 @@ Ready follow-up slices:
 - Later: discover context from the same configured locations other harnesses use
   (for example repo/harness instruction files) and fold those into the same
   precedence model; table this until folder-native context behavior is stable.
-- Add `djinn agent session compact --session-dir <dir>` to distill older turns
-  into durable `context/` notes with evidence links back to `turns/<id>/` files.
-  Compaction should be threshold-friendly (manual first, later after N turns) and
-  should update context instead of creating another transcript/history log.
+- Add model-assisted/session-aware compaction that distills older turns into
+  durable facts, decisions, and open questions rather than only producing a
+  deterministic digest. Compaction should be threshold-friendly (manual first,
+  later after N turns) and should update context instead of creating another
+  transcript/history log.
 - Allow symlinked context intentionally. A session may contain links such as
   `context/repo -> /path/to/repo` or `context/roadmap.md -> /path/to/roadmap.md`;
   Djinn should preserve links and treat them as explicit context references while

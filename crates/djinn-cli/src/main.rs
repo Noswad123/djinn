@@ -47,6 +47,7 @@ const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
 const FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES: u64 = 32 * 1024;
 const FOLDER_SESSION_CONTEXT_MAX_TOTAL_BYTES: usize = 96 * 1024;
 const FOLDER_SESSION_CONTEXT_MAX_FILES: usize = 16;
+const FOLDER_SESSION_COMPACT_SNIPPET_CHARS: usize = 1_200;
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -132,6 +133,8 @@ struct SessionArgs {
 enum SessionCommand {
     /// Scaffold a folder-backed Djinn work session.
     Init(SessionInitArgs),
+    /// Deterministically compact turn request/response evidence into context/compacted.md.
+    Compact(SessionCompactArgs),
     /// List native Djinn sessions.
     List(AgentSessionListArgs),
     /// Show one native session by id, or by a folder-backed session directory.
@@ -159,6 +162,19 @@ struct SessionInitArgs {
     /// Overwrite scaffolded files and context symlink targets when they already exist.
     #[arg(long)]
     force: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionCompactArgs {
+    /// Folder-backed session directory containing turns/ and context/.
+    #[arg(long = "session-dir")]
+    session_dir: PathBuf,
+    /// Output path. Defaults to <session-dir>/context/compacted.md.
+    #[arg(long)]
+    output: Option<PathBuf>,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -5469,10 +5485,37 @@ fn run_agent(args: AgentArgs) -> Result<()> {
 fn run_session(args: SessionArgs) -> Result<()> {
     match args.command {
         SessionCommand::Init(args) => session_init(args),
+        SessionCommand::Compact(args) => session_compact(args),
         SessionCommand::List(args) => agent_session_list(args),
         SessionCommand::Show(args) => session_show(args),
         SessionCommand::Delete(args) => session_delete(args),
     }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionCompactReport {
+    session_dir: String,
+    output_path: String,
+    turn_count: usize,
+    turns: Vec<CompactedTurnReport>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CompactedTurnReport {
+    id: String,
+    request_path: Option<String>,
+    response_path: Option<String>,
+}
+
+fn session_compact(args: SessionCompactArgs) -> Result<()> {
+    let report = compact_folder_session(&args.session_dir, args.output.as_deref())?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Compacted {} turns", report.turn_count);
+        println!("Output: {}", report.output_path);
+    }
+    Ok(())
 }
 
 fn session_show(mut args: AgentSessionShowArgs) -> Result<()> {
@@ -5626,6 +5669,178 @@ fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport
         created,
         skipped,
     })
+}
+
+fn compact_folder_session(
+    session_dir: &Path,
+    output: Option<&Path>,
+) -> Result<SessionCompactReport> {
+    let session_dir = resolve_session_dir(session_dir)?;
+    let turns_dir = session_dir.join("turns");
+    let context_dir = session_dir.join("context");
+    fs::create_dir_all(&context_dir)
+        .with_context(|| format!("creating context directory {}", context_dir.display()))?;
+    let output_path = output
+        .map(PathBuf::from)
+        .unwrap_or_else(|| context_dir.join("compacted.md"));
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("creating compaction output directory {}", parent.display())
+        })?;
+    }
+
+    let turns = read_folder_session_turns(&turns_dir)?;
+    let content = render_folder_session_compaction(&session_dir, &turns);
+    fs::write(&output_path, content)
+        .with_context(|| format!("writing {}", output_path.display()))?;
+
+    Ok(SessionCompactReport {
+        session_dir: session_dir.display().to_string(),
+        output_path: output_path.display().to_string(),
+        turn_count: turns.len(),
+        turns: turns
+            .into_iter()
+            .map(|turn| CompactedTurnReport {
+                id: turn.id,
+                request_path: turn.request_path.map(|path| path.display().to_string()),
+                response_path: turn.response_path.map(|path| path.display().to_string()),
+            })
+            .collect(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FolderSessionTurnDigest {
+    id: String,
+    request_path: Option<PathBuf>,
+    response_path: Option<PathBuf>,
+    request: Option<String>,
+    response: Option<String>,
+}
+
+fn read_folder_session_turns(turns_dir: &Path) -> Result<Vec<FolderSessionTurnDigest>> {
+    if !turns_dir.exists() {
+        return Ok(Vec::new());
+    }
+    if !turns_dir.is_dir() {
+        bail!("turns path is not a directory: {}", turns_dir.display());
+    }
+    let mut entries = fs::read_dir(turns_dir)
+        .with_context(|| format!("reading turns directory {}", turns_dir.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+
+    let mut turns = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("turn")
+            .to_string();
+        let request_path = path.join("request.md");
+        let response_path = path.join("response.md");
+        let request = read_optional_markdown_file(&request_path)?;
+        let response = read_optional_markdown_file(&response_path)?;
+        if request.is_none() && response.is_none() {
+            continue;
+        }
+        turns.push(FolderSessionTurnDigest {
+            id,
+            request_path: request_path.exists().then_some(request_path),
+            response_path: response_path.exists().then_some(response_path),
+            request,
+            response,
+        });
+    }
+    Ok(turns)
+}
+
+fn read_optional_markdown_file(path: &Path) -> Result<Option<String>> {
+    if !path.exists() || !path.is_file() {
+        return Ok(None);
+    }
+    let content =
+        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let content = content.trim_end().to_string();
+    Ok((!content.trim().is_empty()).then_some(content))
+}
+
+fn render_folder_session_compaction(
+    session_dir: &Path,
+    turns: &[FolderSessionTurnDigest],
+) -> String {
+    let mut output = String::new();
+    output.push_str("# Compacted session context\n\n");
+    output.push_str("Generated deterministically by `djinn session compact`. Edit or split this note as durable context evolves.\n\n");
+    output.push_str(&format!("Session: `{}`\n", session_dir.display()));
+    output.push_str(&format!(
+        "Generated: `{}`\n\n",
+        chrono::Local::now().to_rfc3339()
+    ));
+    if turns.is_empty() {
+        output.push_str("No turn files found under `turns/`.\n");
+        return output;
+    }
+    output.push_str("## Turn digest\n\n");
+    for turn in turns {
+        output.push_str(&format!("### {}\n\n", turn.id));
+        if let Some(request) = &turn.request {
+            output.push_str("**Request**\n\n");
+            output.push_str(&markdown_quote_block(&compact_text_snippet(
+                request,
+                FOLDER_SESSION_COMPACT_SNIPPET_CHARS,
+            )));
+            output.push_str("\n\n");
+        }
+        if let Some(response) = &turn.response {
+            output.push_str("**Response**\n\n");
+            output.push_str(&markdown_quote_block(&compact_text_snippet(
+                response,
+                FOLDER_SESSION_COMPACT_SNIPPET_CHARS,
+            )));
+            output.push_str("\n\n");
+        }
+        let mut links = Vec::new();
+        if turn.request_path.is_some() {
+            links.push(format!("[request](../turns/{}/request.md)", turn.id));
+        }
+        if turn.response_path.is_some() {
+            links.push(format!("[response](../turns/{}/response.md)", turn.id));
+        }
+        if !links.is_empty() {
+            output.push_str(&format!("Evidence: {}\n\n", links.join(", ")));
+        }
+    }
+    output
+}
+
+fn compact_text_snippet(value: &str, max_chars: usize) -> String {
+    let normalized = value
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    truncate(&normalized, max_chars)
+}
+
+fn markdown_quote_block(value: &str) -> String {
+    value
+        .lines()
+        .map(|line| {
+            if line.trim().is_empty() {
+                ">".to_string()
+            } else {
+                format!("> {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn canonical_existing_dir(path: &Path, label: &str) -> Result<PathBuf> {
@@ -17843,6 +18058,24 @@ mod tests {
         };
         assert_eq!(args.id, "agt_existing");
         assert!(args.force);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "compact",
+            "--session-dir",
+            "/tmp/folder-session",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let SessionCommand::Compact(args) = session_args.command else {
+            panic!("expected session compact command");
+        };
+        assert_eq!(args.session_dir, PathBuf::from("/tmp/folder-session"));
+        assert!(args.json);
     }
 
     #[test]
@@ -19660,6 +19893,40 @@ link = "context/repo"
         assert!(rendered.contains("context/repo: symlink directory not ingested"));
         assert!(rendered.contains("context/large.md: 40960 bytes exceeds 32768 byte limit"));
         assert!(rendered.contains("context/data.bin: unsupported file type"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_compact_writes_deterministic_turn_digest_with_evidence_links() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-compact-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let turn = dir.join("turns/20260727T120000-1");
+        fs::create_dir_all(&turn).unwrap();
+        fs::write(turn.join("request.md"), "Decide storage shape\n\nDetails").unwrap();
+        fs::write(
+            turn.join("response.md"),
+            "Use context for durable notes and turns for evidence.\n",
+        )
+        .unwrap();
+
+        let report = compact_folder_session(&dir, None).unwrap();
+        let compacted = fs::read_to_string(dir.join("context/compacted.md")).unwrap();
+
+        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.turns[0].id, "20260727T120000-1");
+        assert!(compacted.contains("# Compacted session context"));
+        assert!(compacted.contains("### 20260727T120000-1"));
+        assert!(compacted.contains("> Decide storage shape"));
+        assert!(compacted.contains("> Use context for durable notes"));
+        assert!(compacted.contains("[request](../turns/20260727T120000-1/request.md)"));
+        assert!(compacted.contains("[response](../turns/20260727T120000-1/response.md)"));
+        assert!(!dir.join("logs/transcript.md").exists());
 
         let _ = fs::remove_dir_all(&root);
     }
