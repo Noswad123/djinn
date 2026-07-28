@@ -98,6 +98,44 @@ Remaining ready UI slices:
   rendered Markdown code fences while preserving raw Markdown mode and
   copy-friendly rectangular code-block rows.
 
+### Folder-backed sessions
+
+Djinn is pivoting toward folder-backed work capsules where nvim/files are the
+primary workspace and the TUI manages outputs rather than owning the transcript
+experience.
+
+Initial projection is implemented for agent runs through `--session-dir`: `agent
+ask` can read `request.md` when no prompt is provided, successful `agent ask` and
+`agent chat` turns write the latest answer to `summary.md`, create an
+unstructured `context/` folder, and keep per-turn request/response files under
+`turns/`. `djinn session init <dir> --link-repo <path>` scaffolds the same
+folder shape ahead of a run and links the repo into `context/` as an explicit
+live reference. Do not create `summary-history.md`, mirrored `events.jsonl`, or
+`transcript.md` by default.
+
+Ready follow-up slices:
+
+- Teach `agent ask/chat --session-dir` to consume the manifest/context metadata
+  created by `djinn session init`, including profile/model defaults and explicit
+  repo links.
+- Add `djinn agent session compact --session-dir <dir>` to distill older turns
+  into durable `context/` notes with evidence links back to `turns/<id>/` files.
+  Compaction should be threshold-friendly (manual first, later after N turns) and
+  should update context instead of creating another transcript/history log.
+- Allow symlinked context intentionally. A session may contain links such as
+  `context/repo -> /path/to/repo` or `context/roadmap.md -> /path/to/roadmap.md`;
+  Djinn should preserve links and treat them as explicit context references while
+  avoiding blind whole-folder ingestion.
+- Add `djinn agent session merge <source-dir> --into <target-dir>` for file-based
+  summary/context merging.
+- Reframe the Agent TUI as a session artifact manager: open `summary.md`,
+  `request.md`, context files, and turns in `$EDITOR`; de-emphasize the
+  chat transcript as the main surface.
+- Define how `context/` and selected artifacts are folded into subsequent model
+  context without blindly ingesting whole folders. Default future context should
+  be `request.md`, `summary.md`, selected `context/` files/links, and explicit
+  turn evidence only when cited or requested.
+
 ### Coven-led orchestration and Djinn worker primitives
 
 The user-facing product direction is **not** manual child-session management.

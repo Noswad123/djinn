@@ -101,6 +101,7 @@ pub enum AgentProgressEvent {
         round: usize,
         elapsed_ms: u128,
         tool_calls: usize,
+        planned_tools: Vec<ModelToolCall>,
         has_message: bool,
     },
     ToolCallStarted {
@@ -3658,6 +3659,7 @@ where
                 round,
                 elapsed_ms,
                 tool_calls: response.tool_calls.len(),
+                planned_tools: response.tool_calls.clone(),
                 has_message: !response.message.content.trim().is_empty(),
             })?;
 

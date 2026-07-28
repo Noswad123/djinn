@@ -708,8 +708,10 @@ The first non-interactive agent slice is implemented as:
 27. Agent chat rich progress is rendered in-place during model turns. The runtime
     emits model/tool progress events, and the live transcript preserves the turn's
     progress timeline instead of replacing each status with the latest generic
-    message. Thought/progress entries render as compact `Thought: …` rows in
-    compact mode and reveal additional tool-round details in detailed mode. Tool
+    message. Planned-tool progress names the actual tool(s), for example
+    `Planned read_file` instead of `Planned 1 tool call`. Thought/progress entries
+    render as compact `Thought: …` rows in compact mode and reveal additional
+    tool-round details plus input/result snippets in detailed mode. Tool
     requests/results remain distinct rows/blocks such as `▶ Tool Request · <tool>`
     and `✓/✗ Tool Execution · <tool> · <status>` so the turn shape and
     success/failure state are visible at a glance without dumping raw JSON.
@@ -940,6 +942,35 @@ The first non-interactive agent slice is implemented as:
     sessions an inspectable status through `djinn agent session lifecycle show`
     and `djinn agent session children` without pretending that closing a chat means
     the delegated task is complete.
+63. Djinn supports folder-backed session projections as a pivot away from making
+    the terminal transcript the primary workspace. `djinn agent ask --session-dir`
+    can read `request.md` when no prompt is provided; `djinn agent chat
+    --session-dir` projects successful turns from the interactive session. The
+    projection writes `summary.md` as the latest answer, writes `djinn.toml`
+    metadata, creates an unstructured `context/` folder for user-curated session
+    context, and records per-turn `turns/<id>/request.md` and
+    `turns/<id>/response.md`. It intentionally does not mirror `events.jsonl`,
+    create `summary-history.md`, or create `transcript.md` in the session folder;
+    nvim/file workflows should use summary, context, turn files, and native Djinn
+    session JSONL pointers first.
+64. Folder-backed sessions separate raw evidence from durable context. `turns/`
+    stores exact per-turn request/response evidence. `context/` is unstructured,
+    user-curated working memory for facts, decisions, repo notes, open questions,
+    and links to supporting turns. After enough turns, Djinn should compact useful
+    session knowledge into `context/` instead of replaying the whole turn history.
+    Context entries may cite turn files for proof, for example
+    `../turns/<id>/response.md`, so durable context stays concise but auditable.
+    Symlinks inside `context/` are allowed as live references to target repos or
+    files; Djinn should treat them as explicit user-provided context roots, not as
+    a reason to blindly ingest every linked file.
+65. Folder-backed session creation is top-level UX, not hidden under `agent`:
+    `djinn session init <dir> --link-repo <path>` scaffolds `djinn.toml`,
+    `request.md`, `summary.md`, `context/`, and `turns/`. When a repo is linked,
+    Djinn resolves global config first and repo-local `.djinn.json` second so repo
+    profile/model context can override global defaults; session-local files remain
+    the strongest explicit context. The repo appears as a symlink under
+    `context/<repo-name>` and is recorded in `djinn.toml` as a live reference, not
+    as a command to ingest the whole tree.
 
 Not in the first slice unless explicitly reopened:
 

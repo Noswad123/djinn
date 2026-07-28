@@ -101,6 +101,10 @@ enum Command {
     Config(ConfigArgs),
     /// Manage provider credentials.
     Auth(AuthArgs),
+    /// Ask Djinn from a new or existing session without the legacy agent prefix.
+    Ask(AgentAskArgs),
+    /// Manage folder-backed Djinn work sessions.
+    Session(SessionArgs),
     /// Run or inspect Djinn-native agent sessions.
     Agent(AgentArgs),
     /// Inspect configured Djinn agent roles.
@@ -113,6 +117,42 @@ enum Command {
 struct AuthArgs {
     #[command(subcommand)]
     command: AuthCommand,
+}
+
+#[derive(Debug, Args)]
+struct SessionArgs {
+    #[command(subcommand)]
+    command: SessionCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionCommand {
+    /// Scaffold a folder-backed Djinn work session.
+    Init(SessionInitArgs),
+}
+
+#[derive(Debug, Args)]
+struct SessionInitArgs {
+    /// Session directory to create or update.
+    dir: PathBuf,
+    /// Target repository to link into context/<repo-name> and use for repo-local config.
+    #[arg(long = "link-repo")]
+    link_repo: Option<PathBuf>,
+    /// Agent profile name to record. Defaults through global/repo Djinn config.
+    #[arg(long, default_value = "default")]
+    profile: String,
+    /// Configured agent role name to record.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Model to record. Defaults through profile/agent config when available.
+    #[arg(long)]
+    model: Option<String>,
+    /// Overwrite scaffolded files and context symlink targets when they already exist.
+    #[arg(long)]
+    force: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1486,7 +1526,13 @@ struct AgentFileHistoryRestoreArgs {
 #[derive(Debug, Args)]
 struct AgentAskArgs {
     /// Prompt to send to the configured agent provider.
-    prompt: String,
+    prompt: Option<String>,
+    /// Existing Djinn agent session id to append this ask turn to.
+    #[arg(long = "session-id")]
+    session_id: Option<String>,
+    /// Folder-backed session directory. If prompt is omitted, reads request.md from this directory.
+    #[arg(long = "session-dir")]
+    session_dir: Option<PathBuf>,
     /// Human-friendly session title. Defaults to a trimmed prompt preview.
     #[arg(long)]
     title: Option<String>,
@@ -1530,6 +1576,9 @@ struct AgentChatArgs {
     /// Workspace path for the session. Defaults to the current directory.
     #[arg(long)]
     workspace: Option<PathBuf>,
+    /// Folder-backed session directory for generated artifacts like summary.md.
+    #[arg(long = "session-dir")]
+    session_dir: Option<PathBuf>,
     /// Agent profile name.
     #[arg(long, default_value = "default")]
     profile: String,
@@ -2396,6 +2445,7 @@ fn main() -> Result<()> {
                 resume: None,
                 title: None,
                 workspace: None,
+                session_dir: None,
                 profile: "default".to_string(),
                 agent: None,
                 parent_session: None,
@@ -2433,6 +2483,8 @@ fn main() -> Result<()> {
         Command::Open(args) => run_open(args),
         Command::Config(args) => run_config(args),
         Command::Auth(args) => run_auth(args),
+        Command::Ask(args) => agent_ask(args),
+        Command::Session(args) => run_session(args),
         Command::Agent(args) => run_agent(args),
         Command::Agents(args) => run_agents(args),
         Command::Tui(args) => {
@@ -3011,6 +3063,10 @@ fn load_djinn_config(path: Option<PathBuf>) -> Result<DjinnConfigLoadReport> {
         path.map(|path| vec![path])
             .unwrap_or_else(|| djinn_config_paths(&cwd)),
     );
+    load_djinn_config_from_paths(paths)
+}
+
+fn load_djinn_config_from_paths(paths: Vec<PathBuf>) -> Result<DjinnConfigLoadReport> {
     let checked_paths = paths
         .iter()
         .map(|path| path.display().to_string())
@@ -5401,6 +5457,326 @@ fn run_agent(args: AgentArgs) -> Result<()> {
     }
 }
 
+fn run_session(args: SessionArgs) -> Result<()> {
+    match args.command {
+        SessionCommand::Init(args) => session_init(args),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionInitReport {
+    session_dir: String,
+    manifest_path: String,
+    request_path: String,
+    summary_path: String,
+    context_dir: String,
+    turns_dir: String,
+    profile: String,
+    agent: Option<String>,
+    model: String,
+    workspace: String,
+    repo_link: Option<SessionRepoLinkReport>,
+    config_sources: Vec<String>,
+    precedence: Vec<String>,
+    created: Vec<String>,
+    skipped: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionRepoLinkReport {
+    path: String,
+    target: String,
+}
+
+fn session_init(args: SessionInitArgs) -> Result<()> {
+    let report = initialize_folder_session(&args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Initialized Djinn session: {}", report.session_dir);
+        println!("  profile: {}", report.profile);
+        if let Some(agent) = &report.agent {
+            println!("  agent: {agent}");
+        }
+        println!("  model: {}", report.model);
+        println!("  workspace: {}", report.workspace);
+        if let Some(repo_link) = &report.repo_link {
+            println!("  repo link: {} -> {}", repo_link.path, repo_link.target);
+        }
+        println!("  request: {}", report.request_path);
+        println!("  summary: {}", report.summary_path);
+    }
+    Ok(())
+}
+
+fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport> {
+    let session_dir = resolve_session_dir(&args.dir)?;
+    fs::create_dir_all(&session_dir)
+        .with_context(|| format!("creating session directory {}", session_dir.display()))?;
+    let context_dir = session_dir.join("context");
+    let turns_dir = session_dir.join("turns");
+    fs::create_dir_all(&context_dir)
+        .with_context(|| format!("creating context directory {}", context_dir.display()))?;
+    fs::create_dir_all(&turns_dir)
+        .with_context(|| format!("creating turns directory {}", turns_dir.display()))?;
+
+    let workspace = match &args.link_repo {
+        Some(path) => canonical_existing_dir(path, "linked repository")?,
+        None => env::current_dir().context("resolving current workspace")?,
+    };
+    let config_report = load_djinn_config_from_paths(clean_unique_paths(vec![
+        default_djinn_config_path(),
+        workspace.join(".djinn.json"),
+    ]))?;
+    let selection = resolve_agent_role_selection_from_config(
+        &config_report.effective,
+        args.agent.clone(),
+        &args.profile,
+        args.model.clone(),
+    )?;
+    let model = resolve_agent_model_from_config(
+        selection.model.clone(),
+        &config_report.effective,
+        &selection.profile,
+    );
+
+    let mut created = Vec::new();
+    let mut skipped = Vec::new();
+    let request_path = session_dir.join("request.md");
+    write_scaffold_file(&request_path, "", args.force, &mut created, &mut skipped)?;
+    let summary_path = session_dir.join("summary.md");
+    write_scaffold_file(&summary_path, "", args.force, &mut created, &mut skipped)?;
+    let readme_path = context_dir.join("README.md");
+    write_scaffold_file(
+        &readme_path,
+        &session_context_readme(args.link_repo.as_ref(), &workspace),
+        args.force,
+        &mut created,
+        &mut skipped,
+    )?;
+
+    let repo_link = if args.link_repo.is_some() {
+        Some(link_repo_into_session_context(
+            &context_dir,
+            &workspace,
+            args.force,
+            &mut created,
+            &mut skipped,
+        )?)
+    } else {
+        None
+    };
+
+    let manifest_path = session_dir.join("djinn.toml");
+    let manifest = render_session_manifest(
+        &selection,
+        &model,
+        &workspace,
+        repo_link.as_ref(),
+        &config_report.checked_paths,
+    )?;
+    write_scaffold_file(
+        &manifest_path,
+        &manifest,
+        args.force,
+        &mut created,
+        &mut skipped,
+    )?;
+
+    Ok(SessionInitReport {
+        session_dir: session_dir.display().to_string(),
+        manifest_path: manifest_path.display().to_string(),
+        request_path: request_path.display().to_string(),
+        summary_path: summary_path.display().to_string(),
+        context_dir: context_dir.display().to_string(),
+        turns_dir: turns_dir.display().to_string(),
+        profile: selection.profile,
+        agent: selection.agent_name,
+        model,
+        workspace: workspace.display().to_string(),
+        repo_link,
+        config_sources: config_report.checked_paths,
+        precedence: vec![
+            "global profile/config".to_string(),
+            "repo-local config/context".to_string(),
+            "session-local files".to_string(),
+        ],
+        created,
+        skipped,
+    })
+}
+
+fn canonical_existing_dir(path: &Path, label: &str) -> Result<PathBuf> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("resolving {label} {}", path.display()))?;
+    if !canonical.is_dir() {
+        bail!("{label} is not a directory: {}", canonical.display());
+    }
+    Ok(canonical)
+}
+
+fn write_scaffold_file(
+    path: &Path,
+    content: &str,
+    force: bool,
+    created: &mut Vec<String>,
+    skipped: &mut Vec<String>,
+) -> Result<()> {
+    if path.exists() && !force {
+        skipped.push(path.display().to_string());
+        return Ok(());
+    }
+    fs::write(path, content).with_context(|| format!("writing {}", path.display()))?;
+    created.push(path.display().to_string());
+    Ok(())
+}
+
+fn session_context_readme(link_repo: Option<&PathBuf>, workspace: &Path) -> String {
+    let mut output = String::new();
+    output.push_str("# Djinn session context\n\n");
+    output.push_str("Put durable working notes, decisions, and compacted evidence here. ");
+    output.push_str("Djinn treats this folder as session-local context and does not blindly ingest linked folders.\n\n");
+    output.push_str(
+        "Precedence: global profile/config < repo-local config/context < session-local files.\n",
+    );
+    if let Some(repo) = link_repo {
+        output.push_str(&format!(
+            "\nLinked repo requested: `{}`\nResolved workspace: `{}`\n",
+            repo.display(),
+            workspace.display()
+        ));
+    }
+    output
+}
+
+fn link_repo_into_session_context(
+    context_dir: &Path,
+    repo: &Path,
+    force: bool,
+    created: &mut Vec<String>,
+    skipped: &mut Vec<String>,
+) -> Result<SessionRepoLinkReport> {
+    let repo_name = repo
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("repo");
+    let link_path = context_dir.join(repo_name);
+    if let Ok(metadata) = fs::symlink_metadata(&link_path) {
+        if metadata.file_type().is_symlink() {
+            if let Ok(existing_target) = fs::read_link(&link_path) {
+                let existing_target = if existing_target.is_absolute() {
+                    existing_target
+                } else {
+                    link_path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(existing_target)
+                };
+                if existing_target.canonicalize().ok().as_deref() == Some(repo) && !force {
+                    skipped.push(link_path.display().to_string());
+                    return Ok(SessionRepoLinkReport {
+                        path: link_path.display().to_string(),
+                        target: repo.display().to_string(),
+                    });
+                }
+            }
+            if force {
+                fs::remove_file(&link_path)
+                    .with_context(|| format!("removing symlink {}", link_path.display()))?;
+            } else {
+                bail!(
+                    "context link already exists and points elsewhere: {} (use --force to replace)",
+                    link_path.display()
+                );
+            }
+        } else if metadata.is_file() {
+            if force {
+                fs::remove_file(&link_path)
+                    .with_context(|| format!("removing file {}", link_path.display()))?;
+            } else {
+                bail!(
+                    "context path already exists: {} (use --force to replace files/symlinks)",
+                    link_path.display()
+                );
+            }
+        } else {
+            bail!(
+                "context path already exists and is not a symlink: {}",
+                link_path.display()
+            );
+        }
+    }
+    create_dir_symlink(repo, &link_path)?;
+    created.push(link_path.display().to_string());
+    Ok(SessionRepoLinkReport {
+        path: link_path.display().to_string(),
+        target: repo.display().to_string(),
+    })
+}
+
+#[cfg(unix)]
+fn create_dir_symlink(target: &Path, link: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, link)
+        .with_context(|| format!("linking {} -> {}", link.display(), target.display()))
+}
+
+#[cfg(windows)]
+fn create_dir_symlink(target: &Path, link: &Path) -> Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+        .with_context(|| format!("linking {} -> {}", link.display(), target.display()))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_dir_symlink(_target: &Path, _link: &Path) -> Result<()> {
+    bail!("directory symlinks are not supported on this platform")
+}
+
+fn render_session_manifest(
+    selection: &AgentRoleSelection,
+    model: &str,
+    workspace: &Path,
+    repo_link: Option<&SessionRepoLinkReport>,
+    config_sources: &[String],
+) -> Result<String> {
+    let mut output = String::new();
+    output.push_str("version = 1\n");
+    output.push_str(&format!(
+        "created_at = {}\n",
+        toml_string(&chrono::Local::now().to_rfc3339())?
+    ));
+    output.push_str(&format!("profile = {}\n", toml_string(&selection.profile)?));
+    if let Some(agent_name) = &selection.agent_name {
+        output.push_str(&format!("agent = {}\n", toml_string(agent_name)?));
+    }
+    output.push_str(&format!("model = {}\n", toml_string(model)?));
+    output.push_str(&format!(
+        "workspace = {}\n\n",
+        toml_string(&workspace.display().to_string())?
+    ));
+    output.push_str("[context]\n");
+    output.push_str("path = \"context\"\n");
+    output.push_str(
+        "precedence = [\"global profile/config\", \"repo-local config/context\", \"session-local files\"]\n",
+    );
+    output.push_str(&format!(
+        "config_sources = [{}]\n",
+        config_sources
+            .iter()
+            .map(|source| toml_string(source))
+            .collect::<Result<Vec<_>>>()?
+            .join(", ")
+    ));
+    if let Some(repo_link) = repo_link {
+        output.push_str("\n[context.repo]\n");
+        output.push_str(&format!("path = {}\n", toml_string(&repo_link.target)?));
+        output.push_str(&format!("link = {}\n", toml_string(&repo_link.path)?));
+    }
+    Ok(output)
+}
+
 fn run_agents(args: AgentsArgs) -> Result<()> {
     match args.command {
         AgentsCommand::List(args) => agents_list(args),
@@ -5621,15 +5997,24 @@ fn resolve_agent_role_selection(
     requested_model: Option<String>,
 ) -> Result<AgentRoleSelection> {
     let config = effective_djinn_config()?;
+    resolve_agent_role_selection_from_config(&config, agent, requested_profile, requested_model)
+}
+
+fn resolve_agent_role_selection_from_config(
+    config: &DjinnConfig,
+    agent: Option<String>,
+    requested_profile: &str,
+    requested_model: Option<String>,
+) -> Result<AgentRoleSelection> {
     let Some(agent_name) = agent
         .as_deref()
         .map(str::trim)
         .filter(|agent| !agent.is_empty())
     else {
-        let profile = resolve_agent_profile(requested_profile)?;
+        let profile = resolve_agent_profile_from_config(config, requested_profile);
         return Ok(AgentRoleSelection {
             agent_name: None,
-            instructions: profile_instructions_from_config(&config, &profile),
+            instructions: profile_instructions_from_config(config, &profile),
             profile,
             model: requested_model,
             tools: Vec::new(),
@@ -5645,8 +6030,8 @@ fn resolve_agent_role_selection(
         .filter(|profile| !profile.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| requested_profile.trim().to_string());
-    let profile = resolve_agent_profile(&profile)?;
-    let mut instructions = profile_instructions_from_config(&config, &profile);
+    let profile = resolve_agent_profile_from_config(config, &profile);
+    let mut instructions = profile_instructions_from_config(config, &profile);
     for instruction in &role.instructions {
         push_unique_string(&mut instructions, instruction);
     }
@@ -7376,63 +7761,270 @@ fn agent_file_history_restore(args: AgentFileHistoryRestoreArgs) -> Result<()> {
     Ok(())
 }
 
-fn agent_ask(args: AgentAskArgs) -> Result<()> {
-    let prompt = args.prompt;
-    let selection = resolve_agent_role_selection(args.agent, &args.profile, args.model)?;
-    let profile = selection.profile;
-    let model = resolve_agent_model(selection.model, &profile)?;
-    let store = agent_session_store();
-    let parent_session_id = parent_session_id_from_arg(args.parent_session);
-    validate_agent_child_session_depth(&store, parent_session_id.as_ref())?;
-    let title = args
-        .title
-        .unwrap_or_else(|| prompt_title(&prompt, "Agent prompt"));
-    let workspace = resolve_agent_workspace(args.workspace)?;
-    let system_instructions =
-        resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
-    let effective_config = agent_effective_config_from_parts(
-        workspace.clone(),
-        profile.clone(),
-        model.clone(),
-        selection.agent_name.clone(),
-        selection.instructions.clone(),
-        selection.tools.clone(),
-    )?;
-    let meta = AgentSessionMeta {
-        title,
-        workspace,
-        profile: profile.clone(),
-        agent_name: selection.agent_name,
-        parent_session_id,
-        source: "djinn-agent".to_string(),
-        runtime_config: Some(agent_session_runtime_config(&effective_config)),
-        ..AgentSessionMeta::default()
+fn resolve_agent_request_prompt(
+    prompt: Option<String>,
+    session_dir: Option<&Path>,
+) -> Result<String> {
+    if let Some(prompt) = prompt
+        .map(|prompt| prompt.trim_end().to_string())
+        .filter(|prompt| !prompt.trim().is_empty())
+    {
+        return Ok(prompt);
+    }
+    let Some(session_dir) = session_dir else {
+        bail!("agent ask requires a prompt, or --session-dir containing request.md");
     };
-    let id = store.create_session(meta)?;
+    let request_path = session_dir.join("request.md");
+    let prompt = fs::read_to_string(&request_path)
+        .with_context(|| format!("reading request prompt from {}", request_path.display()))?;
+    let prompt = prompt.trim_end().to_string();
+    if prompt.trim().is_empty() {
+        bail!("request prompt is empty: {}", request_path.display());
+    }
+    Ok(prompt)
+}
+
+fn resolve_session_dir(path: &Path) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        bail!("session directory path cannot be empty");
+    }
+    Ok(path.to_path_buf())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentSessionDirProjection {
+    session_dir: PathBuf,
+    turn_dir: PathBuf,
+    context_dir: PathBuf,
+    summary_path: PathBuf,
+    request_path: PathBuf,
+}
+
+fn project_agent_session_dir(
+    session_dir: &Path,
+    session: &AgentSession,
+    prompt: &str,
+    summary: &str,
+) -> Result<AgentSessionDirProjection> {
+    fs::create_dir_all(session_dir)
+        .with_context(|| format!("creating session directory {}", session_dir.display()))?;
+    let context_dir = session_dir.join("context");
+    let turns_dir = session_dir.join("turns");
+    fs::create_dir_all(&context_dir)
+        .with_context(|| format!("creating context directory {}", context_dir.display()))?;
+    fs::create_dir_all(&turns_dir)
+        .with_context(|| format!("creating turns directory {}", turns_dir.display()))?;
+
+    let summary_path = session_dir.join("summary.md");
+
+    let turn_dir = turns_dir.join(agent_session_turn_dir_name());
+    fs::create_dir_all(&turn_dir)
+        .with_context(|| format!("creating turn directory {}", turn_dir.display()))?;
+
+    let request_path = session_dir.join("request.md");
+    fs::write(&request_path, ensure_trailing_newline(prompt))
+        .with_context(|| format!("writing {}", request_path.display()))?;
+    fs::write(turn_dir.join("request.md"), ensure_trailing_newline(prompt))
+        .with_context(|| format!("writing turn request in {}", turn_dir.display()))?;
+    fs::write(&summary_path, ensure_trailing_newline(summary))
+        .with_context(|| format!("writing {}", summary_path.display()))?;
+    fs::write(
+        turn_dir.join("response.md"),
+        ensure_trailing_newline(summary),
+    )
+    .with_context(|| format!("writing turn response in {}", turn_dir.display()))?;
+
+    write_agent_session_toml(session_dir, session)?;
+
+    Ok(AgentSessionDirProjection {
+        session_dir: session_dir.to_path_buf(),
+        turn_dir,
+        context_dir,
+        summary_path,
+        request_path,
+    })
+}
+
+fn write_agent_session_toml(session_dir: &Path, session: &AgentSession) -> Result<()> {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "session_id = {}\n",
+        toml_string(&session.id.to_string())?
+    ));
+    output.push_str(&format!("title = {}\n", toml_string(&session.meta.title)?));
+    output.push_str(&format!(
+        "workspace = {}\n",
+        toml_string(&session.meta.workspace)?
+    ));
+    output.push_str(&format!(
+        "profile = {}\n",
+        toml_string(&session.meta.profile)?
+    ));
+    if let Some(agent_name) = &session.meta.agent_name {
+        output.push_str(&format!("agent = {}\n", toml_string(agent_name)?));
+    }
+    output.push_str(&format!(
+        "source = {}\n",
+        toml_string(&session.meta.source)?
+    ));
+    fs::write(session_dir.join("djinn.toml"), output)
+        .with_context(|| format!("writing {}", session_dir.join("djinn.toml").display()))
+}
+
+fn toml_string(value: &str) -> Result<String> {
+    serde_json::to_string(value).map_err(Into::into)
+}
+
+fn ensure_trailing_newline(value: &str) -> String {
+    if value.ends_with('\n') {
+        value.to_string()
+    } else {
+        format!("{value}\n")
+    }
+}
+
+fn agent_session_turn_dir_name() -> String {
+    format!(
+        "{}-{}",
+        chrono::Local::now().format("%Y%m%dT%H%M%S"),
+        chrono::Local::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
+    )
+}
+
+fn session_id_from_session_dir(session_dir: &Path) -> Result<Option<AgentSessionId>> {
+    let manifest_path = session_dir.join("djinn.toml");
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+    let manifest = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    Ok(manifest_string_value(&manifest, "session_id").map(AgentSessionId::new))
+}
+
+fn manifest_string_value(manifest: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key} =");
+    manifest.lines().find_map(|line| {
+        let line = line.trim();
+        let value = line.strip_prefix(&prefix)?.trim();
+        serde_json::from_str::<String>(value)
+            .ok()
+            .or_else(|| Some(value.trim_matches('"').to_string()))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn agent_ask(args: AgentAskArgs) -> Result<()> {
+    let session_dir = args
+        .session_dir
+        .as_deref()
+        .map(resolve_session_dir)
+        .transpose()?;
+    let prompt = resolve_agent_request_prompt(args.prompt.clone(), session_dir.as_deref())?;
+    let store = agent_session_store();
+    let requested_session_id = args
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| AgentSessionId::new(id.to_string()));
+    let requested_session_id = match requested_session_id {
+        Some(id) => Some(id),
+        None => session_dir
+            .as_deref()
+            .map(session_id_from_session_dir)
+            .transpose()?
+            .flatten(),
+    };
+
+    let (id, workspace, profile, model, system_instructions, allowed_tools) =
+        if let Some(id) = requested_session_id {
+            let session = store
+                .load_session(&id)
+                .with_context(|| format!("loading agent session {id}"))?;
+            let workspace = if session.meta.workspace.trim().is_empty() {
+                resolve_agent_workspace(None)?
+            } else {
+                session.meta.workspace.clone()
+            };
+            let requested_profile = if session.meta.profile.trim().is_empty() {
+                args.profile.clone()
+            } else {
+                session.meta.profile.clone()
+            };
+            let selection = resolve_agent_role_selection(
+                args.agent.clone().or_else(|| session.meta.agent_name.clone()),
+                &requested_profile,
+                args.model.clone().or_else(|| latest_session_model(&session)),
+            )?;
+            let profile = selection.profile;
+            let model = resolve_agent_model(selection.model.clone(), &profile)?;
+            let system_instructions =
+                resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
+            (id, workspace, profile, model, system_instructions, selection.tools)
+        } else {
+            let selection =
+                resolve_agent_role_selection(args.agent.clone(), &args.profile, args.model.clone())?;
+            let profile = selection.profile;
+            let model = resolve_agent_model(selection.model.clone(), &profile)?;
+            let parent_session_id = parent_session_id_from_arg(args.parent_session.clone());
+            validate_agent_child_session_depth(&store, parent_session_id.as_ref())?;
+            let title = args
+                .title
+                .clone()
+                .unwrap_or_else(|| prompt_title(&prompt, "Djinn prompt"));
+            let workspace = resolve_agent_workspace(args.workspace.clone())?;
+            let system_instructions =
+                resolve_agent_instruction_contents(&workspace, &selection.instructions)?;
+            let effective_config = agent_effective_config_from_parts(
+                workspace.clone(),
+                profile.clone(),
+                model.clone(),
+                selection.agent_name.clone(),
+                selection.instructions.clone(),
+                selection.tools.clone(),
+            )?;
+            let meta = AgentSessionMeta {
+                title,
+                workspace: workspace.clone(),
+                profile: profile.clone(),
+                agent_name: selection.agent_name,
+                parent_session_id,
+                source: "djinn".to_string(),
+                runtime_config: Some(agent_session_runtime_config(&effective_config)),
+                ..AgentSessionMeta::default()
+            };
+            let id = store.create_session(meta)?;
+            (id, workspace, profile, model, system_instructions, selection.tools)
+        };
+
     store.append_event(
         &id,
         AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
             content: prompt.clone(),
         }),
     )?;
+    maybe_auto_title_agent_session(&store, &id, &prompt)?;
     append_foreground_session_lifecycle_event(
         &store,
         &id,
         AgentSessionLifecycleState::Running,
-        "agent prompt started",
+        "djinn ask started",
         None,
     )?;
-    let response = match complete_openai_prompt(
+    let session_for_model = store.load_session(&id)?;
+    let response = match complete_openai_messages(
         &store,
         &id,
-        prompt,
+        agent_model_messages(&session_for_model, &workspace, &system_instructions),
         model.clone(),
         args.api_key,
         args.base_url,
         args.max_tool_rounds,
         &profile,
-        &system_instructions,
-        selection.tools,
+        allowed_tools,
         !args.json,
     ) {
         Ok(response) => {
@@ -7440,7 +8032,7 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
                 &store,
                 &id,
                 AgentSessionLifecycleState::Completed,
-                "agent prompt completed",
+                "djinn ask completed",
                 None,
             )?;
             response
@@ -7450,13 +8042,21 @@ fn agent_ask(args: AgentAskArgs) -> Result<()> {
                 &store,
                 &id,
                 AgentSessionLifecycleState::Failed,
-                "agent prompt failed",
+                "djinn ask failed",
                 Some(error.to_string()),
             );
             return Err(error);
         }
     };
     let session = store.load_session(&id)?;
+    if let Some(session_dir) = &session_dir {
+        project_agent_session_dir(
+            session_dir,
+            &session,
+            &prompt,
+            response.message.content.trim_end(),
+        )?;
+    }
     if args.json {
         println!(
             "{}",
@@ -7631,6 +8231,7 @@ fn prepare_foreground_session_args_from_parent(
     args.resume = None;
     args.title = None;
     args.workspace = None;
+    args.session_dir = None;
 }
 
 fn validate_agent_child_session_depth(
@@ -7680,6 +8281,11 @@ fn agent_session_depth(
 
 fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<AgentChatOutcome> {
     let store = agent_session_store();
+    let session_dir = args
+        .session_dir
+        .as_deref()
+        .map(resolve_session_dir)
+        .transpose()?;
     let selection = resolve_agent_role_selection(args.agent, &args.profile, args.model)?;
     let profile = selection.profile;
     let resumed = args
@@ -7856,6 +8462,14 @@ fn agent_chat(tui: &mut djinn_tui::TuiSession, args: AgentChatArgs) -> Result<Ag
                 }
             }
             let session = store.load_session(&id)?;
+            if let Some(session_dir) = &session_dir {
+                project_agent_session_dir(
+                    session_dir,
+                    &session,
+                    &prompt,
+                    latest_agent_assistant_message(&session).unwrap_or_default(),
+                )?;
+            }
             Ok(agent_chat_messages(&session))
         },
     )?;
@@ -10232,14 +10846,23 @@ fn current_time_millis() -> i64 {
 }
 
 fn resolve_agent_model(explicit: Option<String>, profile: &str) -> Result<String> {
+    let config = effective_djinn_config()?;
+    Ok(resolve_agent_model_from_config(explicit, &config, profile))
+}
+
+fn resolve_agent_model_from_config(
+    explicit: Option<String>,
+    config: &DjinnConfig,
+    profile: &str,
+) -> String {
     if let Some(model) = explicit
         .map(|model| model.trim().to_string())
         .filter(|model| !model.is_empty())
     {
-        return Ok(model);
+        return model;
     }
-    if let Some(model) = djinn_config_profile_model(profile)? {
-        return Ok(model);
+    if let Some(model) = profile_model_from_config(config, profile) {
+        return model;
     }
     for name in [
         "DJINN_AGENT_MODEL",
@@ -10251,10 +10874,10 @@ fn resolve_agent_model(explicit: Option<String>, profile: &str) -> Result<String
         };
         let model = model.trim().to_string();
         if !model.is_empty() {
-            return Ok(model);
+            return model;
         }
     }
-    Ok("gpt-4o-mini".to_string())
+    "gpt-4o-mini".to_string()
 }
 
 fn resolve_agent_profile(requested: &str) -> Result<String> {
@@ -10263,7 +10886,15 @@ fn resolve_agent_profile(requested: &str) -> Result<String> {
         return Ok(requested.to_string());
     }
     let config = effective_djinn_config()?;
-    Ok(config
+    Ok(resolve_agent_profile_from_config(&config, requested))
+}
+
+fn resolve_agent_profile_from_config(config: &DjinnConfig, requested: &str) -> String {
+    let requested = requested.trim();
+    if !requested.is_empty() && requested != "default" {
+        return requested.to_string();
+    }
+    config
         .default_profile
         .as_deref()
         .map(str::trim)
@@ -10273,26 +10904,7 @@ fn resolve_agent_profile(requested: &str) -> Result<String> {
         } else {
             requested
         })
-        .to_string())
-}
-
-fn djinn_config_profile_model(profile: &str) -> Result<Option<String>> {
-    let config = effective_djinn_config()?;
-    let profile = profile.trim();
-    if let Some(model) = profile_model_from_config(&config, profile) {
-        return Ok(Some(model));
-    }
-    if let Some(default_profile) = config
-        .default_profile
-        .as_deref()
-        .map(str::trim)
-        .filter(|profile| !profile.is_empty())
-    {
-        if let Some(model) = profile_model_from_config(&config, default_profile) {
-            return Ok(Some(model));
-        }
-    }
-    Ok(None)
+        .to_string()
 }
 
 fn profile_model_from_config(config: &DjinnConfig, profile: &str) -> Option<String> {
@@ -11417,6 +12029,19 @@ fn agent_chat_messages_with_progress(
     messages
 }
 
+fn latest_agent_assistant_message(session: &AgentSession) -> Option<&str> {
+    session
+        .events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            AgentSessionEventKind::AssistantMessage { content } if !content.trim().is_empty() => {
+                Some(content.trim_end())
+            }
+            _ => None,
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AgentToolCallSummary {
     name: String,
@@ -11458,43 +12083,59 @@ fn agent_progress_message(
             round,
             elapsed_ms,
             tool_calls,
+            planned_tools,
             has_message,
             ..
         } => {
             let label = if *tool_calls > 0 {
                 format!(
-                    "Planned {tool_calls} tool call{}",
-                    plural_suffix(*tool_calls)
+                    "Planned {}",
+                    progress_tool_call_label(planned_tools, *tool_calls)
                 )
             } else if *has_message {
                 "Drafted response".to_string()
             } else {
                 "Completed model turn".to_string()
             };
-            Some(agent_thought_message(format!(
-                "{label} · {}\nTool-round safety cap: completed model request {} of {}; rounds used {}/{}.",
-                format_elapsed_ms(*elapsed_ms),
+            let mut details = vec![format!(
+                "Tool-round safety cap: completed model request {} of {}; rounds used {}/{}.",
                 round.saturating_add(1),
                 max_tool_rounds.saturating_add(1),
                 *round,
                 max_tool_rounds,
+            )];
+            details.extend(progress_planned_tool_detail_lines(planned_tools));
+            Some(agent_thought_message(format!(
+                "{label} · {}\n{}",
+                format_elapsed_ms(*elapsed_ms),
+                details.join("\n")
             )))
         }
-        AgentProgressEvent::ToolCallStarted { call, .. } => Some(agent_thought_message(format!(
-            "Running {}",
-            summarize_agent_tool_input(&call.name, &call.input)
-        ))),
+        AgentProgressEvent::ToolCallStarted { call, .. } => {
+            let summary = summarize_agent_tool_input(&call.name, &call.input);
+            Some(agent_thought_message(format!(
+                "Running {}: {}\nInput:\n{}",
+                call.name,
+                summary,
+                progress_tool_input_snippet(&call.name, &call.input)
+            )))
+        }
         AgentProgressEvent::ToolCallCompleted {
             call,
             result,
             elapsed_ms,
             ..
-        } => Some(agent_thought_message(format!(
-            "{} {} · {}",
-            if result.success { "Finished" } else { "Failed" },
-            call.name,
-            format_elapsed_ms(*elapsed_ms)
-        ))),
+        } => {
+            let summary = summarize_agent_tool_output(&result.output, &call.name);
+            Some(agent_thought_message(format!(
+                "{} {}: {} · {}\nResult:\n{}",
+                if result.success { "Finished" } else { "Failed" },
+                call.name,
+                summary,
+                format_elapsed_ms(*elapsed_ms),
+                progress_tool_result_snippet(&call.name, &result.output, result.success)
+            )))
+        }
     }
 }
 
@@ -11517,12 +12158,14 @@ fn agent_progress_notice(event: &AgentProgressEvent, max_tool_rounds: usize) -> 
             *round,
             max_tool_rounds,
         ),
-        AgentProgressEvent::ModelResponseCompleted { tool_calls, .. } if *tool_calls > 0 => {
-            format!(
-                "Planned {tool_calls} tool call{}.",
-                plural_suffix(*tool_calls)
-            )
-        }
+        AgentProgressEvent::ModelResponseCompleted {
+            tool_calls,
+            planned_tools,
+            ..
+        } if *tool_calls > 0 => format!(
+            "Planned {}.",
+            progress_tool_call_label(planned_tools, *tool_calls)
+        ),
         AgentProgressEvent::ModelResponseCompleted { .. } => "Model response received.".to_string(),
         AgentProgressEvent::ToolCallStarted { call, .. } => format!("Running {}…", call.name),
         AgentProgressEvent::ToolCallCompleted { call, result, .. } => format!(
@@ -11531,6 +12174,156 @@ fn agent_progress_notice(event: &AgentProgressEvent, max_tool_rounds: usize) -> 
             call.name
         ),
     }
+}
+
+fn progress_tool_call_label(planned_tools: &[djinn_agent::ModelToolCall], count: usize) -> String {
+    if planned_tools.is_empty() {
+        return format!("{count} tool call{}", plural_suffix(count));
+    }
+    let mut counts = Vec::<(&str, usize)>::new();
+    for call in planned_tools {
+        if let Some((_, count)) = counts
+            .iter_mut()
+            .find(|(name, _)| *name == call.name.as_str())
+        {
+            *count += 1;
+        } else {
+            counts.push((call.name.as_str(), 1));
+        }
+    }
+    let labels = counts
+        .into_iter()
+        .map(|(name, count)| {
+            if count > 1 {
+                format!("{name} ×{count}")
+            } else {
+                name.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    let visible = labels
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if labels.len() > 3 {
+        format!("{visible}, +{} more", labels.len() - 3)
+    } else {
+        visible
+    }
+}
+
+fn progress_planned_tool_detail_lines(planned_tools: &[djinn_agent::ModelToolCall]) -> Vec<String> {
+    planned_tools
+        .iter()
+        .take(6)
+        .flat_map(|call| {
+            let mut lines = vec![format!(
+                "Planned tool: {}: {}",
+                call.name,
+                summarize_agent_tool_input(&call.name, &call.input)
+            )];
+            lines.push("Input snippet:".to_string());
+            lines.extend(
+                progress_tool_input_snippet(&call.name, &call.input)
+                    .lines()
+                    .map(str::to_string),
+            );
+            lines
+        })
+        .collect()
+}
+
+fn progress_tool_input_snippet(name: &str, input: &Value) -> String {
+    match name {
+        "shell" => {
+            let command = input.get("command").and_then(Value::as_str).unwrap_or("");
+            let workdir = input.get("workdir").and_then(Value::as_str).unwrap_or(".");
+            format!("workdir: {workdir}\n$ {command}")
+        }
+        "read_file" | "list_dir" => input
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|path| format!("path: {path}"))
+            .unwrap_or_else(|| compact_json_value(input)),
+        "find_files" => {
+            let pattern = input.get("pattern").and_then(Value::as_str).unwrap_or("*");
+            let path = input.get("path").and_then(Value::as_str).unwrap_or(".");
+            format!("pattern: {pattern}\npath: {path}")
+        }
+        "search_files" => {
+            let pattern = input.get("pattern").and_then(Value::as_str).unwrap_or("");
+            let path = input.get("path").and_then(Value::as_str).unwrap_or(".");
+            format!("pattern: {pattern}\npath: {path}")
+        }
+        "apply_patch" => input
+            .get("patch")
+            .and_then(Value::as_str)
+            .map(|patch| progress_text_snippet("patch", patch, 8))
+            .unwrap_or_else(|| compact_json_value(input)),
+        "write_file" => {
+            let path = input.get("path").and_then(Value::as_str).unwrap_or("file");
+            let content = input.get("content").and_then(Value::as_str).unwrap_or("");
+            format!(
+                "path: {path}\n{}",
+                progress_text_snippet("content", content, 6)
+            )
+        }
+        "edit_file" => {
+            let path = input.get("path").and_then(Value::as_str).unwrap_or("file");
+            let old_text = input.get("old_text").and_then(Value::as_str).unwrap_or("");
+            let new_text = input.get("new_text").and_then(Value::as_str).unwrap_or("");
+            format!(
+                "path: {path}\n{}\n{}",
+                progress_text_snippet("old", old_text, 4),
+                progress_text_snippet("new", new_text, 4)
+            )
+        }
+        _ => compact_json_value(input),
+    }
+}
+
+fn progress_tool_result_snippet(name: &str, output: &Value, success: bool) -> String {
+    let status = if success { "ok" } else { "failed" };
+    match name {
+        "read_file" => {
+            let path = output
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown path");
+            let content = output.get("content").and_then(Value::as_str).unwrap_or("");
+            format!(
+                "path: {path}\n{} bytes, {} lines\n{}",
+                content.len(),
+                content.lines().count(),
+                progress_text_snippet("preview", content, 8)
+            )
+        }
+        "apply_patch" | "write_file" | "edit_file" => {
+            summarize_mutation_result(name, status, output)
+        }
+        "shell" => summarize_shell_result(status, None, output),
+        "list_dir" | "find_files" | "search_files" => {
+            summarize_matches_result(name, status, output)
+        }
+        _ => summarize_agent_tool_output(output, name),
+    }
+}
+
+fn progress_text_snippet(label: &str, value: &str, max_lines: usize) -> String {
+    let mut lines = vec![format!("{label}:")];
+    let total = value.lines().count();
+    for line in value.lines().take(max_lines) {
+        lines.push(truncate_agent_line(line, 160));
+    }
+    if total > max_lines {
+        lines.push(format!("… {} more lines", total - max_lines));
+    }
+    if total == 0 {
+        lines.push("(empty)".to_string());
+    }
+    lines.join("\n")
 }
 
 fn kitsune_blocked_message_for_error(error: &anyhow::Error) -> &'static str {
@@ -12359,6 +13152,7 @@ fn default_agent_chat_args() -> AgentChatArgs {
         resume: None,
         title: None,
         workspace: None,
+        session_dir: None,
         profile: "default".to_string(),
         agent: None,
         parent_session: None,
@@ -16574,6 +17368,7 @@ mod tests {
         let AgentCommand::Ask(args) = agent_args.command else {
             panic!("expected agent ask command");
         };
+        assert_eq!(args.prompt.as_deref(), Some("hello"));
         assert_eq!(args.agent.as_deref(), Some("reviewer"));
         assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
         assert_eq!(args.max_tool_rounds, DEFAULT_AGENT_MAX_TOOL_ROUNDS);
@@ -16600,6 +17395,55 @@ mod tests {
         assert_eq!(args.agent.as_deref(), Some("planner"));
         assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
         assert_eq!(args.max_tool_rounds, 8);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "agent",
+            "ask",
+            "--session-dir",
+            "/tmp/djinn-session",
+        ])
+        .unwrap();
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Ask(args) = agent_args.command else {
+            panic!("expected agent ask command");
+        };
+        assert!(args.prompt.is_none());
+        assert_eq!(
+            args.session_dir.as_deref(),
+            Some(Path::new("/tmp/djinn-session"))
+        );
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "init",
+            "/tmp/folder-session",
+            "--link-repo",
+            "/tmp/repo",
+            "--profile",
+            "work",
+            "--agent",
+            "architect",
+            "--model",
+            "repo-model",
+            "--force",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let SessionCommand::Init(args) = session_args.command;
+        assert_eq!(args.dir, PathBuf::from("/tmp/folder-session"));
+        assert_eq!(args.link_repo.as_deref(), Some(Path::new("/tmp/repo")));
+        assert_eq!(args.profile, "work");
+        assert_eq!(args.agent.as_deref(), Some("architect"));
+        assert_eq!(args.model.as_deref(), Some("repo-model"));
+        assert!(args.force);
+        assert!(args.json);
     }
 
     #[test]
@@ -18173,6 +19017,62 @@ mod tests {
     }
 
     #[test]
+    fn agent_progress_names_planned_tools_and_includes_input_snippets() {
+        let event = AgentProgressEvent::ModelResponseCompleted {
+            round: 0,
+            elapsed_ms: 2150,
+            tool_calls: 1,
+            planned_tools: vec![djinn_agent::ModelToolCall {
+                id: "call-read".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "Cargo.toml"}),
+            }],
+            has_message: false,
+        };
+
+        let message = agent_progress_message(&event, 12).unwrap();
+        let notice = agent_progress_notice(&event, 12);
+
+        assert!(message.content.contains("Planned read_file · 2.1s"));
+        assert!(!message.content.contains("Planned 1 tool call"));
+        assert!(message
+            .content
+            .contains("Planned tool: read_file: Cargo.toml"));
+        assert!(message.content.contains("Input snippet:\npath: Cargo.toml"));
+        assert_eq!(notice, "Planned read_file.");
+    }
+
+    #[test]
+    fn agent_progress_tool_completion_includes_result_snippet() {
+        let event = AgentProgressEvent::ToolCallCompleted {
+            round: 0,
+            call: djinn_agent::ModelToolCall {
+                id: "call-read".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "Cargo.toml"}),
+            },
+            result: djinn_agent::ToolResult {
+                success: true,
+                output: serde_json::json!({
+                    "path": "Cargo.toml",
+                    "content": "[package]\nname = \"djinn\"\nversion = \"0.1.0\"\n"
+                }),
+            },
+            elapsed_ms: 42,
+        };
+
+        let message = agent_progress_message(&event, 12).unwrap();
+
+        assert!(message
+            .content
+            .contains("Finished read_file: Cargo.toml · 42ms"));
+        assert!(message.content.contains("Result:\npath: Cargo.toml"));
+        assert!(message
+            .content
+            .contains("preview:\n[package]\nname = \"djinn\""));
+    }
+
+    #[test]
     fn agent_chat_messages_with_progress_preserves_timeline_order() {
         let session = AgentSession {
             id: AgentSessionId::new("agt_progress"),
@@ -18195,6 +19095,158 @@ mod tests {
         assert_eq!(messages[1].content, "Waiting for model response…");
         assert_eq!(messages[2].content, "Planning next step…");
         assert_eq!(messages[3].content, "Planned 1 tool call · 2.1s");
+    }
+
+    #[test]
+    fn folder_backed_session_projection_writes_turns_and_context_without_duplicate_logs() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-folder-session-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("summary.md"), "old summary\n").unwrap();
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_folder"),
+            meta: AgentSessionMeta {
+                title: "Folder session".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "new request".to_string(),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "new summary".to_string(),
+                }),
+            ],
+        };
+
+        let projection =
+            project_agent_session_dir(&dir, &session, "new request", "new summary").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.join("request.md")).unwrap(),
+            "new request\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("summary.md")).unwrap(),
+            "new summary\n"
+        );
+        assert!(projection.context_dir.exists());
+        assert!(projection.turn_dir.join("request.md").exists());
+        assert!(projection.turn_dir.join("response.md").exists());
+        assert!(dir.join("djinn.toml").exists());
+        assert!(!dir.join("logs/summary-history.md").exists());
+        assert!(!dir.join("logs/events.jsonl").exists());
+        assert!(!dir.join("logs/transcript.md").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_request_prompt_can_read_session_dir_request_md() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-request-md-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("request.md"), "from request file\n").unwrap();
+
+        let prompt = resolve_agent_request_prompt(None, Some(&dir)).unwrap();
+
+        assert_eq!(prompt, "from request file");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_init_scaffolds_folder_and_links_repo_without_duplicate_logs() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-init-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+
+        let args = SessionInitArgs {
+            dir: dir.clone(),
+            link_repo: Some(repo.clone()),
+            profile: "default".to_string(),
+            agent: None,
+            model: None,
+            force: false,
+            json: false,
+        };
+        let report = initialize_folder_session(&args).unwrap();
+
+        assert!(dir.join("djinn.toml").exists());
+        assert!(dir.join("request.md").exists());
+        assert!(dir.join("summary.md").exists());
+        assert!(dir.join("context/README.md").exists());
+        assert!(dir.join("turns").exists());
+        assert!(!dir.join("logs/summary-history.md").exists());
+        assert!(!dir.join("logs/events.jsonl").exists());
+        assert!(!dir.join("logs/transcript.md").exists());
+
+        let link = dir.join("context/repo");
+        assert_eq!(fs::read_link(&link).unwrap(), repo.canonicalize().unwrap());
+        assert_eq!(
+            report.repo_link.as_ref().unwrap().path,
+            link.display().to_string()
+        );
+        assert_eq!(fs::read_to_string(dir.join("request.md")).unwrap(), "");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_init_repo_config_overrides_global_profile_model() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-config-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let global = root.join("global.json");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(
+            &global,
+            r#"{
+  "version": 1,
+  "default_profile": "work",
+  "profiles": { "work": { "model": "global-model" } }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            repo.join(".djinn.json"),
+            r#"{
+  "version": 1,
+  "profiles": { "work": { "model": "repo-model" } }
+}"#,
+        )
+        .unwrap();
+
+        let load = load_djinn_config_from_paths(vec![global, repo.join(".djinn.json")]).unwrap();
+        let selection =
+            resolve_agent_role_selection_from_config(&load.effective, None, "default", None)
+                .unwrap();
+        let model = resolve_agent_model_from_config(None, &load.effective, &selection.profile);
+
+        assert_eq!(selection.profile, "work");
+        assert_eq!(model, "repo-model");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
