@@ -978,7 +978,14 @@ The first non-interactive agent slice is implemented as:
     an existing native session. `--session-dir` reads/writes the folder-backed
     capsule and, when its `djinn.toml` already records a `session_id`, resumes that
     existing native session; otherwise a successful ask can create/project the
-    folder as a new session capsule.
+    folder as a new session capsule. Ask resolution precedence is CLI flags over
+    session `djinn.toml`, then repo-local `.djinn.json`, then global config, then
+    built-ins. Do not add new behavior to `djinn chat` / `djinn agent chat` while
+    this file-first ask/session flow is settling.
+67. Native session inspection also has top-level spellings: `djinn session list`,
+    `djinn session show <id-or-folder>`, and `djinn session delete <id-or-folder>`.
+    Folder references are resolved through `djinn.toml` `session_id`; the legacy
+    `djinn agent session ...` commands remain compatibility aliases.
 
 Not in the first slice unless explicitly reopened:
 
