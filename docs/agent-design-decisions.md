@@ -993,6 +993,10 @@ The first non-interactive agent slice is implemented as:
     session `djinn.toml`, then repo-local `.djinn.json`, then global config, then
     built-ins. Do not add new behavior to `djinn chat` / `djinn agent chat` while
     this file-first ask/session flow is settling.
+    `djinn session run <session>` is the folder-native spelling for processing
+    the current `request.md`; it reuses the folder-backed ask engine but reports
+    completion in session artifact terms (`summary.md` and latest
+    `turns/<id>/response.md`) instead of only echoing the session directory.
 67. Superseded by decisions 79-80: native session inspection briefly had
     top-level spellings: `djinn session list`, `djinn session show
     <id-or-folder>`, and `djinn session delete <id-or-folder>`. Folder references

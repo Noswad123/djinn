@@ -121,9 +121,14 @@ session id yet. It also ingests bounded shallow session context from
 `request.md`, `summary.md`, and small Markdown/text files directly under
 `context/`, while skipping symlinked directories and deep trees. Top-level
 `djinn session` intentionally keeps the folder-native verbs (`ls`, `status`,
-`open`, `rm`, `compact`, `init`) and does not support legacy-style
+`open`, `rm`, `compact`, `init`, `run`) and does not support legacy-style
 `list`/`show`/`delete` aliases. Do not create `summary-history.md`, mirrored
 `events.jsonl`, or `transcript.md` by default.
+`djinn session run <session>` is the file-first spelling for "process the
+current request.md"; it runs in the foreground, then reports the session,
+`summary.md`, and latest `turns/<id>/response.md` paths. It is equivalent to a
+folder-backed `djinn ask --session <session>` execution with clearer completion
+output.
 
 Manual deterministic compaction is available through `djinn session compact
 --session-dir <dir>`. It reads `turns/<id>/request.md` and `response.md` and

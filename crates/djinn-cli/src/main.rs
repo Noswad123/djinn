@@ -142,6 +142,8 @@ struct SessionArgs {
 enum SessionCommand {
     /// Scaffold a folder-backed Djinn work session.
     Init(SessionInitArgs),
+    /// Run request.md for a folder-backed session and write summary/turn outputs.
+    Run(SessionRunArgs),
     /// Deterministically compact turn request/response evidence into context/compacted.md.
     Compact(SessionCompactArgs),
     /// Manage session-local context files and links.
@@ -156,6 +158,39 @@ enum SessionCommand {
     ShortenNames(SessionShortenNamesArgs),
     /// Remove a folder-backed session and its linked native session when present.
     Rm(SessionRmArgs),
+}
+
+#[derive(Debug, Args)]
+struct SessionRunArgs {
+    /// Folder-backed session name or directory to run.
+    dir: PathBuf,
+    /// Agent profile name override.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Configured agent role name override.
+    #[arg(long)]
+    agent: Option<String>,
+    /// Model override. Prefix with copilot/ to use GitHub Copilot.
+    #[arg(long)]
+    model: Option<String>,
+    /// Provider API token. For copilot/* models, this is a Copilot API token.
+    #[arg(long = "api-key")]
+    api_key: Option<String>,
+    /// Provider endpoint/base URL. For copilot/* models, this is the chat completions endpoint.
+    #[arg(long = "base-url")]
+    base_url: Option<String>,
+    /// Maximum model/tool-call rounds before stopping.
+    #[arg(long = "max-tool-rounds", default_value_t = DEFAULT_AGENT_MAX_TOOL_ROUNDS)]
+    max_tool_rounds: usize,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+    /// Print the produced answer before the completion paths.
+    #[arg(long, conflicts_with = "json")]
+    print: bool,
+    /// Open summary.md after completion.
+    #[arg(long, conflicts_with = "json")]
+    open: bool,
 }
 
 #[derive(Debug, Args)]
@@ -5427,6 +5462,7 @@ fn run_session(args: SessionArgs) -> Result<()> {
 fn run_session_command(command: SessionCommand) -> Result<()> {
     match command {
         SessionCommand::Init(args) => session_init(args),
+        SessionCommand::Run(args) => session_run(args),
         SessionCommand::Compact(args) => session_compact(args),
         SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
@@ -9423,15 +9459,50 @@ fn is_folder_session_context_text_file(path: &Path) -> bool {
 }
 
 fn top_level_ask(args: AgentAskArgs) -> Result<()> {
-    agent_ask(args, true)
+    agent_ask(args, true, AgentAskOutputMode::Ask)
 }
 
 fn legacy_agent_ask(args: AgentAskArgs) -> Result<()> {
     warn_legacy_agent_command("agent ask", Some("use top-level `djinn ask`"));
-    agent_ask(args, true)
+    agent_ask(args, true, AgentAskOutputMode::Ask)
 }
 
-fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentAskOutputMode {
+    Ask,
+    SessionRun { open: bool },
+}
+
+fn session_run(args: SessionRunArgs) -> Result<()> {
+    let open = args.open;
+    agent_ask(
+        AgentAskArgs {
+            prompt: None,
+            session_id: None,
+            session_dir: Some(args.dir),
+            title: None,
+            workspace: None,
+            profile: args.profile,
+            agent: args.agent,
+            parent_session: None,
+            model: args.model,
+            api_key: args.api_key,
+            base_url: args.base_url,
+            max_tool_rounds: args.max_tool_rounds,
+            json: args.json,
+            print: args.print,
+            open: false,
+        },
+        true,
+        AgentAskOutputMode::SessionRun { open },
+    )
+}
+
+fn agent_ask(
+    args: AgentAskArgs,
+    auto_folder_session: bool,
+    output_mode: AgentAskOutputMode,
+) -> Result<()> {
     let session_dir = args
         .session_dir
         .as_deref()
@@ -9683,7 +9754,35 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
         None
     };
     let folder_path_output = auto_folder_session && projected_session_dir.is_some();
-    if args.json && folder_path_output {
+    if let AgentAskOutputMode::SessionRun { .. } = output_mode {
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "completed",
+                    "session_id": id.to_string(),
+                    "session_dir": projected_session_dir,
+                    "model": model,
+                    "summary_path": projection.as_ref().map(|projection| &projection.summary_path),
+                    "request_path": projection.as_ref().map(|projection| &projection.request_path),
+                    "turn_dir": projection.as_ref().map(|projection| &projection.turn_dir),
+                    "response_path": projection.as_ref().map(|projection| projection.turn_dir.join("response.md")),
+                }))?
+            );
+        } else {
+            if args.print {
+                println!("{}", response.message.content);
+            }
+            print!(
+                "{}",
+                format_session_run_completion(
+                    &id,
+                    projection.as_ref(),
+                    projected_session_dir.as_deref()
+                )
+            );
+        }
+    } else if args.json && folder_path_output {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -9721,7 +9820,34 @@ fn agent_ask(args: AgentAskArgs, auto_folder_session: bool) -> Result<()> {
             open_editor_path(&projection.summary_path, None)?;
         }
     }
+    if let AgentAskOutputMode::SessionRun { open: true } = output_mode {
+        if let Some(projection) = &projection {
+            open_editor_path(&projection.summary_path, None)?;
+        }
+    }
     Ok(())
+}
+
+fn format_session_run_completion(
+    id: &AgentSessionId,
+    projection: Option<&AgentSessionDirProjection>,
+    session_dir: Option<&Path>,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Completed Djinn session run: {id}"));
+    if let Some(projection) = projection {
+        lines.push(format!("  session: {}", projection.session_dir.display()));
+        lines.push(format!("  summary: {}", projection.summary_path.display()));
+        lines.push(format!(
+            "  response: {}",
+            projection.turn_dir.join("response.md").display()
+        ));
+        lines.push(format!("  request: {}", projection.request_path.display()));
+    } else if let Some(session_dir) = session_dir {
+        lines.push(format!("  session: {}", session_dir.display()));
+    }
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20123,6 +20249,26 @@ mod tests {
         assert!(args.dry_run);
         assert!(args.json);
 
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "run",
+            "bap-questions",
+            "--print",
+            "--model",
+            "openai/gpt-5.5",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Run(args)) = args.command else {
+            panic!("expected session run command");
+        };
+        assert_eq!(args.dir, PathBuf::from("bap-questions"));
+        assert!(args.print);
+        assert_eq!(args.model.as_deref(), Some("openai/gpt-5.5"));
+
         assert!(Cli::try_parse_from(["djinn", "share", "chats"]).is_err());
     }
 
@@ -21393,6 +21539,29 @@ link = "context/repo"
 
         assert_eq!(prompt, "from request file");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn format_session_run_completion_reports_output_paths() {
+        let session_dir = PathBuf::from("/tmp/djinn/session");
+        let projection = AgentSessionDirProjection {
+            session_dir: session_dir.clone(),
+            turn_dir: session_dir.join("turns/20260728T120000-1"),
+            context_dir: session_dir.join("context"),
+            summary_path: session_dir.join("summary.md"),
+            request_path: session_dir.join("request.md"),
+        };
+
+        let rendered = format_session_run_completion(
+            &AgentSessionId::new("agt_run_test"),
+            Some(&projection),
+            Some(&session_dir),
+        );
+
+        assert!(rendered.contains("Completed Djinn session run: agt_run_test"));
+        assert!(rendered.contains("summary.md"));
+        assert!(rendered.contains("turns/20260728T120000-1/response.md"));
+        assert!(rendered.contains("request.md"));
     }
 
     #[test]
