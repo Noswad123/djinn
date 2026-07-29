@@ -5735,6 +5735,7 @@ struct FolderSessionSummary {
     manifest_exists: bool,
     session_id: Option<String>,
     native_session_exists: bool,
+    lifecycle: SessionStatusLifecycleReport,
     created_at: Option<String>,
     updated_at: Option<String>,
     workspace: Option<String>,
@@ -5743,6 +5744,8 @@ struct FolderSessionSummary {
     summary_md: bool,
     summary_preview: Option<String>,
     turn_count: usize,
+    latest_turn: Option<SessionStatusTurnReport>,
+    next_action: Option<String>,
     modified_at: Option<String>,
     modified_at_ms: Option<i64>,
 }
@@ -6334,6 +6337,12 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         .and_then(|name| name.to_str())
         .unwrap_or("session")
         .to_string();
+    let turns = read_folder_session_turns(&path.join("turns"))?;
+    let turn_count = turns.len();
+    let lifecycle = session_status_lifecycle(native_session.as_ref());
+    let latest_turn = turns.last().map(session_status_turn_report);
+    let request_md = path.join("request.md").exists();
+    let next_action = session_status_next_action(path, request_md, turn_count, &lifecycle);
     Ok(FolderSessionSummary {
         display_name: folder_session_display_name(&name),
         reference_name: folder_session_reference_name(&name),
@@ -6342,6 +6351,7 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         manifest_exists: path.join("djinn.toml").exists(),
         session_id: session_id.map(|id| id.to_string()),
         native_session_exists,
+        lifecycle,
         created_at,
         updated_at,
         workspace: manifest
@@ -6350,10 +6360,12 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         repo_path: manifest
             .as_ref()
             .and_then(|manifest| manifest.repo_path.clone()),
-        request_md: path.join("request.md").exists(),
+        request_md,
         summary_md: path.join("summary.md").exists(),
         summary_preview: folder_session_summary_preview(path),
-        turn_count: read_folder_session_turns(&path.join("turns"))?.len(),
+        turn_count,
+        latest_turn,
+        next_action,
         modified_at: folder_session_modified_at(path),
         modified_at_ms: folder_session_modified_at_ms(path),
     })
@@ -6603,10 +6615,10 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
         }
         lines.push(format!("Repo: {}", group.repo));
         lines.push(format!(
-            "  {:<20} {:>5}  {:<32} {}",
-            "UPDATED", "TURNS", "NAME", "SUMMARY"
+            "  {:<20} {:<12} {:>5}  {:<32} {}",
+            "UPDATED", "STATE", "TURNS", "NAME", "SUMMARY"
         ));
-        lines.push(format!("  {}", "-".repeat(78)));
+        lines.push(format!("  {}", "-".repeat(92)));
         for session in &group.sessions {
             let updated = session
                 .updated_at
@@ -6615,9 +6627,11 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
                 .map(compact_session_list_datetime)
                 .unwrap_or_else(|| "-".to_string());
             let summary = session.summary_preview.as_deref().unwrap_or("");
+            let state = folder_session_summary_state_label(session);
             lines.push(format!(
-                "  {:<20} {:>5}  {:<32} {}",
+                "  {:<20} {:<12} {:>5}  {:<32} {}",
                 truncate_table_cell(&updated, 20),
+                truncate_table_cell(&state, 12),
                 session.turn_count,
                 truncate_table_cell(
                     &format!(
@@ -6641,6 +6655,15 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
     ));
     lines.push(String::new());
     lines.join("\n")
+}
+
+fn folder_session_summary_state_label(session: &FolderSessionSummary) -> String {
+    session
+        .lifecycle
+        .mode
+        .as_deref()
+        .map(|mode| format!("{}/{}", session.lifecycle.state, mode))
+        .unwrap_or_else(|| session.lifecycle.state.clone())
 }
 
 fn format_session_shorten_names_report(report: &SessionShortenNamesReport) -> String {
@@ -21358,6 +21381,33 @@ link = "context/repo"
         fs::write(alpha.join("request.md"), "request\n").unwrap();
         fs::write(alpha.join("summary.md"), "summary\n").unwrap();
         fs::write(alpha.join("turns/turn-a/response.md"), "response\n").unwrap();
+        let alpha_store = folder_agent_session_store(&alpha);
+        let alpha_id = alpha_store
+            .create_session(AgentSessionMeta {
+                title: "Alpha".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "test".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        fs::write(
+            alpha.join("djinn.toml"),
+            format!(
+                "session_id = \"{}\"\ncreated_at = \"2026-07-27T12:34:56.123-04:00\"\nworkspace = \"/tmp/workspace\"\n\n[context.repo]\npath = \"/tmp/repo-b\"\n",
+                alpha_id
+            ),
+        )
+        .unwrap();
+        append_agent_session_lifecycle_event(
+            &alpha_store,
+            &alpha_id,
+            AgentSessionLifecycleState::Running,
+            AgentSessionExecutionMode::Background,
+            "test running",
+            None,
+        )
+        .unwrap();
         fs::write(
             gamma.join("djinn.toml"),
             "created_at = \"2026-07-28T12:34:56.123-04:00\"\n\n[context.repo]\npath = \"/tmp/repo-a\"\n",
@@ -21400,10 +21450,24 @@ link = "context/repo"
             report.sessions[2].reference_name,
             folder_session_reference_name("session-agt_1785201896467199000_123_0")
         );
-        assert_eq!(report.sessions[3].session_id.as_deref(), Some("agt_alpha"));
+        assert_eq!(
+            report.sessions[3].session_id.as_deref(),
+            Some(alpha_id.as_str())
+        );
+        assert!(report.sessions[3].native_session_exists);
+        assert_eq!(report.sessions[3].lifecycle.state, "running");
+        assert_eq!(
+            report.sessions[3].lifecycle.mode.as_deref(),
+            Some("background")
+        );
+        assert_eq!(
+            report.sessions[3].latest_turn.as_ref().unwrap().id,
+            "turn-a"
+        );
         assert_eq!(
             report.sessions[3].created_at.as_deref(),
-            Some("2026-07-27T12:34:56.123-04:00")
+            non_empty_string(&alpha_store.load_session(&alpha_id).unwrap().meta.created_at)
+                .as_deref()
         );
         assert_eq!(report.sessions[3].turn_count, 1);
         assert!(report.sessions[3].request_md);
@@ -21430,6 +21494,8 @@ link = "context/repo"
         assert!(text.contains("Repo: repo-b"));
         assert!(text.contains("Repo: -"));
         assert!(text.contains("UPDATED"));
+        assert!(text.contains("STATE"));
+        assert!(text.contains("running/bac…"));
         assert!(text.contains("alpha"));
         assert!(text.contains("2026-07-27T11:34:56…"));
         assert!(text.contains(&folder_session_reference_name(
@@ -21442,8 +21508,18 @@ link = "context/repo"
         assert!(text.contains("newer repo-a summary"));
         assert!(!text.contains("native: agt_alpha"));
         let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["sessions"][3]["lifecycle"]["state"], "running");
+        assert_eq!(json["sessions"][3]["latest_turn"]["id"], "turn-a");
         assert_eq!(json["groups"][0]["repo"], "repo-a");
         assert_eq!(json["groups"][0]["sessions"][0]["name"], "gamma");
+        assert_eq!(
+            json["groups"][1]["sessions"][0]["lifecycle"]["state"],
+            "running"
+        );
+        assert_eq!(
+            json["groups"][1]["sessions"][0]["lifecycle"]["mode"],
+            "background"
+        );
         assert_eq!(json["groups"][0]["sessions"][2]["display_name"], "session");
         assert_eq!(
             json["groups"][0]["sessions"][2]["reference_name"],

@@ -161,8 +161,10 @@ into repo docs, AGENTS.md, or another repo/harness-owned context location.
 `djinn session ls` lists cache-backed named sessions by scanning that cache root;
 there is no persistent external session index, so manually moved/renamed explicit
 path sessions do not require index maintenance. The list output includes
-created/updated timestamps to distinguish repeated prompt names or multiple
-sessions created from similar requests.
+created/updated timestamps, lifecycle state/mode, turn count, and summary preview
+to distinguish repeated prompt names, active background work, or multiple sessions
+created from similar requests. The JSON output carries the same lifecycle and
+latest-turn projection for future dashboard/TUI consumers.
 Named sessions are unique by their resolved cache folder. Re-running `djinn
 session init <name>` is idempotent for the same manifest identity, rejects
 profile/agent/model/workspace/repo conflicts by default, and only replaces

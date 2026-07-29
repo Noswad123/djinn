@@ -1040,7 +1040,9 @@ The first non-interactive agent slice is implemented as:
     This avoids stale index state when users manually move or rename folders. The
     listing includes created/updated timestamps, using native session metadata
     when available and folder metadata as a fallback, so duplicate-looking prompt
-    names can be distinguished.
+    names can be distinguished. It also carries lifecycle state/mode and latest
+    turn metadata in text and JSON projections so dashboard/watch surfaces can
+    identify running/background work without opening every session folder.
 73. Cache-backed folder session names are unique by resolved path. Re-running
     `djinn session init <name>` is idempotent when the existing `djinn.toml`
     identity matches the requested profile/agent/model/workspace/repo. If the
