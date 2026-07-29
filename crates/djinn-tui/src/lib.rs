@@ -257,6 +257,7 @@ pub struct ChatDeleteRequest {
 }
 
 impl ChatDeleteRequest {
+    #[allow(dead_code)]
     fn is_empty(&self) -> bool {
         self.chat_ids.is_empty() && self.agent_session_ids.is_empty()
     }
@@ -317,9 +318,6 @@ enum DashboardCommand {
     OpenHelp,
     ToggleFilter,
     OpenSelected,
-    ResumeSelectedChat,
-    PromoteSessions,
-    SetSessionScope(SessionFilterScope),
     ToggleSelected,
     ToggleAll,
     AcceptSelected,
@@ -328,6 +326,7 @@ enum DashboardCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum SessionFilterScope {
     All,
     Promotable,
@@ -336,6 +335,7 @@ enum SessionFilterScope {
 }
 
 impl SessionFilterScope {
+    #[allow(dead_code)]
     const ALL: [Self; 4] = [
         Self::All,
         Self::Promotable,
@@ -352,6 +352,7 @@ impl SessionFilterScope {
         }
     }
 
+    #[allow(dead_code)]
     fn description(self) -> &'static str {
         match self {
             Self::All => "Show all session rows",
@@ -361,6 +362,7 @@ impl SessionFilterScope {
         }
     }
 
+    #[allow(dead_code)]
     fn next(self) -> Self {
         match self {
             Self::All => Self::Promotable,
@@ -375,7 +377,6 @@ impl SessionFilterScope {
 pub enum DashboardTab {
     Tools,
     Workspaces,
-    Sessions,
     Memories,
     Suggestions,
     Skills,
@@ -386,10 +387,9 @@ impl DashboardTab {
         match self {
             DashboardTab::Tools => 0,
             DashboardTab::Workspaces => 1,
-            DashboardTab::Sessions => 2,
-            DashboardTab::Memories => 3,
-            DashboardTab::Suggestions => 4,
-            DashboardTab::Skills => 5,
+            DashboardTab::Memories => 2,
+            DashboardTab::Suggestions => 3,
+            DashboardTab::Skills => 4,
         }
     }
 
@@ -397,22 +397,14 @@ impl DashboardTab {
         match index % DASHBOARD_TABS.len() {
             0 => DashboardTab::Tools,
             1 => DashboardTab::Workspaces,
-            2 => DashboardTab::Sessions,
-            3 => DashboardTab::Memories,
-            4 => DashboardTab::Suggestions,
+            2 => DashboardTab::Memories,
+            3 => DashboardTab::Suggestions,
             _ => DashboardTab::Skills,
         }
     }
 }
 
-const DASHBOARD_TABS: [&str; 6] = [
-    "Tools",
-    "Workspaces",
-    "Sessions",
-    "Memories",
-    "Suggestions",
-    "Skills",
-];
+const DASHBOARD_TABS: [&str; 5] = ["Tools", "Workspaces", "Memories", "Suggestions", "Skills"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionPromoteRequest {
     pub chat_ids: Vec<String>,
@@ -668,52 +660,6 @@ fn run_dashboard_loop(
                     continue;
                 }
 
-                if app.active_tab == DashboardTab::Sessions {
-                    match &app.chats.mode {
-                        ChatUiMode::Options => {
-                            match key.code {
-                                KeyCode::Char('q') => return Ok(None),
-                                KeyCode::Esc | KeyCode::Backspace => {
-                                    app.chats.mode = ChatUiMode::Selecting
-                                }
-                                KeyCode::Char('j') | KeyCode::Down => app.chats.next_option(),
-                                KeyCode::Char('k') | KeyCode::Up => app.chats.previous_option(),
-                                KeyCode::Enter => {
-                                    return Ok(app
-                                        .chats
-                                        .promote_request()
-                                        .map(TuiAction::PromoteSessions));
-                                }
-                                _ => {}
-                            }
-                            continue;
-                        }
-                        ChatUiMode::ConfirmDelete(_) => {
-                            match key.code {
-                                KeyCode::Enter | KeyCode::Char('y') => {
-                                    if let Some(action) = app.chats.confirm_delete_action() {
-                                        if handle_continue_action(
-                                            &mut app,
-                                            &mut on_continue_action,
-                                            action.clone(),
-                                        )? {
-                                            continue;
-                                        }
-                                        return Ok(Some(action));
-                                    }
-                                }
-                                KeyCode::Esc
-                                | KeyCode::Backspace
-                                | KeyCode::Char('n')
-                                | KeyCode::Char('q') => app.chats.cancel_modal(),
-                                _ => {}
-                            }
-                            continue;
-                        }
-                        ChatUiMode::Selecting => {}
-                    }
-                }
-
                 if app.filter_editing() {
                     match key.code {
                         KeyCode::Char('/') => app.toggle_filter(),
@@ -756,12 +702,6 @@ fn run_dashboard_loop(
                                 return Ok(Some(TuiAction::OpenWorkspace(workspace)));
                             }
                         }
-                        DashboardTab::Sessions => {
-                            if let Some(request) = app.chats.selected_chat_session_request() {
-                                return Ok(Some(TuiAction::OpenChatSession(request)));
-                            }
-                            app.chats.open_options();
-                        }
                         DashboardTab::Skills => {
                             if let Some(skill) = app.skills.selected_skill().cloned() {
                                 return Ok(Some(TuiAction::OpenSkill(skill)));
@@ -770,11 +710,7 @@ fn run_dashboard_loop(
                         DashboardTab::Memories | DashboardTab::Suggestions => {}
                     },
                     KeyCode::Char('r') => {
-                        if app.active_tab == DashboardTab::Sessions {
-                            if let Some(request) = app.chats.selected_chat_session_request() {
-                                return Ok(Some(TuiAction::OpenChatSession(request)));
-                            }
-                        } else if app.active_tab == DashboardTab::Memories {
+                        if app.active_tab == DashboardTab::Memories {
                             let ids = app.memories.selected_memory_ids();
                             if !ids.is_empty() {
                                 let action = TuiAction::DeleteMemories(ids);
@@ -789,20 +725,7 @@ fn run_dashboard_loop(
                             }
                         }
                     }
-                    KeyCode::Char('f') => {
-                        if app.active_tab == DashboardTab::Sessions {
-                            app.chats.cycle_scope();
-                        }
-                    }
-                    KeyCode::Char('s') => {
-                        if app.active_tab == DashboardTab::Sessions {
-                            app.chats.open_options();
-                        }
-                    }
                     KeyCode::Char('x') | KeyCode::Delete => match app.active_tab {
-                        DashboardTab::Sessions => {
-                            app.chats.open_delete_confirmation();
-                        }
                         DashboardTab::Memories => {
                             let ids = app.memories.selected_memory_ids();
                             if !ids.is_empty() {
@@ -873,12 +796,6 @@ fn handle_dashboard_command(
                     return Ok(Some(TuiAction::OpenWorkspace(workspace)));
                 }
             }
-            DashboardTab::Sessions => {
-                if let Some(request) = app.chats.selected_chat_session_request() {
-                    return Ok(Some(TuiAction::OpenChatSession(request)));
-                }
-                app.chats.open_options();
-            }
             DashboardTab::Skills => {
                 if let Some(skill) = app.skills.selected_skill().cloned() {
                     return Ok(Some(TuiAction::OpenSkill(skill)));
@@ -886,13 +803,6 @@ fn handle_dashboard_command(
             }
             DashboardTab::Memories | DashboardTab::Suggestions => {}
         },
-        DashboardCommand::ResumeSelectedChat => {
-            if let Some(request) = app.chats.selected_chat_session_request() {
-                return Ok(Some(TuiAction::OpenChatSession(request)));
-            }
-        }
-        DashboardCommand::PromoteSessions => app.chats.open_options(),
-        DashboardCommand::SetSessionScope(scope) => app.chats.set_scope(scope),
         DashboardCommand::ToggleSelected => app.toggle_selected(),
         DashboardCommand::ToggleAll => app.toggle_all(),
         DashboardCommand::AcceptSelected => {
@@ -909,9 +819,7 @@ fn handle_dashboard_command(
             }
         }
         DashboardCommand::DeleteSelected => {
-            if app.active_tab == DashboardTab::Sessions {
-                app.chats.open_delete_confirmation();
-            } else if let Some(action) = app.delete_selected_action() {
+            if let Some(action) = app.delete_selected_action() {
                 if handle_continue_action(app, on_continue_action, action.clone())? {
                     return Ok(None);
                 }
@@ -926,7 +834,6 @@ struct DashboardApp {
     active_tab: DashboardTab,
     tools: ToolsApp,
     workspaces: WorkspacesApp,
-    chats: ChatsApp,
     memories: MemoriesApp,
     suggestions: SuggestionsApp,
     skills: SkillsApp,
@@ -939,7 +846,7 @@ impl DashboardApp {
     fn new(
         tools: Vec<ToolEntry>,
         workspaces: Vec<WorkspaceRecord>,
-        chats: Vec<ChatRecord>,
+        _chats: Vec<ChatRecord>,
         memories: Vec<MemoryRecord>,
         suggestions: Vec<SuggestionRecord>,
         skills: Vec<SkillRecord>,
@@ -950,7 +857,6 @@ impl DashboardApp {
             active_tab: initial_tab,
             tools: ToolsApp::new(tools),
             workspaces: WorkspacesApp::new(workspaces),
-            chats: ChatsApp::new(chats),
             memories: MemoriesApp::new(memories),
             suggestions: SuggestionsApp::new(suggestions),
             skills: SkillsApp::new(skills),
@@ -970,9 +876,6 @@ impl DashboardApp {
     }
 
     fn open_palette(&mut self) {
-        if self.active_tab == DashboardTab::Sessions {
-            self.chats.mode = ChatUiMode::Selecting;
-        }
         self.help_open = false;
         self.palette.open();
         self.normalize_palette_selection();
@@ -1037,12 +940,6 @@ impl DashboardApp {
             },
             DashboardCommandEntry {
                 section: "Navigation".to_string(),
-                label: "Open Sessions".to_string(),
-                description: "Jump to the session picker".to_string(),
-                command: DashboardCommand::OpenTab(DashboardTab::Sessions),
-            },
-            DashboardCommandEntry {
-                section: "Navigation".to_string(),
                 label: "Open Memories".to_string(),
                 description: "Jump to active memories".to_string(),
                 command: DashboardCommand::OpenTab(DashboardTab::Memories),
@@ -1100,55 +997,6 @@ impl DashboardApp {
                     DashboardCommand::ToggleFilter,
                 ),
             ],
-            DashboardTab::Sessions => {
-                let mut entries = vec![
-                    dashboard_command_entry(
-                        "Sessions",
-                        "Resume selected session",
-                        "Resume Djinn session or convert+resume OpenCode session",
-                        DashboardCommand::ResumeSelectedChat,
-                    ),
-                    dashboard_command_entry(
-                        "Sessions",
-                        "Promote selected sessions",
-                        "Open promotion options for selected session rows",
-                        DashboardCommand::PromoteSessions,
-                    ),
-                    dashboard_command_entry(
-                        "Sessions",
-                        "Toggle selected session",
-                        "Select or unselect the highlighted session",
-                        DashboardCommand::ToggleSelected,
-                    ),
-                    dashboard_command_entry(
-                        "Sessions",
-                        "Select all visible sessions",
-                        "Toggle all filtered session rows",
-                        DashboardCommand::ToggleAll,
-                    ),
-                    dashboard_command_entry(
-                        "Sessions",
-                        "Remove selected sessions",
-                        "Remove selected persisted session rows or Djinn sessions",
-                        DashboardCommand::DeleteSelected,
-                    ),
-                    dashboard_command_entry(
-                        "Sessions",
-                        "Filter sessions",
-                        "Edit the session picker text filter",
-                        DashboardCommand::ToggleFilter,
-                    ),
-                ];
-                for scope in SessionFilterScope::ALL {
-                    entries.push(dashboard_command_entry(
-                        "Session filters",
-                        &format!("Show {} sessions", scope.label()),
-                        scope.description(),
-                        DashboardCommand::SetSessionScope(scope),
-                    ));
-                }
-                entries
-            }
             DashboardTab::Memories => vec![
                 dashboard_command_entry(
                     "Memories",
@@ -1238,7 +1086,6 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.next(),
             DashboardTab::Workspaces => self.workspaces.next(),
-            DashboardTab::Sessions => self.chats.next(),
             DashboardTab::Memories => self.memories.next(),
             DashboardTab::Suggestions => self.suggestions.next(),
             DashboardTab::Skills => self.skills.next(),
@@ -1249,7 +1096,6 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.previous(),
             DashboardTab::Workspaces => self.workspaces.previous(),
-            DashboardTab::Sessions => self.chats.previous(),
             DashboardTab::Memories => self.memories.previous(),
             DashboardTab::Suggestions => self.suggestions.previous(),
             DashboardTab::Skills => self.skills.previous(),
@@ -1260,7 +1106,6 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.scroll_down(),
             DashboardTab::Workspaces => self.workspaces.scroll_down(),
-            DashboardTab::Sessions => self.chats.scroll_down(),
             DashboardTab::Memories => self.memories.scroll_down(),
             DashboardTab::Suggestions => self.suggestions.scroll_down(),
             DashboardTab::Skills => self.skills.scroll_down(),
@@ -1271,7 +1116,6 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.scroll_up(),
             DashboardTab::Workspaces => self.workspaces.scroll_up(),
-            DashboardTab::Sessions => self.chats.scroll_up(),
             DashboardTab::Memories => self.memories.scroll_up(),
             DashboardTab::Suggestions => self.suggestions.scroll_up(),
             DashboardTab::Skills => self.skills.scroll_up(),
@@ -1282,7 +1126,6 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter.editing,
             DashboardTab::Workspaces => self.workspaces.filter.editing,
-            DashboardTab::Sessions => self.chats.filter.editing,
             DashboardTab::Memories => self.memories.filter.editing,
             DashboardTab::Suggestions => self.suggestions.filter.editing,
             DashboardTab::Skills => self.skills.filter.editing,
@@ -1293,7 +1136,6 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.toggle_filter(),
             DashboardTab::Workspaces => self.workspaces.toggle_filter(),
-            DashboardTab::Sessions => self.chats.toggle_filter(),
             DashboardTab::Memories => self.memories.toggle_filter(),
             DashboardTab::Suggestions => self.suggestions.toggle_filter(),
             DashboardTab::Skills => self.skills.toggle_filter(),
@@ -1304,7 +1146,6 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter_push(ch),
             DashboardTab::Workspaces => self.workspaces.filter_push(ch),
-            DashboardTab::Sessions => self.chats.filter_push(ch),
             DashboardTab::Memories => self.memories.filter_push(ch),
             DashboardTab::Suggestions => self.suggestions.filter_push(ch),
             DashboardTab::Skills => self.skills.filter_push(ch),
@@ -1315,7 +1156,6 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter_backspace(),
             DashboardTab::Workspaces => self.workspaces.filter_backspace(),
-            DashboardTab::Sessions => self.chats.filter_backspace(),
             DashboardTab::Memories => self.memories.filter_backspace(),
             DashboardTab::Suggestions => self.suggestions.filter_backspace(),
             DashboardTab::Skills => self.skills.filter_backspace(),
@@ -1326,7 +1166,6 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter.editing = false,
             DashboardTab::Workspaces => self.workspaces.filter.editing = false,
-            DashboardTab::Sessions => self.chats.filter.editing = false,
             DashboardTab::Memories => self.memories.filter.editing = false,
             DashboardTab::Suggestions => self.suggestions.filter.editing = false,
             DashboardTab::Skills => self.skills.filter.editing = false,
@@ -1335,7 +1174,6 @@ impl DashboardApp {
 
     fn toggle_selected(&mut self) {
         match self.active_tab {
-            DashboardTab::Sessions => self.chats.toggle_selected(),
             DashboardTab::Memories => self.memories.toggle_selected(),
             DashboardTab::Suggestions => self.suggestions.toggle_selected(),
             DashboardTab::Tools | DashboardTab::Workspaces | DashboardTab::Skills => {}
@@ -1344,7 +1182,6 @@ impl DashboardApp {
 
     fn toggle_all(&mut self) {
         match self.active_tab {
-            DashboardTab::Sessions => self.chats.toggle_all(),
             DashboardTab::Memories => self.memories.toggle_all(),
             DashboardTab::Suggestions => self.suggestions.toggle_all(),
             DashboardTab::Tools | DashboardTab::Workspaces | DashboardTab::Skills => {}
@@ -1359,7 +1196,6 @@ impl DashboardApp {
             }
             DashboardTab::Tools
             | DashboardTab::Workspaces
-            | DashboardTab::Sessions
             | DashboardTab::Suggestions
             | DashboardTab::Skills => None,
         }
@@ -1367,7 +1203,6 @@ impl DashboardApp {
 
     fn delete_selected_action(&self) -> Option<TuiAction> {
         match self.active_tab {
-            DashboardTab::Sessions => self.chats.delete_request().map(TuiAction::DeleteChatRows),
             DashboardTab::Memories => self.reject_selected_action(),
             DashboardTab::Suggestions => {
                 let ids = self.suggestions.selected_suggestion_ids();
@@ -1395,10 +1230,10 @@ impl DashboardApp {
 
     fn apply_completed_action(&mut self, action: &TuiAction) {
         match action {
-            TuiAction::DeleteChatRows(request) => self.chats.remove_deleted_rows(request),
             TuiAction::DeleteMemories(ids) => self.memories.remove_ids(ids),
             TuiAction::DeleteSuggestions(ids) => self.suggestions.remove_ids(ids),
             TuiAction::OpenWorkspace(_)
+            | TuiAction::DeleteChatRows(_)
             | TuiAction::OpenTool(_)
             | TuiAction::OpenChatSession(_)
             | TuiAction::OpenSkill(_)
@@ -1434,7 +1269,6 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Tools => self.tools.draw_body(frame, chunks[1]),
             DashboardTab::Workspaces => self.workspaces.draw_body(frame, chunks[1]),
-            DashboardTab::Sessions => self.chats.draw_body(frame, chunks[1]),
             DashboardTab::Memories => self.memories.draw_body(frame, chunks[1]),
             DashboardTab::Suggestions => self.suggestions.draw_body(frame, chunks[1]),
             DashboardTab::Skills => self.skills.draw_body(frame, chunks[1]),
@@ -1446,15 +1280,6 @@ impl DashboardApp {
             chunks[2],
         );
 
-        if self.active_tab == DashboardTab::Sessions {
-            match &self.chats.mode {
-                ChatUiMode::Options => self.chats.draw_options(frame),
-                ChatUiMode::ConfirmDelete(request) => {
-                    self.chats.draw_delete_confirmation(frame, request)
-                }
-                ChatUiMode::Selecting => {}
-            }
-        }
         if self.help_open {
             self.draw_help(frame);
         }
@@ -1559,28 +1384,6 @@ impl DashboardApp {
             Line::from(vec![
                 Span::styled("/", selected_style()),
                 Span::raw(" filter by name, repo, state, path, or summary"),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled("Sessions", title_style())),
-            Line::from(vec![
-                Span::styled("Enter / r", selected_style()),
-                Span::raw(" resume Djinn session or convert+resume OpenCode session"),
-            ]),
-            Line::from(vec![
-                Span::styled("s", selected_style()),
-                Span::raw(" open promotion options"),
-            ]),
-            Line::from(vec![
-                Span::styled("Space / A", selected_style()),
-                Span::raw(" select one / all visible"),
-            ]),
-            Line::from(vec![
-                Span::styled("f", selected_style()),
-                Span::raw(" cycle session scope: all, promotable, djinn-agent, child-agent"),
-            ]),
-            Line::from(vec![
-                Span::styled("x / Delete", selected_style()),
-                Span::raw(" confirm removal of selected sessions"),
             ]),
             Line::from(""),
             Line::from(Span::styled("Memories & Suggestions", title_style())),
@@ -2033,6 +1836,7 @@ fn run_chats_loop(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 enum ChatUiMode {
     Selecting,
     Options,
@@ -2098,6 +1902,7 @@ impl ChatsApp {
             .filter(|chat| self.chat_matches(chat))
     }
 
+    #[allow(dead_code)]
     fn selected_chat_session_request(&self) -> Option<ChatSessionRequest> {
         self.selected_chat().and_then(chat_session_request)
     }
@@ -2133,11 +1938,13 @@ impl ChatsApp {
         }
     }
 
+    #[allow(dead_code)]
     fn set_scope(&mut self, scope: SessionFilterScope) {
         self.scope = scope;
         self.ensure_selection_visible();
     }
 
+    #[allow(dead_code)]
     fn cycle_scope(&mut self) {
         self.set_scope(self.scope.next());
     }
@@ -2188,6 +1995,7 @@ impl ChatsApp {
             .collect()
     }
 
+    #[allow(dead_code)]
     fn delete_request(&self) -> Option<ChatDeleteRequest> {
         let mut request = ChatDeleteRequest {
             chat_ids: Vec::new(),
@@ -2208,12 +2016,14 @@ impl ChatsApp {
         (!request.is_empty()).then_some(request)
     }
 
+    #[allow(dead_code)]
     fn open_delete_confirmation(&mut self) {
         if let Some(request) = self.delete_request() {
             self.mode = ChatUiMode::ConfirmDelete(request);
         }
     }
 
+    #[allow(dead_code)]
     fn confirm_delete_action(&mut self) -> Option<TuiAction> {
         let ChatUiMode::ConfirmDelete(request) = self.mode.clone() else {
             return None;
@@ -2250,6 +2060,7 @@ impl ChatsApp {
         }
     }
 
+    #[allow(dead_code)]
     fn remove_deleted_rows(&mut self, request: &ChatDeleteRequest) {
         let removed_chats = request.chat_ids.iter().cloned().collect::<HashSet<_>>();
         let removed_sessions = request
@@ -3321,6 +3132,7 @@ fn chat_content_metadata_value<'a>(chat: &'a ChatRecord, key: &str) -> Option<&'
     })
 }
 
+#[allow(dead_code)]
 fn chat_session_request(chat: &ChatRecord) -> Option<ChatSessionRequest> {
     let source = chat.source.trim();
     let source_id = chat.source_id.trim();
@@ -4083,22 +3895,14 @@ mod tests {
     fn dashboard_tabs_follow_progression_order() {
         assert_eq!(
             DASHBOARD_TABS,
-            [
-                "Tools",
-                "Workspaces",
-                "Sessions",
-                "Memories",
-                "Suggestions",
-                "Skills"
-            ]
+            ["Tools", "Workspaces", "Memories", "Suggestions", "Skills"]
         );
         assert_eq!(DashboardTab::Tools.index(), 0);
         assert_eq!(DashboardTab::Workspaces.index(), 1);
-        assert_eq!(DashboardTab::Sessions.index(), 2);
-        assert_eq!(DashboardTab::Memories.index(), 3);
-        assert_eq!(DashboardTab::Suggestions.index(), 4);
-        assert_eq!(DashboardTab::Skills.index(), 5);
-        assert_eq!(DashboardTab::from_index(6), DashboardTab::Tools);
+        assert_eq!(DashboardTab::Memories.index(), 2);
+        assert_eq!(DashboardTab::Suggestions.index(), 3);
+        assert_eq!(DashboardTab::Skills.index(), 4);
+        assert_eq!(DashboardTab::from_index(5), DashboardTab::Tools);
     }
 
     #[test]
@@ -4171,7 +3975,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
-            DashboardTab::Sessions,
+            DashboardTab::Workspaces,
         );
 
         assert!(!app.help_open);
@@ -4183,7 +3987,7 @@ mod tests {
 
     #[test]
     fn dashboard_palette_scopes_commands_to_active_tab() {
-        let chats_app = DashboardApp::new(
+        let workspaces_app = DashboardApp::new(
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -4191,20 +3995,17 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
-            DashboardTab::Sessions,
+            DashboardTab::Workspaces,
         );
-        let chat_entries = chats_app.dashboard_command_palette();
+        let workspace_entries = workspaces_app.dashboard_command_palette();
 
-        assert!(!chat_entries.iter().any(|entry| entry.label == "Open Agent"));
-        assert!(chat_entries.iter().any(|entry| {
-            entry.section == "Sessions" && entry.command == DashboardCommand::ResumeSelectedChat
+        assert!(workspace_entries.iter().any(|entry| {
+            entry.section == "Workspaces" && entry.command == DashboardCommand::OpenSelected
         }));
-        assert!(chat_entries.iter().any(|entry| {
-            entry.section == "Session filters"
-                && entry.command
-                    == DashboardCommand::SetSessionScope(SessionFilterScope::ChildAgent)
-        }));
-        assert!(!chat_entries.iter().any(|entry| {
+        assert!(!workspace_entries
+            .iter()
+            .any(|entry| { entry.section == "Sessions" || entry.label == "Open Sessions" }));
+        assert!(!workspace_entries.iter().any(|entry| {
             entry.section == "Skills" && entry.command == DashboardCommand::OpenSelected
         }));
 
@@ -4223,7 +4024,7 @@ mod tests {
             entry.section == "Skills" && entry.command == DashboardCommand::OpenSelected
         }));
         assert!(!skill_entries.iter().any(|entry| {
-            entry.section == "Sessions" && entry.command == DashboardCommand::ResumeSelectedChat
+            entry.section == "Workspaces" && entry.command == DashboardCommand::OpenSelected
         }));
     }
 
@@ -4237,11 +4038,11 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
-            DashboardTab::Sessions,
+            DashboardTab::Memories,
         );
 
         app.open_palette();
-        for ch in "Promote selected sessions".chars() {
+        for ch in "Review selected memory".chars() {
             app.push_palette_query(ch);
         }
 
@@ -4249,7 +4050,7 @@ mod tests {
         assert!(!visible.is_empty());
         assert_eq!(
             app.selected_palette_command(),
-            Some(DashboardCommand::PromoteSessions)
+            Some(DashboardCommand::AcceptSelected)
         );
     }
 

@@ -6,7 +6,7 @@ Placeholder tabs add navigation cost without helping the user decide or act.
 Current visible tabs:
 
 - **Tools** — browse local wrappers, aliases, and scripts with previews.
-- **Sessions** — select sessions and emit grouped review/promote prompts.
+- **Workspaces** — inspect folder-backed Djinn sessions and open their artifacts.
 - **Memories** — review captured lessons, evidence, and provenance.
 - **Suggestions** — review todo-like follow-up items created from memory review.
 - **Skills** — browse reusable `SKILL.md` workflows and open them in an editor.
@@ -14,7 +14,7 @@ Current visible tabs:
 The current order is intentionally a workflow progression:
 
 ```text
-Tools → Sessions → Memories → Suggestions → Skills
+Tools → Workspaces → Memories → Suggestions → Skills
 ```
 
 Future TUI work may group tabs by the scope the user is interested in, such as
@@ -26,8 +26,9 @@ actions are concrete enough to justify a permanent place in the TUI.
 ## Ideas
 
 Do not add an Ideas tab until Djinn has a concrete ideas/insights data model and
-workflow. Session promotion is handled by the Sessions tab and `djinn promote
-session(s)` commands; memory cleanup is handled by review commands.
+workflow. Legacy session promotion is handled by `djinn promote session(s)`
+commands, and folder-backed promotion should live on the session/workspace
+surface; memory cleanup is handled by review commands.
 
 An **Ideas** tab may be useful later if Djinn stores or computes actionable
 insights locally, for example:

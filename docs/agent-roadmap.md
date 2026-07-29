@@ -248,7 +248,7 @@ Ready follow-up slices:
   avoiding blind whole-folder ingestion.
 - Add `djinn session merge <source-dir> --into <target-dir>` for file-based
   summary/context merging.
-- Reframe the Agent TUI as a session artifact manager: open `summary.md`,
+- Reframe the dashboard TUI as a session artifact manager: open `summary.md`,
   `request.md`, context files, and turns in `$EDITOR`; de-emphasize the
   chat transcript as the main surface. The terse spellings should be canonical:
   `djinn` with no args opens the dashboard Workspaces tab for folder-backed

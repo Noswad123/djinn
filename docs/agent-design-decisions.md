@@ -694,36 +694,24 @@ The first non-interactive agent slice is implemented as:
 23. Superseded by decision 84: transcript extraction is replaced by file-first
     artifacts. Users copy from `summary.md`, `turns/<id>/response.md`, compacted
     context, or native logs instead of exporting a live transcript.
-24. Superseded by decisions 78-80: direct resume of legacy JSONL runtime sessions
+24. Superseded by decisions 78-84: direct resume of legacy JSONL runtime sessions
     is not a product path. Migration/import should produce folder sessions or
-    safe legacy rows in the Sessions picker.
+    explicit legacy/source material outside the main dashboard.
 25. Superseded by decision 84: `djinn` with no arguments initially routed to an
     interactive runtime surface when stdin/stdout were terminals. The current
     default opens the Workspaces dashboard.
 26. Superseded by decision 84: the TUI tab row no longer includes a dedicated
-    runtime tab. Dashboard tabs are Tools, Workspaces, Sessions, Memories,
-    Suggestions, and Skills; Workspaces is the default entry point.
+    runtime tab. Dashboard tabs are Tools, Workspaces, Memories, Suggestions, and
+    Skills; Workspaces is the default entry point.
 27. Superseded by decisions 77 and 84: rich turn progress is recorded in native
     lifecycle/events and projected through folder-backed status/watch/list views.
     User-facing inspection should prefer lifecycle state, run logs, and turn files
     over an in-memory transcript renderer.
-28. The dashboard Sessions tab is the session picker. Djinn JSONL agent
-    sessions are projected into that tab as `djinn-agent` records; pressing Enter
-    or `r` resumes a Djinn agent session or converts an imported OpenCode chat
-    (`source=opencode`) into a Djinn JSONL agent session and stays inside Djinn.
-    The conversion records a bridge in Djinn's OpenCode watcher state. When the
-    installed OpenCode plugin later sees that OpenCode session, it best-effort
-    hydrates OpenCode session metadata with the Djinn agent session id/path so
-    OpenCode-side skills can discover the continuation. Once an OpenCode chat has
-    a Djinn bridge, the Sessions picker collapses that row to the Djinn
-    continuation instead of showing a separate stale OpenCode launch target.
-    Projected Djinn-agent rows surface agent role and parent-session metadata in
-    the list and preview when the JSONL session summary has those fields.
-    The picker has metadata-backed scope filters for all rows, promotable rows,
-    projected Djinn-agent rows, and child agent rows; these filters are exposed
-    through the command palette and a simple cycle key rather than a raw event
-    browser.
-    Promote options live on `s` for promotable session rows.
+28. Superseded by decision 84 and the folder-backed pivot: the removed legacy
+    saved-session picker was for JSONL/projected rows. It is no longer visible in
+    the main dashboard. Legacy saved conversations remain source material for CLI
+    promotion/import/archive flows until they are migrated into folder-backed
+    sessions.
 29. Djinn runtime sessions auto-title from the first user prompt when the session
     still has a generated placeholder title. Explicit titles and
     imported/converted session titles are preserved. Folder display names hide
@@ -764,26 +752,25 @@ The first non-interactive agent slice is implemented as:
     The first-class creation/continuation commands are `djinn ask`,
     `djinn session init`, and `djinn session run`.
 37. The dashboard command palette includes Navigation actions for the shared top
-    tabs (Tools, Workspaces, Sessions, Memories, Suggestions, Skills). Ctrl+P
+    tabs (Tools, Workspaces, Memories, Suggestions, Skills). Ctrl+P
     should be a central way to jump around the interface without remembering
     tab-specific shortcuts.
 38. Ctrl+P is a TUI-wide command palette entry point. Dashboard tabs expose the
     same searchable/sectioned command palette pattern, with actions scoped to the
     active tab plus shared navigation/help commands.
-39. The Sessions tab delete action distinguishes backing stores. Persisted session rows are
-    removed through the chat store, while projected `djinn-agent` rows delete the
-    underlying JSONL agent session by `source_id`. Mixed selections can delete
-    both row types in one action. Because Djinn session deletion removes JSONL
-    files, the TUI requires an explicit confirmation before executing the delete.
-40. Sessions picker promote options only operate on promotable persisted session rows. Projected
-    `djinn-agent` rows are resume/delete session targets and are skipped for
-    promote requests, so an agent-only selection does not open the promote dialog.
+39. Superseded by decision 84: legacy saved-session deletion is not a dashboard
+    action. Persisted chat/source rows and old JSONL sessions should be cleaned up
+    through explicit CLI archive/delete/migration commands with dry-run or
+    confirmation semantics as appropriate.
+40. Superseded by decision 84: legacy saved-session promotion is not a dashboard
+    action. Folder-backed promotion should be added to the session/workspace
+    surface; legacy `djinn promote session(s)` remains a CLI source-material flow.
 41. Session promotion emits context material rather than executing a model. Summary
     mode is human-facing in direct CLI use and renders a local digest, not an
     agent-review prompt; patterns/memories modes remain prompt-oriented review
-    helpers. From the TUI Sessions picker, promotion stays a legacy saved-session
-    workflow and should produce local digest/prompt material or migration targets,
-    not open a removed runtime surface. When promoted session content is an
+    helpers. Legacy saved-session promotion stays a CLI source-material workflow
+    and should produce local digest/prompt material or migration targets, not open
+    a removed runtime surface. When promoted session content is an
     OpenCode JSON export, Djinn renders a compact role-labeled digest of readable
     message/tool parts instead of embedding raw JSON.
     Sanitized/redacted exports should state that source text may be unavailable

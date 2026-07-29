@@ -4,13 +4,13 @@ Djinn is a local-first companion for AI coding agents. It keeps five practical
 knowledge surfaces connected:
 
 ```text
-Tools → Sessions → Memories → Suggestions → Skills
+Tools → Workspaces → Memories → Suggestions → Skills
 ```
 
 - **Tools** are local commands, aliases, functions, and scripts discovered from
   tagged dotfiles or configured roots.
-- **Sessions** are AI conversations, including Djinn agent runs and imported
-  OpenCode exports.
+- **Workspaces** are folder-backed Djinn sessions with `request.md`,
+  `summary.md`, `context/`, and per-turn evidence.
 - **Memories** are active lessons, preferences, conventions, and product
   decisions captured with evidence, provenance, and optional `not_before` dates.
 - **Suggestions** are ephemeral review outcomes: possible skills, actions,
@@ -237,7 +237,7 @@ Run:
 ```bash
 djinn
 djinn tui
-djinn tui sessions
+djinn tui workspaces
 djinn tui memories
 djinn tui suggestions
 djinn tui skills
@@ -247,7 +247,7 @@ djinn tui --editor nvim
 Current tab order:
 
 ```text
-Tools → Sessions → Memories → Suggestions → Skills
+Tools → Workspaces → Memories → Suggestions → Skills
 ```
 
 Keybindings:
@@ -257,10 +257,7 @@ Keybindings:
 - `↑`/`k`, `↓`/`j`: move selection.
 - `PageUp`/`u`, `PageDown`/`d`: scroll preview.
 - Tools: `Enter` opens the selected tool.
-- Sessions: `Enter`/`r` resumes sessions, `s` opens promote options for
-  promotable session rows, `f` cycles scope filters, `Space` selects, `a`
-  toggles all visible rows, and `x`/`Delete` asks before removing selected
-  sessions.
+- Workspaces: `Enter` opens the focused folder-backed session view.
 - Memories: `a` reviews the selected memory, `r` rejects/removes it.
 - Suggestions: `r` removes selected suggestions.
 - Skills: `Enter` opens the selected skill.

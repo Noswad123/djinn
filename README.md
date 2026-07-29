@@ -5,7 +5,7 @@ connects local tools, AI sessions, reviewed memory, reusable skills, and lightwe
 contexts into one practical workflow.
 
 ```text
-Tools → Sessions → Memories → Suggestions → Skills
+Tools → Workspaces → Memories → Suggestions → Skills
 ```
 
 The original Go implementation is preserved under `legacy/go/`. The root project
@@ -64,7 +64,6 @@ Open the TUI:
 djinn
 djinn tui
 djinn tui workspaces
-djinn tui sessions
 djinn tui memories
 djinn tui suggestions
 djinn tui skills

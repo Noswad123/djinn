@@ -22,14 +22,16 @@ use djinn_agent::{
 };
 use djinn_chats::{ChatRecord, ChatRestoreReport};
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
+#[cfg(test)]
+use djinn_memory::AgentSessionSummary;
 use djinn_memory::{
     lifecycle_for, ActionRecord, ActionStore, AgentSession, AgentSessionEvent,
     AgentSessionEventKind, AgentSessionExecutionMode, AgentSessionFilter, AgentSessionId,
     AgentSessionLifecycleState, AgentSessionMeta, AgentSessionPolicyRule,
-    AgentSessionPolicySnapshot, AgentSessionRuntimeConfig, AgentSessionStore, AgentSessionSummary,
-    FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore,
-    JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource,
-    SuggestionInput, SuggestionRecord, SuggestionStore,
+    AgentSessionPolicySnapshot, AgentSessionRuntimeConfig, AgentSessionStore, FileHistoryEntryId,
+    FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
+    JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource, SuggestionInput,
+    SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -1445,7 +1447,7 @@ struct OpenToolArgs {
 
 #[derive(Debug, Clone, Args)]
 struct TuiArgs {
-    /// TUI view to open. Defaults to tools.
+    /// TUI view to open. Defaults to workspaces.
     #[arg(value_enum, default_value_t = TuiView::Tools)]
     view: TuiView,
     /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
@@ -1878,7 +1880,6 @@ struct ArchiveRemoveArgs {
 enum TuiView {
     Tools,
     Workspaces,
-    Sessions,
     Memories,
     Suggestions,
     Skills,
@@ -13076,7 +13077,6 @@ fn run_tui_in_session(
     let roots = tool_roots(args.roots.clone());
     let tools = scan_tools(&roots)?;
     let workspaces = workspace_records_for_dashboard()?;
-    let chats = chats_for_session_picker()?;
     let memories = memory_store().list()?;
     let suggestions = suggestion_store().list()?;
     let skills = skill_records()?;
@@ -13084,7 +13084,7 @@ fn run_tui_in_session(
     let Some(action) = tui.run_dashboard_with_handler(
         tools,
         workspaces,
-        chats,
+        Vec::new(),
         memories,
         suggestions,
         skills,
@@ -13211,42 +13211,6 @@ fn create_chat_summary_agent_session(
     Ok(id)
 }
 
-fn chats_for_session_picker() -> Result<Vec<ChatRecord>> {
-    let store = agent_session_store();
-    let summaries = store.list_sessions(AgentSessionFilter {
-        limit: Some(100),
-        ..AgentSessionFilter::default()
-    })?;
-    let summaries_by_id = summaries
-        .iter()
-        .map(|summary| (summary.id.to_string(), summary.clone()))
-        .collect::<HashMap<_, _>>();
-    let state = load_opencode_watch_state().unwrap_or_default();
-    let mut chats = chat_store()
-        .list()?
-        .into_iter()
-        .map(|chat| {
-            opencode_bridge_session_id(&state, &chat)
-                .and_then(|id| summaries_by_id.get(id))
-                .map(|summary| converted_opencode_chat_record(&chat, summary, &store))
-                .unwrap_or(chat)
-        })
-        .collect::<Vec<_>>();
-    let existing_sessions = chats
-        .iter()
-        .filter(|chat| chat.source == "djinn-agent" && !chat.source_id.trim().is_empty())
-        .map(|chat| chat.source_id.clone())
-        .collect::<HashSet<_>>();
-    for summary in summaries {
-        let id = summary.id.to_string();
-        if existing_sessions.contains(&id) {
-            continue;
-        }
-        chats.push(agent_session_chat_record(&summary, &store));
-    }
-    Ok(chats)
-}
-
 fn workspace_records_for_dashboard() -> Result<Vec<djinn_tui::WorkspaceRecord>> {
     let report = list_cache_folder_sessions(None)?;
     Ok(report
@@ -13267,6 +13231,7 @@ fn workspace_records_for_dashboard() -> Result<Vec<djinn_tui::WorkspaceRecord>> 
         .collect())
 }
 
+#[cfg(test)]
 fn opencode_bridge_session_id<'a>(
     state: &'a OpencodeWatchState,
     chat: &ChatRecord,
@@ -13281,6 +13246,7 @@ fn opencode_bridge_session_id<'a>(
         .filter(|id| !id.is_empty())
 }
 
+#[cfg(test)]
 fn converted_opencode_chat_record(
     chat: &ChatRecord,
     summary: &AgentSessionSummary,
@@ -13300,6 +13266,7 @@ fn converted_opencode_chat_record(
     record
 }
 
+#[cfg(test)]
 fn agent_session_chat_record(
     summary: &AgentSessionSummary,
     store: &JsonlAgentSessionStore,
@@ -13526,7 +13493,6 @@ fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
     match view {
         TuiView::Tools => djinn_tui::DashboardTab::Tools,
         TuiView::Workspaces => djinn_tui::DashboardTab::Workspaces,
-        TuiView::Sessions => djinn_tui::DashboardTab::Sessions,
         TuiView::Memories => djinn_tui::DashboardTab::Memories,
         TuiView::Suggestions => djinn_tui::DashboardTab::Suggestions,
         TuiView::Skills => djinn_tui::DashboardTab::Skills,
@@ -19274,6 +19240,11 @@ link = "context/repo"
             dashboard_tab(args.view),
             djinn_tui::DashboardTab::Workspaces
         );
+    }
+
+    #[test]
+    fn rejects_removed_tui_sessions_view() {
+        assert!(Cli::try_parse_from(["djinn", "tui", "sessions"]).is_err());
     }
 
     #[test]
