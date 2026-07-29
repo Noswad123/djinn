@@ -5519,10 +5519,30 @@ struct SessionStatusReport {
     model: Option<String>,
     workspace: Option<String>,
     repo: Option<SessionStatusRepoReport>,
+    lifecycle: SessionStatusLifecycleReport,
     files: SessionStatusFileReport,
     turn_count: usize,
+    latest_turn: Option<SessionStatusTurnReport>,
     context_ingestible_count: usize,
     context_skipped: Vec<String>,
+    next_action: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionStatusLifecycleReport {
+    state: String,
+    mode: Option<String>,
+    updated_at: Option<String>,
+    reason: Option<String>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionStatusTurnReport {
+    id: String,
+    request_path: Option<String>,
+    response_path: Option<String>,
+    has_response: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -6058,14 +6078,21 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
     let session_id = manifest
         .as_ref()
         .and_then(|manifest| manifest.session_id.clone());
-    let native_session_exists = session_id
+    let native_session = session_id
         .as_ref()
-        .is_some_and(|id| load_folder_native_agent_session(&session_dir, id).is_some());
+        .and_then(|id| load_folder_native_agent_session(&session_dir, id));
+    let native_session_exists = native_session.is_some();
     let context_dir = session_dir.join("context");
     let turns_dir = session_dir.join("turns");
     let (context_ingestible_count, context_skipped) =
         inspect_folder_session_context_dir(&context_dir)?;
-    let turn_count = read_folder_session_turns(&turns_dir)?.len();
+    let turns = read_folder_session_turns(&turns_dir)?;
+    let turn_count = turns.len();
+    let lifecycle = session_status_lifecycle(native_session.as_ref());
+    let latest_turn = turns.last().map(session_status_turn_report);
+    let request_exists = session_dir.join("request.md").exists();
+    let next_action =
+        session_status_next_action(&session_dir, request_exists, turn_count, &lifecycle);
 
     Ok(SessionStatusReport {
         session_dir: session_dir.display().to_string(),
@@ -6087,17 +6114,84 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
         repo: manifest
             .as_ref()
             .and_then(|manifest| session_status_repo(&session_dir, manifest)),
+        lifecycle,
         files: SessionStatusFileReport {
-            request_md: session_dir.join("request.md").exists(),
+            request_md: request_exists,
             summary_md: session_dir.join("summary.md").exists(),
             context_dir: context_dir.is_dir(),
             compacted_md: context_dir.join("compacted.md").exists(),
             turns_dir: turns_dir.is_dir(),
         },
         turn_count,
+        latest_turn,
         context_ingestible_count,
         context_skipped,
+        next_action,
     })
+}
+
+fn session_status_lifecycle(native_session: Option<&AgentSession>) -> SessionStatusLifecycleReport {
+    if let Some(session) = native_session {
+        let lifecycle = lifecycle_for(session);
+        SessionStatusLifecycleReport {
+            state: lifecycle.state.as_str().to_string(),
+            mode: lifecycle.mode.map(|mode| mode.as_str().to_string()),
+            updated_at: non_empty_string(&lifecycle.updated_at),
+            reason: lifecycle.reason,
+            note: lifecycle.note,
+        }
+    } else {
+        SessionStatusLifecycleReport {
+            state: "not_started".to_string(),
+            mode: None,
+            updated_at: None,
+            reason: None,
+            note: None,
+        }
+    }
+}
+
+fn session_status_turn_report(turn: &FolderSessionTurnDigest) -> SessionStatusTurnReport {
+    SessionStatusTurnReport {
+        id: turn.id.clone(),
+        request_path: turn
+            .request_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        response_path: turn
+            .response_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        has_response: turn.response_path.is_some(),
+    }
+}
+
+fn session_status_next_action(
+    session_dir: &Path,
+    request_exists: bool,
+    turn_count: usize,
+    lifecycle: &SessionStatusLifecycleReport,
+) -> Option<String> {
+    if lifecycle.state == "running" {
+        Some(format!(
+            "check again: djinn session status {}",
+            session_dir.display()
+        ))
+    } else if lifecycle.state == "failed" {
+        Some("inspect the failure note, edit request.md or context, then run again".to_string())
+    } else if request_exists && turn_count == 0 {
+        Some(format!(
+            "run request.md: djinn session run {}",
+            session_dir.display()
+        ))
+    } else if turn_count > 0 {
+        Some(format!(
+            "open latest summary: djinn session open {} summary",
+            session_dir.display()
+        ))
+    } else {
+        None
+    }
 }
 
 fn list_cache_folder_sessions(limit: Option<usize>) -> Result<SessionLsReport> {
@@ -7579,6 +7673,19 @@ fn format_folder_session_status(report: &SessionStatusReport) -> String {
     } else {
         lines.push("Native session: none recorded".to_string());
     }
+    lines.push(format!("State: {}", report.lifecycle.state));
+    if let Some(mode) = &report.lifecycle.mode {
+        lines.push(format!("Mode: {mode}"));
+    }
+    if let Some(updated_at) = &report.lifecycle.updated_at {
+        lines.push(format!("State updated: {updated_at}"));
+    }
+    if let Some(reason) = &report.lifecycle.reason {
+        lines.push(format!("State reason: {reason}"));
+    }
+    if let Some(note) = &report.lifecycle.note {
+        lines.push(format!("State note: {note}"));
+    }
     if let Some(profile) = &report.profile {
         lines.push(format!("Profile: {profile}"));
     }
@@ -7616,6 +7723,17 @@ fn format_folder_session_status(report: &SessionStatusReport) -> String {
     ));
     lines.push(format!("  turns/: {}", yes_no(report.files.turns_dir)));
     lines.push(format!("Turns: {}", report.turn_count));
+    if let Some(turn) = &report.latest_turn {
+        lines.push("Latest turn:".to_string());
+        lines.push(format!("  id: {}", turn.id));
+        if let Some(request_path) = &turn.request_path {
+            lines.push(format!("  request: {request_path}"));
+        }
+        if let Some(response_path) = &turn.response_path {
+            lines.push(format!("  response: {response_path}"));
+        }
+        lines.push(format!("  has response: {}", yes_no(turn.has_response)));
+    }
     lines.push(format!(
         "Ingestible context files: {}",
         report.context_ingestible_count
@@ -7629,6 +7747,9 @@ fn format_folder_session_status(report: &SessionStatusReport) -> String {
         for skipped in &report.context_skipped {
             lines.push(format!("  - {skipped}"));
         }
+    }
+    if let Some(next_action) = &report.next_action {
+        lines.push(format!("Next: {next_action}"));
     }
     lines.push(String::new());
     lines.join("\n")
@@ -20779,14 +20900,78 @@ link = "context/repo"
         assert!(report.files.context_dir);
         assert!(report.files.turns_dir);
         assert_eq!(report.turn_count, 1);
+        assert_eq!(report.lifecycle.state, "not_started");
+        assert_eq!(report.latest_turn.as_ref().unwrap().id, "turn-1");
+        assert!(!report.latest_turn.as_ref().unwrap().has_response);
         assert_eq!(report.context_ingestible_count, 1);
         let repo_status = report.repo.as_ref().unwrap();
         assert!(repo_status.link_exists);
         assert!(repo_status.link_is_symlink);
         assert!(!repo_status.link_broken);
         assert!(text.contains("Skipped context:"));
+        assert!(text.contains("State: not_started"));
+        assert!(text.contains("Latest turn:"));
         assert!(text.contains("context/data.bin: unsupported file type"));
         assert!(text.contains("context/repo: symlink directory not ingested"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_status_reports_lifecycle_and_latest_response() {
+        let store = temp_agent_store("folder-status-lifecycle");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Lifecycle session".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "test".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        append_foreground_session_lifecycle_event(
+            &store,
+            &id,
+            AgentSessionLifecycleState::Completed,
+            "test completed",
+            Some("all done".to_string()),
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-status-lifecycle-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("session");
+        let session = store.load_session(&id).unwrap();
+        project_agent_session_dir(&session_dir, &session, "request", "response").unwrap();
+        relocate_agent_session_into_folder(&store, &session_dir, &id).unwrap();
+
+        let report = folder_session_status(&session_dir).unwrap();
+        let text = format_folder_session_status(&report);
+
+        assert!(report.native_session_exists);
+        assert_eq!(report.lifecycle.state, "completed");
+        assert_eq!(report.lifecycle.mode.as_deref(), Some("foreground"));
+        assert_eq!(report.lifecycle.reason.as_deref(), Some("test completed"));
+        assert_eq!(report.lifecycle.note.as_deref(), Some("all done"));
+        let latest = report.latest_turn.as_ref().unwrap();
+        assert!(latest.has_response);
+        assert!(latest
+            .response_path
+            .as_deref()
+            .unwrap()
+            .ends_with("response.md"));
+        assert!(report
+            .next_action
+            .as_deref()
+            .unwrap()
+            .contains("open latest summary"));
+        assert!(text.contains("State: completed"));
+        assert!(text.contains("Mode: foreground"));
+        assert!(text.contains("State note: all done"));
+        assert!(text.contains("response.md"));
 
         let _ = fs::remove_dir_all(&root);
     }

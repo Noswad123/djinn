@@ -1138,6 +1138,13 @@ The first non-interactive agent slice is implemented as:
     `.env*`, `*.db`, `.pytest_cache/**`, and `.ruff_cache/**` are ignored by
     default. Repo-local Djinn config may tune include/exclude/index/ingest rules,
     but the defaults should work in mixed OpenCode/Copilot/Cursor/Claude repos.
+84. The session dashboard TUI should use terse entry points. `djinn` with no
+    arguments opens the dashboard. `djinn session <name-or-path>` opens the same
+    TUI focused on that folder-backed session. Verbose `djinn tui` or
+    `djinn session tui ...` spellings may exist as discoverable aliases, but the
+    default workflow should not require saying `tui`. This preserves the
+    file-first session model while giving users a cockpit for checking status,
+    opening artifacts, and eventually polling active/background runs.
 
 Not in the first slice unless explicitly reopened:
 

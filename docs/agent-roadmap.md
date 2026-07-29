@@ -142,6 +142,9 @@ Folder sessions are inspectable without running a model through `djinn session
 status <dir>`. Status reports manifest/native-session linkage, profile/model /
 workspace defaults, repo symlink health, expected file presence, turn count, and
 the same shallow-context ingest/skip summary used by `djinn ask --session-dir`.
+It also reports lifecycle state (`not_started`, `running`, `completed`,
+`failed`, etc.), latest turn request/response paths, and a suggested next action
+so future dashboard/watch surfaces have a stable polling substrate.
 
 Bare session names are cache-backed for lightweight exploratory work: `djinn
 session init small-question` resolves to Djinn's cache session root
@@ -238,7 +241,11 @@ Ready follow-up slices:
   summary/context merging.
 - Reframe the Agent TUI as a session artifact manager: open `summary.md`,
   `request.md`, context files, and turns in `$EDITOR`; de-emphasize the
-  chat transcript as the main surface.
+  chat transcript as the main surface. The terse spellings should be canonical:
+  `djinn` with no args opens the session dashboard TUI, while
+  `djinn session <name-or-path>` opens the same TUI focused on that session.
+  Verbose `djinn tui` / `djinn session tui ...` forms may remain discoverable
+  aliases, but they should not be the primary workflow.
 - Define how `context/` and selected artifacts are folded into subsequent model
   context without blindly ingesting whole folders. Default future context should
   be `request.md`, `summary.md`, selected `context/` files/links, and explicit
