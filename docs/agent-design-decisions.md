@@ -1144,7 +1144,10 @@ The first non-interactive agent slice is implemented as:
     `djinn session tui ...` spellings may exist as discoverable aliases, but the
     default workflow should not require saying `tui`. This preserves the
     file-first session model while giving users a cockpit for checking status,
-    opening artifacts, and eventually polling active/background runs.
+    opening artifacts, and eventually polling active/background runs. The TUI
+    should consume the same status projection as `djinn session status` and
+    `djinn session watch <session>` rather than maintaining a separate status
+    model.
 
 Not in the first slice unless explicitly reopened:
 

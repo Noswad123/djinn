@@ -144,6 +144,8 @@ enum SessionCommand {
     Init(SessionInitArgs),
     /// Run request.md for a folder-backed session and write summary/turn outputs.
     Run(SessionRunArgs),
+    /// Poll a folder-backed session until it is no longer running.
+    Watch(SessionWatchArgs),
     /// Deterministically compact turn request/response evidence into context/compacted.md.
     Compact(SessionCompactArgs),
     /// Manage session-local context files and links.
@@ -158,6 +160,21 @@ enum SessionCommand {
     ShortenNames(SessionShortenNamesArgs),
     /// Remove a folder-backed session and its linked native session when present.
     Rm(SessionRmArgs),
+}
+
+#[derive(Debug, Args)]
+struct SessionWatchArgs {
+    /// Folder-backed session name or directory to watch.
+    dir: PathBuf,
+    /// Poll interval in milliseconds while the session is running.
+    #[arg(long = "interval-ms", default_value_t = 1000)]
+    interval_ms: u64,
+    /// Stop watching after this many seconds. Defaults to no timeout.
+    #[arg(long = "timeout-seconds")]
+    timeout_seconds: Option<u64>,
+    /// Output compact JSON status snapshots instead of text.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -5463,6 +5480,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
     match command {
         SessionCommand::Init(args) => session_init(args),
         SessionCommand::Run(args) => session_run(args),
+        SessionCommand::Watch(args) => session_watch(args),
         SessionCommand::Compact(args) => session_compact(args),
         SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
@@ -9617,6 +9635,92 @@ fn session_run(args: SessionRunArgs) -> Result<()> {
         true,
         AgentAskOutputMode::SessionRun { open },
     )
+}
+
+fn session_watch(args: SessionWatchArgs) -> Result<()> {
+    if args.interval_ms == 0 {
+        bail!("--interval-ms must be greater than zero");
+    }
+    let started = Instant::now();
+    let timeout = args.timeout_seconds.map(Duration::from_secs);
+    let interval = Duration::from_millis(args.interval_ms);
+    let mut last_key: Option<String> = None;
+
+    loop {
+        let report = folder_session_status(&args.dir)?;
+        let key = session_watch_snapshot_key(&report)?;
+        if last_key.as_deref() != Some(key.as_str()) {
+            if args.json {
+                println!("{}", serde_json::to_string(&report)?);
+            } else {
+                print!("{}", format_session_watch_snapshot(&report));
+            }
+            last_key = Some(key);
+        }
+
+        if report.lifecycle.state != "running" {
+            return Ok(());
+        }
+        if let Some(timeout) = timeout {
+            if started.elapsed() >= timeout {
+                bail!(
+                    "timed out watching session after {} seconds: {}",
+                    timeout.as_secs(),
+                    report.session_dir
+                );
+            }
+        }
+        thread::sleep(interval);
+    }
+}
+
+fn session_watch_snapshot_key(report: &SessionStatusReport) -> Result<String> {
+    serde_json::to_string(&serde_json::json!({
+        "state": report.lifecycle.state,
+        "mode": report.lifecycle.mode,
+        "updated_at": report.lifecycle.updated_at,
+        "reason": report.lifecycle.reason,
+        "note": report.lifecycle.note,
+        "turn_count": report.turn_count,
+        "latest_turn": report.latest_turn,
+        "next_action": report.next_action,
+    }))
+    .context("serializing session watch snapshot key")
+}
+
+fn format_session_watch_snapshot(report: &SessionStatusReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Session: {}", report.session_dir));
+    let mode = report
+        .lifecycle
+        .mode
+        .as_deref()
+        .map(|mode| format!(" ({mode})"))
+        .unwrap_or_default();
+    lines.push(format!("State: {}{}", report.lifecycle.state, mode));
+    if let Some(updated_at) = &report.lifecycle.updated_at {
+        lines.push(format!("Updated: {updated_at}"));
+    }
+    if let Some(reason) = &report.lifecycle.reason {
+        lines.push(format!("Reason: {reason}"));
+    }
+    if let Some(note) = &report.lifecycle.note {
+        lines.push(format!("Note: {note}"));
+    }
+    lines.push(format!("Turns: {}", report.turn_count));
+    if let Some(turn) = &report.latest_turn {
+        lines.push(format!("Latest turn: {}", turn.id));
+        if let Some(response_path) = &turn.response_path {
+            lines.push(format!("Response: {response_path}"));
+        } else if let Some(request_path) = &turn.request_path {
+            lines.push(format!("Request: {request_path}"));
+        }
+    }
+    if let Some(next_action) = &report.next_action {
+        lines.push(format!("Next: {next_action}"));
+    }
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 fn agent_ask(
@@ -20390,6 +20494,29 @@ mod tests {
         assert!(args.print);
         assert_eq!(args.model.as_deref(), Some("openai/gpt-5.5"));
 
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "watch",
+            "bap-questions",
+            "--interval-ms",
+            "250",
+            "--timeout-seconds",
+            "5",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Watch(args)) = args.command else {
+            panic!("expected session watch command");
+        };
+        assert_eq!(args.dir, PathBuf::from("bap-questions"));
+        assert_eq!(args.interval_ms, 250);
+        assert_eq!(args.timeout_seconds, Some(5));
+        assert!(args.json);
+
         assert!(Cli::try_parse_from(["djinn", "share", "chats"]).is_err());
     }
 
@@ -20974,6 +21101,56 @@ link = "context/repo"
         assert!(text.contains("response.md"));
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_watch_snapshot_renders_status_changes() {
+        let report = SessionStatusReport {
+            session_dir: "/tmp/session".to_string(),
+            manifest_exists: true,
+            session_id: Some("agt_watch".to_string()),
+            native_session_exists: true,
+            profile: Some("default".to_string()),
+            agent: None,
+            model: Some("openai/gpt-5.5".to_string()),
+            workspace: Some("/tmp/workspace".to_string()),
+            repo: None,
+            lifecycle: SessionStatusLifecycleReport {
+                state: "running".to_string(),
+                mode: Some("background".to_string()),
+                updated_at: Some("2026-07-28T12:00:00Z".to_string()),
+                reason: Some("started".to_string()),
+                note: None,
+            },
+            files: SessionStatusFileReport {
+                request_md: true,
+                summary_md: true,
+                context_dir: true,
+                compacted_md: false,
+                turns_dir: true,
+            },
+            turn_count: 1,
+            latest_turn: Some(SessionStatusTurnReport {
+                id: "turn-1".to_string(),
+                request_path: Some("/tmp/session/turns/turn-1/request.md".to_string()),
+                response_path: None,
+                has_response: false,
+            }),
+            context_ingestible_count: 0,
+            context_skipped: Vec::new(),
+            next_action: Some("check again: djinn session status /tmp/session".to_string()),
+        };
+
+        let rendered = format_session_watch_snapshot(&report);
+        let key = session_watch_snapshot_key(&report).unwrap();
+
+        assert!(rendered.contains("Session: /tmp/session"));
+        assert!(rendered.contains("State: running (background)"));
+        assert!(rendered.contains("Latest turn: turn-1"));
+        assert!(rendered.contains("Request: /tmp/session/turns/turn-1/request.md"));
+        assert!(rendered.contains("Next: check again"));
+        assert!(key.contains("running"));
+        assert!(key.contains("turn-1"));
     }
 
     #[test]

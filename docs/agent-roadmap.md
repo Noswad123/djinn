@@ -145,6 +145,11 @@ the same shallow-context ingest/skip summary used by `djinn ask --session-dir`.
 It also reports lifecycle state (`not_started`, `running`, `completed`,
 `failed`, etc.), latest turn request/response paths, and a suggested next action
 so future dashboard/watch surfaces have a stable polling substrate.
+`djinn session watch <session>` is the first lightweight consumer of that
+substrate: it prints a compact status snapshot, polls while the lifecycle is
+`running`, emits another snapshot only when status changes, and exits once the
+session is no longer running. This intentionally precedes the full TUI dashboard
+so status semantics can stabilize in a scriptable command.
 
 Bare session names are cache-backed for lightweight exploratory work: `djinn
 session init small-question` resolves to Djinn's cache session root
@@ -246,6 +251,8 @@ Ready follow-up slices:
   `djinn session <name-or-path>` opens the same TUI focused on that session.
   Verbose `djinn tui` / `djinn session tui ...` forms may remain discoverable
   aliases, but they should not be the primary workflow.
+- Feed the future dashboard from the same status/watch projection rather than a
+  separate TUI-only state model.
 - Define how `context/` and selected artifacts are folded into subsequent model
   context without blindly ingesting whole folders. Default future context should
   be `request.md`, `summary.md`, selected `context/` files/links, and explicit
