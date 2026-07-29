@@ -973,12 +973,15 @@ The first non-interactive agent slice is implemented as:
     a reason to blindly ingest every linked file.
 65. Folder-backed session creation is top-level UX, not hidden under `agent`:
     `djinn session init <dir> --link-repo <path>` scaffolds `djinn.toml`,
-    `request.md`, `summary.md`, `context/`, and `turns/`. When a repo is linked,
-    Djinn resolves global config first and repo-local `.djinn.json` second so repo
-    profile/model context can override global defaults; session-local files remain
-    the strongest explicit context. The repo appears as a symlink under
-    `context/<repo-name>` and is recorded in `djinn.toml` as a live reference, not
-    as a command to ingest the whole tree.
+    `request.md`, `summary.md`, `context/`, and `turns/`. The session-local
+    context guide is `context/djinn-context.md` so a linked repo's `README.md` can
+    be discovered without a naming conflict. When a repo is linked, Djinn resolves
+    global config first and repo-local `.djinn.json` second so repo profile/model
+    context can override global defaults; session-local files remain the strongest
+    explicit context. The repo appears as a symlink under `context/<repo-name>`
+    and is recorded in `djinn.toml` as a live reference, not as a command to
+    ingest the whole tree. Safe context discovery runs during linked-repo init by
+    default and can be skipped with `--no-discover-context`.
 66. The CLI should gradually remove the user-facing need to type `agent` for the
     common path. `djinn ask` is the preferred shorthand for `djinn agent ask` and
     creates a native Djinn session by default using the effective global +
@@ -1116,8 +1119,10 @@ The first non-interactive agent slice is implemented as:
 83. Harness-aware context discovery adapts to breadcrumbs already present in a
     repository instead of requiring teammates to adopt Djinn-native layout.
     `djinn session context discover <session>` applies by default and `--dry-run`
-    previews without mutation. Discovery links a small set of high-signal files
-    into top-level `context/` symlinks where possible and writes a compact
+    previews without mutation. `djinn session init <session> --link-repo <repo>`
+    runs the same safe discovery automatically unless `--no-discover-context` is
+    set. Discovery links a small set of high-signal files into top-level
+    `context/` symlinks where possible and writes a compact
     `context/repo-index.md`; it must never bulk-ingest a repo. Built-in
     discovery reads generic repo breadcrumbs (`AGENTS.md`, `README.md`,
     `CLAUDE.md`, `.cursorrules`), Copilot breadcrumbs

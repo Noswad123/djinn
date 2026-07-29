@@ -109,8 +109,9 @@ ask` can read `request.md` when no prompt is provided, successful `agent ask` an
 `agent chat` turns write the latest answer to `summary.md`, create an
 unstructured `context/` folder, and keep per-turn request/response files under
 `turns/`. `djinn session init <dir> --link-repo <path>` scaffolds the same
-folder shape ahead of a run and links the repo into `context/` as an explicit
-live reference. `djinn ask` is the canonical spelling for the common
+folder shape ahead of a run, links the repo into `context/` as an explicit live
+reference, writes a session-local guide at `context/djinn-context.md`, and runs
+safe context discovery by default. `djinn ask` is the canonical spelling for the common
 non-interactive path; `djinn agent ask` is a deprecated alias that warns and
 delegates to the same folder-backed behavior. `djinn ask --session-dir <dir>` now
 consumes `djinn.toml` defaults (`session_id`,
@@ -192,6 +193,9 @@ Harness-aware discovery now has an initial safe implementation:
 
 - `djinn session context discover <session>` applies safe discoveries by default.
 - `djinn session context discover <session> --dry-run` previews without mutation.
+- `djinn session init <session> --link-repo <repo>` runs the same safe discovery
+  automatically; use `--no-discover-context` when only the repo symlink scaffold
+  is desired.
 - Generic breadcrumbs (`AGENTS.md`, `README.md`, `CLAUDE.md`, `.cursorrules`),
   Copilot breadcrumbs (`.github/copilot-instructions.md`, `.github/instructions`,
   `.github/prompts`), and OpenCode breadcrumbs (`opencode.json` instructions,

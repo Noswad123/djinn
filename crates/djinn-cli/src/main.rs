@@ -165,6 +165,9 @@ struct SessionInitArgs {
     /// Target repository to link into context/<repo-name> and use for repo-local config.
     #[arg(long = "link-repo")]
     link_repo: Option<PathBuf>,
+    /// Do not auto-discover repo/harness breadcrumbs when --link-repo is set.
+    #[arg(long = "no-discover-context")]
+    no_discover_context: bool,
     /// Agent profile name to record. Defaults through global/repo Djinn config.
     #[arg(long, default_value = "default")]
     profile: String,
@@ -5750,6 +5753,7 @@ struct SessionInitReport {
     model: String,
     workspace: String,
     repo_link: Option<SessionRepoLinkReport>,
+    discovered_context: Option<SessionContextDiscoverReport>,
     config_sources: Vec<String>,
     precedence: Vec<String>,
     created: Vec<String>,
@@ -5777,8 +5781,20 @@ fn session_init(args: SessionInitArgs) -> Result<()> {
         if let Some(repo_link) = &report.repo_link {
             println!("  repo link: {} -> {}", repo_link.path, repo_link.target);
         }
+        if let Some(discovered) = &report.discovered_context {
+            let created = discovered.links.iter().filter(|link| link.created).count();
+            let existing = discovered.links.iter().filter(|link| link.existed).count();
+            println!(
+                "  discovered context: {created} linked, {existing} existing, index {}",
+                discovered.repo_index_path
+            );
+        }
         println!("  request: {}", report.request_path);
         println!("  summary: {}", report.summary_path);
+        println!("  run: djinn ask --session {}", args.dir.display());
+        println!(
+            "  done: command exits; answer is written to summary.md and turns/<turn>/response.md"
+        );
     }
     Ok(())
 }
@@ -5821,7 +5837,7 @@ fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport
     write_scaffold_file(&request_path, "", args.force, &mut created, &mut skipped)?;
     let summary_path = session_dir.join("summary.md");
     write_scaffold_file(&summary_path, "", args.force, &mut created, &mut skipped)?;
-    let readme_path = context_dir.join("README.md");
+    let readme_path = context_dir.join("djinn-context.md");
     write_scaffold_file(
         &readme_path,
         &session_context_readme(args.link_repo.as_ref(), &workspace),
@@ -5857,6 +5873,11 @@ fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport
         &mut created,
         &mut skipped,
     )?;
+    let discovered_context = if args.link_repo.is_some() && !args.no_discover_context {
+        Some(discover_folder_session_context(&session_dir, false)?)
+    } else {
+        None
+    };
 
     Ok(SessionInitReport {
         session_dir: session_dir.display().to_string(),
@@ -5870,6 +5891,7 @@ fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport
         model,
         workspace: workspace.display().to_string(),
         repo_link,
+        discovered_context,
         config_sources: config_report.checked_paths,
         precedence: vec![
             "global profile/config".to_string(),
@@ -9015,7 +9037,7 @@ fn folder_session_slug(value: &str) -> String {
 
 fn ensure_folder_session_readme(session_dir: &Path) -> Result<()> {
     let context_dir = session_dir.join("context");
-    let readme_path = context_dir.join("README.md");
+    let readme_path = context_dir.join("djinn-context.md");
     if readme_path.exists() {
         return Ok(());
     }
@@ -21388,6 +21410,7 @@ link = "context/repo"
         let args = SessionInitArgs {
             dir: dir.clone(),
             link_repo: Some(repo.clone()),
+            no_discover_context: false,
             profile: "default".to_string(),
             agent: None,
             model: None,
@@ -21399,7 +21422,8 @@ link = "context/repo"
         assert!(dir.join("djinn.toml").exists());
         assert!(dir.join("request.md").exists());
         assert!(dir.join("summary.md").exists());
-        assert!(dir.join("context/README.md").exists());
+        assert!(dir.join("context/djinn-context.md").exists());
+        assert!(dir.join("context/repo-index.md").exists());
         assert!(dir.join("turns").exists());
         assert!(!dir.join("logs/summary-history.md").exists());
         assert!(!dir.join("logs/events.jsonl").exists());
@@ -21411,6 +21435,7 @@ link = "context/repo"
             report.repo_link.as_ref().unwrap().path,
             link.display().to_string()
         );
+        assert!(report.discovered_context.is_some());
         assert_eq!(fs::read_to_string(dir.join("request.md")).unwrap(), "");
 
         let _ = fs::remove_dir_all(&root);
@@ -21431,6 +21456,7 @@ link = "context/repo"
         let args = SessionInitArgs {
             dir: dir.clone(),
             link_repo: Some(repo.clone()),
+            no_discover_context: false,
             profile: "default".to_string(),
             agent: None,
             model: Some("same-model".to_string()),
