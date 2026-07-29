@@ -63,6 +63,7 @@ Open the TUI:
 ```bash
 djinn
 djinn tui
+djinn tui workspaces
 djinn tui sessions
 djinn tui memories
 djinn tui suggestions
@@ -75,16 +76,19 @@ files under `~/.config/github-copilot/`. If those are missing, Djinn falls back
 to `gh auth token` and exchanges that GitHub token for a Copilot token:
 
 ```bash
-djinn agent ask "Summarize this repo" --model copilot/gpt-4.1
-djinn agent chat --model copilot/gpt-4.1
+djinn ask "Summarize this repo" --model copilot/gpt-4.1
+djinn session init repo-review --link-repo . --model copilot/gpt-4.1
+djinn session run repo-review
+djinn session watch repo-review
 ```
 
-When `djinn agent chat` runs inside Kitsune, Djinn reports its session id and
-agent lifecycle state back to the hosting pane automatically. Kitsune can then
-show Djinn as a first-class agent, track idle/working/blocked state, surface
-permission and auth/configuration waits as blocked, and resume reported sessions
-with `djinn agent chat --resume <id>`. Djinn releases its Kitsune agent authority
-when the chat session exits so the hosting pane does not keep stale Djinn state.
+Folder-backed sessions are the canonical interactive workflow. The dashboard
+calls these file-backed capsules **Workspaces**: `djinn` opens that tab by
+default, and `djinn tui workspaces` opens it explicitly. Use
+`djinn session <name-or-path>` for the focused workspace view,
+`djinn session run` to execute turns, and `djinn session watch` to follow
+lifecycle status. The old interactive `djinn agent chat` surface has been
+removed.
 
 `djinn agent config list` and the TUI command palette include Copilot model
 options from `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`, comma/semicolon-list
@@ -95,7 +99,7 @@ Copilot adapter; token-like and Gemini model strings are ignored.
 
 Supported Copilot auth inputs, in resolution order:
 
-- `--api-key` for `djinn agent ask` / `djinn agent chat`;
+- `--api-key` for `djinn ask` / legacy `djinn agent ask`;
 - direct Copilot API token env vars: `DJINN_COPILOT_TOKEN`,
   `GITHUB_COPILOT_TOKEN`, `COPILOT_TOKEN`;
 - OAuth/GitHub token env vars exchanged for a Copilot token:
@@ -133,12 +137,11 @@ Inspect configured Djinn agent roles (planner/reviewer/etc.) from native config:
 djinn agents list
 djinn agents show reviewer
 djinn agents show reviewer --json
-djinn agent ask --agent reviewer "Review this diff"
-djinn agent chat --agent planner
-djinn agent session new --agent reviewer --parent-session <session-id>
-djinn agent session list --agent reviewer
-djinn agent session list --parent-session <session-id>
-djinn agent session children <session-id>
+djinn ask --agent reviewer "Review this diff"
+djinn session init review --link-repo . --agent reviewer
+djinn session run review
+djinn session ls
+djinn session status review
 ```
 
 Profiles and agent roles can list instruction references. References matching

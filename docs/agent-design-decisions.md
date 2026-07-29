@@ -160,7 +160,7 @@ Implemented compatibility decisions:
   discovered via `gh auth token`. OAuth/GitHub tokens are exchanged via the GitHub
   Copilot internal token endpoint; tokens must never be printed.
 - The supported Copilot auth contract is:
-  - explicit `--api-key` for `djinn agent ask` / `djinn agent chat`;
+  - explicit `--api-key` for `djinn ask` / legacy `djinn agent ask`;
   - direct Copilot API token env vars: `DJINN_COPILOT_TOKEN`,
     `GITHUB_COPILOT_TOKEN`, `COPILOT_TOKEN`;
   - OAuth/GitHub token env vars exchanged for a Copilot token:
@@ -282,8 +282,9 @@ Working interpretation:
   command family. The first slice is read-only inspection:
   `djinn agents list` and `djinn agents show <name>`.
 - Explicit role selection is supported with `--agent <name>` on runtime entry
-  points such as `djinn ask` and the legacy `djinn agent ask` / `djinn agent chat`
-  surfaces. Earlier `djinn agent session new` role-selection behavior is
+  points such as `djinn ask`, legacy `djinn agent ask`, and folder-backed
+  `djinn session init` / `djinn session run` surfaces. Earlier
+  `djinn agent session new` role-selection behavior is
   superseded by the folder-backed session workflow in decisions 66-80. A selected
   role supplies the profile/model defaults for that invocation, and session
   metadata records `agent_name` plus optional `parent_session_id` for related
@@ -952,10 +953,10 @@ The first non-interactive agent slice is implemented as:
     inspection commands are superseded by the folder-backed direction in
     decisions 66-80.
 63. Djinn supports folder-backed session projections as a pivot away from making
-    the terminal transcript the primary workspace. `djinn agent ask --session-dir`
-    can read `request.md` when no prompt is provided; `djinn agent chat
-    --session-dir` projects successful turns from the interactive session. The
-    projection writes `summary.md` as the latest answer, writes `djinn.toml`
+    the terminal transcript the primary workspace. `djinn ask --session-dir`
+    can read `request.md` when no prompt is provided; `djinn session run` is the
+    folder-native way to process turns. The projection writes `summary.md` as the
+    latest answer, writes `djinn.toml`
     metadata, creates an unstructured `context/` folder for user-curated session
     context, and records per-turn `turns/<id>/request.md` and
     `turns/<id>/response.md`. It intentionally does not mirror `events.jsonl`,
@@ -992,8 +993,8 @@ The first non-interactive agent slice is implemented as:
     existing native session; otherwise a successful ask can create/project the
     folder as a new session capsule. Ask resolution precedence is CLI flags over
     session `djinn.toml`, then repo-local `.djinn.json`, then global config, then
-    built-ins. Do not add new behavior to `djinn chat` / `djinn agent chat` while
-    this file-first ask/session flow is settling.
+    built-ins. `djinn chat` / `djinn agent chat` are not user-facing surfaces;
+    keep new behavior on the file-first ask/session flow.
     `djinn session run <session>` is the folder-native spelling for processing
     the current `request.md`; it starts a background worker by default and reports
     the pid/log path plus a `djinn session watch <session>` hint. `--fg` uses the
@@ -1143,17 +1144,21 @@ The first non-interactive agent slice is implemented as:
     `.env*`, `*.db`, `.pytest_cache/**`, and `.ruff_cache/**` are ignored by
     default. Repo-local Djinn config may tune include/exclude/index/ingest rules,
     but the defaults should work in mixed OpenCode/Copilot/Cursor/Claude repos.
-84. The session dashboard TUI uses terse entry points. `djinn` with no arguments
-    opens the dashboard Sessions tab. `djinn session <name-or-path>` opens a
-    focused folder-session status TUI backed by the same status projection; richer
-    artifact/run actions can be layered into that focused view next. Verbose `djinn tui` or
+84. The session dashboard TUI uses terse entry points and calls folder-backed
+    session capsules **Workspaces**. `djinn` with no arguments opens the
+    dashboard Workspaces tab, fed from the same cache scan/status projection as
+    `djinn session ls`. `djinn session <name-or-path>` opens a focused workspace
+    view backed by the same status projection. The focused view provides
+    first-pass shortcuts for run, watch, open summary, edit request, open
+    context, and discover context by delegating to the existing CLI commands
+    after leaving the alternate screen. Verbose `djinn tui` or
     `djinn session tui ...` spellings may exist as discoverable aliases, but the
     default workflow should not require saying `tui`. This preserves the
     file-first session model while giving users a cockpit for checking status,
     opening artifacts, and eventually polling active/background runs. The TUI
-    should consume the same status projection as `djinn session status` and
-    `djinn session watch <session>` rather than maintaining a separate status
-    model.
+    should consume the same status projection as `djinn session status`,
+    `djinn session ls`, and `djinn session watch <session>` rather than
+    maintaining a separate status model.
 
 Not in the first slice unless explicitly reopened:
 

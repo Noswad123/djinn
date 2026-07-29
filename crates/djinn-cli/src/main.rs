@@ -1107,8 +1107,6 @@ enum AgentCommand {
     FileHistory(AgentFileHistoryArgs),
     /// Deprecated alias for top-level `djinn ask`.
     Ask(AgentAskArgs),
-    /// Deprecated legacy interactive chat surface.
-    Chat(AgentChatArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1937,6 +1935,7 @@ struct ArchiveRemoveArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum TuiView {
     Tools,
+    Workspaces,
     Sessions,
     Memories,
     Suggestions,
@@ -2455,11 +2454,7 @@ fn main() -> Result<()> {
 }
 
 fn run_tui_command(args: TuiArgs) -> Result<()> {
-    if let Some(args) = run_tui(args)? {
-        run_interactive_app(args)
-    } else {
-        Ok(())
-    }
+    run_tui(args)
 }
 
 fn run_list(args: ListArgs) -> Result<()> {
@@ -5438,13 +5433,6 @@ fn run_agent(args: AgentArgs) -> Result<()> {
             run_agent_file_history(args)
         }
         AgentCommand::Ask(args) => legacy_agent_ask(args),
-        AgentCommand::Chat(args) => {
-            warn_legacy_agent_command(
-                "agent chat",
-                Some("use folder-backed `djinn ask` and `djinn session ...`"),
-            );
-            run_interactive_app(args)
-        }
     }
 }
 
@@ -5470,7 +5458,7 @@ fn run_session(args: SessionArgs) -> Result<()> {
         }
         None if args.dir.is_some() => run_folder_session_tui(args.dir.unwrap()),
         None => run_tui_command(TuiArgs {
-            view: TuiView::Sessions,
+            view: TuiView::Workspaces,
             roots: Vec::new(),
             editor: args.editor,
         }),
@@ -5480,8 +5468,62 @@ fn run_session(args: SessionArgs) -> Result<()> {
 fn run_folder_session_tui(dir: PathBuf) -> Result<()> {
     let session_dir = resolve_session_dir(&dir)?;
     let mut tui = djinn_tui::TuiSession::enter()?;
-    tui.run_folder_session_status(|| folder_session_status_tui_view(&session_dir))?;
-    tui.finish()
+    let action = tui.run_folder_session_status(|| folder_session_status_tui_view(&session_dir))?;
+    tui.finish()?;
+    if let Some(action) = action {
+        handle_folder_session_tui_action(action, session_dir)?;
+    }
+    Ok(())
+}
+
+fn handle_folder_session_tui_action(
+    action: djinn_tui::FolderSessionAction,
+    session_dir: PathBuf,
+) -> Result<()> {
+    match action {
+        djinn_tui::FolderSessionAction::Run => session_run(SessionRunArgs {
+            dir: session_dir,
+            foreground: false,
+            background_worker: false,
+            profile: None,
+            agent: None,
+            model: None,
+            api_key: None,
+            base_url: None,
+            max_tool_rounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
+            json: false,
+            print: false,
+            open: false,
+        }),
+        djinn_tui::FolderSessionAction::Watch => session_watch(SessionWatchArgs {
+            dir: session_dir,
+            interval_ms: 1000,
+            timeout_seconds: None,
+            json: false,
+        }),
+        djinn_tui::FolderSessionAction::OpenSummary => session_open(SessionOpenArgs {
+            dir: session_dir,
+            target: SessionOpenTarget::Summary,
+            editor: None,
+        }),
+        djinn_tui::FolderSessionAction::EditRequest => session_open(SessionOpenArgs {
+            dir: session_dir,
+            target: SessionOpenTarget::Request,
+            editor: None,
+        }),
+        djinn_tui::FolderSessionAction::OpenContext => session_open(SessionOpenArgs {
+            dir: session_dir,
+            target: SessionOpenTarget::Context,
+            editor: None,
+        }),
+        djinn_tui::FolderSessionAction::DiscoverContext => {
+            session_context_discover(SessionContextDiscoverArgs {
+                session: session_dir,
+                dry_run: false,
+                json: false,
+            })
+        }
+    }
 }
 
 fn folder_session_status_tui_view(
@@ -10318,11 +10360,6 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                     ..args
                 };
                 match run_tui_in_session(&mut tui, &default_tui_args(), initial_tab)? {
-                    TuiRunOutcome::OpenAgentChat { resume } => {
-                        if let Some(resume) = resume {
-                            args.resume = Some(resume);
-                        }
-                    }
                     TuiRunOutcome::Exit => return Ok(()),
                     TuiRunOutcome::Action(action) => {
                         tui.finish()?;
@@ -10362,11 +10399,6 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                             &default_tui_args(),
                             djinn_tui::DashboardTab::Sessions,
                         )? {
-                            TuiRunOutcome::OpenAgentChat { resume } => {
-                                if let Some(resume) = resume {
-                                    args.resume = Some(resume);
-                                }
-                            }
                             TuiRunOutcome::Exit => return Ok(()),
                             TuiRunOutcome::Action(action) => {
                                 tui.finish()?;
@@ -10380,11 +10412,6 @@ fn run_interactive_app(mut args: AgentChatArgs) -> Result<()> {
                     }
                     djinn_tui::AgentChatCommand::OpenDashboardTab(initial_tab) => {
                         match run_tui_in_session(&mut tui, &default_tui_args(), initial_tab)? {
-                            TuiRunOutcome::OpenAgentChat { resume } => {
-                                if let Some(resume) = resume {
-                                    args.resume = Some(resume);
-                                }
-                            }
                             TuiRunOutcome::Exit => return Ok(()),
                             TuiRunOutcome::Action(action) => {
                                 tui.finish()?;
@@ -14624,25 +14651,20 @@ fn summarize_agent_tool_output(output: &Value, fallback: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TuiRunOutcome {
-    OpenAgentChat { resume: Option<String> },
     Exit,
     Action(djinn_tui::TuiAction),
 }
 
-fn run_tui(args: TuiArgs) -> Result<Option<AgentChatArgs>> {
+fn run_tui(args: TuiArgs) -> Result<()> {
     let initial_tab = dashboard_tab(args.view);
     let mut tui = djinn_tui::TuiSession::enter()?;
     let outcome = run_tui_in_session(&mut tui, &args, initial_tab)?;
     tui.finish()?;
     match outcome {
-        TuiRunOutcome::OpenAgentChat { resume } => Ok(Some(AgentChatArgs {
-            resume,
-            ..default_agent_chat_args()
-        })),
-        TuiRunOutcome::Exit => Ok(None),
+        TuiRunOutcome::Exit => Ok(()),
         TuiRunOutcome::Action(action) => {
             handle_tui_action(action, args.editor)?;
-            Ok(None)
+            Ok(())
         }
     }
 }
@@ -14654,6 +14676,7 @@ fn run_tui_in_session(
 ) -> Result<TuiRunOutcome> {
     let roots = tool_roots(args.roots.clone());
     let tools = scan_tools(&roots)?;
+    let workspaces = workspace_records_for_dashboard()?;
     let chats = chats_for_session_picker()?;
     let memories = memory_store().list()?;
     let suggestions = suggestion_store().list()?;
@@ -14661,6 +14684,7 @@ fn run_tui_in_session(
     let active_context = context_store().active()?;
     let Some(action) = tui.run_dashboard_with_handler(
         tools,
+        workspaces,
         chats,
         memories,
         suggestions,
@@ -14673,7 +14697,7 @@ fn run_tui_in_session(
                 delete_chat_rows_silent(&request).map(|_| ())
             }
             djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| ()),
-            djinn_tui::TuiAction::OpenAgentChat
+            djinn_tui::TuiAction::OpenWorkspace(_)
             | djinn_tui::TuiAction::OpenChatSession(_)
             | djinn_tui::TuiAction::OpenTool(_)
             | djinn_tui::TuiAction::OpenSkill(_)
@@ -14685,26 +14709,16 @@ fn run_tui_in_session(
         return Ok(TuiRunOutcome::Exit);
     };
 
-    if action == djinn_tui::TuiAction::OpenAgentChat {
-        return Ok(TuiRunOutcome::OpenAgentChat { resume: None });
-    }
     if let djinn_tui::TuiAction::OpenChatSession(request) = &action {
-        let resume = match request.kind {
-            djinn_tui::ChatSessionKind::DjinnAgent => request.session_id.clone(),
-            djinn_tui::ChatSessionKind::OpenCode => {
-                convert_opencode_chat_to_agent_session(&request.session_id)?.to_string()
-            }
-        };
-        return Ok(TuiRunOutcome::OpenAgentChat {
-            resume: Some(resume),
-        });
+        if request.kind == djinn_tui::ChatSessionKind::OpenCode {
+            convert_opencode_chat_to_agent_session(&request.session_id)?;
+        }
+        return Ok(TuiRunOutcome::Exit);
     }
     if let djinn_tui::TuiAction::PromoteSessions(request) = &action {
         if request.mode == djinn_tui::SessionPromoteMode::Summary {
-            let id = create_chat_summary_agent_session(request)?;
-            return Ok(TuiRunOutcome::OpenAgentChat {
-                resume: Some(id.to_string()),
-            });
+            create_chat_summary_agent_session(request)?;
+            return Ok(TuiRunOutcome::Exit);
         }
     }
     Ok(TuiRunOutcome::Action(action))
@@ -14712,11 +14726,13 @@ fn run_tui_in_session(
 
 fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Result<bool> {
     match action {
-        djinn_tui::TuiAction::OpenAgentChat => Ok(true),
+        djinn_tui::TuiAction::OpenWorkspace(workspace) => {
+            run_folder_session_tui(PathBuf::from(workspace.path)).map(|_| false)
+        }
         djinn_tui::TuiAction::OpenChatSession(request) => match request.kind {
-            djinn_tui::ChatSessionKind::DjinnAgent => Ok(true),
+            djinn_tui::ChatSessionKind::DjinnAgent => Ok(false),
             djinn_tui::ChatSessionKind::OpenCode => {
-                convert_opencode_chat_to_agent_session(&request.session_id).map(|_| true)
+                convert_opencode_chat_to_agent_session(&request.session_id).map(|_| false)
             }
         },
         djinn_tui::TuiAction::OpenTool(entry) => open_tool_entry(&entry, editor).map(|_| false),
@@ -14830,6 +14846,26 @@ fn chats_for_session_picker() -> Result<Vec<ChatRecord>> {
         chats.push(agent_session_chat_record(&summary, &store));
     }
     Ok(chats)
+}
+
+fn workspace_records_for_dashboard() -> Result<Vec<djinn_tui::WorkspaceRecord>> {
+    let report = list_cache_folder_sessions(None)?;
+    Ok(report
+        .sessions
+        .into_iter()
+        .map(|session| djinn_tui::WorkspaceRecord {
+            name: session.display_name,
+            reference_name: session.reference_name,
+            path: session.path,
+            state: session.lifecycle.state,
+            mode: session.lifecycle.mode,
+            updated_at: session.updated_at.or(session.modified_at),
+            repo_path: session.repo_path.or(session.workspace),
+            summary_preview: session.summary_preview,
+            turn_count: session.turn_count,
+            next_action: session.next_action,
+        })
+        .collect())
 }
 
 fn opencode_bridge_session_id<'a>(
@@ -15090,6 +15126,7 @@ fn push_nonempty_opencode_line(lines: &mut Vec<String>, value: &str) {
 fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
     match view {
         TuiView::Tools => djinn_tui::DashboardTab::Tools,
+        TuiView::Workspaces => djinn_tui::DashboardTab::Workspaces,
         TuiView::Sessions => djinn_tui::DashboardTab::Sessions,
         TuiView::Memories => djinn_tui::DashboardTab::Memories,
         TuiView::Suggestions => djinn_tui::DashboardTab::Suggestions,
@@ -15107,7 +15144,7 @@ fn default_tui_args() -> TuiArgs {
 
 fn default_dashboard_tui_args() -> TuiArgs {
     TuiArgs {
-        view: TuiView::Sessions,
+        view: TuiView::Workspaces,
         roots: Vec::new(),
         editor: None,
     }
@@ -19143,7 +19180,7 @@ mod tests {
         assert_eq!(args.max_tool_rounds, DEFAULT_AGENT_MAX_TOOL_ROUNDS);
         assert!(args.json);
 
-        let cli = Cli::try_parse_from([
+        assert!(Cli::try_parse_from([
             "djinn",
             "agent",
             "chat",
@@ -19154,16 +19191,7 @@ mod tests {
             "--max-tool-rounds",
             "8",
         ])
-        .unwrap();
-        let Some(Command::Agent(agent_args)) = cli.command else {
-            panic!("expected agent command");
-        };
-        let AgentCommand::Chat(args) = agent_args.command else {
-            panic!("expected agent chat command");
-        };
-        assert_eq!(args.agent.as_deref(), Some("planner"));
-        assert_eq!(args.parent_session.as_deref(), Some("agt_parent"));
-        assert_eq!(args.max_tool_rounds, 8);
+        .is_err());
 
         let cli = Cli::try_parse_from([
             "djinn",
@@ -21322,12 +21350,26 @@ link = "context/repo"
     }
 
     #[test]
-    fn default_no_args_tui_opens_sessions_dashboard() {
+    fn default_no_args_tui_opens_workspaces_dashboard() {
         let args = default_dashboard_tui_args();
 
-        assert_eq!(args.view, TuiView::Sessions);
+        assert_eq!(args.view, TuiView::Workspaces);
         assert!(args.roots.is_empty());
         assert!(args.editor.is_none());
+    }
+
+    #[test]
+    fn parses_tui_workspaces_view() {
+        let cli = Cli::try_parse_from(["djinn", "tui", "workspaces"]).unwrap();
+        let Some(Command::Tui(args)) = cli.command else {
+            panic!("expected tui command");
+        };
+
+        assert_eq!(args.view, TuiView::Workspaces);
+        assert_eq!(
+            dashboard_tab(args.view),
+            djinn_tui::DashboardTab::Workspaces
+        );
     }
 
     #[test]

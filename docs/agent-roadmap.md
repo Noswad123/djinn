@@ -104,9 +104,9 @@ Djinn is pivoting toward folder-backed work capsules where nvim/files are the
 primary workspace and the TUI manages outputs rather than owning the transcript
 experience.
 
-Initial projection is implemented for agent runs through `--session-dir`: `agent
-ask` can read `request.md` when no prompt is provided, successful `agent ask` and
-`agent chat` turns write the latest answer to `summary.md`, create an
+Initial projection is implemented for agent runs through folder sessions: `djinn
+ask` can read `request.md` when no prompt is provided, successful `djinn ask`
+and `djinn session run` turns write the latest answer to `summary.md`, create an
 unstructured `context/` folder, and keep per-turn request/response files under
 `turns/`. `djinn session init <dir> --link-repo <path>` scaffolds the same
 folder shape ahead of a run, links the repo into `context/` as an explicit live
@@ -250,15 +250,18 @@ Ready follow-up slices:
 - Reframe the Agent TUI as a session artifact manager: open `summary.md`,
   `request.md`, context files, and turns in `$EDITOR`; de-emphasize the
   chat transcript as the main surface. The terse spellings should be canonical:
-  `djinn` with no args opens the session dashboard TUI, while
-  `djinn session <name-or-path>` opens a focused folder-session status TUI for
-  that session.
+  `djinn` with no args opens the dashboard Workspaces tab for folder-backed
+  sessions, while `djinn session <name-or-path>` opens a focused workspace view
+  for that session.
   Verbose `djinn tui` / `djinn session tui ...` forms may remain discoverable
   aliases, but they should not be the primary workflow.
-- Feed the future dashboard from the same status/watch projection rather than a
-  separate TUI-only state model.
-- Next TUI polish: add focused-session actions for run/watch/open/edit/discover
-  instead of only displaying the status/artifact paths.
+- The Workspaces tab is fed from the same cache scan/status projection as
+  `djinn session ls`, rather than a separate TUI-only state model.
+- The focused workspace view exposes first-pass shortcuts: `r` starts the session in
+  the background, `w` watches it, `o` opens `summary.md`, `e` edits `request.md`,
+  `c` opens `context/`, and `d` runs context discovery. These actions currently
+  leave the alternate-screen view and delegate to the existing CLI commands;
+  future polish can keep more of them in-place.
 - Define how `context/` and selected artifacts are folded into subsequent model
   context without blindly ingesting whole folders. Default future context should
   be `request.md`, `summary.md`, selected `context/` files/links, and explicit
