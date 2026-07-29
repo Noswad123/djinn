@@ -5,7 +5,7 @@ connects local tools, AI sessions, reviewed memory, reusable skills, and lightwe
 contexts into one practical workflow.
 
 ```text
-Tools → Workspaces → Memories → Suggestions → Skills
+Tools → Sessions → Memories → Suggestions → Skills
 ```
 
 The original Go implementation is preserved under `legacy/go/`. The root project
@@ -63,7 +63,7 @@ Open the TUI:
 ```bash
 djinn
 djinn tui
-djinn tui workspaces
+djinn tui sessions
 djinn tui memories
 djinn tui suggestions
 djinn tui skills
@@ -82,9 +82,9 @@ djinn session watch repo-review
 ```
 
 Folder-backed sessions are the canonical interactive workflow. The dashboard
-calls these file-backed capsules **Workspaces**: `djinn` opens that tab by
-default, and `djinn tui workspaces` opens it explicitly. Use
-`djinn session <name-or-path>` for the focused workspace view,
+calls these file-backed capsules **Sessions**: `djinn` opens that tab by
+default, and `djinn tui sessions` opens it explicitly. Use
+`djinn session <name-or-path>` for the focused session view,
 `djinn session run` to execute turns, and `djinn session watch` to follow
 lifecycle status. The old transcript subcommand has been removed.
 

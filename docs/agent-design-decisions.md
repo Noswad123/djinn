@@ -674,22 +674,22 @@ The first non-interactive agent slice is implemented as:
 17. Superseded by decisions 63-84: a dashboard pane that only browses JSONL
     runtime sessions overlaps with the legacy Sessions picker and should not be
     treated as the primary product surface. The current primary surface is the
-    folder-backed Workspace: files are user-facing state, and JSONL is a private
-    event artifact inside or behind the workspace folder.
+    folder-backed Session: files are user-facing state, and JSONL is a private
+    event artifact inside or behind the session folder.
 18. Superseded by decisions 63-84: the early interactive transcript/composer TUI
     proved useful for message rendering experiments, but it is removed from the
     user-facing CLI. Do not restore it as a parallel product; port durable lessons
-    into Workspaces, focused status, and artifact navigation.
+    into Sessions, focused status, and artifact navigation.
 19. Superseded by decision 84: long-running turn progress should be visible
     through folder lifecycle state, run logs, `summary.md`, and turn artifacts
     rather than an alternate-screen transcript runtime.
 20. Superseded by decision 84: transcript autoscroll and jump-to-latest behavior
-    belongs to any future artifact viewer, not to the core Workspace dashboard.
+    belongs to any future artifact viewer, not to the core Sessions dashboard.
 21. Superseded by decision 84: copy-friendly TUI chrome remains a constraint, but
-    the current Workspaces UI optimizes for copyable paths, summaries, and
+    the current Sessions UI optimizes for copyable paths, summaries, and
     artifact names instead of text-heavy transcript/composer panes.
 22. Superseded by decision 84: prompt editing now belongs in `request.md` and the
-    user's editor. The focused workspace view delegates edit/open actions to files
+    user's editor. The focused session view delegates edit/open actions to files
     instead of owning a prompt composer.
 23. Superseded by decision 84: transcript extraction is replaced by file-first
     artifacts. Users copy from `summary.md`, `turns/<id>/response.md`, compacted
@@ -699,10 +699,10 @@ The first non-interactive agent slice is implemented as:
     explicit legacy/source material outside the main dashboard.
 25. Superseded by decision 84: `djinn` with no arguments initially routed to an
     interactive runtime surface when stdin/stdout were terminals. The current
-    default opens the Workspaces dashboard.
+    default opens the Sessions dashboard.
 26. Superseded by decision 84: the TUI tab row no longer includes a dedicated
-    runtime tab. Dashboard tabs are Tools, Workspaces, Memories, Suggestions, and
-    Skills; Workspaces is the default entry point.
+    runtime tab. Dashboard tabs are Tools, Sessions, Memories, Suggestions, and
+    Skills; Sessions is the default entry point.
 27. Superseded by decisions 77 and 84: rich turn progress is recorded in native
     lifecycle/events and projected through folder-backed status/watch/list views.
     User-facing inspection should prefer lifecycle state, run logs, and turn files
@@ -748,11 +748,11 @@ The first non-interactive agent slice is implemented as:
     already-current profile/model is a no-op and must not append redundant JSONL
     metadata events.
 36. Superseded by decisions 78 and 84: starting new model work from the TUI should
-    create or open a folder-backed workspace, not a detached runtime transcript.
+    create or open a folder-backed session, not a detached runtime transcript.
     The first-class creation/continuation commands are `djinn ask`,
     `djinn session init`, and `djinn session run`.
 37. The dashboard command palette includes Navigation actions for the shared top
-    tabs (Tools, Workspaces, Memories, Suggestions, Skills). Ctrl+P
+    tabs (Tools, Sessions, Memories, Suggestions, Skills). Ctrl+P
     should be a central way to jump around the interface without remembering
     tab-specific shortcuts.
 38. Ctrl+P is a TUI-wide command palette entry point. Dashboard tabs expose the
@@ -763,7 +763,7 @@ The first non-interactive agent slice is implemented as:
     through explicit CLI archive/delete/migration commands with dry-run or
     confirmation semantics as appropriate.
 40. Superseded by decision 84: legacy saved-session promotion is not a dashboard
-    action. Folder-backed promotion should be added to the session/workspace
+    action. Folder-backed promotion should be added to the session
     surface; legacy `djinn promote session(s)` remains a CLI source-material flow.
 41. Session promotion emits context material rather than executing a model. Summary
     mode is human-facing in direct CLI use and renders a local digest, not an
@@ -794,7 +794,7 @@ The first non-interactive agent slice is implemented as:
     viewers if reopened. The canonical copy/export surfaces are Markdown files
     (`summary.md`, `request.md`, turn files, and compacted context), which already
     preserve raw source text for editors and terminal copying.
-45. Workspace scroll affordances should not occupy a persistent selectable text
+45. Session scroll affordances should not occupy a persistent selectable text
     column. Prefer title/footer hints and explicit keys over decorative scroll
     chrome that can be copied with terminal selection.
 46. Tool output inspection is an artifact/log problem in the folder-backed model.
@@ -804,13 +804,13 @@ The first non-interactive agent slice is implemented as:
 47. Long shell and generic tool output should be collapsed in projections by
     default. Users can inspect complete output through run logs/native artifacts;
     dashboards and watch/status views should show bounded previews or pointers.
-48. Workspace hierarchy should stay visually scannable without adding copy-hostile
+48. Session hierarchy should stay visually scannable without adding copy-hostile
     chrome: prominent state/title, muted repo/profile/model/session metadata,
     distinct warning/error rows, concise summary previews, and visible next-action
     hints.
-49. Workspace navigation is keyboard-first and palette-discoverable. Dashboard tabs
+49. Session navigation is keyboard-first and palette-discoverable. Dashboard tabs
     support filter/search, line/page preview scrolling, tab cycling, and
-    palette-backed navigation. Focused workspace shortcuts delegate to file/run
+    palette-backed navigation. Focused session shortcuts delegate to file/run
     commands so artifacts remain the source of truth.
 50. Prompt editing belongs in files, not a fixed TUI dock. `request.md` is the
     editable prompt, `summary.md` is the latest answer, `turns/` is evidence, and
@@ -1072,9 +1072,9 @@ The first non-interactive agent slice is implemented as:
     default. Repo-local Djinn config may tune include/exclude/index/ingest rules,
     but the defaults should work in mixed OpenCode/Copilot/Cursor/Claude repos.
 84. The session dashboard TUI uses terse entry points and calls folder-backed
-    session capsules **Workspaces**. `djinn` with no arguments opens the
-    dashboard Workspaces tab, fed from the same cache scan/status projection as
-    `djinn session ls`. `djinn session <name-or-path>` opens a focused workspace
+    session capsules **Sessions**. `djinn` with no arguments opens the
+    dashboard Sessions tab, fed from the same cache scan/status projection as
+    `djinn session ls`. `djinn session <name-or-path>` opens a focused session
     view backed by the same status projection. The focused view provides
     first-pass shortcuts for run, watch, open summary, edit request, open
     context, and discover context by delegating to the existing CLI commands

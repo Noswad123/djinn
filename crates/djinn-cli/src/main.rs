@@ -1447,8 +1447,8 @@ struct OpenToolArgs {
 
 #[derive(Debug, Clone, Args)]
 struct TuiArgs {
-    /// TUI view to open. Defaults to workspaces.
-    #[arg(value_enum, default_value_t = TuiView::Tools)]
+    /// TUI view to open. Defaults to sessions.
+    #[arg(value_enum, default_value_t = TuiView::Sessions)]
     view: TuiView,
     /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
     #[arg(long = "root")]
@@ -1879,7 +1879,7 @@ struct ArchiveRemoveArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum TuiView {
     Tools,
-    Workspaces,
+    Sessions,
     Memories,
     Suggestions,
     Skills,
@@ -5401,7 +5401,7 @@ fn run_session(args: SessionArgs) -> Result<()> {
         }
         None if args.dir.is_some() => run_folder_session_tui(args.dir.unwrap()),
         None => run_tui_command(TuiArgs {
-            view: TuiView::Workspaces,
+            view: TuiView::Sessions,
             roots: Vec::new(),
             editor: args.editor,
         }),
@@ -13076,14 +13076,14 @@ fn run_tui_in_session(
 ) -> Result<TuiRunOutcome> {
     let roots = tool_roots(args.roots.clone());
     let tools = scan_tools(&roots)?;
-    let workspaces = workspace_records_for_dashboard()?;
+    let sessions = session_records_for_dashboard()?;
     let memories = memory_store().list()?;
     let suggestions = suggestion_store().list()?;
     let skills = skill_records()?;
     let active_context = context_store().active()?;
     let Some(action) = tui.run_dashboard_with_handler(
         tools,
-        workspaces,
+        sessions,
         Vec::new(),
         memories,
         suggestions,
@@ -13096,7 +13096,7 @@ fn run_tui_in_session(
                 delete_chat_rows_silent(&request).map(|_| ())
             }
             djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| ()),
-            djinn_tui::TuiAction::OpenWorkspace(_)
+            djinn_tui::TuiAction::OpenSession(_)
             | djinn_tui::TuiAction::OpenChatSession(_)
             | djinn_tui::TuiAction::OpenTool(_)
             | djinn_tui::TuiAction::OpenSkill(_)
@@ -13125,8 +13125,8 @@ fn run_tui_in_session(
 
 fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Result<bool> {
     match action {
-        djinn_tui::TuiAction::OpenWorkspace(workspace) => {
-            run_folder_session_tui(PathBuf::from(workspace.path)).map(|_| false)
+        djinn_tui::TuiAction::OpenSession(session) => {
+            run_folder_session_tui(PathBuf::from(session.path)).map(|_| false)
         }
         djinn_tui::TuiAction::OpenChatSession(request) => match request.kind {
             djinn_tui::ChatSessionKind::DjinnAgent => Ok(false),
@@ -13211,12 +13211,12 @@ fn create_chat_summary_agent_session(
     Ok(id)
 }
 
-fn workspace_records_for_dashboard() -> Result<Vec<djinn_tui::WorkspaceRecord>> {
+fn session_records_for_dashboard() -> Result<Vec<djinn_tui::SessionRecord>> {
     let report = list_cache_folder_sessions(None)?;
     Ok(report
         .sessions
         .into_iter()
-        .map(|session| djinn_tui::WorkspaceRecord {
+        .map(|session| djinn_tui::SessionRecord {
             name: session.display_name,
             reference_name: session.reference_name,
             path: session.path,
@@ -13492,7 +13492,7 @@ fn push_nonempty_opencode_line(lines: &mut Vec<String>, value: &str) {
 fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
     match view {
         TuiView::Tools => djinn_tui::DashboardTab::Tools,
-        TuiView::Workspaces => djinn_tui::DashboardTab::Workspaces,
+        TuiView::Sessions => djinn_tui::DashboardTab::Sessions,
         TuiView::Memories => djinn_tui::DashboardTab::Memories,
         TuiView::Suggestions => djinn_tui::DashboardTab::Suggestions,
         TuiView::Skills => djinn_tui::DashboardTab::Skills,
@@ -13501,7 +13501,7 @@ fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
 
 fn default_dashboard_tui_args() -> TuiArgs {
     TuiArgs {
-        view: TuiView::Workspaces,
+        view: TuiView::Sessions,
         roots: Vec::new(),
         editor: None,
     }
@@ -19220,31 +19220,38 @@ link = "context/repo"
     }
 
     #[test]
-    fn default_no_args_tui_opens_workspaces_dashboard() {
+    fn default_no_args_tui_opens_sessions_dashboard() {
         let args = default_dashboard_tui_args();
 
-        assert_eq!(args.view, TuiView::Workspaces);
+        assert_eq!(args.view, TuiView::Sessions);
         assert!(args.roots.is_empty());
         assert!(args.editor.is_none());
     }
 
     #[test]
-    fn parses_tui_workspaces_view() {
-        let cli = Cli::try_parse_from(["djinn", "tui", "workspaces"]).unwrap();
+    fn parses_tui_without_view_defaults_to_sessions() {
+        let cli = Cli::try_parse_from(["djinn", "tui"]).unwrap();
         let Some(Command::Tui(args)) = cli.command else {
             panic!("expected tui command");
         };
 
-        assert_eq!(args.view, TuiView::Workspaces);
-        assert_eq!(
-            dashboard_tab(args.view),
-            djinn_tui::DashboardTab::Workspaces
-        );
+        assert_eq!(args.view, TuiView::Sessions);
     }
 
     #[test]
-    fn rejects_removed_tui_sessions_view() {
-        assert!(Cli::try_parse_from(["djinn", "tui", "sessions"]).is_err());
+    fn parses_tui_sessions_view() {
+        let cli = Cli::try_parse_from(["djinn", "tui", "sessions"]).unwrap();
+        let Some(Command::Tui(args)) = cli.command else {
+            panic!("expected tui command");
+        };
+
+        assert_eq!(args.view, TuiView::Sessions);
+        assert_eq!(dashboard_tab(args.view), djinn_tui::DashboardTab::Sessions);
+    }
+
+    #[test]
+    fn rejects_removed_tui_workspaces_view() {
+        assert!(Cli::try_parse_from(["djinn", "tui", "workspaces"]).is_err());
     }
 
     #[test]

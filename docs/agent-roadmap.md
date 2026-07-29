@@ -32,9 +32,9 @@ These items are small enough or well-defined enough to implement without another
 product-design pass. UI work is the current priority because it affects every
 agent turn and makes the rest of the runtime easier to evaluate.
 
-### Workspace TUI polish
+### Session TUI polish
 
-Djinn's folder-backed Workspaces dashboard and focused workspace view are now the
+Djinn's folder-backed Sessions dashboard and focused session view are now the
 primary product surfaces. Keep the Ratatui/local-first architecture, but borrow
 OpenCode's strongest UX patterns where they map cleanly to file-backed terminal
 workflows: quiet chrome, easy copy/paste of paths and artifacts, progressive
@@ -64,7 +64,7 @@ Useful OpenCode reference files:
 
 Borrow these concepts directly where they fit Ratatui:
 
-- **Workspace layout:** a recent-work list with a rich preview, focused status
+- **Session layout:** a recent-work list with a rich preview, focused status
   view, low-noise persistent footer, and artifact-oriented actions.
 - **Status hierarchy:** prominent lifecycle state, muted repo/model/session
   metadata, clear next-action hints, and distinct failure/warning rows.
@@ -93,10 +93,10 @@ Do not copy these OpenCode details directly:
 
 Remaining ready UI slices:
 
-- **Workspace preview polish:** group cache-backed sessions by linked repo, improve
+- **Session preview polish:** group cache-backed sessions by linked repo, improve
   stale/running/failed state badges, and make next actions obvious without opening
   the folder.
-- **Artifact opening polish:** ensure every focused-workspace action reports the
+- **Artifact opening polish:** ensure every focused-session action reports the
   exact delegated command/path and leaves the terminal in a clean state.
 
 ### Folder-backed sessions
@@ -251,14 +251,14 @@ Ready follow-up slices:
 - Reframe the dashboard TUI as a session artifact manager: open `summary.md`,
   `request.md`, context files, and turns in `$EDITOR`; de-emphasize the
   chat transcript as the main surface. The terse spellings should be canonical:
-  `djinn` with no args opens the dashboard Workspaces tab for folder-backed
-  sessions, while `djinn session <name-or-path>` opens a focused workspace view
+  `djinn` with no args opens the dashboard Sessions tab for folder-backed
+  sessions, while `djinn session <name-or-path>` opens a focused session view
   for that session.
   Verbose `djinn tui` / `djinn session tui ...` forms may remain discoverable
   aliases, but they should not be the primary workflow.
-- The Workspaces tab is fed from the same cache scan/status projection as
+- The Sessions tab is fed from the same cache scan/status projection as
   `djinn session ls`, rather than a separate TUI-only state model.
-- The focused workspace view exposes first-pass shortcuts: `r` starts the session in
+- The focused session view exposes first-pass shortcuts: `r` starts the session in
   the background, `w` watches it, `o` opens `summary.md`, `e` edits `request.md`,
   `c` opens `context/`, and `d` runs context discovery. These actions currently
   leave the alternate-screen view and delegate to the existing CLI commands;

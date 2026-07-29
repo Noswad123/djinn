@@ -50,7 +50,7 @@ impl TuiSession {
     pub fn run_dashboard_with_handler<F>(
         &mut self,
         tools: Vec<ToolEntry>,
-        workspaces: Vec<WorkspaceRecord>,
+        sessions: Vec<SessionRecord>,
         chats: Vec<ChatRecord>,
         memories: Vec<MemoryRecord>,
         suggestions: Vec<SuggestionRecord>,
@@ -65,7 +65,7 @@ impl TuiSession {
         run_dashboard_loop(
             &mut self.terminal,
             tools,
-            workspaces,
+            sessions,
             chats,
             memories,
             suggestions,
@@ -135,7 +135,7 @@ pub struct FolderSessionStatusView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceRecord {
+pub struct SessionRecord {
     pub name: String,
     pub reference_name: String,
     pub path: String,
@@ -174,7 +174,7 @@ pub fn run_chats(chats: Vec<ChatRecord>) -> Result<Option<SessionPromoteRequest>
 
 pub fn run_dashboard(
     tools: Vec<ToolEntry>,
-    workspaces: Vec<WorkspaceRecord>,
+    sessions: Vec<SessionRecord>,
     chats: Vec<ChatRecord>,
     memories: Vec<MemoryRecord>,
     suggestions: Vec<SuggestionRecord>,
@@ -186,7 +186,7 @@ pub fn run_dashboard(
     let result = run_dashboard_loop(
         &mut terminal,
         tools,
-        workspaces,
+        sessions,
         chats,
         memories,
         suggestions,
@@ -201,7 +201,7 @@ pub fn run_dashboard(
 
 pub fn run_dashboard_with_handler<F>(
     tools: Vec<ToolEntry>,
-    workspaces: Vec<WorkspaceRecord>,
+    sessions: Vec<SessionRecord>,
     chats: Vec<ChatRecord>,
     memories: Vec<MemoryRecord>,
     suggestions: Vec<SuggestionRecord>,
@@ -217,7 +217,7 @@ where
     let result = run_dashboard_loop(
         &mut terminal,
         tools,
-        workspaces,
+        sessions,
         chats,
         memories,
         suggestions,
@@ -239,7 +239,7 @@ pub fn run_approval_dialog(metadata: Value) -> Result<ApprovalDecision> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiAction {
-    OpenWorkspace(WorkspaceRecord),
+    OpenSession(SessionRecord),
     OpenChatSession(ChatSessionRequest),
     OpenTool(ToolEntry),
     OpenSkill(SkillRecord),
@@ -376,7 +376,7 @@ impl SessionFilterScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashboardTab {
     Tools,
-    Workspaces,
+    Sessions,
     Memories,
     Suggestions,
     Skills,
@@ -386,7 +386,7 @@ impl DashboardTab {
     fn index(self) -> usize {
         match self {
             DashboardTab::Tools => 0,
-            DashboardTab::Workspaces => 1,
+            DashboardTab::Sessions => 1,
             DashboardTab::Memories => 2,
             DashboardTab::Suggestions => 3,
             DashboardTab::Skills => 4,
@@ -396,7 +396,7 @@ impl DashboardTab {
     fn from_index(index: usize) -> Self {
         match index % DASHBOARD_TABS.len() {
             0 => DashboardTab::Tools,
-            1 => DashboardTab::Workspaces,
+            1 => DashboardTab::Sessions,
             2 => DashboardTab::Memories,
             3 => DashboardTab::Suggestions,
             _ => DashboardTab::Skills,
@@ -404,7 +404,7 @@ impl DashboardTab {
     }
 }
 
-const DASHBOARD_TABS: [&str; 5] = ["Tools", "Workspaces", "Memories", "Suggestions", "Skills"];
+const DASHBOARD_TABS: [&str; 5] = ["Tools", "Sessions", "Memories", "Suggestions", "Skills"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionPromoteRequest {
     pub chat_ids: Vec<String>,
@@ -584,7 +584,7 @@ fn status_style(state: &str) -> Style {
 fn run_dashboard_loop(
     terminal: &mut TuiTerminal,
     tools: Vec<ToolEntry>,
-    workspaces: Vec<WorkspaceRecord>,
+    sessions: Vec<SessionRecord>,
     chats: Vec<ChatRecord>,
     memories: Vec<MemoryRecord>,
     suggestions: Vec<SuggestionRecord>,
@@ -595,7 +595,7 @@ fn run_dashboard_loop(
 ) -> Result<Option<TuiAction>> {
     let mut app = DashboardApp::new(
         tools,
-        workspaces,
+        sessions,
         chats,
         memories,
         suggestions,
@@ -697,9 +697,9 @@ fn run_dashboard_loop(
                                 return Ok(Some(TuiAction::OpenTool(tool)));
                             }
                         }
-                        DashboardTab::Workspaces => {
-                            if let Some(workspace) = app.workspaces.selected_workspace().cloned() {
-                                return Ok(Some(TuiAction::OpenWorkspace(workspace)));
+                        DashboardTab::Sessions => {
+                            if let Some(session) = app.sessions.selected_session().cloned() {
+                                return Ok(Some(TuiAction::OpenSession(session)));
                             }
                         }
                         DashboardTab::Skills => {
@@ -754,7 +754,7 @@ fn run_dashboard_loop(
                                 return Ok(Some(action));
                             }
                         }
-                        DashboardTab::Tools | DashboardTab::Workspaces | DashboardTab::Skills => {}
+                        DashboardTab::Tools | DashboardTab::Sessions | DashboardTab::Skills => {}
                     },
                     _ => {}
                 }
@@ -791,9 +791,9 @@ fn handle_dashboard_command(
                     return Ok(Some(TuiAction::OpenTool(tool)));
                 }
             }
-            DashboardTab::Workspaces => {
-                if let Some(workspace) = app.workspaces.selected_workspace().cloned() {
-                    return Ok(Some(TuiAction::OpenWorkspace(workspace)));
+            DashboardTab::Sessions => {
+                if let Some(session) = app.sessions.selected_session().cloned() {
+                    return Ok(Some(TuiAction::OpenSession(session)));
                 }
             }
             DashboardTab::Skills => {
@@ -833,7 +833,7 @@ fn handle_dashboard_command(
 struct DashboardApp {
     active_tab: DashboardTab,
     tools: ToolsApp,
-    workspaces: WorkspacesApp,
+    sessions: SessionsApp,
     memories: MemoriesApp,
     suggestions: SuggestionsApp,
     skills: SkillsApp,
@@ -845,7 +845,7 @@ struct DashboardApp {
 impl DashboardApp {
     fn new(
         tools: Vec<ToolEntry>,
-        workspaces: Vec<WorkspaceRecord>,
+        sessions: Vec<SessionRecord>,
         _chats: Vec<ChatRecord>,
         memories: Vec<MemoryRecord>,
         suggestions: Vec<SuggestionRecord>,
@@ -856,7 +856,7 @@ impl DashboardApp {
         Self {
             active_tab: initial_tab,
             tools: ToolsApp::new(tools),
-            workspaces: WorkspacesApp::new(workspaces),
+            sessions: SessionsApp::new(sessions),
             memories: MemoriesApp::new(memories),
             suggestions: SuggestionsApp::new(suggestions),
             skills: SkillsApp::new(skills),
@@ -934,9 +934,9 @@ impl DashboardApp {
             },
             DashboardCommandEntry {
                 section: "Navigation".to_string(),
-                label: "Open Workspaces".to_string(),
-                description: "Jump to folder-backed workspaces".to_string(),
-                command: DashboardCommand::OpenTab(DashboardTab::Workspaces),
+                label: "Open Sessions".to_string(),
+                description: "Jump to folder-backed sessions".to_string(),
+                command: DashboardCommand::OpenTab(DashboardTab::Sessions),
             },
             DashboardCommandEntry {
                 section: "Navigation".to_string(),
@@ -983,17 +983,17 @@ impl DashboardApp {
                     DashboardCommand::ToggleFilter,
                 ),
             ],
-            DashboardTab::Workspaces => vec![
+            DashboardTab::Sessions => vec![
                 dashboard_command_entry(
-                    "Workspaces",
-                    "Open selected workspace",
-                    "Open the highlighted folder-backed workspace",
+                    "Sessions",
+                    "Open selected session",
+                    "Open the highlighted folder-backed session",
                     DashboardCommand::OpenSelected,
                 ),
                 dashboard_command_entry(
-                    "Workspaces",
-                    "Filter workspaces",
-                    "Edit the Workspaces filter",
+                    "Sessions",
+                    "Filter sessions",
+                    "Edit the Sessions filter",
                     DashboardCommand::ToggleFilter,
                 ),
             ],
@@ -1085,7 +1085,7 @@ impl DashboardApp {
     fn next_item(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.next(),
-            DashboardTab::Workspaces => self.workspaces.next(),
+            DashboardTab::Sessions => self.sessions.next(),
             DashboardTab::Memories => self.memories.next(),
             DashboardTab::Suggestions => self.suggestions.next(),
             DashboardTab::Skills => self.skills.next(),
@@ -1095,7 +1095,7 @@ impl DashboardApp {
     fn previous_item(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.previous(),
-            DashboardTab::Workspaces => self.workspaces.previous(),
+            DashboardTab::Sessions => self.sessions.previous(),
             DashboardTab::Memories => self.memories.previous(),
             DashboardTab::Suggestions => self.suggestions.previous(),
             DashboardTab::Skills => self.skills.previous(),
@@ -1105,7 +1105,7 @@ impl DashboardApp {
     fn scroll_down(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.scroll_down(),
-            DashboardTab::Workspaces => self.workspaces.scroll_down(),
+            DashboardTab::Sessions => self.sessions.scroll_down(),
             DashboardTab::Memories => self.memories.scroll_down(),
             DashboardTab::Suggestions => self.suggestions.scroll_down(),
             DashboardTab::Skills => self.skills.scroll_down(),
@@ -1115,7 +1115,7 @@ impl DashboardApp {
     fn scroll_up(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.scroll_up(),
-            DashboardTab::Workspaces => self.workspaces.scroll_up(),
+            DashboardTab::Sessions => self.sessions.scroll_up(),
             DashboardTab::Memories => self.memories.scroll_up(),
             DashboardTab::Suggestions => self.suggestions.scroll_up(),
             DashboardTab::Skills => self.skills.scroll_up(),
@@ -1125,7 +1125,7 @@ impl DashboardApp {
     fn filter_editing(&self) -> bool {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter.editing,
-            DashboardTab::Workspaces => self.workspaces.filter.editing,
+            DashboardTab::Sessions => self.sessions.filter.editing,
             DashboardTab::Memories => self.memories.filter.editing,
             DashboardTab::Suggestions => self.suggestions.filter.editing,
             DashboardTab::Skills => self.skills.filter.editing,
@@ -1135,7 +1135,7 @@ impl DashboardApp {
     fn toggle_filter(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.toggle_filter(),
-            DashboardTab::Workspaces => self.workspaces.toggle_filter(),
+            DashboardTab::Sessions => self.sessions.toggle_filter(),
             DashboardTab::Memories => self.memories.toggle_filter(),
             DashboardTab::Suggestions => self.suggestions.toggle_filter(),
             DashboardTab::Skills => self.skills.toggle_filter(),
@@ -1145,7 +1145,7 @@ impl DashboardApp {
     fn filter_push(&mut self, ch: char) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter_push(ch),
-            DashboardTab::Workspaces => self.workspaces.filter_push(ch),
+            DashboardTab::Sessions => self.sessions.filter_push(ch),
             DashboardTab::Memories => self.memories.filter_push(ch),
             DashboardTab::Suggestions => self.suggestions.filter_push(ch),
             DashboardTab::Skills => self.skills.filter_push(ch),
@@ -1155,7 +1155,7 @@ impl DashboardApp {
     fn filter_backspace(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter_backspace(),
-            DashboardTab::Workspaces => self.workspaces.filter_backspace(),
+            DashboardTab::Sessions => self.sessions.filter_backspace(),
             DashboardTab::Memories => self.memories.filter_backspace(),
             DashboardTab::Suggestions => self.suggestions.filter_backspace(),
             DashboardTab::Skills => self.skills.filter_backspace(),
@@ -1165,7 +1165,7 @@ impl DashboardApp {
     fn finish_filter_edit(&mut self) {
         match self.active_tab {
             DashboardTab::Tools => self.tools.filter.editing = false,
-            DashboardTab::Workspaces => self.workspaces.filter.editing = false,
+            DashboardTab::Sessions => self.sessions.filter.editing = false,
             DashboardTab::Memories => self.memories.filter.editing = false,
             DashboardTab::Suggestions => self.suggestions.filter.editing = false,
             DashboardTab::Skills => self.skills.filter.editing = false,
@@ -1176,7 +1176,7 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Memories => self.memories.toggle_selected(),
             DashboardTab::Suggestions => self.suggestions.toggle_selected(),
-            DashboardTab::Tools | DashboardTab::Workspaces | DashboardTab::Skills => {}
+            DashboardTab::Tools | DashboardTab::Sessions | DashboardTab::Skills => {}
         }
     }
 
@@ -1184,7 +1184,7 @@ impl DashboardApp {
         match self.active_tab {
             DashboardTab::Memories => self.memories.toggle_all(),
             DashboardTab::Suggestions => self.suggestions.toggle_all(),
-            DashboardTab::Tools | DashboardTab::Workspaces | DashboardTab::Skills => {}
+            DashboardTab::Tools | DashboardTab::Sessions | DashboardTab::Skills => {}
         }
     }
 
@@ -1195,7 +1195,7 @@ impl DashboardApp {
                 (!ids.is_empty()).then_some(TuiAction::DeleteMemories(ids))
             }
             DashboardTab::Tools
-            | DashboardTab::Workspaces
+            | DashboardTab::Sessions
             | DashboardTab::Suggestions
             | DashboardTab::Skills => None,
         }
@@ -1208,7 +1208,7 @@ impl DashboardApp {
                 let ids = self.suggestions.selected_suggestion_ids();
                 (!ids.is_empty()).then_some(TuiAction::DeleteSuggestions(ids))
             }
-            DashboardTab::Tools | DashboardTab::Workspaces | DashboardTab::Skills => None,
+            DashboardTab::Tools | DashboardTab::Sessions | DashboardTab::Skills => None,
         }
     }
 
@@ -1232,7 +1232,7 @@ impl DashboardApp {
         match action {
             TuiAction::DeleteMemories(ids) => self.memories.remove_ids(ids),
             TuiAction::DeleteSuggestions(ids) => self.suggestions.remove_ids(ids),
-            TuiAction::OpenWorkspace(_)
+            TuiAction::OpenSession(_)
             | TuiAction::DeleteChatRows(_)
             | TuiAction::OpenTool(_)
             | TuiAction::OpenChatSession(_)
@@ -1268,7 +1268,7 @@ impl DashboardApp {
 
         match self.active_tab {
             DashboardTab::Tools => self.tools.draw_body(frame, chunks[1]),
-            DashboardTab::Workspaces => self.workspaces.draw_body(frame, chunks[1]),
+            DashboardTab::Sessions => self.sessions.draw_body(frame, chunks[1]),
             DashboardTab::Memories => self.memories.draw_body(frame, chunks[1]),
             DashboardTab::Suggestions => self.suggestions.draw_body(frame, chunks[1]),
             DashboardTab::Skills => self.skills.draw_body(frame, chunks[1]),
@@ -1376,10 +1376,10 @@ impl DashboardApp {
                 Span::raw(" open selected tool"),
             ]),
             Line::from(""),
-            Line::from(Span::styled("Workspaces", title_style())),
+            Line::from(Span::styled("Sessions", title_style())),
             Line::from(vec![
                 Span::styled("Enter", selected_style()),
-                Span::raw(" open focused folder-backed workspace"),
+                Span::raw(" open focused folder-backed session"),
             ]),
             Line::from(vec![
                 Span::styled("/", selected_style()),
@@ -1577,17 +1577,17 @@ impl ToolsApp {
     }
 }
 
-struct WorkspacesApp {
-    workspaces: Vec<WorkspaceRecord>,
+struct SessionsApp {
+    sessions: Vec<SessionRecord>,
     selected: usize,
     preview_scroll: u16,
     filter: FilterState,
 }
 
-impl WorkspacesApp {
-    fn new(workspaces: Vec<WorkspaceRecord>) -> Self {
+impl SessionsApp {
+    fn new(sessions: Vec<SessionRecord>) -> Self {
         Self {
-            workspaces,
+            sessions,
             selected: 0,
             preview_scroll: 0,
             filter: FilterState::default(),
@@ -1622,30 +1622,30 @@ impl WorkspacesApp {
         self.preview_scroll = self.preview_scroll.saturating_sub(8);
     }
 
-    fn selected_workspace(&self) -> Option<&WorkspaceRecord> {
-        self.workspaces
+    fn selected_session(&self) -> Option<&SessionRecord> {
+        self.sessions
             .get(self.selected)
-            .filter(|workspace| self.workspace_matches(workspace))
+            .filter(|session| self.session_matches(session))
     }
 
     fn visible_indices(&self) -> Vec<usize> {
-        self.workspaces
+        self.sessions
             .iter()
             .enumerate()
-            .filter_map(|(idx, workspace)| self.workspace_matches(workspace).then_some(idx))
+            .filter_map(|(idx, session)| self.session_matches(session).then_some(idx))
             .collect()
     }
 
-    fn workspace_matches(&self, workspace: &WorkspaceRecord) -> bool {
-        fuzzy_match(&self.filter.query, &workspace.name)
-            || fuzzy_match(&self.filter.query, &workspace.reference_name)
-            || fuzzy_match(&self.filter.query, &workspace.path)
-            || fuzzy_match(&self.filter.query, &workspace.state)
-            || workspace
+    fn session_matches(&self, session: &SessionRecord) -> bool {
+        fuzzy_match(&self.filter.query, &session.name)
+            || fuzzy_match(&self.filter.query, &session.reference_name)
+            || fuzzy_match(&self.filter.query, &session.path)
+            || fuzzy_match(&self.filter.query, &session.state)
+            || session
                 .repo_path
                 .as_ref()
                 .is_some_and(|repo| fuzzy_match(&self.filter.query, repo))
-            || workspace
+            || session
                 .summary_preview
                 .as_ref()
                 .is_some_and(|summary| fuzzy_match(&self.filter.query, summary))
@@ -1683,21 +1683,18 @@ impl WorkspacesApp {
             .split(area);
 
         let visible = self.visible_indices();
-        let items = if self.workspaces.is_empty() {
-            vec![ListItem::new("No workspaces found").style(dim_style())]
+        let items = if self.sessions.is_empty() {
+            vec![ListItem::new("No sessions found").style(dim_style())]
         } else if visible.is_empty() {
-            vec![ListItem::new("No workspaces match filter").style(dim_style())]
+            vec![ListItem::new("No sessions match filter").style(dim_style())]
         } else {
             visible
                 .iter()
                 .map(|idx| {
-                    let workspace = &self.workspaces[*idx];
+                    let session = &self.sessions[*idx];
                     ListItem::new(vec![
-                        Line::from(Span::styled(workspace.name.clone(), title_style())),
-                        Line::from(Span::styled(
-                            workspace_list_metadata(workspace),
-                            dim_style(),
-                        )),
+                        Line::from(Span::styled(session.name.clone(), title_style())),
+                        Line::from(Span::styled(session_list_metadata(session), dim_style())),
                     ])
                 })
                 .collect::<Vec<_>>()
@@ -1708,9 +1705,9 @@ impl WorkspacesApp {
             state.select(selected_visible_position(self.selected, &visible));
         }
         let title = format!(
-            "Workspaces ({} / {} visible, {})",
+            "Sessions ({} / {} visible, {})",
             visible.len(),
-            self.workspaces.len(),
+            self.sessions.len(),
             self.filter.label()
         );
         let list = List::new(items)
@@ -1722,13 +1719,13 @@ impl WorkspacesApp {
         frame.render_stateful_widget(list, body[0], &mut state);
 
         let preview = self
-            .selected_workspace()
-            .map(workspace_preview)
+            .selected_session()
+            .map(session_preview)
             .unwrap_or_else(|| "No preview available.".to_string());
         let preview_title = self
-            .selected_workspace()
-            .map(|workspace| workspace.name.as_str())
-            .unwrap_or("Workspace");
+            .selected_session()
+            .map(|session| session.name.as_str())
+            .unwrap_or("Session");
         let preview = Paragraph::new(preview)
             .block(block(preview_title))
             .style(base_style())
@@ -1739,42 +1736,42 @@ impl WorkspacesApp {
     }
 }
 
-fn workspace_list_metadata(workspace: &WorkspaceRecord) -> String {
-    let mode = workspace.mode.as_deref().unwrap_or("-");
-    let updated = workspace.updated_at.as_deref().unwrap_or("unknown");
-    let next = workspace.next_action.as_deref().unwrap_or("-");
+fn session_list_metadata(session: &SessionRecord) -> String {
+    let mode = session.mode.as_deref().unwrap_or("-");
+    let updated = session.updated_at.as_deref().unwrap_or("unknown");
+    let next = session.next_action.as_deref().unwrap_or("-");
     format!(
         "{} / {} · {} turns · updated {} · next {}",
-        workspace.state, mode, workspace.turn_count, updated, next
+        session.state, mode, session.turn_count, updated, next
     )
 }
 
-fn workspace_preview(workspace: &WorkspaceRecord) -> String {
+fn session_preview(session: &SessionRecord) -> String {
     let mut lines = vec![
-        format!("Name: {}", workspace.name),
-        format!("Reference: {}", workspace.reference_name),
-        format!("Path: {}", workspace.path),
-        format!("State: {}", workspace.state),
-        format!("Mode: {}", workspace.mode.as_deref().unwrap_or("-")),
-        format!("Turns: {}", workspace.turn_count),
+        format!("Name: {}", session.name),
+        format!("Reference: {}", session.reference_name),
+        format!("Path: {}", session.path),
+        format!("State: {}", session.state),
+        format!("Mode: {}", session.mode.as_deref().unwrap_or("-")),
+        format!("Turns: {}", session.turn_count),
         format!(
             "Updated: {}",
-            workspace.updated_at.as_deref().unwrap_or("unknown")
+            session.updated_at.as_deref().unwrap_or("unknown")
         ),
     ];
-    if let Some(repo) = &workspace.repo_path {
+    if let Some(repo) = &session.repo_path {
         lines.push(format!("Repo: {repo}"));
     }
-    if let Some(next) = &workspace.next_action {
+    if let Some(next) = &session.next_action {
         lines.push(format!("Next: {next}"));
     }
     lines.push(String::new());
-    lines.push("Enter opens the focused workspace view.".to_string());
+    lines.push("Enter opens the focused session view.".to_string());
     lines.push(
         "Focused shortcuts: r run, w watch, o summary, e request, c context, d discover."
             .to_string(),
     );
-    if let Some(summary) = &workspace.summary_preview {
+    if let Some(summary) = &session.summary_preview {
         lines.push(String::new());
         lines.push("Summary".to_string());
         lines.push(summary.clone());
@@ -3895,10 +3892,10 @@ mod tests {
     fn dashboard_tabs_follow_progression_order() {
         assert_eq!(
             DASHBOARD_TABS,
-            ["Tools", "Workspaces", "Memories", "Suggestions", "Skills"]
+            ["Tools", "Sessions", "Memories", "Suggestions", "Skills"]
         );
         assert_eq!(DashboardTab::Tools.index(), 0);
-        assert_eq!(DashboardTab::Workspaces.index(), 1);
+        assert_eq!(DashboardTab::Sessions.index(), 1);
         assert_eq!(DashboardTab::Memories.index(), 2);
         assert_eq!(DashboardTab::Suggestions.index(), 3);
         assert_eq!(DashboardTab::Skills.index(), 4);
@@ -3935,8 +3932,8 @@ mod tests {
     }
 
     #[test]
-    fn workspaces_tab_filters_and_previews_folder_sessions() {
-        let workspace = WorkspaceRecord {
+    fn sessions_tab_filters_and_previews_folder_sessions() {
+        let session = SessionRecord {
             name: "repo-review".to_string(),
             reference_name: "repo-review-1234567890".to_string(),
             path: "/tmp/repo-review".to_string(),
@@ -3948,21 +3945,22 @@ mod tests {
             turn_count: 2,
             next_action: Some("edit request.md or run again".to_string()),
         };
-        let mut app = WorkspacesApp::new(vec![workspace]);
+        let mut app = SessionsApp::new(vec![session]);
 
         assert_eq!(app.visible_indices(), vec![0]);
         app.filter_push('r');
         app.filter_push('e');
         app.filter_push('p');
         app.filter_push('o');
-        assert_eq!(app.selected_workspace().unwrap().name, "repo-review");
+        assert_eq!(app.selected_session().unwrap().name, "repo-review");
 
-        let preview = workspace_preview(app.selected_workspace().unwrap());
+        let preview = session_preview(app.selected_session().unwrap());
         assert!(preview.contains("Name: repo-review"));
         assert!(preview.contains("Focused shortcuts"));
         assert!(preview.contains("Latest answer preview"));
-        assert!(workspace_list_metadata(app.selected_workspace().unwrap())
-            .contains("paused / background"));
+        assert!(
+            session_list_metadata(app.selected_session().unwrap()).contains("paused / background")
+        );
     }
 
     #[test]
@@ -3975,7 +3973,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
-            DashboardTab::Workspaces,
+            DashboardTab::Sessions,
         );
 
         assert!(!app.help_open);
@@ -3987,7 +3985,7 @@ mod tests {
 
     #[test]
     fn dashboard_palette_scopes_commands_to_active_tab() {
-        let workspaces_app = DashboardApp::new(
+        let sessions_app = DashboardApp::new(
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -3995,17 +3993,19 @@ mod tests {
             Vec::new(),
             Vec::new(),
             None,
-            DashboardTab::Workspaces,
+            DashboardTab::Sessions,
         );
-        let workspace_entries = workspaces_app.dashboard_command_palette();
+        let session_entries = sessions_app.dashboard_command_palette();
 
-        assert!(workspace_entries.iter().any(|entry| {
-            entry.section == "Workspaces" && entry.command == DashboardCommand::OpenSelected
+        assert!(session_entries.iter().any(|entry| {
+            entry.section == "Sessions" && entry.command == DashboardCommand::OpenSelected
         }));
-        assert!(!workspace_entries
-            .iter()
-            .any(|entry| { entry.section == "Sessions" || entry.label == "Open Sessions" }));
-        assert!(!workspace_entries.iter().any(|entry| {
+        assert!(session_entries.iter().any(|entry| {
+            entry.section == "Navigation"
+                && entry.label == "Open Sessions"
+                && entry.command == DashboardCommand::OpenTab(DashboardTab::Sessions)
+        }));
+        assert!(!session_entries.iter().any(|entry| {
             entry.section == "Skills" && entry.command == DashboardCommand::OpenSelected
         }));
 
@@ -4024,7 +4024,7 @@ mod tests {
             entry.section == "Skills" && entry.command == DashboardCommand::OpenSelected
         }));
         assert!(!skill_entries.iter().any(|entry| {
-            entry.section == "Workspaces" && entry.command == DashboardCommand::OpenSelected
+            entry.section == "Sessions" && entry.command == DashboardCommand::OpenSelected
         }));
     }
 
