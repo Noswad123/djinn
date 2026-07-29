@@ -32,14 +32,15 @@ These items are small enough or well-defined enough to implement without another
 product-design pass. UI work is the current priority because it affects every
 agent turn and makes the rest of the runtime easier to evaluate.
 
-### Agent chat UI polish
+### Workspace TUI polish
 
-Djinn's interactive chat is the primary product surface. It should keep the
-Ratatui/local-first architecture but borrow OpenCode's strongest UX patterns
-where they map cleanly to a terminal UI: quiet chrome, easy copy/paste,
-progressive disclosure, and visually scannable assistant turns. This is an
-OpenCode-inspired direction, not a commitment to clone OpenCode wholesale; choose
-the degree of stylistic emulation slice-by-slice as the UI evolves.
+Djinn's folder-backed Workspaces dashboard and focused workspace view are now the
+primary product surfaces. Keep the Ratatui/local-first architecture, but borrow
+OpenCode's strongest UX patterns where they map cleanly to file-backed terminal
+workflows: quiet chrome, easy copy/paste of paths and artifacts, progressive
+disclosure, and visually scannable status/provenance. This is an OpenCode-inspired
+direction, not a commitment to clone OpenCode wholesale; choose the degree of
+stylistic emulation slice-by-slice as the file-first UI evolves.
 
 Useful OpenCode reference files:
 
@@ -63,21 +64,19 @@ Useful OpenCode reference files:
 
 Borrow these concepts directly where they fit Ratatui:
 
-- **Session layout:** scrollable transcript, fixed composer/status dock, optional
-  right sidebar on wide terminals, low-noise persistent footer.
-- **Message hierarchy:** stronger user turns, quieter assistant text, muted
-  assistant metadata, distinct error/progress/tool states.
-- **Tool taxonomy:** inline rows for simple/status-like tools; block panels for
-  shell output, diffs, writes, todos, errors, and long generic output.
-- **Progressive disclosure:** collapse long tool output and reasoning by default,
-  with keyboard-first expand/collapse affordances.
-- **Composer polish:** bounded multiline input, profile/model/provider metadata,
-  active status/spinner row, cwd/context/usage hints, paste summarization.
+- **Workspace layout:** a recent-work list with a rich preview, focused status
+  view, low-noise persistent footer, and artifact-oriented actions.
+- **Status hierarchy:** prominent lifecycle state, muted repo/model/session
+  metadata, clear next-action hints, and distinct failure/warning rows.
+- **Artifact taxonomy:** summary, request, context, turns, logs, and repo links
+  should be visible as navigable artifacts rather than hidden implementation
+  details.
+- **Progressive disclosure:** show concise previews by default, with keyboard-first
+  drill-down into status, context, turn evidence, and run logs.
 - **Reusable dialogs:** one grouped fuzzy select abstraction for commands,
   models, sessions, themes, agents/profiles, and future pickers.
-- **Navigation:** line/page/half-page scroll, first/last, next/previous message,
-  jump to last user message, jump to latest, and sticky-bottom only when the user
-  is already following the bottom.
+- **Navigation:** tab switching, filter/search, recency/grouping, page/line scroll,
+  and focused open/run/watch shortcuts should stay keyboard-first.
 - **Theme tokens:** move from direct color constants toward semantic tokens for
   backgrounds, text/muted text, borders, status colors, diff colors, and Markdown
   colors.
@@ -94,9 +93,11 @@ Do not copy these OpenCode details directly:
 
 Remaining ready UI slices:
 
-- **Code fence syntax highlighting:** add terminal-safe syntax highlighting for
-  rendered Markdown code fences while preserving raw Markdown mode and
-  copy-friendly rectangular code-block rows.
+- **Workspace preview polish:** group cache-backed sessions by linked repo, improve
+  stale/running/failed state badges, and make next actions obvious without opening
+  the folder.
+- **Artifact opening polish:** ensure every focused-workspace action reports the
+  exact delegated command/path and leaves the terminal in a clean state.
 
 ### Folder-backed sessions
 
@@ -313,19 +314,20 @@ Ready Djinn implementation slices:
 
 Completed Djinn worker primitives:
 
-- Foreground child-session launch from Agent chat creates a normal agent session
-  with `parent_session_id`, preserving current profile/agent/model context while
-  normal New Session clears parent linkage.
+- Early foreground child-session launch created normal agent sessions with
+  `parent_session_id`, preserving current profile/agent/model context while normal
+  New Session cleared parent linkage. That UI path is superseded by the
+  folder-backed workflow; keep the lineage/event lessons, not the removed surface.
 - Child-session tree depth is capped at three levels below the root at creation
   time.
 - CLI-only lifecycle state is recorded as JSONL session events and derived from
   the latest event, with states `created`, `running`, `paused`, `completed`,
   `failed`, and `cancelled`. Review/notification state remains separate and is
   owned by Coven/family projections rather than the execution lifecycle.
-- Foreground chat writes lifecycle events automatically: turns become
-  `running/foreground`, successful turns become `paused/foreground`, failures
-  become `failed/foreground`, and chat exit leaves the session paused rather than
-  pretending the task is complete.
+- Foreground folder-backed runs write lifecycle events: turns become
+  `running/foreground`, successful turns become `paused` or `completed` depending
+  on run mode, failures become `failed`, and exiting an inspectable workflow must
+  not pretend unfinished work is complete.
 
 ## Needs a decision before implementation
 

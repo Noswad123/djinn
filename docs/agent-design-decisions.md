@@ -671,62 +671,42 @@ The first non-interactive agent slice is implemented as:
     Delete required `--force` and removed the session JSONL file. These native
     session inspection commands are no longer the user-facing surface; folder
     sessions and `djinn ask` / `djinn session ...` are canonical.
-17. A dashboard pane that only browses JSONL agent sessions overlaps with the
-    Sessions picker and should not be treated as the Agent UI. The Agent UI must
-    be an interactive chat/composer/runtime surface, with history/session picking
-    as secondary behavior.
-18. `djinn agent chat` opens the first real Agent TUI surface: a Ratatui chat
-    composer with readable transcript rendering, tool-call entries that identify
-    the tool name and invocation details, correlated tool-result summaries that
-    avoid raw JSON/call-id-first output, workspace/profile/model status, JSONL
-    session persistence, and multi-turn calls through the existing agent runtime.
-19. The Agent chat TUI stays in the alternate screen across prompt submission and
-    runtime turns. It updates the transcript/status in-place while a turn runs
-    instead of dropping to stdout with an out-of-band "thinking" message.
-20. Agent chat should not auto-scroll by default. It exposes an explicit bottom
-    arrow/jump-to-latest affordance (`End`) so the user can move instantly to the
-    newest transcript content without losing their current scroll position.
-21. Agent chat transcript/composer boxes avoid left and right borders because
-    side borders interfere with copy/paste. Use top/bottom separators instead for
-    text-heavy chat regions.
-22. Agent chat composer uses Enter to send and Shift+Enter to insert multiline
-    prompts. Djinn enables crossterm keyboard enhancement flags so terminals that
-    support enhanced key reporting can distinguish Shift+Enter from Enter. Do not
-    use Ctrl+J as a newline fallback. The focused composer should show a visible
-    terminal cursor, and typing `q` into an empty composer must insert text rather
-    than quit the chat.
-23. Agent chat uses Ctrl+E as a transcript extraction escape hatch. Ctrl+E
-    suspends the TUI and opens a copy-friendly Markdown export of the current
-    transcript in `$VISUAL`, `$EDITOR`, or `nvim` regardless of whether the
-    composer has text. Existing composer text and paste summaries are preserved so
-    the user can yank from the transcript editor, return to chat, and paste into
-    the next prompt without losing their draft.
-24. `djinn agent chat --resume <session-id>` resumes an existing JSONL agent
-    session using that session's stored workspace/profile metadata. This keeps
-    resume as part of the Agent runtime surface rather than the Sessions
-    browser.
-25. Superseded by decision 84: `djinn` with no arguments initially routed to the
-    interactive Agent chat surface when stdin/stdout were terminals. The current
-    terse default is the session dashboard instead.
-26. Agent chat keeps the same top tab row as the dashboard, with Agent selected
-    instead of showing a plain `Djinn Agent` title header. Pressing Tab from
-    Agent chat enters Tools; Shift+Tab from Agent chat enters Skills. Pressing
-    Tab from Skills or Shift+Tab from Tools returns to Agent chat and resumes the
-    current agent session. Chat/dashboard transitions keep one terminal session
-    alive to avoid alternate-screen flicker.
-27. Agent chat rich progress is rendered in-place during model turns. The runtime
-    emits model/tool progress events, and the live transcript preserves the turn's
-    progress timeline instead of replacing each status with the latest generic
-    message. Planned-tool progress names the actual tool(s), for example
-    `Planned read_file` instead of `Planned 1 tool call`. Thought/progress entries
-    render as compact `Thought: …` rows in compact mode and reveal additional
-    tool-round details plus input/result snippets in detailed mode. Tool
-    requests/results remain distinct rows/blocks such as `▶ Tool Request · <tool>`
-    and `✓/✗ Tool Execution · <tool> · <status>` so the turn shape and
-    success/failure state are visible at a glance without dumping raw JSON.
-    Mutation tools (`apply_patch`, `write_file`, and `edit_file`) summarize
-    operation/path/line counts from their shared mutation result payloads rather
-    than exposing raw `summary`/`preview` JSON.
+17. Superseded by decisions 63-84: a dashboard pane that only browses JSONL
+    runtime sessions overlaps with the legacy Sessions picker and should not be
+    treated as the primary product surface. The current primary surface is the
+    folder-backed Workspace: files are user-facing state, and JSONL is a private
+    event artifact inside or behind the workspace folder.
+18. Superseded by decisions 63-84: the early interactive transcript/composer TUI
+    proved useful for message rendering experiments, but it is removed from the
+    user-facing CLI. Do not restore it as a parallel product; port durable lessons
+    into Workspaces, focused status, and artifact navigation.
+19. Superseded by decision 84: long-running turn progress should be visible
+    through folder lifecycle state, run logs, `summary.md`, and turn artifacts
+    rather than an alternate-screen transcript runtime.
+20. Superseded by decision 84: transcript autoscroll and jump-to-latest behavior
+    belongs to any future artifact viewer, not to the core Workspace dashboard.
+21. Superseded by decision 84: copy-friendly TUI chrome remains a constraint, but
+    the current Workspaces UI optimizes for copyable paths, summaries, and
+    artifact names instead of text-heavy transcript/composer panes.
+22. Superseded by decision 84: prompt editing now belongs in `request.md` and the
+    user's editor. The focused workspace view delegates edit/open actions to files
+    instead of owning a prompt composer.
+23. Superseded by decision 84: transcript extraction is replaced by file-first
+    artifacts. Users copy from `summary.md`, `turns/<id>/response.md`, compacted
+    context, or native logs instead of exporting a live transcript.
+24. Superseded by decisions 78-80: direct resume of legacy JSONL runtime sessions
+    is not a product path. Migration/import should produce folder sessions or
+    safe legacy rows in the Sessions picker.
+25. Superseded by decision 84: `djinn` with no arguments initially routed to an
+    interactive runtime surface when stdin/stdout were terminals. The current
+    default opens the Workspaces dashboard.
+26. Superseded by decision 84: the TUI tab row no longer includes a dedicated
+    runtime tab. Dashboard tabs are Tools, Workspaces, Sessions, Memories,
+    Suggestions, and Skills; Workspaces is the default entry point.
+27. Superseded by decisions 77 and 84: rich turn progress is recorded in native
+    lifecycle/events and projected through folder-backed status/watch/list views.
+    User-facing inspection should prefer lifecycle state, run logs, and turn files
+    over an in-memory transcript renderer.
 28. The dashboard Sessions tab is the session picker. Djinn JSONL agent
     sessions are projected into that tab as `djinn-agent` records; pressing Enter
     or `r` resumes a Djinn agent session or converts an imported OpenCode chat
@@ -744,23 +724,23 @@ The first non-interactive agent slice is implemented as:
     through the command palette and a simple cycle key rather than a raw event
     browser.
     Promote options live on `s` for promotable session rows.
-29. Djinn agent sessions auto-title from the first user prompt when the session
-    still has a default title such as `Agent chat` or `Untitled agent session`.
-    Explicit titles and imported/converted session titles are preserved.
-30. Agent chat uses Ctrl+P as the command palette home for cross-cutting chat
+29. Djinn runtime sessions auto-title from the first user prompt when the session
+    still has a generated placeholder title. Explicit titles and
+    imported/converted session titles are preserved. Folder display names hide
+    long native ids and expose shorter reference names for copy/paste.
+30. The dashboard uses Ctrl+P as the command palette home for cross-cutting TUI
     actions instead of accumulating one-off keybindings. The palette follows the
     OpenCode-style shape: a search box with fuzzy matching, section headers for
-    related actions, and Ctrl+P/Ctrl+N navigation while the palette is open. The
-    first action sections open the Sessions picker and switch the active
-    profile or model; profile/model changes are persisted as JSONL session
-    metadata events so resumed sessions continue with the selected runtime
-    context.
+    related actions, and Ctrl+P/Ctrl+N navigation while the palette is open.
+    Actions are scoped to the active dashboard tab plus shared navigation/help
+    commands; runtime profile/model changes belong to config/ask/session command
+    flows, not a removed transcript composer.
     `djinn agent config list` is the non-interactive companion for inspecting the
     same discovered profile/model option sets in text or JSON form, while
     `djinn agent config show` explains the effective workspace/profile/model,
     read-access policy, and permission policy that an agent run will use.
-31. Agent chat uses Ctrl+/ for a help dialog. Detailed keybinding guidance lives
-    there instead of crowding the footer; the footer should stay minimal and
+31. The dashboard uses Ctrl+/ for a help dialog. Detailed keybinding guidance
+    lives there instead of crowding the footer; the footer should stay minimal and
     point to help.
 32. The command palette keeps its search row fixed and scrolls only the action
     list. This keeps config-driven profile/model lists usable without hiding the
@@ -775,16 +755,18 @@ The first non-interactive agent slice is implemented as:
 34. The dashboard also uses Ctrl+/ for detailed help. Per-tab keybinding
     guidance belongs in the help overlay, while the dashboard footer stays short
     and points to help.
-35. Current profile/model choices in the command palette should be visibly marked
-    with a check. Selecting the already-current profile/model is a no-op and must
-    not append redundant JSONL metadata events.
-36. The Agent command palette Session section includes New session as a first-class
-    action. Starting a new session from the palette should preserve the current
-    profile/model context while clearing the resumed session id/title/workspace;
-    it does not create a parent/child relationship.
-37. The Agent command palette includes Navigation actions for the shared top tabs
-    (Tools, Sessions, Memories, Suggestions, Skills). Ctrl+P should be a central way
-    to jump around the interface without remembering tab-specific shortcuts.
+35. When profile/model choices appear in future config or workspace pickers, the
+    current choice should be visibly marked with a check. Selecting the
+    already-current profile/model is a no-op and must not append redundant JSONL
+    metadata events.
+36. Superseded by decisions 78 and 84: starting new model work from the TUI should
+    create or open a folder-backed workspace, not a detached runtime transcript.
+    The first-class creation/continuation commands are `djinn ask`,
+    `djinn session init`, and `djinn session run`.
+37. The dashboard command palette includes Navigation actions for the shared top
+    tabs (Tools, Workspaces, Sessions, Memories, Suggestions, Skills). Ctrl+P
+    should be a central way to jump around the interface without remembering
+    tab-specific shortcuts.
 38. Ctrl+P is a TUI-wide command palette entry point. Dashboard tabs expose the
     same searchable/sectioned command palette pattern, with actions scoped to the
     active tab plus shared navigation/help commands.
@@ -799,11 +781,11 @@ The first non-interactive agent slice is implemented as:
 41. Session promotion emits context material rather than executing a model. Summary
     mode is human-facing in direct CLI use and renders a local digest, not an
     agent-review prompt; patterns/memories modes remain prompt-oriented review
-    helpers. From the TUI Sessions picker, summary promotion creates an Agent session
-    seeded with selected session context and a summarization request so follow-up can
-    continue conversationally instead of dumping output to stdout. When promoted
-    session content is an OpenCode JSON export, Djinn renders a compact role-labeled
-    digest of readable message/tool parts instead of embedding raw JSON.
+    helpers. From the TUI Sessions picker, promotion stays a legacy saved-session
+    workflow and should produce local digest/prompt material or migration targets,
+    not open a removed runtime surface. When promoted session content is an
+    OpenCode JSON export, Djinn renders a compact role-labeled digest of readable
+    message/tool parts instead of embedding raw JSON.
     Sanitized/redacted exports should state that source text may be unavailable
     rather than burying that fact in large redacted payloads.
 42. `djinn promote sessions --mode merge` is the cleanup-oriented promotion workflow.
@@ -821,110 +803,71 @@ The first non-interactive agent slice is implemented as:
     conflicting active rows by default and requires `--force` to replace rows
     with matching IDs or source/source-id pairs. Archive removal should require
     `--force` and refuse to delete files outside Djinn's chat archive directory.
-44. Agent chat rendered Markdown is a display mode over raw Markdown transcript
-    text. Ctrl+R toggles rendered/raw display so visual polish does not replace
-    copy/export fidelity. Fenced code blocks should render as quiet rectangular
-    background-highlighted rows padded to the transcript width, including empty
-    code rows, without decorative border/header/footer glyphs in the selectable
-    transcript text. Markdown tables render as aligned text rows without copied
-    table separator rows or decorative table borders; raw mode preserves the
-    original Markdown table markers for exact copying/export.
-45. Agent chat scroll affordances should not occupy a persistent selectable text
-    column. Prefer title/footer hints such as `Transcript ↓ End` plus explicit
-    jump keys over a glyph scrollbar that can be copied with terminal selection.
-46. Agent chat tool rendering uses an OpenCode-inspired taxonomy rather than a
-    uniform raw tool-call block. Read/list/find/search/web/simple tools render as
-    compact inline rows with status glyphs and short summaries. Shell requests
-    and shell results render as richer block-style rows with command, exit/status,
-    stdout, and stderr separated visually. Mutation tools such as patch/write/edit
-    render as block-style results so file operations remain prominent and
-    inspectable.
-47. Long shell and generic tool output is collapsed by default in the Agent chat
-    transcript. Shell stdout/stderr sections show a bounded preview; long generic
-    tool results render as a small block preview. Ctrl+T toggles compact/full tool
-    output globally for the current TUI session so users can inspect complete
-    output without making every long tool result noisy by default.
-48. Agent chat message hierarchy should stay visually scannable without adding
-    copy-hostile chrome. User turns use a subtle panel background/accent,
-    assistant Markdown renders quieter with light indentation, assistant replies
-    show muted profile/model metadata when that context is available, and failure
-    notices render as distinct error rows instead of blending into generic
-    status text. Per-turn duration should be added to the same muted metadata row
-    once reliable per-message timing is available.
-49. Agent chat transcript navigation is keyboard-first and palette-discoverable.
-    Down/Up scroll by one line for smoother reading, PageDown/PageUp scroll by a
-    visible page with overlap, Ctrl+U/Ctrl+D scroll half pages, Alt+Up/Alt+Down
-    jump to previous/next message boundaries, Ctrl+Home/Ctrl+End jump to
-    first/last message boundaries, and Alt+U jumps to the last user turn.
-    Transcript scroll is clamped to the current content height so users cannot
-    overscroll into blank space. The command palette exposes the same navigation
-    actions so these jumps do not have to become permanent footer chrome.
-50. Agent chat composer is a fixed dock rather than an unstructured text box. It
-    keeps a bounded multiline input preview so long prompts do not crowd out the
-    transcript. It should not repeat profile/model metadata from the header or
-    ready/runtime status already visible in the transcript. The cwd remains
-    visible in quiet footer/status chrome instead of reintroducing a large
-    shortcut footer.
-51. The portable OpenCode session-UI patterns for Djinn are message grouping,
-    progressive assistant/tool hierarchy, keyboard-first navigation, quiet footer
-    telemetry, and reusable grouped selection dialogs. Specifically: user turns
-    can be more card-like while assistant prose stays light; simple tools should
-    remain inline and rich/error/diff/shell outputs should use blocks; reasoning
-    and long outputs should stay collapsible; command/dialog search should favor
-    action titles and flatten results after typing; jump-to-latest and
-    message-boundary navigation are more useful than visible scroll chrome; and
-    permission prompts should use explicit action bars with safe defaults. Avoid
-    copying Solid/OpenTUI implementation details, heavy assistant chrome,
-    unbounded output blocks, hover/mouse-primary behavior, or exposing every
-    completed tool detail by default.
+44. Superseded by decision 84: rich Markdown rendering belongs in focused artifact
+    viewers if reopened. The canonical copy/export surfaces are Markdown files
+    (`summary.md`, `request.md`, turn files, and compacted context), which already
+    preserve raw source text for editors and terminal copying.
+45. Workspace scroll affordances should not occupy a persistent selectable text
+    column. Prefer title/footer hints and explicit keys over decorative scroll
+    chrome that can be copied with terminal selection.
+46. Tool output inspection is an artifact/log problem in the folder-backed model.
+    Keep concise status in list/watch views, and preserve full details in native
+    events or run logs so long output is inspectable without making dashboards
+    noisy.
+47. Long shell and generic tool output should be collapsed in projections by
+    default. Users can inspect complete output through run logs/native artifacts;
+    dashboards and watch/status views should show bounded previews or pointers.
+48. Workspace hierarchy should stay visually scannable without adding copy-hostile
+    chrome: prominent state/title, muted repo/profile/model/session metadata,
+    distinct warning/error rows, concise summary previews, and visible next-action
+    hints.
+49. Workspace navigation is keyboard-first and palette-discoverable. Dashboard tabs
+    support filter/search, line/page preview scrolling, tab cycling, and
+    palette-backed navigation. Focused workspace shortcuts delegate to file/run
+    commands so artifacts remain the source of truth.
+50. Prompt editing belongs in files, not a fixed TUI dock. `request.md` is the
+    editable prompt, `summary.md` is the latest answer, `turns/` is evidence, and
+    `context/` is durable working memory.
+51. The portable OpenCode UI patterns for Djinn are keyboard-first navigation,
+    quiet footer telemetry, reusable grouped selection dialogs, progressive
+    disclosure, and explicit action bars with safe defaults. In the folder-backed
+    UI, apply those patterns to workspace lists, artifact previews, lifecycle
+    state, logs, permissions, and future pickers. Avoid copying Solid/OpenTUI
+    implementation details, heavy assistant chrome, unbounded output blocks,
+    hover/mouse-primary behavior, or exposing every completed tool detail by
+    default.
 52. Searchable grouped picker behavior lives in a generic grouped-select TUI
     primitive rather than command-palette-specific code. It owns open/close state,
     fuzzy query text, visible index projection, selection movement, selected-row
     scroll visibility, grouped row rendering, and selected-item extraction. The
-    Agent and dashboard command palettes now use that primitive, and future model,
-    profile, session, theme, and agent pickers should use the same abstraction
+    dashboard command palette uses that primitive, and future model, profile,
+    session, theme, and agent pickers should use the same abstraction
     unless they need a clearly different interaction model.
-53. Agent chat command metadata lives in a central command spec registry for
-    built-in chat actions. The registry records section/group, label,
-    description, optional keybinding, optional help section, and the command value
-    when an action is palette-runnable. Built-in palette entries and the Agent
-    help overlay are generated from that registry; dynamic profile/model entries
-    remain runtime-provided but should follow the same grouped-select shape.
+53. Dashboard command metadata is centralized by tab and shared navigation/help
+    sections. Entries record section/group, label, description, and command value
+    when an action is palette-runnable. Future dynamic profile/model/session
+    entries should follow the same grouped-select shape.
 54. TUI styling uses semantic theme tokens backed initially by a
-    Catppuccin-inspired palette. Agent chat uses `#24273A` for the main app
-    background and `#181926` for the composer dock background.
-    Shared styles and Agent chat rendering should refer to roles such as app
+    Catppuccin-inspired palette. Shared styles should refer to roles such as app
     background, panel background, composer background, elevated background, text,
     muted text, title, selected, success, warning, error, info, code background,
     and tool background instead of hard-coding palette constants at each call
     site. Catppuccin
     constants remain the default palette values and can still support legacy code
     during incremental migration.
-55. Agent chat has an optional right-side Context sidebar, hidden by default and
-    toggleable from the command palette. It only renders on wide terminals so the
-    transcript remains copy-friendly by default and the main transcript/composer
-    layout remains unchanged on narrower terminals. The initial sidebar projection
-    is read-only session context: session id, profile/model, workspace, display
-    modes, and message counts. Future active tools, child sessions, permissions,
-    memories, or workspace health can extend that sidebar without adding more
-    persistent footer/header noise.
-56. Agent chat enables bracketed paste and summarizes large pasted ranges in the
-    composer preview so clipboard dumps do not flood the input box. Small pastes
-    insert normally. Large pastes remain in the raw prompt buffer and expand to
-    their original text on submit; the composer shows a compact line/byte summary
-    such as `📋 pasted … — included on submit`. Opening the transcript in the
-    external editor preserves the raw prompt text and paste summaries.
-57. Agent chat treats Ctrl+C as a composer clear before it is a quit command. If
-    the composer contains text, Ctrl+C clears the prompt and any paste summaries;
-    if the composer is empty, Ctrl+C exits the chat. Esc remains an empty-composer
-    quit affordance.
-58. Agent chat has a foreground child-session launch surface in the command
-    palette. `Launch child session…` starts a new Agent chat using the current
-    session's profile, configured agent role, latest selected model, and runtime
-    policy snapshot path while setting `parent_session_id` to the current session.
-    This foregrounds the child by switching the current TUI to that new session;
-    background lifecycle, grant records, and child result import remain separate
-    later slices.
+55. Superseded by decision 84: context should be a folder artifact, not a hidden
+    sidebar. `context/` and `djinn session context ...` commands are the durable
+    context surface; focused TUI views may preview or open those artifacts.
+56. Superseded by decision 84: large prompt input is handled by editing files.
+    Clipboard dumps belong in `request.md` or explicit context files where users
+    can inspect, trim, and cite them before a run.
+57. Superseded by decision 84: composer-specific Ctrl+C behavior was removed with
+    the transcript runtime. Dashboard/focused views use simple quit/cancel keys and
+    delegate edits to files.
+58. Superseded by decision 84: foreground child launch from the removed runtime UI
+    should not be restored. Future worker/subtask creation should use folder-backed
+    session metadata, explicit parent/orchestration ids, and inspectable result
+    artifacts.
 59. Djinn enforces the initial child-session tree depth cap at session creation
     time. A child may be created up to three levels below the root session; using a
     depth-three session as the parent for another child is rejected. The check
@@ -942,16 +885,13 @@ The first non-interactive agent slice is implemented as:
     Future review states such as unread/dismissed/imported should live in a
     family projection or notification layer, not overload the execution lifecycle
     event.
-62. Foreground agent chat now writes lifecycle events automatically. A submitted
-    prompt marks the session `running/foreground`; a successful turn marks it
-    `paused/foreground` with a ready-for-next-prompt note; a failed turn marks it
-    `failed/foreground`; exiting a non-failed/non-cancelled chat marks it
-    `paused/foreground`, not completed. Completion remains explicit, or automatic
-    only for non-interactive/background success paths. This originally gave
-    foreground child sessions an inspectable status through `djinn agent session
-    lifecycle show` and `djinn agent session children`; those JSONL-first
-    inspection commands are superseded by the folder-backed direction in
-    decisions 66-80.
+62. Foreground folder-backed runs write lifecycle events automatically. A submitted
+    prompt marks the session `running/foreground`; a successful foreground turn
+    updates the folder artifacts and leaves inspectable state for the next action;
+    a failed turn marks it `failed/foreground`. Completion remains explicit, or
+    automatic only for non-interactive/background success paths. Earlier
+    JSONL-first lifecycle inspection commands are superseded by the folder-backed
+    direction in decisions 66-84.
 63. Djinn supports folder-backed session projections as a pivot away from making
     the terminal transcript the primary workspace. `djinn ask --session-dir`
     can read `request.md` when no prompt is provided; `djinn session run` is the
@@ -993,8 +933,8 @@ The first non-interactive agent slice is implemented as:
     existing native session; otherwise a successful ask can create/project the
     folder as a new session capsule. Ask resolution precedence is CLI flags over
     session `djinn.toml`, then repo-local `.djinn.json`, then global config, then
-    built-ins. `djinn chat` / `djinn agent chat` are not user-facing surfaces;
-    keep new behavior on the file-first ask/session flow.
+    built-ins. Removed chat spellings are not user-facing surfaces; keep new
+    behavior on the file-first ask/session flow.
     `djinn session run <session>` is the folder-native spelling for processing
     the current `request.md`; it starts a background worker by default and reports
     the pid/log path plus a `djinn session watch <session>` hint. `--fg` uses the
@@ -1114,7 +1054,7 @@ The first non-interactive agent slice is implemented as:
     scripts and also includes grouped repo sections for UI consumers. Long native
     id suffixes in cache folder names are implementation details. Newly
     auto-created cache folders should use short copy-pasteable names such as
-    `agent-chat-1785201849-abcd`; legacy long `...-agt_...` folders should remain
+    `repo-review-1785201849-abcd`; legacy long `...-agt_...` folders should remain
     resolvable through the same short reference shape and can be renamed in place
     with `djinn session shorten-names`. JSON preserves exact folder name/path and
     also exposes friendly display/reference names.

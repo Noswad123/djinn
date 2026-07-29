@@ -85,9 +85,9 @@ djinn status opencode
 djinn uninstall opencode
 ```
 
-Promotion is session-focused. In the TUI, choosing `summary` from the Sessions
-picker opens an Agent chat seeded with the selected session context so you can ask
-follow-up questions conversationally. In the CLI, `--mode summary` prints a local,
+Promotion is session-focused. In the TUI, the Sessions picker is for legacy saved
+session rows: resume/convert where supported, or promote selected rows into local
+digest/prompt material. In the CLI, `--mode summary` prints a local,
 human-facing digest and does not run a model. `--mode pattern` and `--mode
 memories` emit agent-ready prompts without writing memories automatically. For
 OpenCode exports, Djinn renders a readable digest of message/tool parts instead of

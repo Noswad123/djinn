@@ -1164,7 +1164,7 @@ struct AgentPolicyListArgs {
     /// Configured agent role name.
     #[arg(long)]
     agent: Option<String>,
-    /// OpenAI model to use. Defaults the same way as agent chat.
+    /// OpenAI model to use. Defaults the same way as folder-backed asks.
     #[arg(long)]
     model: Option<String>,
     /// Output format.
@@ -1186,7 +1186,7 @@ struct AgentPolicyAuditArgs {
     /// Configured agent role name.
     #[arg(long)]
     agent: Option<String>,
-    /// OpenAI model to use. Defaults the same way as agent chat.
+    /// OpenAI model to use. Defaults the same way as folder-backed asks.
     #[arg(long)]
     model: Option<String>,
     /// Output format.
@@ -1224,7 +1224,7 @@ struct AgentConfigListArgs {
     /// Agent profile to treat as current.
     #[arg(long, default_value = "default")]
     profile: String,
-    /// Model to treat as current. Defaults the same way as agent chat.
+    /// Model to treat as current. Defaults the same way as folder-backed asks.
     #[arg(long)]
     model: Option<String>,
     /// Output format.
@@ -1246,7 +1246,7 @@ struct AgentConfigShowArgs {
     /// Configured agent role name.
     #[arg(long)]
     agent: Option<String>,
-    /// OpenAI model to use. Defaults the same way as agent chat.
+    /// OpenAI model to use. Defaults the same way as folder-backed asks.
     #[arg(long)]
     model: Option<String>,
     /// Output format.
@@ -10276,12 +10276,12 @@ fn should_auto_title_agent_session(session: &AgentSession) -> bool {
 }
 
 fn infer_agent_session_title(prompt: &str) -> String {
-    let title = prompt_title(prompt, "Agent chat")
+    let title = prompt_title(prompt, "Djinn session")
         .trim_matches(|ch: char| ch.is_ascii_punctuation() || ch.is_whitespace())
         .trim()
         .to_string();
     if title.is_empty() {
-        "Agent chat".to_string()
+        "Djinn session".to_string()
     } else {
         title
     }

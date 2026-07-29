@@ -87,8 +87,7 @@ calls these file-backed capsules **Workspaces**: `djinn` opens that tab by
 default, and `djinn tui workspaces` opens it explicitly. Use
 `djinn session <name-or-path>` for the focused workspace view,
 `djinn session run` to execute turns, and `djinn session watch` to follow
-lifecycle status. The old interactive `djinn agent chat` surface has been
-removed.
+lifecycle status. The old transcript subcommand has been removed.
 
 `djinn agent config list` and the TUI command palette include Copilot model
 options from `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`, comma/semicolon-list
