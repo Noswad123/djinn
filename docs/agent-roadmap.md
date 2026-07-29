@@ -188,6 +188,20 @@ Session context has first-class file/link management:
 
 This keeps durable working memory explicit and reversible while preserving the
 rule that linked directories are references, not blindly ingested context.
+Harness-aware discovery now has an initial safe implementation:
+
+- `djinn session context discover <session>` applies safe discoveries by default.
+- `djinn session context discover <session> --dry-run` previews without mutation.
+- Generic breadcrumbs (`AGENTS.md`, `README.md`, `CLAUDE.md`, `.cursorrules`),
+  Copilot breadcrumbs (`.github/copilot-instructions.md`, `.github/instructions`,
+  `.github/prompts`), and OpenCode breadcrumbs (`opencode.json` instructions,
+  `.opencode/commands`, `.opencode/skills`) are adapted into session context.
+- Direct links are reserved for high-signal files and are flattened into
+  top-level `context/*.md` symlinks where possible, so `context ls` reports them
+  as explicit ingestible entries. Broader `docs/**/*.md` style trees are indexed
+  in `context/repo-index.md`, not bulk-ingested.
+- Dependency/cache/secret paths such as `.opencode/node_modules`, `.venv`,
+  `.env*`, `*.db`, `.pytest_cache`, and `.ruff_cache` remain excluded by default.
 
 Ready follow-up slices:
 
@@ -199,9 +213,9 @@ Ready follow-up slices:
 - Add explicit deprecation/migration affordances for legacy commands: clear help
   text, warnings where appropriate, and one-way import/move helpers that leave the
   folder session as the only user-facing artifact.
-- Later: discover context from the same configured locations other harnesses use
-  (for example repo/harness instruction files) and fold those into the same
-  precedence model; table this until folder-native context behavior is stable.
+- Extend context discovery with repo-local Djinn config for include/exclude/index
+  tuning without requiring teams to replace OpenCode/Copilot/Cursor/Claude
+  breadcrumbs.
 - Add model-assisted/session-aware compaction that distills older turns into
   durable facts, decisions, and open questions rather than only producing a
   deterministic digest. Compaction should be threshold-friendly (manual first,

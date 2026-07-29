@@ -203,12 +203,26 @@ struct SessionContextArgs {
 
 #[derive(Debug, Subcommand)]
 enum SessionContextCommand {
+    /// Discover repo and harness context breadcrumbs into this session.
+    Discover(SessionContextDiscoverArgs),
     /// List session-local context entries and ingestion status.
     Ls(SessionContextLsArgs),
     /// Link a file or directory into session-local context.
     Add(SessionContextAddArgs),
     /// Remove one session-local context entry.
     Rm(SessionContextRmArgs),
+}
+
+#[derive(Debug, Args)]
+struct SessionContextDiscoverArgs {
+    /// Folder-backed session name or directory to update.
+    session: PathBuf,
+    /// Preview discoveries without creating links or repo-index.md.
+    #[arg(long = "dry-run")]
+    dry_run: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -5422,6 +5436,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
 
 fn session_context(args: SessionContextArgs) -> Result<()> {
     match args.command {
+        SessionContextCommand::Discover(args) => session_context_discover(args),
         SessionContextCommand::Ls(args) => session_context_ls(args),
         SessionContextCommand::Add(args) => session_context_add(args),
         SessionContextCommand::Rm(args) => session_context_rm(args),
@@ -5529,12 +5544,55 @@ struct SessionContextRmReport {
     removed: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionContextDiscoverReport {
+    session_dir: String,
+    context_dir: String,
+    repo: String,
+    dry_run: bool,
+    links: Vec<SessionContextDiscoverLink>,
+    indexed: Vec<SessionContextDiscoverIndexEntry>,
+    ignored: Vec<String>,
+    warnings: Vec<String>,
+    repo_index_path: String,
+    repo_index_written: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionContextDiscoverLink {
+    source: String,
+    name: String,
+    path: String,
+    target: String,
+    existed: bool,
+    created: bool,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionContextDiscoverIndexEntry {
+    source: String,
+    path: String,
+    title: Option<String>,
+    reason: String,
+}
+
 fn session_status(args: SessionStatusArgs) -> Result<()> {
     let report = folder_session_status(&args.dir)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", format_folder_session_status(&report));
+    }
+    Ok(())
+}
+
+fn session_context_discover(args: SessionContextDiscoverArgs) -> Result<()> {
+    let report = discover_folder_session_context(&args.session, args.dry_run)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_folder_session_context_discover(&report));
     }
     Ok(())
 }
@@ -6701,6 +6759,548 @@ fn remove_folder_session_context_entry(
     })
 }
 
+fn discover_folder_session_context(
+    session: &Path,
+    dry_run: bool,
+) -> Result<SessionContextDiscoverReport> {
+    let session_dir = resolve_existing_folder_session_dir(session)?;
+    let context_dir = session_dir.join("context");
+    if !dry_run {
+        fs::create_dir_all(&context_dir)
+            .with_context(|| format!("creating context directory {}", context_dir.display()))?;
+    }
+    let repo = resolve_folder_session_repo_open_target(&session_dir)?
+        .canonicalize()
+        .with_context(|| "resolving discovered repo path")?;
+    let mut warnings = Vec::new();
+    let mut links = Vec::new();
+    let mut indexed = Vec::new();
+    let mut ignored = Vec::new();
+
+    let mut link_specs = discover_repo_context_link_specs(&repo, &mut indexed, &mut ignored)?;
+    link_specs.sort_by(|left, right| left.context_path.cmp(&right.context_path));
+    link_specs.dedup_by(|left, right| left.context_path == right.context_path);
+    for spec in link_specs {
+        links.push(apply_discovered_context_link(
+            &context_dir,
+            &spec,
+            dry_run,
+            &mut warnings,
+        )?);
+    }
+
+    collect_repo_index_entries(&repo, &mut indexed, &mut ignored)?;
+    indexed.sort_by(|left, right| left.path.cmp(&right.path));
+    indexed.dedup_by(|left, right| left.path == right.path);
+    ignored.sort();
+    ignored.dedup();
+
+    let repo_index_path = context_dir.join("repo-index.md");
+    let repo_index = render_context_discovery_repo_index(&repo, &links, &indexed, &ignored);
+    let repo_index_written = if dry_run {
+        false
+    } else {
+        fs::write(&repo_index_path, repo_index)
+            .with_context(|| format!("writing {}", repo_index_path.display()))?;
+        true
+    };
+
+    Ok(SessionContextDiscoverReport {
+        session_dir: session_dir.display().to_string(),
+        context_dir: context_dir.display().to_string(),
+        repo: repo.display().to_string(),
+        dry_run,
+        links,
+        indexed,
+        ignored,
+        warnings,
+        repo_index_path: repo_index_path.display().to_string(),
+        repo_index_written,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContextDiscoveryLinkSpec {
+    source: String,
+    context_path: PathBuf,
+    target: PathBuf,
+    reason: String,
+}
+
+fn discover_repo_context_link_specs(
+    repo: &Path,
+    indexed: &mut Vec<SessionContextDiscoverIndexEntry>,
+    ignored: &mut Vec<String>,
+) -> Result<Vec<ContextDiscoveryLinkSpec>> {
+    let mut specs = Vec::new();
+    for relative in [
+        "AGENTS.md",
+        "README.md",
+        "CLAUDE.md",
+        ".github/copilot-instructions.md",
+        ".cursorrules",
+        "opencode.json",
+        "opencode.jsonc",
+    ] {
+        push_context_discovery_link_if_exists(
+            repo,
+            relative,
+            Path::new(relative)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(relative),
+            "built-in breadcrumb",
+            &mut specs,
+        )?;
+    }
+    discover_opencode_config_context(repo, &mut specs, indexed)?;
+    discover_simple_markdown_links(
+        repo,
+        Path::new(".opencode/commands"),
+        "opencode-command",
+        "opencode command",
+        &mut specs,
+        ignored,
+    )?;
+    discover_opencode_skill_links(repo, Path::new(".opencode/skills"), &mut specs, ignored)?;
+    discover_simple_markdown_links(
+        repo,
+        Path::new(".github/instructions"),
+        "copilot-instruction",
+        "copilot instruction",
+        &mut specs,
+        ignored,
+    )?;
+    discover_simple_markdown_links(
+        repo,
+        Path::new(".github/prompts"),
+        "copilot-prompt",
+        "copilot prompt",
+        &mut specs,
+        ignored,
+    )?;
+    Ok(specs)
+}
+
+fn push_context_discovery_link_if_exists(
+    repo: &Path,
+    relative: &str,
+    context_name: &str,
+    reason: &str,
+    specs: &mut Vec<ContextDiscoveryLinkSpec>,
+) -> Result<()> {
+    let target = repo.join(relative);
+    if target.is_file() {
+        specs.push(ContextDiscoveryLinkSpec {
+            source: relative.to_string(),
+            context_path: PathBuf::from(validate_context_entry_name(context_name)?),
+            target: target.canonicalize()?,
+            reason: reason.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn discover_opencode_config_context(
+    repo: &Path,
+    specs: &mut Vec<ContextDiscoveryLinkSpec>,
+    indexed: &mut Vec<SessionContextDiscoverIndexEntry>,
+) -> Result<()> {
+    for config_name in ["opencode.json", "opencode.jsonc"] {
+        let path = repo.join(config_name);
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(value) = read_json_or_jsonc_value(&path) else {
+            continue;
+        };
+        if let Some(instructions) = value.get("instructions").and_then(|value| value.as_array()) {
+            for instruction in instructions.iter().filter_map(|value| value.as_str()) {
+                let relative = instruction.trim_start_matches("./");
+                let target = repo.join(relative);
+                if target.is_file() {
+                    let name = target
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("instruction.md");
+                    specs.push(ContextDiscoveryLinkSpec {
+                        source: relative.to_string(),
+                        context_path: PathBuf::from(validate_context_entry_name(name)?),
+                        target: target.canonicalize()?,
+                        reason: format!("{config_name} instructions"),
+                    });
+                }
+            }
+        }
+        if let Some(paths) = value
+            .get("skills")
+            .and_then(|skills| skills.get("paths"))
+            .and_then(|paths| paths.as_array())
+        {
+            for path in paths.iter().filter_map(|value| value.as_str()) {
+                discover_opencode_skill_links(repo, Path::new(path), specs, &mut Vec::new())?;
+            }
+        }
+        indexed.push(SessionContextDiscoverIndexEntry {
+            source: "opencode".to_string(),
+            path: config_name.to_string(),
+            title: Some("OpenCode config".to_string()),
+            reason: "harness config".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn read_json_or_jsonc_value(path: &Path) -> Result<Value> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&content)
+        .or_else(|_| serde_json::from_str(&strip_jsonc_line_comments(&content)))
+        .with_context(|| format!("parsing {}", path.display()))
+}
+
+fn strip_jsonc_line_comments(content: &str) -> String {
+    let mut output = String::new();
+    let mut chars = content.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if in_string {
+            output.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            output.push(ch);
+            continue;
+        }
+        if ch == '/' {
+            match chars.peek().copied() {
+                Some('/') => {
+                    chars.next();
+                    for comment_ch in chars.by_ref() {
+                        if comment_ch == '\n' {
+                            output.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    let mut previous = '\0';
+                    for comment_ch in chars.by_ref() {
+                        if previous == '*' && comment_ch == '/' {
+                            break;
+                        }
+                        previous = comment_ch;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        output.push(ch);
+    }
+    output
+}
+
+fn discover_simple_markdown_links(
+    repo: &Path,
+    source_dir: &Path,
+    context_prefix: &str,
+    reason: &str,
+    specs: &mut Vec<ContextDiscoveryLinkSpec>,
+    ignored: &mut Vec<String>,
+) -> Result<()> {
+    let root = repo.join(source_dir);
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for path in collect_markdown_files_under(repo, source_dir, ignored)? {
+        let relative = path.strip_prefix(repo).unwrap_or(&path).to_path_buf();
+        let stem = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("context");
+        let name = format!("{}-{}.md", context_prefix, folder_session_slug(stem));
+        specs.push(ContextDiscoveryLinkSpec {
+            source: relative.display().to_string(),
+            context_path: PathBuf::from(validate_context_entry_name(&name)?),
+            target: path.canonicalize()?,
+            reason: reason.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn discover_opencode_skill_links(
+    repo: &Path,
+    skills_dir: &Path,
+    specs: &mut Vec<ContextDiscoveryLinkSpec>,
+    ignored: &mut Vec<String>,
+) -> Result<()> {
+    let root = repo.join(skills_dir);
+    if !root.is_dir() || is_excluded_repo_relative_path(skills_dir) {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(&root)
+        .with_context(|| format!("reading skills directory {}", root.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let skill_dir = entry.path();
+        if !skill_dir.is_dir() {
+            continue;
+        }
+        let relative_dir = skill_dir.strip_prefix(repo).unwrap_or(&skill_dir);
+        if is_excluded_repo_relative_path(relative_dir) {
+            ignored.push(relative_dir.display().to_string());
+            continue;
+        }
+        let skill = skill_dir.join("SKILL.md");
+        if skill.is_file() {
+            let skill_name = skill_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("skill");
+            specs.push(ContextDiscoveryLinkSpec {
+                source: skill
+                    .strip_prefix(repo)
+                    .unwrap_or(&skill)
+                    .display()
+                    .to_string(),
+                context_path: PathBuf::from(validate_context_entry_name(&format!(
+                    "opencode-skill-{}.md",
+                    folder_session_slug(skill_name)
+                ))?),
+                target: skill.canonicalize()?,
+                reason: "opencode skill".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn collect_repo_index_entries(
+    repo: &Path,
+    indexed: &mut Vec<SessionContextDiscoverIndexEntry>,
+    ignored: &mut Vec<String>,
+) -> Result<()> {
+    for base in [
+        Path::new("docs"),
+        Path::new("shadow/docs"),
+        Path::new("tests"),
+    ] {
+        for path in collect_markdown_files_under(repo, base, ignored)? {
+            let relative = path
+                .strip_prefix(repo)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            indexed.push(SessionContextDiscoverIndexEntry {
+                source: "repo-docs".to_string(),
+                title: markdown_title(&path)?,
+                path: relative,
+                reason: "repo documentation index".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn collect_markdown_files_under(
+    repo: &Path,
+    base: &Path,
+    ignored: &mut Vec<String>,
+) -> Result<Vec<PathBuf>> {
+    let root = repo.join(base);
+    let mut files = Vec::new();
+    collect_markdown_files_recursive(repo, &root, &mut files, ignored)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_markdown_files_recursive(
+    repo: &Path,
+    path: &Path,
+    files: &mut Vec<PathBuf>,
+    ignored: &mut Vec<String>,
+) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let relative = path.strip_prefix(repo).unwrap_or(path);
+    if is_excluded_repo_relative_path(relative) {
+        ignored.push(relative.display().to_string());
+        return Ok(());
+    }
+    if path.is_file() {
+        if is_markdown_path(path) {
+            files.push(path.to_path_buf());
+        }
+        return Ok(());
+    }
+    if !path.is_dir() {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(path)
+        .with_context(|| format!("reading repo context path {}", path.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        collect_markdown_files_recursive(repo, &entry.path(), files, ignored)?;
+    }
+    Ok(())
+}
+
+fn is_markdown_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("md" | "markdown")
+    )
+}
+
+fn is_excluded_repo_relative_path(path: &Path) -> bool {
+    let text = path.display().to_string();
+    if text.starts_with(".env") || text.ends_with(".db") {
+        return true;
+    }
+    path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        matches!(
+            name.to_str(),
+            Some(".git" | ".venv" | "node_modules" | ".pytest_cache" | ".ruff_cache")
+        )
+    })
+}
+
+fn markdown_title(path: &Path) -> Result<Option<String>> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(content.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("# ")
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_string)
+    }))
+}
+
+fn apply_discovered_context_link(
+    context_dir: &Path,
+    spec: &ContextDiscoveryLinkSpec,
+    dry_run: bool,
+    warnings: &mut Vec<String>,
+) -> Result<SessionContextDiscoverLink> {
+    let path = context_dir.join(&spec.context_path);
+    if let Some(parent) = path.parent() {
+        if !dry_run {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating context directory {}", parent.display()))?;
+        }
+    }
+    let mut existed = false;
+    let mut created = false;
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        existed = true;
+        if metadata.file_type().is_symlink()
+            && fs::read_link(&path)
+                .ok()
+                .and_then(|target| {
+                    if target.is_absolute() {
+                        Some(target)
+                    } else {
+                        path.parent().map(|parent| parent.join(target))
+                    }
+                })
+                .and_then(|target| target.canonicalize().ok())
+                .as_deref()
+                == Some(spec.target.as_path())
+        {
+            // Already linked to the desired target.
+        } else {
+            warnings.push(format!(
+                "context path already exists and was not replaced: {}",
+                path.display()
+            ));
+        }
+    } else if !dry_run {
+        create_context_symlink(&spec.target, &path)?;
+        created = true;
+    } else {
+        created = false;
+    }
+    Ok(SessionContextDiscoverLink {
+        source: spec.source.clone(),
+        name: spec
+            .context_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("context")
+            .to_string(),
+        path: path.display().to_string(),
+        target: spec.target.display().to_string(),
+        existed,
+        created,
+        reason: spec.reason.clone(),
+    })
+}
+
+fn render_context_discovery_repo_index(
+    repo: &Path,
+    links: &[SessionContextDiscoverLink],
+    indexed: &[SessionContextDiscoverIndexEntry],
+    ignored: &[String],
+) -> String {
+    let mut output = String::new();
+    output.push_str("# Repo context index\n\n");
+    output.push_str(&format!("Repo: `{}`\n\n", repo.display()));
+    output.push_str("## Linked context\n\n");
+    if links.is_empty() {
+        output.push_str("No high-signal context links discovered.\n\n");
+    } else {
+        for link in links {
+            output.push_str(&format!("- `{}` — {}\n", link.source, link.reason));
+        }
+        output.push('\n');
+    }
+    output.push_str("## Indexed references\n\n");
+    if indexed.is_empty() {
+        output.push_str("No repo documentation references discovered.\n\n");
+    } else {
+        for entry in indexed {
+            let title = entry
+                .title
+                .as_ref()
+                .map(|title| format!(" — {title}"))
+                .unwrap_or_default();
+            output.push_str(&format!("- `{}`{} ({})\n", entry.path, title, entry.reason));
+        }
+        output.push('\n');
+    }
+    if !ignored.is_empty() {
+        output.push_str("## Ignored\n\n");
+        for path in ignored {
+            output.push_str(&format!("- `{path}`\n"));
+        }
+        output.push('\n');
+    }
+    output
+}
+
 fn validate_context_entry_name(name: &str) -> Result<&str> {
     let name = name.trim();
     if name.is_empty() || matches!(name, "." | "..") {
@@ -7014,6 +7614,77 @@ fn format_folder_session_context_ls(report: &SessionContextLsReport) -> String {
         }
     }
     lines.push(format!("\nTotal: {} context entries", report.entries.len()));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn format_folder_session_context_discover(report: &SessionContextDiscoverReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "{} session context from repo: {}",
+        if report.dry_run {
+            "Discovered"
+        } else {
+            "Updated"
+        },
+        report.repo
+    ));
+    lines.push(format!("Session: {}", report.session_dir));
+    lines.push(format!("Context: {}", report.context_dir));
+    lines.push(format!(
+        "Repo index: {}{}",
+        report.repo_index_path,
+        if report.repo_index_written {
+            " (written)"
+        } else if report.dry_run {
+            " (dry-run)"
+        } else {
+            ""
+        }
+    ));
+    if !report.links.is_empty() {
+        lines.push("Links:".to_string());
+        for link in &report.links {
+            let action = if link.created {
+                "created"
+            } else if link.existed {
+                "exists"
+            } else if report.dry_run {
+                "would create"
+            } else {
+                "skipped"
+            };
+            lines.push(format!(
+                "  - {action}: {} -> {} ({})",
+                link.path, link.target, link.reason
+            ));
+        }
+    } else {
+        lines.push("Links: none".to_string());
+    }
+    if !report.indexed.is_empty() {
+        lines.push("Indexed references:".to_string());
+        for entry in &report.indexed {
+            let title = entry
+                .title
+                .as_ref()
+                .map(|title| format!(" — {title}"))
+                .unwrap_or_default();
+            lines.push(format!("  - {}{} ({})", entry.path, title, entry.reason));
+        }
+    }
+    if !report.ignored.is_empty() {
+        lines.push("Ignored:".to_string());
+        for ignored in &report.ignored {
+            lines.push(format!("  - {ignored}"));
+        }
+    }
+    if !report.warnings.is_empty() {
+        lines.push("Warnings:".to_string());
+        for warning in &report.warnings {
+            lines.push(format!("  - {warning}"));
+        }
+    }
     lines.push(String::new());
     lines.join("\n")
 }
@@ -19407,6 +20078,29 @@ mod tests {
         assert_eq!(args.source.as_deref(), Some("opencode"));
         assert_eq!(args.mode, ShareChatsMode::Pattern);
 
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "context",
+            "discover",
+            "./session",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Context(args)) = args.command else {
+            panic!("expected session context command");
+        };
+        let SessionContextCommand::Discover(args) = args.command else {
+            panic!("expected session context discover command");
+        };
+        assert_eq!(args.session, PathBuf::from("./session"));
+        assert!(args.dry_run);
+        assert!(args.json);
+
         assert!(Cli::try_parse_from(["djinn", "share", "chats"]).is_err());
     }
 
@@ -20544,6 +21238,91 @@ link = "context/repo"
         assert!(removed.removed);
         assert!(!session.join("context/notes.md").exists());
         assert!(repo.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_context_discover_links_high_signal_files_and_indexes_docs() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-context-discover-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session = root.join("session");
+        let repo = root.join("repo");
+        fs::create_dir_all(repo.join(".github/instructions")).unwrap();
+        fs::create_dir_all(repo.join(".opencode/commands")).unwrap();
+        fs::create_dir_all(repo.join(".opencode/skills/demo")).unwrap();
+        fs::create_dir_all(repo.join("docs/node_modules/pkg")).unwrap();
+        fs::create_dir_all(&session).unwrap();
+        fs::write(
+            session.join("djinn.toml"),
+            format!(
+                "session_id = \"test\"\n[context.repo]\npath = \"{}\"\n",
+                repo.display()
+            ),
+        )
+        .unwrap();
+        fs::write(repo.join("README.md"), "# Demo Repo\n").unwrap();
+        fs::write(repo.join("AGENTS.md"), "# Agents\n").unwrap();
+        fs::write(
+            repo.join("opencode.json"),
+            r#"{"instructions":["./docs/opencode.md"],"skills":{"paths":[".opencode/skills"]}}"#,
+        )
+        .unwrap();
+        fs::write(repo.join("docs/opencode.md"), "# OpenCode Notes\n").unwrap();
+        fs::write(repo.join("docs/guide.md"), "# Guide\n").unwrap();
+        fs::write(repo.join("docs/node_modules/pkg/ignored.md"), "# Ignored\n").unwrap();
+        fs::write(
+            repo.join(".github/instructions/go.md"),
+            "# Go Instructions\n",
+        )
+        .unwrap();
+        fs::write(repo.join(".opencode/commands/build.md"), "# Build\n").unwrap();
+        fs::write(
+            repo.join(".opencode/skills/demo/SKILL.md"),
+            "# Demo Skill\n",
+        )
+        .unwrap();
+
+        let dry_run = discover_folder_session_context(&session, true).unwrap();
+        assert!(dry_run.dry_run);
+        assert!(!dry_run.repo_index_written);
+        assert!(!session.join("context").exists());
+        assert!(dry_run
+            .links
+            .iter()
+            .any(|link| link.name == "opencode-command-build.md"));
+
+        let report = discover_folder_session_context(&session, false).unwrap();
+        assert!(report.repo_index_written);
+        assert!(session.join("context/repo-index.md").is_file());
+        for name in [
+            "AGENTS.md",
+            "README.md",
+            "opencode.md",
+            "opencode-command-build.md",
+            "opencode-skill-demo.md",
+            "copilot-instruction-go.md",
+        ] {
+            let path = session.join("context").join(name);
+            assert!(path.exists(), "expected discovered context link {name}");
+            assert!(fs::symlink_metadata(path).unwrap().file_type().is_symlink());
+        }
+        let context = list_folder_session_context(&session).unwrap();
+        assert!(context
+            .entries
+            .iter()
+            .any(|entry| { entry.name == "opencode-command-build.md" && entry.ingestible }));
+        let repo_index = fs::read_to_string(session.join("context/repo-index.md")).unwrap();
+        assert!(repo_index.contains("docs/guide.md"));
+        assert!(repo_index.contains("docs/opencode.md"));
+        assert!(report
+            .ignored
+            .iter()
+            .any(|path| path.contains("node_modules")));
 
         let _ = fs::remove_dir_all(&root);
     }

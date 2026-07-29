@@ -1113,6 +1113,22 @@ The first non-interactive agent slice is implemented as:
     `--force` is provided. `djinn session context rm <session> <name>` removes
     only a single validated entry under `context/`. Directory links remain
     explicit durable references but are not blindly ingested by `djinn ask`.
+83. Harness-aware context discovery adapts to breadcrumbs already present in a
+    repository instead of requiring teammates to adopt Djinn-native layout.
+    `djinn session context discover <session>` applies by default and `--dry-run`
+    previews without mutation. Discovery links a small set of high-signal files
+    into top-level `context/` symlinks where possible and writes a compact
+    `context/repo-index.md`; it must never bulk-ingest a repo. Built-in
+    discovery reads generic repo breadcrumbs (`AGENTS.md`, `README.md`,
+    `CLAUDE.md`, `.cursorrules`), Copilot breadcrumbs
+    (`.github/copilot-instructions.md`, `.github/instructions/**/*.md`,
+    `.github/prompts/**/*.prompt.md`), and OpenCode breadcrumbs (`opencode.json`,
+    `opencode.jsonc`, `instructions`, `skills.paths`, `.opencode/commands/*.md`,
+    `.opencode/skills/*/SKILL.md`). Dependency/cache/secret paths such as
+    `.git/**`, `.venv/**`, `node_modules/**`, `.opencode/node_modules/**`,
+    `.env*`, `*.db`, `.pytest_cache/**`, and `.ruff_cache/**` are ignored by
+    default. Repo-local Djinn config may tune include/exclude/index/ingest rules,
+    but the defaults should work in mixed OpenCode/Copilot/Cursor/Claude repos.
 
 Not in the first slice unless explicitly reopened:
 

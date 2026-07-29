@@ -323,3 +323,7 @@ legacy/go/                         # original Go implementation
 - Keep OpenCode as the first integration, not the only possible backend.
 - Avoid turning Djinn into a monolith internally even though users get one
   `djinn` binary.
+
+## Credit
+
+- memory concept inspired by: https://github.com/ericmjl/opencode-autolearn/tree/main
