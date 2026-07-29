@@ -142,7 +142,7 @@ struct SessionArgs {
 enum SessionCommand {
     /// Scaffold a folder-backed Djinn work session.
     Init(SessionInitArgs),
-    /// Run request.md for a folder-backed session and write summary/turn outputs.
+    /// Start request.md for a folder-backed session in the background by default.
     Run(SessionRunArgs),
     /// Poll a folder-backed session until it is no longer running.
     Watch(SessionWatchArgs),
@@ -181,6 +181,12 @@ struct SessionWatchArgs {
 struct SessionRunArgs {
     /// Folder-backed session name or directory to run.
     dir: PathBuf,
+    /// Run in the foreground and block until the answer is written. Background is the default.
+    #[arg(long = "fg")]
+    foreground: bool,
+    /// Internal worker mode for background session runs.
+    #[arg(long = "background-worker", hide = true)]
+    background_worker: bool,
     /// Agent profile name override.
     #[arg(long)]
     profile: Option<String>,
@@ -202,10 +208,10 @@ struct SessionRunArgs {
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
-    /// Print the produced answer before the completion paths.
+    /// Print the produced answer before the completion paths. Requires --fg.
     #[arg(long, conflicts_with = "json")]
     print: bool,
-    /// Open summary.md after completion.
+    /// Open summary.md after completion. Requires --fg.
     #[arg(long, conflicts_with = "json")]
     open: bool,
 }
@@ -9609,11 +9615,18 @@ fn legacy_agent_ask(args: AgentAskArgs) -> Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentAskOutputMode {
     Ask,
-    SessionRun { open: bool },
+    SessionRun { open: bool, background_worker: bool },
 }
 
 fn session_run(args: SessionRunArgs) -> Result<()> {
+    if args.background_worker && args.foreground {
+        bail!("--background-worker cannot be combined with --fg");
+    }
+    if !args.foreground && !args.background_worker {
+        return session_run_background(args);
+    }
     let open = args.open;
+    let background_worker = args.background_worker;
     agent_ask(
         AgentAskArgs {
             prompt: None,
@@ -9625,7 +9638,9 @@ fn session_run(args: SessionRunArgs) -> Result<()> {
             agent: args.agent,
             parent_session: None,
             model: args.model,
-            api_key: args.api_key,
+            api_key: args
+                .api_key
+                .or_else(|| env::var("DJINN_SESSION_RUN_API_KEY").ok()),
             base_url: args.base_url,
             max_tool_rounds: args.max_tool_rounds,
             json: args.json,
@@ -9633,8 +9648,116 @@ fn session_run(args: SessionRunArgs) -> Result<()> {
             open: false,
         },
         true,
-        AgentAskOutputMode::SessionRun { open },
+        AgentAskOutputMode::SessionRun {
+            open,
+            background_worker,
+        },
     )
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionRunBackgroundReport {
+    status: String,
+    session_dir: String,
+    pid: u32,
+    log_path: String,
+    watch_command: String,
+}
+
+fn session_run_background(args: SessionRunArgs) -> Result<()> {
+    if args.print || args.open {
+        bail!("--print and --open require --fg because background runs return before an answer exists");
+    }
+    let session_dir = resolve_session_dir(&args.dir)?;
+    resolve_agent_request_prompt(None, Some(&session_dir))?;
+    let report = spawn_background_session_run(&session_dir, &args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_run_background_started(&report));
+    }
+    Ok(())
+}
+
+fn spawn_background_session_run(
+    session_dir: &Path,
+    args: &SessionRunArgs,
+) -> Result<SessionRunBackgroundReport> {
+    let log_path = background_session_run_log_path(session_dir)?;
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("opening background run log {}", log_path.display()))?;
+    let err_file = log_file
+        .try_clone()
+        .with_context(|| format!("cloning background run log {}", log_path.display()))?;
+    let exe = env::current_exe().context("resolving current djinn executable")?;
+    let mut command = ProcessCommand::new(exe);
+    command
+        .arg("session")
+        .arg("run")
+        .arg(session_dir)
+        .arg("--background-worker")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(err_file));
+    if let Some(profile) = &args.profile {
+        command.arg("--profile").arg(profile);
+    }
+    if let Some(agent) = &args.agent {
+        command.arg("--agent").arg(agent);
+    }
+    if let Some(model) = &args.model {
+        command.arg("--model").arg(model);
+    }
+    if let Some(api_key) = &args.api_key {
+        command.env("DJINN_SESSION_RUN_API_KEY", api_key);
+    }
+    if let Some(base_url) = &args.base_url {
+        command.arg("--base-url").arg(base_url);
+    }
+    command
+        .arg("--max-tool-rounds")
+        .arg(args.max_tool_rounds.to_string());
+    let child = command.spawn().with_context(|| {
+        format!(
+            "spawning background session run for {}",
+            session_dir.display()
+        )
+    })?;
+    let pid = child.id();
+    Ok(SessionRunBackgroundReport {
+        status: "started".to_string(),
+        session_dir: session_dir.display().to_string(),
+        pid,
+        log_path: log_path.display().to_string(),
+        watch_command: format!("djinn session watch {}", session_dir.display()),
+    })
+}
+
+fn background_session_run_log_path(session_dir: &Path) -> Result<PathBuf> {
+    let log_dir = session_dir.join(".djinn").join("runs");
+    fs::create_dir_all(&log_dir).with_context(|| {
+        format!(
+            "creating background run log directory {}",
+            log_dir.display()
+        )
+    })?;
+    Ok(log_dir.join(format!(
+        "session-run-{}.log",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    )))
+}
+
+fn format_session_run_background_started(report: &SessionRunBackgroundReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Started Djinn session run: {}", report.session_dir));
+    lines.push(format!("  pid: {}", report.pid));
+    lines.push(format!("  log: {}", report.log_path));
+    lines.push(format!("  watch: {}", report.watch_command));
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 fn session_watch(args: SessionWatchArgs) -> Result<()> {
@@ -9915,8 +10038,21 @@ fn agent_ask(
     }
     if let Some(session_dir) = &projected_session_dir {
         store = relocate_agent_session_into_folder(&store, session_dir, &id)?;
+        let session = store.load_session(&id)?;
+        write_agent_session_toml(session_dir, &session)?;
     }
 
+    let lifecycle_mode = match output_mode {
+        AgentAskOutputMode::SessionRun {
+            background_worker: true,
+            ..
+        } => AgentSessionExecutionMode::Background,
+        _ => AgentSessionExecutionMode::Foreground,
+    };
+    let lifecycle_reason_prefix = match output_mode {
+        AgentAskOutputMode::SessionRun { .. } => "djinn session run",
+        AgentAskOutputMode::Ask => "djinn ask",
+    };
     store.append_event(
         &id,
         AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
@@ -9924,11 +10060,12 @@ fn agent_ask(
         }),
     )?;
     maybe_auto_title_agent_session(&store, &id, &prompt)?;
-    append_foreground_session_lifecycle_event(
+    append_agent_session_lifecycle_event(
         &store,
         &id,
         AgentSessionLifecycleState::Running,
-        "djinn ask started",
+        lifecycle_mode.clone(),
+        format!("{lifecycle_reason_prefix} started"),
         None,
     )?;
     let session_for_model = store.load_session(&id)?;
@@ -9945,21 +10082,23 @@ fn agent_ask(
         !args.json,
     ) {
         Ok(response) => {
-            append_foreground_session_lifecycle_event(
+            append_agent_session_lifecycle_event(
                 &store,
                 &id,
                 AgentSessionLifecycleState::Completed,
-                "djinn ask completed",
+                lifecycle_mode.clone(),
+                format!("{lifecycle_reason_prefix} completed"),
                 None,
             )?;
             response
         }
         Err(error) => {
-            let _ = append_foreground_session_lifecycle_event(
+            let _ = append_agent_session_lifecycle_event(
                 &store,
                 &id,
                 AgentSessionLifecycleState::Failed,
-                "djinn ask failed",
+                lifecycle_mode,
+                format!("{lifecycle_reason_prefix} failed"),
                 Some(error.to_string()),
             );
             return Err(error);
@@ -10045,7 +10184,7 @@ fn agent_ask(
             open_editor_path(&projection.summary_path, None)?;
         }
     }
-    if let AgentAskOutputMode::SessionRun { open: true } = output_mode {
+    if let AgentAskOutputMode::SessionRun { open: true, .. } = output_mode {
         if let Some(projection) = &projection {
             open_editor_path(&projection.summary_path, None)?;
         }
@@ -20479,6 +20618,7 @@ mod tests {
             "session",
             "run",
             "bap-questions",
+            "--fg",
             "--print",
             "--model",
             "openai/gpt-5.5",
@@ -20491,6 +20631,7 @@ mod tests {
             panic!("expected session run command");
         };
         assert_eq!(args.dir, PathBuf::from("bap-questions"));
+        assert!(args.foreground);
         assert!(args.print);
         assert_eq!(args.model.as_deref(), Some("openai/gpt-5.5"));
 
@@ -21924,6 +22065,24 @@ link = "context/repo"
         assert!(rendered.contains("summary.md"));
         assert!(rendered.contains("turns/20260728T120000-1/response.md"));
         assert!(rendered.contains("request.md"));
+    }
+
+    #[test]
+    fn format_session_run_background_started_reports_watch_and_log() {
+        let report = SessionRunBackgroundReport {
+            status: "started".to_string(),
+            session_dir: "/tmp/djinn/session".to_string(),
+            pid: 4242,
+            log_path: "/tmp/djinn/session/.djinn/runs/session-run.log".to_string(),
+            watch_command: "djinn session watch /tmp/djinn/session".to_string(),
+        };
+
+        let rendered = format_session_run_background_started(&report);
+
+        assert!(rendered.contains("Started Djinn session run: /tmp/djinn/session"));
+        assert!(rendered.contains("pid: 4242"));
+        assert!(rendered.contains("log: /tmp/djinn/session/.djinn/runs/session-run.log"));
+        assert!(rendered.contains("watch: djinn session watch /tmp/djinn/session"));
     }
 
     #[test]

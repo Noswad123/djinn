@@ -125,10 +125,11 @@ session id yet. It also ingests bounded shallow session context from
 `list`/`show`/`delete` aliases. Do not create `summary-history.md`, mirrored
 `events.jsonl`, or `transcript.md` by default.
 `djinn session run <session>` is the file-first spelling for "process the
-current request.md"; it runs in the foreground, then reports the session,
-`summary.md`, and latest `turns/<id>/response.md` paths. It is equivalent to a
-folder-backed `djinn ask --session <session>` execution with clearer completion
-output.
+current request.md". It starts in the background by default, reports the child
+pid/log path plus a `djinn session watch <session>` hint, and lets the worker
+write `summary.md` plus the latest `turns/<id>/response.md` paths when complete.
+Use `djinn session run <session> --fg` for the blocking foreground mode, including
+`--print`/`--open` answer affordances.
 
 Manual deterministic compaction is available through `djinn session compact
 --session-dir <dir>`. It reads `turns/<id>/request.md` and `response.md` and

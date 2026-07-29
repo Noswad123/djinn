@@ -994,7 +994,9 @@ The first non-interactive agent slice is implemented as:
     built-ins. Do not add new behavior to `djinn chat` / `djinn agent chat` while
     this file-first ask/session flow is settling.
     `djinn session run <session>` is the folder-native spelling for processing
-    the current `request.md`; it reuses the folder-backed ask engine but reports
+    the current `request.md`; it starts a background worker by default and reports
+    the pid/log path plus a `djinn session watch <session>` hint. `--fg` uses the
+    same folder-backed ask engine in blocking foreground mode and reports
     completion in session artifact terms (`summary.md` and latest
     `turns/<id>/response.md`) instead of only echoing the session directory.
 67. Superseded by decisions 79-80: native session inspection briefly had
