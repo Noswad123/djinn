@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode};
-use djinn_chats::ChatRecord;
 use djinn_contexts::ContextRecord;
 use djinn_memory::{MemoryRecord, SuggestionRecord};
 use djinn_skills::SkillRecord;
@@ -51,7 +50,6 @@ impl TuiSession {
         &mut self,
         tools: Vec<ToolEntry>,
         sessions: Vec<SessionRecord>,
-        chats: Vec<ChatRecord>,
         memories: Vec<MemoryRecord>,
         suggestions: Vec<SuggestionRecord>,
         skills: Vec<SkillRecord>,
@@ -66,7 +64,6 @@ impl TuiSession {
             &mut self.terminal,
             tools,
             sessions,
-            chats,
             memories,
             suggestions,
             skills,
@@ -165,17 +162,9 @@ pub fn run_tools(tools: Vec<ToolEntry>) -> Result<()> {
     result
 }
 
-pub fn run_chats(chats: Vec<ChatRecord>) -> Result<Option<SessionPromoteRequest>> {
-    let mut terminal = enter_terminal()?;
-    let result = run_chats_loop(&mut terminal, chats);
-    leave_terminal(&mut terminal)?;
-    result
-}
-
 pub fn run_dashboard(
     tools: Vec<ToolEntry>,
     sessions: Vec<SessionRecord>,
-    chats: Vec<ChatRecord>,
     memories: Vec<MemoryRecord>,
     suggestions: Vec<SuggestionRecord>,
     skills: Vec<SkillRecord>,
@@ -187,7 +176,6 @@ pub fn run_dashboard(
         &mut terminal,
         tools,
         sessions,
-        chats,
         memories,
         suggestions,
         skills,
@@ -202,7 +190,6 @@ pub fn run_dashboard(
 pub fn run_dashboard_with_handler<F>(
     tools: Vec<ToolEntry>,
     sessions: Vec<SessionRecord>,
-    chats: Vec<ChatRecord>,
     memories: Vec<MemoryRecord>,
     suggestions: Vec<SuggestionRecord>,
     skills: Vec<SkillRecord>,
@@ -218,7 +205,6 @@ where
         &mut terminal,
         tools,
         sessions,
-        chats,
         memories,
         suggestions,
         skills,
@@ -240,40 +226,11 @@ pub fn run_approval_dialog(metadata: Value) -> Result<ApprovalDecision> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiAction {
     OpenSession(SessionRecord),
-    OpenChatSession(ChatSessionRequest),
     OpenTool(ToolEntry),
     OpenSkill(SkillRecord),
-    PromoteSessions(SessionPromoteRequest),
     ReviewMemory(String),
     DeleteMemories(Vec<String>),
-    DeleteChatRows(ChatDeleteRequest),
     DeleteSuggestions(Vec<String>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatDeleteRequest {
-    pub chat_ids: Vec<String>,
-    pub agent_session_ids: Vec<String>,
-}
-
-impl ChatDeleteRequest {
-    #[allow(dead_code)]
-    fn is_empty(&self) -> bool {
-        self.chat_ids.is_empty() && self.agent_session_ids.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatSessionRequest {
-    pub kind: ChatSessionKind,
-    pub session_id: String,
-    pub title: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChatSessionKind {
-    DjinnAgent,
-    OpenCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,54 +283,6 @@ enum DashboardCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-enum SessionFilterScope {
-    All,
-    Promotable,
-    DjinnAgent,
-    ChildAgent,
-}
-
-impl SessionFilterScope {
-    #[allow(dead_code)]
-    const ALL: [Self; 4] = [
-        Self::All,
-        Self::Promotable,
-        Self::DjinnAgent,
-        Self::ChildAgent,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Promotable => "promotable",
-            Self::DjinnAgent => "djinn-agent",
-            Self::ChildAgent => "child-agent",
-        }
-    }
-
-    #[allow(dead_code)]
-    fn description(self) -> &'static str {
-        match self {
-            Self::All => "Show all session rows",
-            Self::Promotable => "Show persisted rows that can be promoted",
-            Self::DjinnAgent => "Show projected Djinn agent sessions",
-            Self::ChildAgent => "Show projected child agent sessions with parent metadata",
-        }
-    }
-
-    #[allow(dead_code)]
-    fn next(self) -> Self {
-        match self {
-            Self::All => Self::Promotable,
-            Self::Promotable => Self::DjinnAgent,
-            Self::DjinnAgent => Self::ChildAgent,
-            Self::ChildAgent => Self::All,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashboardTab {
     Tools,
     Sessions,
@@ -405,18 +314,6 @@ impl DashboardTab {
 }
 
 const DASHBOARD_TABS: [&str; 5] = ["Tools", "Sessions", "Memories", "Suggestions", "Skills"];
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionPromoteRequest {
-    pub chat_ids: Vec<String>,
-    pub mode: SessionPromoteMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionPromoteMode {
-    Summary,
-    Pattern,
-    Memories,
-}
 
 fn run_tools_loop(terminal: &mut TuiTerminal, tools: Vec<ToolEntry>) -> Result<()> {
     let mut app = ToolsApp::new(tools);
@@ -585,7 +482,6 @@ fn run_dashboard_loop(
     terminal: &mut TuiTerminal,
     tools: Vec<ToolEntry>,
     sessions: Vec<SessionRecord>,
-    chats: Vec<ChatRecord>,
     memories: Vec<MemoryRecord>,
     suggestions: Vec<SuggestionRecord>,
     skills: Vec<SkillRecord>,
@@ -596,7 +492,6 @@ fn run_dashboard_loop(
     let mut app = DashboardApp::new(
         tools,
         sessions,
-        chats,
         memories,
         suggestions,
         skills,
@@ -846,7 +741,6 @@ impl DashboardApp {
     fn new(
         tools: Vec<ToolEntry>,
         sessions: Vec<SessionRecord>,
-        _chats: Vec<ChatRecord>,
         memories: Vec<MemoryRecord>,
         suggestions: Vec<SuggestionRecord>,
         skills: Vec<SkillRecord>,
@@ -1233,11 +1127,8 @@ impl DashboardApp {
             TuiAction::DeleteMemories(ids) => self.memories.remove_ids(ids),
             TuiAction::DeleteSuggestions(ids) => self.suggestions.remove_ids(ids),
             TuiAction::OpenSession(_)
-            | TuiAction::DeleteChatRows(_)
             | TuiAction::OpenTool(_)
-            | TuiAction::OpenChatSession(_)
             | TuiAction::OpenSkill(_)
-            | TuiAction::PromoteSessions(_)
             | TuiAction::ReviewMemory(_) => {}
         }
     }
@@ -1777,536 +1668,6 @@ fn session_preview(session: &SessionRecord) -> String {
         lines.push(summary.clone());
     }
     lines.join("\n")
-}
-
-fn run_chats_loop(
-    terminal: &mut TuiTerminal,
-    chats: Vec<ChatRecord>,
-) -> Result<Option<SessionPromoteRequest>> {
-    let mut app = ChatsApp::new(chats);
-    loop {
-        terminal.draw(|frame| app.draw(frame))?;
-        if event::poll(Duration::from_millis(150))? {
-            if let Event::Key(key) = event::read()? {
-                if !actionable_key_event(&key) {
-                    continue;
-                }
-                match &app.mode {
-                    ChatUiMode::Selecting => match key.code {
-                        _ if app.filter.editing => match key.code {
-                            KeyCode::Char('/') => app.toggle_filter(),
-                            KeyCode::Backspace => app.filter_backspace(),
-                            KeyCode::Enter | KeyCode::Esc => app.filter.editing = false,
-                            KeyCode::Char(ch) => app.filter_push(ch),
-                            _ => {}
-                        },
-                        KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
-                        KeyCode::Char('/') => app.toggle_filter(),
-                        KeyCode::Char('j') | KeyCode::Down => app.next(),
-                        KeyCode::Char('k') | KeyCode::Up => app.previous(),
-                        KeyCode::Char('d') | KeyCode::PageDown => app.scroll_down(),
-                        KeyCode::Char('u') | KeyCode::PageUp => app.scroll_up(),
-                        KeyCode::Char(' ') => app.toggle_selected(),
-                        KeyCode::Char('a') => app.toggle_all(),
-                        KeyCode::Enter => app.open_options(),
-                        _ => {}
-                    },
-                    ChatUiMode::Options => match key.code {
-                        KeyCode::Char('q') => return Ok(None),
-                        KeyCode::Esc | KeyCode::Backspace => app.mode = ChatUiMode::Selecting,
-                        KeyCode::Char('j') | KeyCode::Down => app.next_option(),
-                        KeyCode::Char('k') | KeyCode::Up => app.previous_option(),
-                        KeyCode::Enter => return Ok(app.promote_request()),
-                        _ => {}
-                    },
-                    ChatUiMode::ConfirmDelete(_) => match key.code {
-                        KeyCode::Esc
-                        | KeyCode::Backspace
-                        | KeyCode::Char('n')
-                        | KeyCode::Char('q') => app.cancel_modal(),
-                        _ => {}
-                    },
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-enum ChatUiMode {
-    Selecting,
-    Options,
-    ConfirmDelete(ChatDeleteRequest),
-}
-
-struct ChatsApp {
-    chats: Vec<ChatRecord>,
-    selected: usize,
-    preview_scroll: u16,
-    checked: HashSet<String>,
-    mode: ChatUiMode,
-    option_selected: usize,
-    scope: SessionFilterScope,
-    filter: FilterState,
-}
-
-impl ChatsApp {
-    fn new(chats: Vec<ChatRecord>) -> Self {
-        Self {
-            chats,
-            selected: 0,
-            preview_scroll: 0,
-            checked: HashSet::new(),
-            mode: ChatUiMode::Selecting,
-            option_selected: 0,
-            scope: SessionFilterScope::All,
-            filter: FilterState::default(),
-        }
-    }
-
-    fn next(&mut self) {
-        let visible = self.visible_indices();
-        if visible.is_empty() {
-            return;
-        }
-        let pos = selected_visible_position(self.selected, &visible).unwrap_or(0);
-        self.selected = visible[(pos + 1).min(visible.len() - 1)];
-        self.preview_scroll = 0;
-    }
-
-    fn previous(&mut self) {
-        let visible = self.visible_indices();
-        if visible.is_empty() {
-            return;
-        }
-        let pos = selected_visible_position(self.selected, &visible).unwrap_or(0);
-        self.selected = visible[pos.saturating_sub(1)];
-        self.preview_scroll = 0;
-    }
-
-    fn scroll_down(&mut self) {
-        self.preview_scroll = self.preview_scroll.saturating_add(8);
-    }
-
-    fn scroll_up(&mut self) {
-        self.preview_scroll = self.preview_scroll.saturating_sub(8);
-    }
-
-    fn selected_chat(&self) -> Option<&ChatRecord> {
-        self.chats
-            .get(self.selected)
-            .filter(|chat| self.chat_matches(chat))
-    }
-
-    #[allow(dead_code)]
-    fn selected_chat_session_request(&self) -> Option<ChatSessionRequest> {
-        self.selected_chat().and_then(chat_session_request)
-    }
-
-    fn visible_indices(&self) -> Vec<usize> {
-        self.chats
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, chat)| self.chat_matches(chat).then_some(idx))
-            .collect()
-    }
-
-    fn chat_matches(&self, chat: &ChatRecord) -> bool {
-        self.scope_matches(chat)
-            && (fuzzy_match(&self.filter.query, &chat.title)
-                || fuzzy_match(&self.filter.query, &chat.id)
-                || fuzzy_match(&self.filter.query, &chat.source)
-                || fuzzy_match(&self.filter.query, &chat.source_id)
-                || fuzzy_match(&self.filter.query, &chat.source_path)
-                || fuzzy_match(&self.filter.query, &chat.content_path)
-                || fuzzy_match(&self.filter.query, &chat.content))
-    }
-
-    fn scope_matches(&self, chat: &ChatRecord) -> bool {
-        match self.scope {
-            SessionFilterScope::All => true,
-            SessionFilterScope::Promotable => chat.source.trim() != "djinn-agent",
-            SessionFilterScope::DjinnAgent => chat.source.trim() == "djinn-agent",
-            SessionFilterScope::ChildAgent => {
-                chat.source.trim() == "djinn-agent"
-                    && chat_content_metadata_value(chat, "Parent session").is_some()
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    fn set_scope(&mut self, scope: SessionFilterScope) {
-        self.scope = scope;
-        self.ensure_selection_visible();
-    }
-
-    #[allow(dead_code)]
-    fn cycle_scope(&mut self) {
-        self.set_scope(self.scope.next());
-    }
-
-    fn ensure_selection_visible(&mut self) {
-        let visible = self.visible_indices();
-        if let Some(first) = visible.first() {
-            if selected_visible_position(self.selected, &visible).is_none() {
-                self.selected = *first;
-            }
-        }
-        self.preview_scroll = 0;
-    }
-
-    fn toggle_filter(&mut self) {
-        self.filter.toggle();
-        self.ensure_selection_visible();
-    }
-
-    fn filter_push(&mut self, ch: char) {
-        self.filter.push(ch);
-        self.ensure_selection_visible();
-    }
-
-    fn filter_backspace(&mut self) {
-        self.filter.backspace();
-        self.ensure_selection_visible();
-    }
-
-    fn selected_promotable_session_ids(&self) -> Vec<String> {
-        self.selected_chats()
-            .into_iter()
-            .filter(|chat| chat.source != "djinn-agent")
-            .map(|chat| chat.id.clone())
-            .collect()
-    }
-
-    fn selected_chats(&self) -> Vec<&ChatRecord> {
-        if self.checked.is_empty() {
-            return self
-                .selected_chat()
-                .map(|chat| vec![chat])
-                .unwrap_or_default();
-        }
-        self.chats
-            .iter()
-            .filter(|chat| self.checked.contains(&chat.id))
-            .collect()
-    }
-
-    #[allow(dead_code)]
-    fn delete_request(&self) -> Option<ChatDeleteRequest> {
-        let mut request = ChatDeleteRequest {
-            chat_ids: Vec::new(),
-            agent_session_ids: Vec::new(),
-        };
-        for chat in self.selected_chats() {
-            if chat.source == "djinn-agent" {
-                let session_id = chat.source_id.trim();
-                if !session_id.is_empty()
-                    && !request.agent_session_ids.iter().any(|id| id == session_id)
-                {
-                    request.agent_session_ids.push(session_id.to_string());
-                }
-            } else if !request.chat_ids.iter().any(|id| id == &chat.id) {
-                request.chat_ids.push(chat.id.clone());
-            }
-        }
-        (!request.is_empty()).then_some(request)
-    }
-
-    #[allow(dead_code)]
-    fn open_delete_confirmation(&mut self) {
-        if let Some(request) = self.delete_request() {
-            self.mode = ChatUiMode::ConfirmDelete(request);
-        }
-    }
-
-    #[allow(dead_code)]
-    fn confirm_delete_action(&mut self) -> Option<TuiAction> {
-        let ChatUiMode::ConfirmDelete(request) = self.mode.clone() else {
-            return None;
-        };
-        self.mode = ChatUiMode::Selecting;
-        Some(TuiAction::DeleteChatRows(request))
-    }
-
-    fn cancel_modal(&mut self) {
-        self.mode = ChatUiMode::Selecting;
-    }
-
-    fn toggle_selected(&mut self) {
-        if let Some(id) = self.selected_chat().map(|chat| chat.id.clone()) {
-            if !self.checked.insert(id.clone()) {
-                self.checked.remove(&id);
-            }
-        }
-    }
-
-    fn toggle_all(&mut self) {
-        let visible = self.visible_indices();
-        let visible_ids = visible
-            .iter()
-            .map(|idx| self.chats[*idx].id.clone())
-            .collect::<Vec<_>>();
-        if visible_ids.is_empty() {
-            return;
-        }
-        if visible_ids.iter().all(|id| self.checked.contains(id)) {
-            self.checked.clear();
-        } else {
-            self.checked = visible_ids.into_iter().collect();
-        }
-    }
-
-    #[allow(dead_code)]
-    fn remove_deleted_rows(&mut self, request: &ChatDeleteRequest) {
-        let removed_chats = request.chat_ids.iter().cloned().collect::<HashSet<_>>();
-        let removed_sessions = request
-            .agent_session_ids
-            .iter()
-            .cloned()
-            .collect::<HashSet<_>>();
-        self.chats.retain(|chat| {
-            !removed_chats.contains(&chat.id)
-                && !(chat.source == "djinn-agent" && removed_sessions.contains(&chat.source_id))
-        });
-        self.checked.retain(|id| !removed_chats.contains(id));
-        self.checked.retain(|id| {
-            self.chats
-                .iter()
-                .any(|chat| chat.id == *id || chat.source_id == *id)
-        });
-        if self.selected >= self.chats.len() {
-            self.selected = self.chats.len().saturating_sub(1);
-        }
-        self.mode = ChatUiMode::Selecting;
-        self.ensure_selection_visible();
-    }
-
-    fn open_options(&mut self) {
-        if !self.selected_promotable_session_ids().is_empty() {
-            self.mode = ChatUiMode::Options;
-        }
-    }
-
-    fn next_option(&mut self) {
-        self.option_selected = (self.option_selected + 1).min(2);
-    }
-
-    fn previous_option(&mut self) {
-        self.option_selected = self.option_selected.saturating_sub(1);
-    }
-
-    fn selected_promote_mode(&self) -> SessionPromoteMode {
-        match self.option_selected {
-            0 => SessionPromoteMode::Summary,
-            1 => SessionPromoteMode::Pattern,
-            _ => SessionPromoteMode::Memories,
-        }
-    }
-
-    fn promote_request(&self) -> Option<SessionPromoteRequest> {
-        let chat_ids = self.selected_promotable_session_ids();
-        if chat_ids.is_empty() {
-            return None;
-        }
-        Some(SessionPromoteRequest {
-            chat_ids,
-            mode: self.selected_promote_mode(),
-        })
-    }
-
-    fn draw(&mut self, frame: &mut ratatui::Frame) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(frame.area());
-
-        self.draw_body(frame, chunks[0]);
-
-        let help = Paragraph::new(
-            "↑/k ↓/j move • Space select • a all visible • f scope • / search • Enter resume/promote • x/Delete remove • q/Esc quit",
-        )
-        .style(dim_style());
-        frame.render_widget(Clear, chunks[1]);
-        frame.render_widget(help, chunks[1]);
-
-        if self.mode == ChatUiMode::Options {
-            self.draw_options(frame);
-        }
-        if let ChatUiMode::ConfirmDelete(request) = &self.mode {
-            self.draw_delete_confirmation(frame, request);
-        }
-    }
-
-    fn draw_body(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        let body = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-            .split(area);
-
-        let visible = self.visible_indices();
-        let items = if self.chats.is_empty() {
-            vec![ListItem::new("No sessions recorded").style(dim_style())]
-        } else if visible.is_empty() {
-            vec![ListItem::new("No sessions match filter").style(dim_style())]
-        } else {
-            visible
-                .iter()
-                .map(|idx| {
-                    let chat = &self.chats[*idx];
-                    let checked = if self.checked.contains(&chat.id) {
-                        "[x]"
-                    } else {
-                        "[ ]"
-                    };
-                    let metadata = chat_list_metadata(chat);
-                    ListItem::new(vec![
-                        Line::from(vec![
-                            Span::styled(
-                                format!("{checked} "),
-                                if checked == "[x]" {
-                                    Style::default().fg(CTP_GREEN).bg(CTP_BASE)
-                                } else {
-                                    dim_style()
-                                },
-                            ),
-                            Span::styled(chat.title.clone(), title_style()),
-                        ]),
-                        Line::from(Span::styled(metadata, dim_style())),
-                    ])
-                })
-                .collect::<Vec<_>>()
-        };
-
-        let mut state = ListState::default();
-        if !visible.is_empty() {
-            state.select(selected_visible_position(self.selected, &visible));
-        }
-        let title = format!(
-            "Sessions ({} / {} visible, {} selected, scope: {}, {})",
-            visible.len(),
-            self.chats.len(),
-            self.checked.len(),
-            self.scope.label(),
-            self.filter.label()
-        );
-        let list = List::new(items)
-            .block(block(&title))
-            .style(base_style())
-            .highlight_style(highlight_style())
-            .highlight_symbol("› ");
-        frame.render_widget(Clear, body[0]);
-        frame.render_stateful_widget(list, body[0], &mut state);
-
-        let preview = self
-            .selected_chat()
-            .map(chat_preview)
-            .unwrap_or_else(|| "No preview available.".to_string());
-        let preview_title = self
-            .selected_chat()
-            .map(|chat| chat_preview_title(chat, &self.chats))
-            .unwrap_or_else(|| "Chat".to_string());
-        let preview = Paragraph::new(preview)
-            .block(block(&preview_title))
-            .style(base_style())
-            .scroll((self.preview_scroll, 0))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(Clear, body[1]);
-        frame.render_widget(preview, body[1]);
-    }
-
-    fn draw_options(&self, frame: &mut ratatui::Frame) {
-        let area = centered_rect(58, 42, frame.area());
-        let mode_names = ["summary", "pattern", "memories"];
-        let mut lines = vec![
-            Line::from(Span::styled("Promote selected sessions", title_style())),
-            Line::from(Span::styled(
-                format!(
-                    "Promotable sessions: {}",
-                    self.selected_promotable_session_ids().len()
-                ),
-                dim_style(),
-            )),
-            Line::from(""),
-        ];
-        for (idx, name) in mode_names.iter().enumerate() {
-            let marker = if idx == self.option_selected {
-                "›"
-            } else {
-                " "
-            };
-            let style = if idx == self.option_selected {
-                selected_style()
-            } else {
-                base_style()
-            };
-            lines.push(Line::from(Span::styled(format!("{marker} {name}"), style)));
-        }
-        lines.push(Line::from(Span::styled(
-            "Enter promote • Esc back",
-            dim_style(),
-        )));
-
-        let modal = Paragraph::new(lines)
-            .block(block("Promote Options"))
-            .style(base_style())
-            .wrap(Wrap { trim: false });
-        frame.render_widget(Clear, area);
-        frame.render_widget(modal, area);
-    }
-
-    fn draw_delete_confirmation(&self, frame: &mut ratatui::Frame, request: &ChatDeleteRequest) {
-        let area = centered_rect(58, 34, frame.area());
-        let total = request.chat_ids.len() + request.agent_session_ids.len();
-        let mut lines = vec![
-            Line::from(Span::styled("Confirm removal", title_style())),
-            Line::from(""),
-            Line::from(format!("Selected items: {total}")),
-        ];
-        if !request.chat_ids.is_empty() {
-            lines.push(Line::from(format!(
-                "Session rows: {}",
-                request.chat_ids.len()
-            )));
-            for id in request.chat_ids.iter().take(3) {
-                lines.push(Line::from(Span::styled(
-                    format!("  - {}", truncate_line(id, 52)),
-                    dim_style(),
-                )));
-            }
-        }
-        if !request.agent_session_ids.is_empty() {
-            lines.push(Line::from(format!(
-                "Djinn sessions: {}",
-                request.agent_session_ids.len()
-            )));
-            for id in request.agent_session_ids.iter().take(3) {
-                lines.push(Line::from(Span::styled(
-                    format!("  - {}", truncate_line(id, 52)),
-                    dim_style(),
-                )));
-            }
-        }
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "This removes selected session rows and deletes selected Djinn session JSONL files.",
-            dim_style(),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("Enter / y", selected_style()),
-            Span::raw(" delete  •  "),
-            Span::styled("Esc / n", selected_style()),
-            Span::raw(" cancel"),
-        ]));
-
-        let modal = Paragraph::new(lines)
-            .block(block("Confirm Delete"))
-            .style(base_style())
-            .wrap(Wrap { trim: false });
-        frame.render_widget(Clear, area);
-        frame.render_widget(modal, area);
-    }
 }
 
 struct SuggestionsApp {
@@ -3019,150 +2380,6 @@ fn strip_tool_metadata_lines(preview: &str) -> String {
         .join("\n")
 }
 
-fn chat_preview(chat: &ChatRecord) -> String {
-    let mut out = format!(
-        "ID: {}\nTitle: {}\nCreated: {}\n",
-        chat.id, chat.title, chat.created_at
-    );
-    out.push_str(&format!("Actions: {}\n", chat_picker_action_hint(chat)));
-    if chat.source.trim() == "djinn-agent" {
-        if let Some(role) = chat_content_metadata_value(chat, "Agent role") {
-            out.push_str(&format!("Agent role: {role}\n"));
-        }
-        if let Some(parent) = chat_content_metadata_value(chat, "Parent session") {
-            out.push_str(&format!("Parent session: {parent}\n"));
-        }
-        if let Some(profile) = chat_content_metadata_value(chat, "Profile") {
-            out.push_str(&format!("Profile: {profile}\n"));
-        }
-    }
-    if !chat.source.trim().is_empty() {
-        out.push_str(&format!("Source: {}\n", chat.source));
-    }
-    if !chat.source_id.trim().is_empty() {
-        out.push_str(&format!("Source ID: {}\n", chat.source_id));
-    }
-    if !chat.source_path.trim().is_empty() {
-        out.push_str(&format!("Source path: {}\n", chat.source_path));
-    }
-    out.push_str("\n");
-    out.push_str(&sanitize_preview(&chat.content));
-    out
-}
-
-fn chat_picker_action_hint(chat: &ChatRecord) -> &'static str {
-    match chat.source.trim() {
-        "djinn-agent" => "Enter/r resume session • x delete session (confirm)",
-        "opencode" if !chat.source_id.trim().is_empty() => {
-            "Enter/r convert+resume in Djinn • s promote • x remove (confirm)"
-        }
-        _ => "Enter/s promote options • x remove (confirm)",
-    }
-}
-
-fn chat_source_label(chat: &ChatRecord) -> String {
-    if chat.source.trim() == "djinn-agent" {
-        let mut parts = vec!["Djinn agent".to_string()];
-        if let Some(role) = chat_content_metadata_value(chat, "Agent role") {
-            parts.push(format!("role: {role}"));
-        }
-        if let Some(parent) = chat_content_metadata_value(chat, "Parent session") {
-            parts.push(format!("parent: {parent}"));
-        }
-        if parts.len() == 1 && !chat.source_id.trim().is_empty() {
-            parts.push(chat.source_id.trim().to_string());
-        }
-        return format!(" • {}", parts.join(" • "));
-    }
-    if !chat.source.trim().is_empty() && !chat.source_id.trim().is_empty() {
-        format!(" • {}:{}", chat.source, chat.source_id)
-    } else if !chat.source.trim().is_empty() {
-        format!(" • {}", chat.source)
-    } else if !chat.source_id.trim().is_empty() {
-        format!(" • {}", chat.source_id)
-    } else {
-        String::new()
-    }
-}
-
-fn chat_list_metadata(chat: &ChatRecord) -> String {
-    if chat.source.trim() == "djinn-agent" {
-        let mut parts = Vec::new();
-        if let Some(role) = chat_content_metadata_value(chat, "Agent role") {
-            parts.push(format!("role: {role}"));
-        }
-        if let Some(parent) = chat_content_metadata_value(chat, "Parent session") {
-            parts.push(format!("parent: {parent}"));
-        }
-        if let Some(profile) = chat_content_metadata_value(chat, "Profile") {
-            parts.push(format!("profile: {profile}"));
-        }
-        if let Some(events) = chat_content_metadata_value(chat, "Events") {
-            parts.push(format!("{events} events"));
-        }
-        if parts.is_empty() {
-            let id = chat.source_id.trim();
-            if id.is_empty() {
-                "Djinn agent".to_string()
-            } else {
-                format!("Djinn agent • {id}")
-            }
-        } else {
-            format!("Djinn agent • {}", parts.join(" • "))
-        }
-    } else {
-        format!(
-            "{} chars{}",
-            chat.content.chars().count(),
-            chat_source_label(chat)
-        )
-    }
-}
-
-fn chat_content_metadata_value<'a>(chat: &'a ChatRecord, key: &str) -> Option<&'a str> {
-    let prefix = format!("{key}:");
-    chat.content.lines().find_map(|line| {
-        line.trim()
-            .strip_prefix(&prefix)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    })
-}
-
-#[allow(dead_code)]
-fn chat_session_request(chat: &ChatRecord) -> Option<ChatSessionRequest> {
-    let source = chat.source.trim();
-    let source_id = chat.source_id.trim();
-    if source_id.is_empty() {
-        return None;
-    }
-    let kind = match source {
-        "djinn-agent" => ChatSessionKind::DjinnAgent,
-        "opencode" => ChatSessionKind::OpenCode,
-        _ => return None,
-    };
-    Some(ChatSessionRequest {
-        kind,
-        session_id: source_id.to_string(),
-        title: chat.title.clone(),
-    })
-}
-
-fn chat_preview_title(chat: &ChatRecord, chats: &[ChatRecord]) -> String {
-    let title = chat.title.trim();
-    if !title.is_empty()
-        && chats
-            .iter()
-            .filter(|candidate| candidate.title.trim() == title)
-            .count()
-            == 1
-    {
-        truncate_title(title, 64)
-    } else {
-        compact_id(&chat.id)
-    }
-}
-
 fn compact_id(id: &str) -> String {
     truncate_title(id.trim(), 64)
 }
@@ -3273,298 +2490,6 @@ fn sanitize_preview(preview: &str) -> String {
 mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-
-    fn test_chat_record(id: &str, title: &str, source: &str, source_id: &str) -> ChatRecord {
-        ChatRecord {
-            id: id.to_string(),
-            title: title.to_string(),
-            content: String::new(),
-            source: source.to_string(),
-            source_id: source_id.to_string(),
-            source_path: String::new(),
-            content_path: String::new(),
-            created_at: String::new(),
-        }
-    }
-
-    #[test]
-    fn strip_tool_metadata_lines_removes_name_and_description_tags() {
-        let preview =
-            "# @name: foo\n# @description: does foo\necho foo\n-- @name: luafoo\nprint('foo')";
-        let stripped = strip_tool_metadata_lines(preview);
-        assert!(!stripped.contains("@name"));
-        assert!(!stripped.contains("@description"));
-        assert!(stripped.contains("echo foo"));
-        assert!(stripped.contains("print('foo')"));
-    }
-
-    #[test]
-    fn chat_preview_title_uses_unique_title_else_id() {
-        let unique = ChatRecord {
-            id: "chat-one-id".to_string(),
-            title: "Unique title".to_string(),
-            content: String::new(),
-            source: String::new(),
-            source_id: String::new(),
-            source_path: String::new(),
-            content_path: String::new(),
-            created_at: String::new(),
-        };
-        let duplicate_a = ChatRecord {
-            id: "chat-two-id".to_string(),
-            title: "Duplicate".to_string(),
-            content: String::new(),
-            source: String::new(),
-            source_id: String::new(),
-            source_path: String::new(),
-            content_path: String::new(),
-            created_at: String::new(),
-        };
-        let duplicate_b = ChatRecord {
-            id: "chat-three-id".to_string(),
-            title: "Duplicate".to_string(),
-            content: String::new(),
-            source: String::new(),
-            source_id: String::new(),
-            source_path: String::new(),
-            content_path: String::new(),
-            created_at: String::new(),
-        };
-        let chats = vec![unique.clone(), duplicate_a.clone(), duplicate_b];
-        assert_eq!(chat_preview_title(&unique, &chats), "Unique title");
-        assert_eq!(chat_preview_title(&duplicate_a, &chats), "chat-two-id");
-    }
-
-    #[test]
-    fn chats_can_request_djinn_or_opencode_session_resume() {
-        let djinn = test_chat_record("agent:agt_1", "Djinn", "djinn-agent", "agt_1");
-        let opencode = test_chat_record("chat", "OpenCode", "opencode", "ses_1");
-
-        assert_eq!(
-            chat_session_request(&djinn).map(|request| (request.kind, request.session_id)),
-            Some((ChatSessionKind::DjinnAgent, "agt_1".to_string()))
-        );
-        assert_eq!(
-            chat_session_request(&opencode).map(|request| (request.kind, request.session_id)),
-            Some((ChatSessionKind::OpenCode, "ses_1".to_string()))
-        );
-    }
-
-    #[test]
-    fn chats_filter_matches_source_paths_and_content() {
-        let mut app = ChatsApp::new(vec![
-            ChatRecord {
-                id: "chat-one".to_string(),
-                title: "Architecture notes".to_string(),
-                content: "Discussed command palettes".to_string(),
-                source: "opencode".to_string(),
-                source_id: "ses_alpha".to_string(),
-                source_path: "/tmp/opencode/ses_alpha.json".to_string(),
-                content_path: "/tmp/cache/chat-one.md".to_string(),
-                created_at: String::new(),
-            },
-            ChatRecord {
-                id: "chat-two".to_string(),
-                title: "Other".to_string(),
-                content: "Unrelated".to_string(),
-                source: "manual".to_string(),
-                source_id: String::new(),
-                source_path: String::new(),
-                content_path: String::new(),
-                created_at: String::new(),
-            },
-        ]);
-
-        app.filter.query = "ocsa".to_string();
-        assert_eq!(app.visible_indices(), vec![0]);
-
-        app.filter.query = "cmdpal".to_string();
-        assert_eq!(app.visible_indices(), vec![0]);
-    }
-
-    #[test]
-    fn sessions_filter_matches_agent_role_and_parent_metadata() {
-        let mut agent =
-            test_chat_record("agent:agt_child", "Review diff", "djinn-agent", "agt_child");
-        agent.content = "Djinn agent session\n\nID: agt_child\nProfile: default\nEvents: 7\nAgent role: reviewer\nParent session: agt_parent".to_string();
-        let mut app = ChatsApp::new(vec![
-            agent,
-            test_chat_record("chat-one", "Manual", "manual", ""),
-        ]);
-
-        app.filter.query = "reviewer".to_string();
-        assert_eq!(app.visible_indices(), vec![0]);
-
-        app.filter.query = "agt_parent".to_string();
-        assert_eq!(app.visible_indices(), vec![0]);
-    }
-
-    #[test]
-    fn sessions_scope_filter_uses_projected_session_metadata() {
-        let mut child_agent =
-            test_chat_record("agent:agt_child", "Child", "djinn-agent", "agt_child");
-        child_agent.content = "Djinn agent session\n\nID: agt_child\nProfile: default\nEvents: 7\nAgent role: reviewer\nParent session: agt_parent".to_string();
-        let parent_agent =
-            test_chat_record("agent:agt_parent", "Parent", "djinn-agent", "agt_parent");
-        let manual = test_chat_record("chat-one", "Manual", "manual", "");
-        let mut app = ChatsApp::new(vec![child_agent, parent_agent, manual]);
-
-        assert_eq!(app.visible_indices(), vec![0, 1, 2]);
-
-        app.set_scope(SessionFilterScope::Promotable);
-        assert_eq!(app.visible_indices(), vec![2]);
-
-        app.set_scope(SessionFilterScope::DjinnAgent);
-        assert_eq!(app.visible_indices(), vec![0, 1]);
-
-        app.set_scope(SessionFilterScope::ChildAgent);
-        assert_eq!(app.visible_indices(), vec![0]);
-
-        app.cycle_scope();
-        assert_eq!(app.scope, SessionFilterScope::All);
-        assert_eq!(app.visible_indices(), vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn chats_delete_request_separates_saved_chats_and_agent_sessions() {
-        let mut app = ChatsApp::new(vec![
-            test_chat_record("chat-one", "Saved", "manual", ""),
-            test_chat_record("agent:agt_1", "Agent", "djinn-agent", "agt_1"),
-            test_chat_record("chat-two", "Other", "opencode", "ses_2"),
-        ]);
-        app.checked.insert("chat-one".to_string());
-        app.checked.insert("agent:agt_1".to_string());
-
-        let request = app.delete_request().unwrap();
-
-        assert_eq!(request.chat_ids, vec!["chat-one"]);
-        assert_eq!(request.agent_session_ids, vec!["agt_1"]);
-
-        app.remove_deleted_rows(&request);
-
-        assert_eq!(app.chats.len(), 1);
-        assert_eq!(app.chats[0].id, "chat-two");
-        assert!(app.checked.is_empty());
-    }
-
-    #[test]
-    fn chats_delete_request_defaults_to_selected_agent_session() {
-        let app = ChatsApp::new(vec![test_chat_record(
-            "agent:agt_1",
-            "Agent",
-            "djinn-agent",
-            "agt_1",
-        )]);
-
-        let request = app.delete_request().unwrap();
-
-        assert!(request.chat_ids.is_empty());
-        assert_eq!(request.agent_session_ids, vec!["agt_1"]);
-    }
-
-    #[test]
-    fn sessions_promote_options_do_not_open_for_agent_session_only() {
-        let mut app = ChatsApp::new(vec![test_chat_record(
-            "agent:agt_1",
-            "Agent",
-            "djinn-agent",
-            "agt_1",
-        )]);
-
-        app.open_options();
-
-        assert_eq!(app.mode, ChatUiMode::Selecting);
-        assert!(app.promote_request().is_none());
-    }
-
-    #[test]
-    fn sessions_promote_request_uses_only_promotable_session_rows() {
-        let mut app = ChatsApp::new(vec![
-            test_chat_record("chat-one", "Saved", "manual", ""),
-            test_chat_record("agent:agt_1", "Agent", "djinn-agent", "agt_1"),
-            test_chat_record("chat-two", "OpenCode", "opencode", "ses_2"),
-        ]);
-        app.checked.insert("chat-one".to_string());
-        app.checked.insert("agent:agt_1".to_string());
-        app.checked.insert("chat-two".to_string());
-
-        app.open_options();
-        let request = app.promote_request().unwrap();
-
-        assert_eq!(app.mode, ChatUiMode::Options);
-        assert_eq!(request.chat_ids, vec!["chat-one", "chat-two"]);
-    }
-
-    #[test]
-    fn chats_delete_confirmation_requires_explicit_confirm() {
-        let mut app = ChatsApp::new(vec![test_chat_record(
-            "agent:agt_1",
-            "Agent",
-            "djinn-agent",
-            "agt_1",
-        )]);
-
-        app.open_delete_confirmation();
-
-        assert_eq!(
-            app.mode,
-            ChatUiMode::ConfirmDelete(ChatDeleteRequest {
-                chat_ids: Vec::new(),
-                agent_session_ids: vec!["agt_1".to_string()],
-            })
-        );
-
-        let action = app.confirm_delete_action().unwrap();
-        assert_eq!(
-            action,
-            TuiAction::DeleteChatRows(ChatDeleteRequest {
-                chat_ids: Vec::new(),
-                agent_session_ids: vec!["agt_1".to_string()],
-            })
-        );
-        assert_eq!(app.mode, ChatUiMode::Selecting);
-    }
-
-    #[test]
-    fn chats_delete_confirmation_can_cancel_without_action() {
-        let mut app = ChatsApp::new(vec![test_chat_record("chat-one", "Saved", "manual", "")]);
-
-        app.open_delete_confirmation();
-        app.cancel_modal();
-
-        assert_eq!(app.mode, ChatUiMode::Selecting);
-        assert_eq!(app.chats.len(), 1);
-        assert!(app.confirm_delete_action().is_none());
-    }
-
-    #[test]
-    fn chat_preview_surfaces_session_picker_actions() {
-        let djinn = test_chat_record("agent:agt_1", "Djinn", "djinn-agent", "agt_1");
-        let opencode = test_chat_record("chat", "OpenCode", "opencode", "ses_1");
-
-        assert!(chat_preview(&djinn)
-            .contains("Actions: Enter/r resume session • x delete session (confirm)"));
-        assert!(chat_preview(&opencode).contains("Actions: Enter/r convert+resume in Djinn"));
-    }
-
-    #[test]
-    fn chat_preview_and_list_metadata_surface_agent_role_and_parent() {
-        let mut djinn = test_chat_record("agent:agt_child", "Djinn", "djinn-agent", "agt_child");
-        djinn.content = "Djinn agent session\n\nID: agt_child\nProfile: default\nEvents: 7\nAgent role: reviewer\nParent session: agt_parent".to_string();
-
-        let preview = chat_preview(&djinn);
-
-        assert!(preview.contains("Agent role: reviewer"));
-        assert!(preview.contains("Parent session: agt_parent"));
-        assert_eq!(
-            chat_source_label(&djinn),
-            " • Djinn agent • role: reviewer • parent: agt_parent"
-        );
-        assert_eq!(
-            chat_list_metadata(&djinn),
-            "Djinn agent • role: reviewer • parent: agt_parent • profile: default • 7 events"
-        );
-    }
 
     #[test]
     fn fuzzy_match_matches_subsequence_case_insensitive() {
@@ -3971,7 +2896,6 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
             None,
             DashboardTab::Sessions,
         );
@@ -3986,7 +2910,6 @@ mod tests {
     #[test]
     fn dashboard_palette_scopes_commands_to_active_tab() {
         let sessions_app = DashboardApp::new(
-            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -4015,7 +2938,6 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
             None,
             DashboardTab::Skills,
         );
@@ -4031,7 +2953,6 @@ mod tests {
     #[test]
     fn dashboard_palette_filters_and_selects_commands() {
         let mut app = DashboardApp::new(
-            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -4164,7 +3085,6 @@ mod tests {
     #[test]
     fn dashboard_header_shows_active_context() {
         let app = DashboardApp::new(
-            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),

@@ -22,14 +22,12 @@ use djinn_agent::{
 };
 use djinn_chats::{ChatRecord, ChatRestoreReport};
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
-#[cfg(test)]
-use djinn_memory::AgentSessionSummary;
 use djinn_memory::{
     lifecycle_for, ActionRecord, ActionStore, AgentSession, AgentSessionEvent,
-    AgentSessionEventKind, AgentSessionExecutionMode, AgentSessionFilter, AgentSessionId,
-    AgentSessionLifecycleState, AgentSessionMeta, AgentSessionPolicyRule,
-    AgentSessionPolicySnapshot, AgentSessionRuntimeConfig, AgentSessionStore, FileHistoryEntryId,
-    FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
+    AgentSessionEventKind, AgentSessionExecutionMode, AgentSessionId, AgentSessionLifecycleState,
+    AgentSessionMeta, AgentSessionPolicyRule, AgentSessionPolicySnapshot,
+    AgentSessionRuntimeConfig, AgentSessionStore, FileHistoryEntryId, FileHistoryFilter,
+    FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
     JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource, SuggestionInput,
     SuggestionRecord, SuggestionStore,
 };
@@ -13084,7 +13082,6 @@ fn run_tui_in_session(
     let Some(action) = tui.run_dashboard_with_handler(
         tools,
         sessions,
-        Vec::new(),
         memories,
         suggestions,
         skills,
@@ -13092,15 +13089,10 @@ fn run_tui_in_session(
         initial_tab,
         |action| match action {
             djinn_tui::TuiAction::DeleteMemories(ids) => remove_memories_silent(&ids).map(|_| ()),
-            djinn_tui::TuiAction::DeleteChatRows(request) => {
-                delete_chat_rows_silent(&request).map(|_| ())
-            }
             djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| ()),
             djinn_tui::TuiAction::OpenSession(_)
-            | djinn_tui::TuiAction::OpenChatSession(_)
             | djinn_tui::TuiAction::OpenTool(_)
             | djinn_tui::TuiAction::OpenSkill(_)
-            | djinn_tui::TuiAction::PromoteSessions(_)
             | djinn_tui::TuiAction::ReviewMemory(_) => Ok(()),
         },
     )?
@@ -13108,18 +13100,6 @@ fn run_tui_in_session(
         return Ok(TuiRunOutcome::Exit);
     };
 
-    if let djinn_tui::TuiAction::OpenChatSession(request) = &action {
-        if request.kind == djinn_tui::ChatSessionKind::OpenCode {
-            convert_opencode_chat_to_agent_session(&request.session_id)?;
-        }
-        return Ok(TuiRunOutcome::Exit);
-    }
-    if let djinn_tui::TuiAction::PromoteSessions(request) = &action {
-        if request.mode == djinn_tui::SessionPromoteMode::Summary {
-            create_chat_summary_agent_session(request)?;
-            return Ok(TuiRunOutcome::Exit);
-        }
-    }
     Ok(TuiRunOutcome::Action(action))
 }
 
@@ -13128,31 +13108,8 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
         djinn_tui::TuiAction::OpenSession(session) => {
             run_folder_session_tui(PathBuf::from(session.path)).map(|_| false)
         }
-        djinn_tui::TuiAction::OpenChatSession(request) => match request.kind {
-            djinn_tui::ChatSessionKind::DjinnAgent => Ok(false),
-            djinn_tui::ChatSessionKind::OpenCode => {
-                convert_opencode_chat_to_agent_session(&request.session_id).map(|_| false)
-            }
-        },
         djinn_tui::TuiAction::OpenTool(entry) => open_tool_entry(&entry, editor).map(|_| false),
         djinn_tui::TuiAction::OpenSkill(entry) => open_skill_entry(&entry, editor).map(|_| false),
-        djinn_tui::TuiAction::PromoteSessions(request) => promote_sessions(ShareChatsArgs {
-            ids: request.chat_ids,
-            source: None,
-            query: None,
-            limit: 10,
-            all: false,
-            mode: promote_sessions_mode_from_tui(request.mode),
-            max_chars_per_chat: 4000,
-            max_memories: 20,
-            archive: false,
-            dry_run: false,
-            profile: "default".to_string(),
-            model: None,
-            api_key: None,
-            base_url: None,
-        })
-        .map(|_| false),
         djinn_tui::TuiAction::ReviewMemory(id) => accept_memory(AcceptMemoryArgs {
             id,
             agent: None,
@@ -13162,53 +13119,8 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
         })
         .map(|_| false),
         djinn_tui::TuiAction::DeleteMemories(ids) => remove_memories_silent(&ids).map(|_| false),
-        djinn_tui::TuiAction::DeleteChatRows(request) => {
-            delete_chat_rows_silent(&request).map(|_| false)
-        }
         djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| false),
     }
-}
-
-fn create_chat_summary_agent_session(
-    request: &djinn_tui::SessionPromoteRequest,
-) -> Result<AgentSessionId> {
-    let args = ShareChatsArgs {
-        ids: request.chat_ids.clone(),
-        source: None,
-        query: None,
-        limit: 10,
-        all: false,
-        mode: ShareChatsMode::Summary,
-        max_chars_per_chat: 4000,
-        max_memories: 20,
-        archive: false,
-        dry_run: false,
-        profile: "default".to_string(),
-        model: None,
-        api_key: None,
-        base_url: None,
-    };
-    let records = chat_store().list()?;
-    let selected = select_chats_for_share(&records, &args)?;
-    let prompt = format_chat_summary_agent_prompt(&selected, &args);
-    let title = if selected.len() == 1 {
-        format!("Summarize {}", selected[0].title)
-    } else {
-        format!("Summarize {} selected sessions", selected.len())
-    };
-    let store = agent_session_store();
-    let id = store.create_session(AgentSessionMeta {
-        title,
-        workspace: resolve_agent_workspace(None)?,
-        profile: "default".to_string(),
-        source: "djinn-chat-summary".to_string(),
-        ..AgentSessionMeta::default()
-    })?;
-    store.append_event(
-        &id,
-        AgentSessionEvent::new(AgentSessionEventKind::UserMessage { content: prompt }),
-    )?;
-    Ok(id)
 }
 
 fn session_records_for_dashboard() -> Result<Vec<djinn_tui::SessionRecord>> {
@@ -13229,257 +13141,6 @@ fn session_records_for_dashboard() -> Result<Vec<djinn_tui::SessionRecord>> {
             next_action: session.next_action,
         })
         .collect())
-}
-
-#[cfg(test)]
-fn opencode_bridge_session_id<'a>(
-    state: &'a OpencodeWatchState,
-    chat: &ChatRecord,
-) -> Option<&'a str> {
-    if chat.source != "opencode" || chat.source_id.trim().is_empty() {
-        return None;
-    }
-    state
-        .sessions
-        .get(&chat.source_id)
-        .map(|session| session.djinn_session_id.trim())
-        .filter(|id| !id.is_empty())
-}
-
-#[cfg(test)]
-fn converted_opencode_chat_record(
-    chat: &ChatRecord,
-    summary: &AgentSessionSummary,
-    store: &JsonlAgentSessionStore,
-) -> ChatRecord {
-    let mut record = agent_session_chat_record(summary, store);
-    record.id = format!("converted:{}:{}", chat.source_id, summary.id);
-    record.title = if summary.title.trim().is_empty() {
-        format!("{} (converted to Djinn)", chat.title)
-    } else {
-        format!("{} (converted)", summary.title)
-    };
-    record.content = format!(
-        "Converted from OpenCode session {}.\n\n{}",
-        chat.source_id, record.content
-    );
-    record
-}
-
-#[cfg(test)]
-fn agent_session_chat_record(
-    summary: &AgentSessionSummary,
-    store: &JsonlAgentSessionStore,
-) -> ChatRecord {
-    let id = summary.id.to_string();
-    let title = if summary.title.trim().is_empty() {
-        format!("Djinn agent session {id}")
-    } else {
-        summary.title.clone()
-    };
-    let mut content = format!(
-        "Djinn agent session\n\nID: {id}\nWorkspace: {}\nProfile: {}\nSource: {}\nEvents: {}\nCreated: {}\nUpdated: {}",
-        summary.workspace,
-        summary.profile,
-        summary.source,
-        summary.event_count,
-        summary.created_at,
-        summary.updated_at
-    );
-    if let Some(agent_name) = summary
-        .agent_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-    {
-        content.push_str(&format!("\nAgent role: {agent_name}"));
-    }
-    if let Some(parent_session_id) = &summary.parent_session_id {
-        content.push_str(&format!("\nParent session: {parent_session_id}"));
-    }
-
-    ChatRecord {
-        id: format!("agent:{id}"),
-        title,
-        content,
-        source: "djinn-agent".to_string(),
-        source_id: id.clone(),
-        source_path: store.session_file_path(&summary.id).display().to_string(),
-        content_path: String::new(),
-        created_at: summary
-            .created_at
-            .split('T')
-            .next()
-            .unwrap_or(&summary.created_at)
-            .to_string(),
-    }
-}
-
-fn convert_opencode_chat_to_agent_session(opencode_session_id: &str) -> Result<AgentSessionId> {
-    let opencode_session_id = opencode_session_id.trim();
-    if opencode_session_id.is_empty() {
-        bail!("OpenCode session id is empty");
-    }
-    if let Some(existing) = existing_converted_opencode_agent_session(opencode_session_id)? {
-        return Ok(existing);
-    }
-
-    let chat = chat_store()
-        .list()?
-        .into_iter()
-        .find(|chat| chat.source == "opencode" && chat.source_id == opencode_session_id)
-        .with_context(|| format!("finding imported OpenCode chat for {opencode_session_id}"))?;
-    let workspace = opencode_export_workspace(&chat.content)
-        .or_else(|| {
-            env::current_dir()
-                .ok()
-                .map(|path| path.display().to_string())
-        })
-        .unwrap_or_default();
-    let store = agent_session_store();
-    let id = store.create_session(AgentSessionMeta {
-        title: if chat.title.trim().is_empty() {
-            format!("OpenCode session {opencode_session_id}")
-        } else {
-            chat.title.clone()
-        },
-        workspace,
-        profile: "default".to_string(),
-        source: "opencode".to_string(),
-        ..AgentSessionMeta::default()
-    })?;
-    store.append_event(
-        &id,
-        AgentSessionEvent::new(AgentSessionEventKind::Checkpoint {
-            label: opencode_conversion_checkpoint(opencode_session_id),
-        }),
-    )?;
-    for event in opencode_export_agent_events(&chat.content, opencode_session_id) {
-        store.append_event(&id, AgentSessionEvent::new(event))?;
-    }
-    record_opencode_djinn_bridge(opencode_session_id, &id, &store)?;
-    Ok(id)
-}
-
-fn record_opencode_djinn_bridge(
-    opencode_session_id: &str,
-    djinn_session_id: &AgentSessionId,
-    store: &JsonlAgentSessionStore,
-) -> Result<()> {
-    let mut state = load_opencode_watch_state().unwrap_or_default();
-    let entry = state
-        .sessions
-        .entry(opencode_session_id.to_string())
-        .or_default();
-    entry.djinn_session_id = djinn_session_id.to_string();
-    entry.djinn_session_path = store
-        .session_file_path(djinn_session_id)
-        .display()
-        .to_string();
-    entry.converted_at = chrono::Local::now().to_rfc3339();
-    save_opencode_watch_state(&state)
-}
-
-fn existing_converted_opencode_agent_session(
-    opencode_session_id: &str,
-) -> Result<Option<AgentSessionId>> {
-    let store = agent_session_store();
-    let checkpoint = opencode_conversion_checkpoint(opencode_session_id);
-    for summary in store.list_sessions(AgentSessionFilter {
-        source: Some("opencode".to_string()),
-        ..AgentSessionFilter::default()
-    })? {
-        let session = store.load_session(&summary.id)?;
-        if session.events.iter().any(|event| {
-            matches!(
-                &event.kind,
-                AgentSessionEventKind::Checkpoint { label } if label == &checkpoint
-            )
-        }) {
-            record_opencode_djinn_bridge(opencode_session_id, &summary.id, &store)?;
-            return Ok(Some(summary.id));
-        }
-    }
-    Ok(None)
-}
-
-fn opencode_conversion_checkpoint(opencode_session_id: &str) -> String {
-    format!("converted-opencode-session:{opencode_session_id}")
-}
-
-fn opencode_export_workspace(export: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(export).ok()?;
-    ["/info/directory", "/info/path/root", "/info/path/cwd"]
-        .iter()
-        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-}
-
-fn opencode_export_agent_events(export: &str, session_id: &str) -> Vec<AgentSessionEventKind> {
-    let Ok(value) = serde_json::from_str::<Value>(export) else {
-        return vec![AgentSessionEventKind::Summary {
-            content: format!("Converted OpenCode session {session_id}.\n\n{export}"),
-        }];
-    };
-    let mut events = Vec::new();
-    for message in value
-        .get("messages")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let role = message
-            .pointer("/info/role")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let content = opencode_message_text(message);
-        if content.trim().is_empty() {
-            continue;
-        }
-        match role {
-            "user" => events.push(AgentSessionEventKind::UserMessage { content }),
-            "assistant" => events.push(AgentSessionEventKind::AssistantMessage { content }),
-            _ => events.push(AgentSessionEventKind::Summary {
-                content: format!("OpenCode {role} message:\n{content}"),
-            }),
-        }
-    }
-    if events.is_empty() {
-        events.push(AgentSessionEventKind::Summary {
-            content: format!("Converted OpenCode session {session_id}."),
-        });
-    }
-    events
-}
-
-fn opencode_message_text(message: &Value) -> String {
-    let mut lines = Vec::new();
-    for part in message
-        .get("parts")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        match part.get("type").and_then(Value::as_str) {
-            Some("text") | Some("reasoning") => {
-                if let Some(text) = part.get("text").and_then(Value::as_str) {
-                    push_nonempty_opencode_line(&mut lines, text);
-                }
-            }
-            Some("tool") => {
-                if let Some(title) = part.pointer("/state/title").and_then(Value::as_str) {
-                    push_nonempty_opencode_line(&mut lines, &format!("Tool: {title}"));
-                } else if let Some(tool) = part.get("tool").and_then(Value::as_str) {
-                    push_nonempty_opencode_line(&mut lines, &format!("Tool: {tool}"));
-                }
-                if let Some(output) = part.pointer("/state/output").and_then(Value::as_str) {
-                    push_nonempty_opencode_line(&mut lines, output);
-                }
-            }
-            _ => {}
-        }
-    }
-    lines.join("\n\n")
 }
 
 fn push_nonempty_opencode_line(lines: &mut Vec<String>, value: &str) {
@@ -13504,14 +13165,6 @@ fn default_dashboard_tui_args() -> TuiArgs {
         view: TuiView::Sessions,
         roots: Vec::new(),
         editor: None,
-    }
-}
-
-fn promote_sessions_mode_from_tui(mode: djinn_tui::SessionPromoteMode) -> ShareChatsMode {
-    match mode {
-        djinn_tui::SessionPromoteMode::Summary => ShareChatsMode::Summary,
-        djinn_tui::SessionPromoteMode::Pattern => ShareChatsMode::Pattern,
-        djinn_tui::SessionPromoteMode::Memories => ShareChatsMode::Memories,
     }
 }
 
@@ -14390,21 +14043,6 @@ fn delete_chats_silent(ids: &[String]) -> Result<Vec<ChatRecord>> {
     let chats = chat_store().list()?;
     let resolved = resolve_chat_ids(&chats, ids)?;
     chat_store().remove_ids(&resolved)
-}
-
-fn delete_chat_rows_silent(request: &djinn_tui::ChatDeleteRequest) -> Result<()> {
-    if !request.chat_ids.is_empty() {
-        delete_chats_silent(&request.chat_ids)?;
-    }
-
-    if !request.agent_session_ids.is_empty() {
-        let store = agent_session_store();
-        for id in &request.agent_session_ids {
-            store.delete_session(&AgentSessionId::new(id.clone()))?;
-        }
-    }
-
-    Ok(())
 }
 
 fn archive_chats(args: ArchiveChatsArgs) -> Result<()> {
@@ -16035,20 +15673,6 @@ fn archive_label(label: &str) -> String {
     }
 }
 
-fn format_chat_summary_agent_prompt(records: &[ChatRecord], args: &ShareChatsArgs) -> String {
-    let mut out = String::from(
-        "Please summarize the selected sessions below so we can continue discussing them.\n\n",
-    );
-    out.push_str("Focus on:\n");
-    out.push_str("- main themes and outcomes;\n");
-    out.push_str("- important decisions;\n");
-    out.push_str("- unresolved follow-ups;\n");
-    out.push_str("- potentially reusable memories, clearly labeled as possible memories only.\n\n");
-    out.push_str("Do not write memories automatically. If sanitized exports hide the source text, say that the available detail is limited.\n");
-    append_chats_bundle(&mut out, records, args.max_chars_per_chat);
-    out
-}
-
 fn format_chats_review_prompt(
     records: &[ChatRecord],
     args: &ShareChatsArgs,
@@ -16995,7 +16619,7 @@ fn chat_store() -> djinn_chats::ChatStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use djinn_memory::{AgentSessionLifecycle, AgentSessionTokenUsage};
+    use djinn_memory::AgentSessionTokenUsage;
 
     fn test_chat(id: &str, title: &str, source: &str, content: &str) -> ChatRecord {
         ChatRecord {
@@ -20929,93 +20553,6 @@ link = "context/repo"
     }
 
     #[test]
-    fn opencode_bridge_session_id_detects_converted_chat() {
-        let mut state = OpencodeWatchState::default();
-        state.sessions.insert(
-            "ses_1".to_string(),
-            OpencodeSessionState {
-                djinn_session_id: "agt_1".to_string(),
-                ..OpencodeSessionState::default()
-            },
-        );
-        let chat = ChatRecord {
-            id: "chat".to_string(),
-            title: "OpenCode".to_string(),
-            content: String::new(),
-            source: "opencode".to_string(),
-            source_id: "ses_1".to_string(),
-            source_path: String::new(),
-            content_path: String::new(),
-            created_at: String::new(),
-        };
-
-        assert_eq!(opencode_bridge_session_id(&state, &chat), Some("agt_1"));
-    }
-
-    #[test]
-    fn converted_opencode_chat_record_points_at_djinn_session() {
-        let chat = ChatRecord {
-            id: "chat".to_string(),
-            title: "OpenCode".to_string(),
-            content: String::new(),
-            source: "opencode".to_string(),
-            source_id: "ses_1".to_string(),
-            source_path: String::new(),
-            content_path: String::new(),
-            created_at: "2026-07-24".to_string(),
-        };
-        let summary = AgentSessionSummary {
-            id: AgentSessionId::new("agt_1"),
-            title: "Converted title".to_string(),
-            workspace: "/tmp/project".to_string(),
-            profile: "default".to_string(),
-            agent_name: None,
-            parent_session_id: None,
-            source: "opencode".to_string(),
-            created_at: "2026-07-24T00:00:00Z".to_string(),
-            updated_at: "2026-07-24T01:00:00Z".to_string(),
-            event_count: 3,
-            lifecycle: AgentSessionLifecycle::default(),
-        };
-        let store = JsonlAgentSessionStore::default_in(&std::env::temp_dir());
-
-        let record = converted_opencode_chat_record(&chat, &summary, &store);
-
-        assert_eq!(record.source, "djinn-agent");
-        assert_eq!(record.source_id, "agt_1");
-        assert!(record.id.contains("ses_1"));
-        assert!(record.title.contains("converted"));
-        assert!(record
-            .content
-            .contains("Converted from OpenCode session ses_1"));
-    }
-
-    #[test]
-    fn agent_session_chat_record_surfaces_role_and_parent_metadata() {
-        let summary = AgentSessionSummary {
-            id: AgentSessionId::new("agt_child"),
-            title: "Review diff".to_string(),
-            workspace: "/tmp/project".to_string(),
-            profile: "default".to_string(),
-            agent_name: Some("reviewer".to_string()),
-            parent_session_id: Some(AgentSessionId::new("agt_parent")),
-            source: "djinn-agent".to_string(),
-            created_at: "2026-07-25T00:00:00Z".to_string(),
-            updated_at: "2026-07-25T01:00:00Z".to_string(),
-            event_count: 7,
-            lifecycle: AgentSessionLifecycle::default(),
-        };
-        let store = JsonlAgentSessionStore::default_in(&std::env::temp_dir());
-
-        let record = agent_session_chat_record(&summary, &store);
-
-        assert_eq!(record.source, "djinn-agent");
-        assert_eq!(record.source_id, "agt_child");
-        assert!(record.content.contains("Agent role: reviewer"));
-        assert!(record.content.contains("Parent session: agt_parent"));
-    }
-
-    #[test]
     fn opencode_default_model_reads_coder_agent_model() {
         let model = opencode_default_model_from_content(
             r#"{
@@ -21307,47 +20844,6 @@ link = "context/repo"
     }
 
     #[test]
-    fn opencode_export_agent_events_reads_text_parts() {
-        let events = opencode_export_agent_events(
-            r#"{
-              "info": {"directory": "/tmp/project"},
-              "messages": [
-                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "hello"}]},
-                {"info": {"role": "assistant"}, "parts": [
-                  {"type": "reasoning", "text": "thinking"},
-                  {"type": "text", "text": "world"}
-                ]}
-              ]
-            }"#,
-            "ses_test",
-        );
-
-        assert_eq!(
-            opencode_export_workspace(r#"{"info":{"directory":"/tmp/project"}}"#).as_deref(),
-            Some("/tmp/project")
-        );
-        assert_eq!(events.len(), 2);
-        assert!(matches!(
-            &events[0],
-            AgentSessionEventKind::UserMessage { content } if content == "hello"
-        ));
-        assert!(matches!(
-            &events[1],
-            AgentSessionEventKind::AssistantMessage { content } if content.contains("thinking") && content.contains("world")
-        ));
-    }
-
-    #[test]
-    fn opencode_export_agent_events_falls_back_to_summary_for_raw_export() {
-        let events = opencode_export_agent_events("not json", "ses_test");
-
-        assert!(matches!(
-            &events[0],
-            AgentSessionEventKind::Summary { content } if content.contains("Converted OpenCode session ses_test")
-        ));
-    }
-
-    #[test]
     fn promote_sessions_renders_opencode_exports_as_digest_not_raw_json() {
         let records = vec![test_chat(
             "opencode-session-ses-test",
@@ -21434,33 +20930,6 @@ link = "context/repo"
         assert!(!summary.contains("Return Markdown"));
         assert!(!summary.contains("## Existing Memories"));
         assert!(!summary.contains("\"messages\""));
-    }
-
-    #[test]
-    fn chat_summary_agent_prompt_uses_digest_context_for_conversation() {
-        let records = vec![test_chat(
-            "opencode-session-ses-test",
-            "OpenCode session ses_test",
-            "opencode",
-            r#"{
-              "info": {"id": "ses_test", "slug": "quiet-cactus"},
-              "messages": [
-                {"info": {"role": "user"}, "parts": [{"type": "text", "text": "Summarize this in chat"}]},
-                {"info": {"role": "assistant"}, "parts": [{"type": "text", "text": "Ready for follow-up."}]}
-              ]
-            }"#,
-        )];
-        let mut args = default_share_chats_args();
-        args.mode = ShareChatsMode::Summary;
-
-        let prompt = format_chat_summary_agent_prompt(&records, &args);
-
-        assert!(prompt.starts_with("Please summarize the selected sessions"));
-        assert!(prompt.contains("so we can continue discussing them"));
-        assert!(prompt.contains("OpenCode export digest"));
-        assert!(prompt.contains("User:\nSummarize this in chat"));
-        assert!(prompt.contains("Assistant:\nReady for follow-up."));
-        assert!(!prompt.contains("\"messages\""));
     }
 
     #[test]
