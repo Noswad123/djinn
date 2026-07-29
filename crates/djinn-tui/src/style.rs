@@ -68,16 +68,6 @@ pub(crate) fn base_style() -> Style {
     Style::default().fg(theme.text).bg(theme.app_bg)
 }
 
-pub(crate) fn composer_style() -> Style {
-    let theme = theme_tokens();
-    Style::default().fg(theme.text).bg(theme.composer_bg)
-}
-
-pub(crate) fn composer_dim_style() -> Style {
-    let theme = theme_tokens();
-    Style::default().fg(theme.muted_text).bg(theme.composer_bg)
-}
-
 pub(crate) fn dim_style() -> Style {
     let theme = theme_tokens();
     Style::default().fg(theme.muted_text).bg(theme.app_bg)
@@ -127,31 +117,6 @@ pub(crate) fn info_style() -> Style {
     Style::default().fg(theme.info).bg(theme.app_bg)
 }
 
-pub(crate) fn elevated_style() -> Style {
-    let theme = theme_tokens();
-    Style::default().fg(theme.text).bg(theme.elevated_bg)
-}
-
-pub(crate) fn muted_elevated_style() -> Style {
-    let theme = theme_tokens();
-    Style::default().fg(theme.muted_text).bg(theme.elevated_bg)
-}
-
-pub(crate) fn code_style() -> Style {
-    let theme = theme_tokens();
-    Style::default().fg(theme.text).bg(theme.code_bg)
-}
-
-pub(crate) fn code_warning_style() -> Style {
-    let theme = theme_tokens();
-    Style::default().fg(theme.warning).bg(theme.code_bg)
-}
-
-pub(crate) fn tool_block_style() -> Style {
-    let theme = theme_tokens();
-    Style::default().fg(theme.text).bg(theme.tool_bg)
-}
-
 pub(crate) fn block<'a>(title: &'a str) -> Block<'a> {
     let theme = theme_tokens();
     Block::default()
@@ -160,30 +125,6 @@ pub(crate) fn block<'a>(title: &'a str) -> Block<'a> {
         .title_style(title_style())
         .border_style(Style::default().fg(theme.border).bg(theme.panel_bg))
         .style(Style::default().fg(theme.text).bg(theme.panel_bg))
-}
-
-pub(crate) fn agent_chat_block<'a>(title: &'a str) -> Block<'a> {
-    let theme = theme_tokens();
-    Block::default()
-        .borders(agent_chat_borders())
-        .title(title)
-        .title_style(title_style())
-        .border_style(Style::default().fg(theme.border).bg(theme.panel_bg))
-        .style(Style::default().fg(theme.text).bg(theme.panel_bg))
-}
-
-pub(crate) fn agent_chat_composer_block<'a>(title: &'a str) -> Block<'a> {
-    let theme = theme_tokens();
-    Block::default()
-        .borders(agent_chat_borders())
-        .title(title)
-        .title_style(title_style().bg(theme.composer_bg))
-        .border_style(Style::default().fg(theme.border).bg(theme.composer_bg))
-        .style(Style::default().fg(theme.text).bg(theme.composer_bg))
-}
-
-pub(crate) fn agent_chat_borders() -> Borders {
-    Borders::TOP | Borders::BOTTOM
 }
 
 #[cfg(test)]
@@ -212,12 +153,7 @@ mod tests {
 
         assert_eq!(base_style().fg, Some(theme.text));
         assert_eq!(base_style().bg, Some(theme.app_bg));
-        assert_eq!(composer_style().fg, Some(theme.text));
-        assert_eq!(composer_style().bg, Some(theme.composer_bg));
-        assert_eq!(composer_dim_style().fg, Some(theme.muted_text));
-        assert_eq!(composer_dim_style().bg, Some(theme.composer_bg));
         assert_eq!(dim_style().fg, Some(theme.muted_text));
         assert_eq!(selected_style().fg, Some(theme.selected));
-        assert_eq!(code_style().bg, Some(theme.code_bg));
     }
 }
