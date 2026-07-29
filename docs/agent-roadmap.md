@@ -251,11 +251,14 @@ Ready follow-up slices:
   `request.md`, context files, and turns in `$EDITOR`; de-emphasize the
   chat transcript as the main surface. The terse spellings should be canonical:
   `djinn` with no args opens the session dashboard TUI, while
-  `djinn session <name-or-path>` opens the same TUI focused on that session.
+  `djinn session <name-or-path>` opens a focused folder-session status TUI for
+  that session.
   Verbose `djinn tui` / `djinn session tui ...` forms may remain discoverable
   aliases, but they should not be the primary workflow.
 - Feed the future dashboard from the same status/watch projection rather than a
   separate TUI-only state model.
+- Next TUI polish: add focused-session actions for run/watch/open/edit/discover
+  instead of only displaying the status/artifact paths.
 - Define how `context/` and selected artifacts are folded into subsequent model
   context without blindly ingesting whole folders. Default future context should
   be `request.md`, `summary.md`, selected `context/` files/links, and explicit

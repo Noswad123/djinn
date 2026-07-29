@@ -2416,19 +2416,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let Some(command) = cli.command else {
         if io::stdin().is_terminal() && io::stdout().is_terminal() {
-            return run_interactive_app(AgentChatArgs {
-                resume: None,
-                title: None,
-                workspace: None,
-                session_dir: None,
-                profile: "default".to_string(),
-                agent: None,
-                parent_session: None,
-                model: None,
-                api_key: None,
-                base_url: None,
-                max_tool_rounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
-            });
+            return run_tui_command(default_dashboard_tui_args());
         }
         Cli::command().print_help()?;
         println!();
@@ -2462,13 +2450,15 @@ fn main() -> Result<()> {
         Command::Session(args) => run_session(args),
         Command::Agent(args) => run_agent(args),
         Command::Agents(args) => run_agents(args),
-        Command::Tui(args) => {
-            if let Some(args) = run_tui(args)? {
-                run_interactive_app(args)
-            } else {
-                Ok(())
-            }
-        }
+        Command::Tui(args) => run_tui_command(args),
+    }
+}
+
+fn run_tui_command(args: TuiArgs) -> Result<()> {
+    if let Some(args) = run_tui(args)? {
+        run_interactive_app(args)
+    } else {
+        Ok(())
     }
 }
 
@@ -5478,8 +5468,57 @@ fn run_session(args: SessionArgs) -> Result<()> {
                 editor: args.editor,
             })
         }
-        None => bail!("expected a session command or `djinn session <name-or-path> --open`"),
+        None if args.dir.is_some() => run_folder_session_tui(args.dir.unwrap()),
+        None => run_tui_command(TuiArgs {
+            view: TuiView::Sessions,
+            roots: Vec::new(),
+            editor: args.editor,
+        }),
     }
+}
+
+fn run_folder_session_tui(dir: PathBuf) -> Result<()> {
+    let session_dir = resolve_session_dir(&dir)?;
+    let mut tui = djinn_tui::TuiSession::enter()?;
+    tui.run_folder_session_status(|| folder_session_status_tui_view(&session_dir))?;
+    tui.finish()
+}
+
+fn folder_session_status_tui_view(
+    session_dir: &Path,
+) -> Result<djinn_tui::FolderSessionStatusView> {
+    let report = folder_session_status(session_dir)?;
+    let session_path = PathBuf::from(&report.session_dir);
+    let title = session_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(folder_session_display_name)
+        .unwrap_or_else(|| report.session_dir.clone());
+    Ok(djinn_tui::FolderSessionStatusView {
+        title,
+        state: report.lifecycle.state.clone(),
+        mode: report.lifecycle.mode.clone(),
+        session_dir: report.session_dir.clone(),
+        summary_path: report
+            .files
+            .summary_md
+            .then(|| session_path.join("summary.md").display().to_string()),
+        request_path: report
+            .files
+            .request_md
+            .then(|| session_path.join("request.md").display().to_string()),
+        response_path: report
+            .latest_turn
+            .as_ref()
+            .and_then(|turn| turn.response_path.clone()),
+        turn_count: report.turn_count,
+        next_action: report.next_action.clone(),
+        note: report
+            .lifecycle
+            .note
+            .clone()
+            .or(report.lifecycle.reason.clone()),
+    })
 }
 
 fn run_session_command(command: SessionCommand) -> Result<()> {
@@ -15066,6 +15105,14 @@ fn default_tui_args() -> TuiArgs {
     }
 }
 
+fn default_dashboard_tui_args() -> TuiArgs {
+    TuiArgs {
+        view: TuiView::Sessions,
+        roots: Vec::new(),
+        editor: None,
+    }
+}
+
 fn default_agent_chat_args() -> AgentChatArgs {
     AgentChatArgs {
         resume: None,
@@ -20681,6 +20728,13 @@ mod tests {
         assert_eq!(args.timeout_seconds, Some(5));
         assert!(args.json);
 
+        let cli = Cli::try_parse_from(["djinn", "session", "bap-questions"]).unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        assert!(args.command.is_none());
+        assert_eq!(args.dir, Some(PathBuf::from("bap-questions")));
+
         assert!(Cli::try_parse_from(["djinn", "share", "chats"]).is_err());
     }
 
@@ -21263,6 +21317,56 @@ link = "context/repo"
         assert!(text.contains("Mode: foreground"));
         assert!(text.contains("State note: all done"));
         assert!(text.contains("response.md"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn default_no_args_tui_opens_sessions_dashboard() {
+        let args = default_dashboard_tui_args();
+
+        assert_eq!(args.view, TuiView::Sessions);
+        assert!(args.roots.is_empty());
+        assert!(args.editor.is_none());
+    }
+
+    #[test]
+    fn folder_session_status_tui_view_projects_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-tui-view-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("bap-questions");
+        let turn = session_dir.join("turns/turn-1");
+        fs::create_dir_all(&turn).unwrap();
+        fs::write(session_dir.join("djinn.toml"), "title = \"BAP\"\n").unwrap();
+        fs::write(session_dir.join("request.md"), "question\n").unwrap();
+        fs::write(session_dir.join("summary.md"), "answer\n").unwrap();
+        fs::write(turn.join("request.md"), "question\n").unwrap();
+        fs::write(turn.join("response.md"), "answer\n").unwrap();
+
+        let view = folder_session_status_tui_view(&session_dir).unwrap();
+
+        assert_eq!(view.title, "bap-questions");
+        assert_eq!(view.state, "not_started");
+        assert_eq!(view.turn_count, 1);
+        assert!(view
+            .request_path
+            .as_deref()
+            .unwrap()
+            .ends_with("request.md"));
+        assert!(view
+            .summary_path
+            .as_deref()
+            .unwrap()
+            .ends_with("summary.md"));
+        assert!(view
+            .response_path
+            .as_deref()
+            .unwrap()
+            .ends_with("response.md"));
 
         let _ = fs::remove_dir_all(&root);
     }

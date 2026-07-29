@@ -109,6 +109,13 @@ impl TuiSession {
         )
     }
 
+    pub fn run_folder_session_status<F>(&mut self, mut load: F) -> Result<()>
+    where
+        F: FnMut() -> Result<FolderSessionStatusView>,
+    {
+        run_folder_session_status_loop(&mut self.terminal, &mut load)
+    }
+
     pub fn finish(mut self) -> Result<()> {
         if self.active {
             leave_terminal(&mut self.terminal)?;
@@ -141,6 +148,20 @@ impl Drop for TuiSession {
             self.active = false;
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderSessionStatusView {
+    pub title: String,
+    pub state: String,
+    pub mode: Option<String>,
+    pub session_dir: String,
+    pub summary_path: Option<String>,
+    pub request_path: Option<String>,
+    pub response_path: Option<String>,
+    pub turn_count: usize,
+    pub next_action: Option<String>,
+    pub note: Option<String>,
 }
 
 pub fn run_tools(tools: Vec<ToolEntry>) -> Result<()> {
@@ -3247,6 +3268,114 @@ fn run_tools_loop(terminal: &mut TuiTerminal, tools: Vec<ToolEntry>) -> Result<(
         }
     }
     Ok(())
+}
+
+fn run_folder_session_status_loop<F>(terminal: &mut TuiTerminal, load: &mut F) -> Result<()>
+where
+    F: FnMut() -> Result<FolderSessionStatusView>,
+{
+    loop {
+        let view = load()?;
+        terminal.draw(|frame| draw_folder_session_status(frame, &view))?;
+        if event::poll(Duration::from_millis(1000))? {
+            if let Event::Key(key) = event::read()? {
+                if !actionable_key_event(&key) {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn draw_folder_session_status(frame: &mut ratatui::Frame<'_>, view: &FolderSessionStatusView) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    let mode = view
+        .mode
+        .as_deref()
+        .map(|mode| format!(" ({mode})"))
+        .unwrap_or_default();
+    let title = Paragraph::new(vec![Line::from(vec![
+        Span::styled("Djinn session ", dim_style()),
+        Span::styled(
+            view.title.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(format!("{}{}", view.state, mode), status_style(&view.state)),
+    ])])
+    .block(block(" Session "));
+    frame.render_widget(title, chunks[0]);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Folder: ", dim_style()),
+            Span::raw(&view.session_dir),
+        ]),
+        Line::from(vec![
+            Span::styled("Turns:  ", dim_style()),
+            Span::raw(view.turn_count.to_string()),
+        ]),
+    ];
+    if let Some(path) = &view.request_path {
+        lines.push(Line::from(vec![
+            Span::styled("Request: ", dim_style()),
+            Span::raw(path),
+        ]));
+    }
+    if let Some(path) = &view.summary_path {
+        lines.push(Line::from(vec![
+            Span::styled("Summary: ", dim_style()),
+            Span::raw(path),
+        ]));
+    }
+    if let Some(path) = &view.response_path {
+        lines.push(Line::from(vec![
+            Span::styled("Response:", dim_style()),
+            Span::raw(format!(" {path}")),
+        ]));
+    }
+    if let Some(note) = &view.note {
+        lines.push(Line::from(vec![
+            Span::styled("Note:    ", dim_style()),
+            Span::raw(note),
+        ]));
+    }
+    if let Some(next) = &view.next_action {
+        lines.push(Line::from(vec![
+            Span::styled("Next:    ", dim_style()),
+            Span::raw(next),
+        ]));
+    }
+    let body = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(block(" Artifacts "));
+    frame.render_widget(body, chunks[1]);
+
+    let footer = Paragraph::new("q/Esc quit · refreshes every second · richer actions coming next")
+        .style(dim_style());
+    frame.render_widget(footer, chunks[2]);
+}
+
+fn status_style(state: &str) -> Style {
+    match state {
+        "running" => info_style(),
+        "completed" => success_style(),
+        "failed" => error_style(),
+        "cancelled" => warning_style(),
+        _ => base_style(),
+    }
 }
 
 fn run_dashboard_loop(

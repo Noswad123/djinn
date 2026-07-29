@@ -704,8 +704,9 @@ The first non-interactive agent slice is implemented as:
     session using that session's stored workspace/profile metadata. This keeps
     resume as part of the Agent runtime surface rather than the Sessions
     browser.
-25. `djinn` with no arguments now routes to that interactive Agent chat surface
-    when stdin/stdout are terminals. It must not route to the Sessions tab.
+25. Superseded by decision 84: `djinn` with no arguments initially routed to the
+    interactive Agent chat surface when stdin/stdout were terminals. The current
+    terse default is the session dashboard instead.
 26. Agent chat keeps the same top tab row as the dashboard, with Agent selected
     instead of showing a plain `Djinn Agent` title header. Pressing Tab from
     Agent chat enters Tools; Shift+Tab from Agent chat enters Skills. Pressing
@@ -1142,9 +1143,10 @@ The first non-interactive agent slice is implemented as:
     `.env*`, `*.db`, `.pytest_cache/**`, and `.ruff_cache/**` are ignored by
     default. Repo-local Djinn config may tune include/exclude/index/ingest rules,
     but the defaults should work in mixed OpenCode/Copilot/Cursor/Claude repos.
-84. The session dashboard TUI should use terse entry points. `djinn` with no
-    arguments opens the dashboard. `djinn session <name-or-path>` opens the same
-    TUI focused on that folder-backed session. Verbose `djinn tui` or
+84. The session dashboard TUI uses terse entry points. `djinn` with no arguments
+    opens the dashboard Sessions tab. `djinn session <name-or-path>` opens a
+    focused folder-session status TUI backed by the same status projection; richer
+    artifact/run actions can be layered into that focused view next. Verbose `djinn tui` or
     `djinn session tui ...` spellings may exist as discoverable aliases, but the
     default workflow should not require saying `tui`. This preserves the
     file-first session model while giving users a cockpit for checking status,
