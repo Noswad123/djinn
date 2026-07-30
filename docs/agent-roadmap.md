@@ -99,141 +99,19 @@ Remaining ready UI slices:
 - **Artifact opening polish:** ensure every focused-session action reports the
   exact delegated command/path and leaves the terminal in a clean state.
 
-### Folder-backed sessions
+### Folder-backed session follow-ups
 
-Djinn is pivoting toward folder-backed work capsules where nvim/files are the
-primary workspace and the TUI manages outputs rather than owning the transcript
-experience.
+Folder-backed sessions are now the canonical work capsules; implemented behavior
+belongs in [`agent-design-decisions.md`](./agent-design-decisions.md) and the app
+guide rather than being repeated here. Remaining ready slices should build on the
+file-first surfaces without restoring the removed legacy saved-row model.
 
-Initial projection is implemented for agent runs through folder sessions: `djinn
-ask` can read `request.md` when no prompt is provided, successful `djinn ask`
-and `djinn session run` turns write the latest answer to `summary.md`, create an
-unstructured `context/` folder, and keep per-turn request/response files under
-`turns/`. `djinn session init <dir> --link-repo <path>` scaffolds the same
-folder shape ahead of a run, links the repo into `context/` as an explicit live
-reference, writes a session-local guide at `context/djinn-context.md`, and runs
-safe context discovery by default. `djinn ask` is the canonical spelling for the common
-non-interactive path; `djinn agent ask` is a deprecated alias that warns and
-delegates to the same folder-backed behavior. `djinn ask --session-dir <dir>` now
-consumes `djinn.toml` defaults (`session_id`,
-`profile`, `agent`, `model`, `workspace`, and `[context.repo].path`) and can
-create/project a new folder-backed capsule when the directory has no native
-session id yet. It also ingests bounded shallow session context from
-`request.md`, `summary.md`, and small Markdown/text files directly under
-`context/`, while skipping symlinked directories and deep trees. Top-level
-`djinn session` intentionally keeps the folder-native verbs (`ls`, `status`,
-`open`, `rm`, `compact`, `init`, `run`) and does not support legacy-style
-`list`/`show`/`delete` aliases. Do not create `summary-history.md`, mirrored
-`events.jsonl`, or `transcript.md` by default.
-`djinn session run <session>` is the file-first spelling for "process the
-current request.md". It starts in the background by default, reports the child
-pid/log path plus a `djinn session watch <session>` hint, and lets the worker
-write `summary.md` plus the latest `turns/<id>/response.md` paths when complete.
-Use `djinn session run <session> --fg` for the blocking foreground mode, including
-`--print`/`--open` answer affordances.
-
-Manual deterministic compaction is available through `djinn session compact
---session-dir <dir>`. It reads `turns/<id>/request.md` and `response.md` and
-rewrites `context/compacted.md` as a bounded turn digest with evidence links back
-to the original turn files. The file is append-safe: user notes outside
-`<!-- djinn:generated:start -->` / `<!-- djinn:generated:end -->` are preserved
-while the generated digest block is replaced. This is intentionally model-free
-for the first slice.
-
-Folder sessions are inspectable without running a model through `djinn session
-status <dir>`. Status reports manifest/native-session linkage, profile/model /
-workspace defaults, repo symlink health, expected file presence, turn count, and
-the same shallow-context ingest/skip summary used by `djinn ask --session-dir`.
-It also reports lifecycle state (`not_started`, `running`, `completed`,
-`failed`, etc.), latest turn request/response paths, and a suggested next action
-so future dashboard/watch surfaces have a stable polling substrate.
-`djinn session watch <session>` is the first lightweight consumer of that
-substrate: it prints a compact status snapshot, polls while the lifecycle is
-`running`, emits another snapshot only when status changes, and exits once the
-session is no longer running. This intentionally precedes the full TUI dashboard
-so status semantics can stabilize in a scriptable command.
-
-Bare session names are cache-backed for lightweight exploratory work: `djinn
-session init small-question` resolves to Djinn's cache session root
-(`$DJINN_CACHE_DIR/sessions/small-question`, or the default cache dir equivalent).
-Explicit absolute paths, `./relative` paths, and paths containing separators stay
-filesystem paths. Durable context that should survive a session should graduate
-into repo docs, AGENTS.md, or another repo/harness-owned context location.
-`djinn session ls` lists cache-backed named sessions by scanning that cache root;
-there is no persistent external session index, so manually moved/renamed explicit
-path sessions do not require index maintenance. The list output includes
-created/updated timestamps, lifecycle state/mode, turn count, and summary preview
-to distinguish repeated prompt names, active background work, or multiple sessions
-created from similar requests. The JSON output carries the same lifecycle and
-latest-turn projection for future dashboard/TUI consumers.
-Named sessions are unique by their resolved cache folder. Re-running `djinn
-session init <name>` is idempotent for the same manifest identity, rejects
-profile/agent/model/workspace/repo conflicts by default, and only replaces
-scaffolded metadata with `--force`; Djinn does not auto-suffix duplicate names.
-`djinn session open <name-or-path> [summary|request|context|compacted|turns|manifest|repo]`
-opens the common session artifacts in `$VISUAL`, `$EDITOR`, or `nvim`, completing
-the file-first loop without adding chat behavior.
-`djinn session rm <name-or-path>` removes the folder-backed session and its linked
-native session id when present, without requiring `--force`; explicit directories
-without `djinn.toml` are refused as a safety guard.
-Plain `djinn ask "..."` now creates a cache-backed folder session automatically
-with a prompt slug plus native session id. `--session-dir` and its friendlier
-`--session` alias keep explicit folder control; `--session-id` appends to an
-existing native session without creating a new folder. For folder-backed asks, the
-native JSONL is colocated in the session folder under `.djinn/<session-id>.jsonl`,
-and the default top-level command output is just the session directory path; read
-the answer from `summary.md` or the latest `turns/` entry.
-The current UX polish keeps that mental model intact: `djinn ask "..." --print`
-prints the produced answer, `djinn ask "..." --open` opens the produced
-`summary.md` for an auto-created folder-backed ask, while opening an existing
-session uses the session surface via `djinn session <name-or-path> --open`.
-`djinn session open ... latest` is not a planned target; `summary.md` and
-`turns/` are the cleaner navigation points.
-`djinn session ls` should be easier to scan by grouping/sorting cache-backed work
-by target repo when known, then recency, with concise metadata that helps choose a
-session without opening every folder. `djinn session ls --json` keeps the flat
-`sessions` array and adds grouped repo sections for consumers that want the same
-shape as the text UI. Auto-created cache folders use short copy-pasteable names;
-legacy long `...-agt_...` folders remain selectable through the same short
-reference shape and can be renamed with `djinn session shorten-names`. JSON keeps
-exact folder names, paths, display names, and reference names.
-Session context has first-class file/link management:
-
-- `djinn session context ls <session>` reports entries and ingestion status.
-- `djinn session context add <session> <path> [--name <name>]` links a file or
-  directory into `context/`.
-- `djinn session context rm <session> <name>` removes one validated context entry.
-
-This keeps durable working memory explicit and reversible while preserving the
-rule that linked directories are references, not blindly ingested context.
-Harness-aware discovery now has an initial safe implementation:
-
-- `djinn session context discover <session>` applies safe discoveries by default.
-- `djinn session context discover <session> --dry-run` previews without mutation.
-- `djinn session init <session> --link-repo <repo>` runs the same safe discovery
-  automatically; use `--no-discover-context` when only the repo symlink scaffold
-  is desired.
-- Generic breadcrumbs (`AGENTS.md`, `README.md`, `CLAUDE.md`, `.cursorrules`),
-  Copilot breadcrumbs (`.github/copilot-instructions.md`, `.github/instructions`,
-  `.github/prompts`), and OpenCode breadcrumbs (`opencode.json` instructions,
-  `.opencode/commands`, `.opencode/skills`) are adapted into session context.
-- Direct links are reserved for high-signal files and are flattened into
-  top-level `context/*.md` symlinks where possible, so `context ls` reports them
-  as explicit ingestible entries. Broader `docs/**/*.md` style trees are indexed
-  in `context/repo-index.md`, not bulk-ingested.
-- Dependency/cache/secret paths such as `.opencode/node_modules`, `.venv`,
-  `.env*`, `*.db`, `.pytest_cache`, and `.ruff_cache` remain excluded by default.
-
-Ready follow-up slices:
-
-- Treat the folder-backed top-level UX as canonical. New work should target
-  `djinn ask` and `djinn session ...`; legacy `djinn agent ...` commands and the
-  global `agent-sessions` JSONL root should only receive migration, delegation,
-  or safe-removal work. Do not add new capabilities to the legacy surface unless
-  they directly unblock migrating users/sessions to folder-backed capsules.
-- Add explicit deprecation/migration affordances for legacy commands: clear help
-  text, warnings where appropriate, and one-way import/move helpers that leave the
-  folder session as the only user-facing artifact.
+- Keep the top-level UX canonical around `djinn ask` and `djinn session ...`.
+  Legacy `djinn agent ...` commands and the global `agent-sessions` JSONL root
+  should only receive migration, delegation, or safe-removal work.
+- Add explicit migration affordances for remaining legacy session material: clear
+  help text, warnings where appropriate, and one-way import/move helpers that
+  leave the folder session as the only user-facing artifact.
 - Extend context discovery with repo-local Djinn config for include/exclude/index
   tuning without requiring teams to replace OpenCode/Copilot/Cursor/Claude
   breadcrumbs.
@@ -242,43 +120,42 @@ Ready follow-up slices:
   deterministic digest. Compaction should be threshold-friendly (manual first,
   later after N turns) and should update context instead of creating another
   transcript/history log.
-- Add folder-backed session promotion. The useful product idea is not the old
-  legacy row picker; it is promoting one or more session folders and selected
-  artifacts into durable local knowledge: memories, skills, reusable patterns,
-  compacted context, ideas, or suggested follow-up actions. The folder workflow
-  should keep provenance file-native by linking outputs back to `summary.md`,
-  `context/`, and `turns/<id>/{request,response}.md`, support dry-runs, and make
-  the target explicit (`--as memory|skill|pattern|context|suggestion`, or a
-  better final taxonomy). Reuse old promotion internals only where they remain a
-  good fit: bounded selection, role-labeled OpenCode digesting, redaction
-  warnings, memory merge/write safeguards, archive-after-success semantics, and
-  prompt templates that can be adapted to file evidence. Do not preserve the old
-  dashboard picker model or legacy JSONL row identity as the product shape.
-- Allow symlinked context intentionally. A session may contain links such as
-  `context/repo -> /path/to/repo` or `context/roadmap.md -> /path/to/roadmap.md`;
-  Djinn should preserve links and treat them as explicit context references while
-  avoiding blind whole-folder ingestion.
 - Add `djinn session merge <source-dir> --into <target-dir>` for file-based
   summary/context merging.
-- Reframe the dashboard TUI as a session artifact manager: open `summary.md`,
-  `request.md`, context files, and turns in `$EDITOR`; de-emphasize the
-  chat transcript as the main surface. The terse spellings should be canonical:
-  `djinn` with no args opens the dashboard Sessions tab for folder-backed
-  sessions, while `djinn session <name-or-path>` opens a focused session view
-  for that session.
-  Verbose `djinn tui` / `djinn session tui ...` forms may remain discoverable
-  aliases, but they should not be the primary workflow.
-- The Sessions tab is fed from the same cache scan/status projection as
-  `djinn session ls`, rather than a separate TUI-only state model.
-- The focused session view exposes first-pass shortcuts: `r` starts the session in
-  the background, `w` watches it, `o` opens `summary.md`, `e` edits `request.md`,
-  `c` opens `context/`, and `d` runs context discovery. These actions currently
-  leave the alternate-screen view and delegate to the existing CLI commands;
-  future polish can keep more of them in-place.
 - Define how `context/` and selected artifacts are folded into subsequent model
   context without blindly ingesting whole folders. Default future context should
   be `request.md`, `summary.md`, selected `context/` files/links, and explicit
   turn evidence only when cited or requested.
+
+### Folder-backed promotion sessions
+
+The first promotion slice is complete: `djinn session promote ...` renders a
+deterministic preview packet with file-native provenance and does not run a model
+or write memories. The next product shape should be a **promotion session**: a
+special folder-backed session whose context is one or more source sessions.
+
+Ready implementation slices:
+
+- Create a promotion session folder from one or more source sessions. The folder
+  should record source session refs, selected artifacts, promotion type, and the
+  deterministic source packet, likely under `context/source-packet.md` or an
+  equivalent provenance-preserving path.
+- Use the promotion type taxonomy `memory|todo|skill|pattern`:
+  - `memory`: a nugget of wisdom worth returning to later.
+  - `todo`: something concrete the user can take immediate action on.
+  - `skill`: a recurring task or instruction set to reuse in future agent
+    harnesses.
+  - `pattern`: a synthesis session whose purpose is to understand the common
+    thread, theme, or suggestion across the source sessions.
+- Keep source sessions and promotion sessions by default. Do not delete or archive
+  derivatives automatically; add explicit cleanup flags only after provenance and
+  recovery behavior is clear.
+- After the promotion-session folder exists, add model-backed dry-run generation
+  that writes candidate artifacts into the promotion session without mutating
+  durable memory/todo/skill stores.
+- Add guarded writeback only after candidate formats stabilize: memories, todos,
+  skills, or pattern summaries should be accepted explicitly and retain evidence
+  links to `summary.md`, `context/compacted.md`, and `turns/<id>/` files.
 
 ### Coven-led orchestration and Djinn worker primitives
 
@@ -346,6 +223,11 @@ Completed Djinn worker primitives:
 These are useful directions, but implementing them now would risk locking in the
 wrong product shape.
 
+### Neovim integration
+
+- it would be nice to have  keybind that overlays the djinn similar to how lazy git works
+- It would be nice if it would default to the last session that targeted the repo I'm currently in or if i'm in the session itself
+
 ### Djinn/Coven interop transport
 
 The ownership direction is decided in
@@ -387,22 +269,6 @@ behavior there before implementation:
 - warn on lossy conversion;
 - reject only when continuing would be unsafe.
 
-### Neovim harness backend
-
-Before adding `util/harness/djinn.lua` in dotfiles, decide the stable Djinn CLI or
-runtime capabilities behind each shared harness action:
-
-- `open_chat` / `toggle_chat`;
-- `ask_buffer`;
-- `append_clipboard` / `append_selection` / `send_context`;
-- `submit_prompt`;
-- `scroll_up` / `scroll_down`;
-- `select_profile`;
-- `connect_session`;
-- `select_command` / `select_agent`.
-
-Keep unsupported actions routed through the shared noop/action map rather than a
-generic fallback.
 
 ### Session indexing/storage
 

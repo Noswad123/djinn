@@ -23,14 +23,14 @@ tooling/workflows, learning/memory, or project context.
 The tabs below are intentionally not visible yet. Add one only when its model and
 actions are concrete enough to justify a permanent place in the TUI.
 
-## Ideas
+## Todos / insights
 
-Do not add an Ideas tab until Djinn has a concrete ideas/insights data model and
-workflow. Folder-backed promotion should live on the session surface; memory
-cleanup is handled by review commands.
+Do not add a Todos or insights tab until Djinn has a concrete todo/insight data
+model and workflow. Folder-backed promotion should live on the session surface;
+memory cleanup is handled by review commands.
 
-An **Ideas** tab may be useful later if Djinn stores or computes actionable
-insights locally, for example:
+A **Todos** tab may be useful later if Djinn stores or computes actionable
+follow-ups locally, for example:
 
 - stale memories to prune or rewrite;
 - high-value memories to review;
@@ -41,7 +41,7 @@ insights locally, for example:
 
 Entry criteria:
 
-- Djinn has an `ideas`/`insights` data model, not just a prompt string.
+- Djinn has a `todo`/insight data model, not just a prompt string.
 - The tab supports actions such as accept, dismiss, promote session, or open source.
 - The tab saves review state so items do not reappear endlessly.
 

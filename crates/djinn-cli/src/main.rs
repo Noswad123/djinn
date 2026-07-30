@@ -132,6 +132,8 @@ enum SessionCommand {
     Watch(SessionWatchArgs),
     /// Deterministically compact turn request/response evidence into context/compacted.md.
     Compact(SessionCompactArgs),
+    /// Render a folder-backed promotion packet with file-native provenance.
+    Promote(SessionPromoteArgs),
     /// Manage session-local context files and links.
     Context(SessionContextArgs),
     /// Inspect a folder-backed Djinn work session without running a model.
@@ -238,6 +240,32 @@ struct SessionCompactArgs {
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionPromoteArgs {
+    /// Folder-backed session names or directories to promote from.
+    #[arg(required = true)]
+    dirs: Vec<PathBuf>,
+    /// Promotion target to prepare for.
+    #[arg(long, value_enum, default_value_t = SessionPromoteTarget::Memories)]
+    target: SessionPromoteTarget,
+    /// Maximum characters to include from each artifact excerpt.
+    #[arg(long = "max-chars-per-artifact", default_value_t = 1200)]
+    max_chars_per_artifact: usize,
+    /// Output JSON instead of Markdown.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionPromoteTarget {
+    Memories,
+    Suggestions,
+    Skills,
+    Patterns,
+    Context,
 }
 
 #[derive(Debug, Args)]
@@ -4760,6 +4788,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Run(args) => session_run(args),
         SessionCommand::Watch(args) => session_watch(args),
         SessionCommand::Compact(args) => session_compact(args),
+        SessionCommand::Promote(args) => session_promote(args),
         SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
         SessionCommand::Ls(args) => session_ls(args),
@@ -4802,6 +4831,258 @@ fn session_compact(args: SessionCompactArgs) -> Result<()> {
         println!("Output: {}", report.output_path);
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionPromoteReport {
+    target: SessionPromoteTarget,
+    session_count: usize,
+    sessions: Vec<SessionPromoteSessionReport>,
+    packet: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionPromoteSessionReport {
+    session_dir: String,
+    title: String,
+    artifact_count: usize,
+    turn_count: usize,
+    artifacts: Vec<SessionPromoteArtifactReport>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionPromoteArtifactReport {
+    kind: String,
+    path: String,
+    chars: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionPromoteArtifact {
+    kind: String,
+    path: PathBuf,
+    relative_path: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionPromoteSession {
+    session_dir: PathBuf,
+    title: String,
+    artifacts: Vec<SessionPromoteArtifact>,
+    turn_count: usize,
+}
+
+fn session_promote(args: SessionPromoteArgs) -> Result<()> {
+    let report =
+        build_session_promote_report(&args.dirs, args.target, args.max_chars_per_artifact)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.packet);
+    }
+    Ok(())
+}
+
+fn build_session_promote_report(
+    dirs: &[PathBuf],
+    target: SessionPromoteTarget,
+    max_chars_per_artifact: usize,
+) -> Result<SessionPromoteReport> {
+    let sessions = dirs
+        .iter()
+        .map(|dir| collect_session_promote_artifacts(dir))
+        .collect::<Result<Vec<_>>>()?;
+    let packet = render_session_promote_packet(&sessions, target, max_chars_per_artifact);
+    Ok(SessionPromoteReport {
+        target,
+        session_count: sessions.len(),
+        sessions: sessions
+            .iter()
+            .map(|session| SessionPromoteSessionReport {
+                session_dir: session.session_dir.display().to_string(),
+                title: session.title.clone(),
+                artifact_count: session.artifacts.len(),
+                turn_count: session.turn_count,
+                artifacts: session
+                    .artifacts
+                    .iter()
+                    .map(|artifact| SessionPromoteArtifactReport {
+                        kind: artifact.kind.clone(),
+                        path: artifact.path.display().to_string(),
+                        chars: artifact.content.chars().count(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        packet,
+    })
+}
+
+fn collect_session_promote_artifacts(dir: &Path) -> Result<SessionPromoteSession> {
+    let session_dir = resolve_session_dir(dir)?;
+    let title = session_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(folder_session_display_name)
+        .unwrap_or_else(|| session_dir.display().to_string());
+
+    let mut artifacts = Vec::new();
+    push_session_promote_artifact(
+        &mut artifacts,
+        &session_dir,
+        "request",
+        &session_dir.join("request.md"),
+    )?;
+    push_session_promote_artifact(
+        &mut artifacts,
+        &session_dir,
+        "summary",
+        &session_dir.join("summary.md"),
+    )?;
+    push_session_promote_artifact(
+        &mut artifacts,
+        &session_dir,
+        "compacted_context",
+        &session_dir.join("context").join("compacted.md"),
+    )?;
+
+    let turns = read_folder_session_turns(&session_dir.join("turns"))?;
+    for turn in &turns {
+        if let Some(path) = &turn.request_path {
+            push_session_promote_artifact(
+                &mut artifacts,
+                &session_dir,
+                &format!("turn:{}:request", turn.id),
+                path,
+            )?;
+        }
+        if let Some(path) = &turn.response_path {
+            push_session_promote_artifact(
+                &mut artifacts,
+                &session_dir,
+                &format!("turn:{}:response", turn.id),
+                path,
+            )?;
+        }
+    }
+
+    if artifacts.is_empty() {
+        bail!(
+            "session {} has no promotable artifacts; run `djinn ask --session {}` first or add summary/context files",
+            session_dir.display(),
+            session_dir.display()
+        );
+    }
+
+    Ok(SessionPromoteSession {
+        session_dir,
+        title,
+        artifacts,
+        turn_count: turns.len(),
+    })
+}
+
+fn push_session_promote_artifact(
+    artifacts: &mut Vec<SessionPromoteArtifact>,
+    session_dir: &Path,
+    kind: &str,
+    path: &Path,
+) -> Result<()> {
+    let Some(content) = read_optional_markdown_file(path)? else {
+        return Ok(());
+    };
+    artifacts.push(SessionPromoteArtifact {
+        kind: kind.to_string(),
+        path: path.to_path_buf(),
+        relative_path: session_relative_path(session_dir, path),
+        content,
+    });
+    Ok(())
+}
+
+fn session_relative_path(session_dir: &Path, path: &Path) -> String {
+    path.strip_prefix(session_dir)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn render_session_promote_packet(
+    sessions: &[SessionPromoteSession],
+    target: SessionPromoteTarget,
+    max_chars_per_artifact: usize,
+) -> String {
+    let mut out = String::from("# Djinn Folder Session Promotion Packet\n\n");
+    out.push_str(&format!(
+        "Target: `{}`\n",
+        session_promote_target_label(target)
+    ));
+    out.push_str(&format!("Sessions: `{}`\n\n", sessions.len()));
+    out.push_str("## Instructions\n\n");
+    out.push_str(session_promote_target_instructions(target));
+    out.push_str("\n\nUse only the evidence below. Preserve file-native provenance by citing `session_dir` plus artifact paths such as `summary.md`, `context/compacted.md`, and `turns/<id>/response.md`. Do not invent facts that are not supported by copied evidence.\n");
+
+    for (idx, session) in sessions.iter().enumerate() {
+        out.push_str(&format!(
+            "\n## Session {}: {}\n\n- session_dir: `{}`\n- turns: `{}`\n- artifacts: `{}`\n",
+            idx + 1,
+            session.title,
+            session.session_dir.display(),
+            session.turn_count,
+            session.artifacts.len()
+        ));
+        out.push_str("\n### Provenance\n\n");
+        for artifact in &session.artifacts {
+            out.push_str(&format!(
+                "- `{}`: `{}` ({} chars)\n",
+                artifact.kind,
+                artifact.relative_path,
+                artifact.content.chars().count()
+            ));
+        }
+        out.push_str("\n### Evidence excerpts\n");
+        for artifact in &session.artifacts {
+            out.push_str(&format!(
+                "\n#### {} — `{}`\n\n```text\n{}\n```\n",
+                artifact.kind,
+                artifact.relative_path,
+                truncate(&artifact.content, max_chars_per_artifact)
+            ));
+        }
+    }
+
+    out
+}
+
+fn session_promote_target_label(target: SessionPromoteTarget) -> &'static str {
+    match target {
+        SessionPromoteTarget::Memories => "memories",
+        SessionPromoteTarget::Suggestions => "suggestions",
+        SessionPromoteTarget::Skills => "skills",
+        SessionPromoteTarget::Patterns => "patterns",
+        SessionPromoteTarget::Context => "context",
+    }
+}
+
+fn session_promote_target_instructions(target: SessionPromoteTarget) -> &'static str {
+    match target {
+        SessionPromoteTarget::Memories => {
+            "Identify durable, reusable memories. Return reviewed `djinn add memory ... --evidence ...` commands or say `No durable memories recommended.`"
+        }
+        SessionPromoteTarget::Suggestions => {
+            "Identify concrete follow-up suggestions. Return reviewed `djinn add suggestion ... --evidence ...` commands or say `No suggestions recommended.`"
+        }
+        SessionPromoteTarget::Skills => {
+            "Identify reusable workflow knowledge that should become or update a skill. Return a short skill proposal with evidence links."
+        }
+        SessionPromoteTarget::Patterns => {
+            "Extract repeated patterns, conventions, gotchas, and workflow decisions. Separate high-confidence patterns from one-off observations."
+        }
+        SessionPromoteTarget::Context => {
+            "Identify compact context that would help resume this work. Prefer concise bullets with direct artifact provenance."
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -15787,6 +16068,36 @@ mod tests {
         assert_eq!(args.timeout_seconds, Some(5));
         assert!(args.json);
 
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "promote",
+            "bap-questions",
+            "./other-session",
+            "--target",
+            "patterns",
+            "--max-chars-per-artifact",
+            "250",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Promote(args)) = args.command else {
+            panic!("expected session promote command");
+        };
+        assert_eq!(
+            args.dirs,
+            vec![
+                PathBuf::from("bap-questions"),
+                PathBuf::from("./other-session")
+            ]
+        );
+        assert_eq!(args.target, SessionPromoteTarget::Patterns);
+        assert_eq!(args.max_chars_per_artifact, 250);
+        assert!(args.json);
+
         let cli = Cli::try_parse_from(["djinn", "session", "bap-questions"]).unwrap();
         let Some(Command::Session(args)) = cli.command else {
             panic!("expected session command");
@@ -16706,6 +17017,65 @@ link = "context/repo"
         assert!(compacted.contains("[request](../turns/20260727T120000-1/request.md)"));
         assert!(compacted.contains("[response](../turns/20260727T120000-1/response.md)"));
         assert!(!dir.join("logs/transcript.md").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_promote_renders_folder_artifacts_with_file_provenance() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-promote-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let turn = dir.join("turns/turn-1");
+        let context = dir.join("context");
+        fs::create_dir_all(&turn).unwrap();
+        fs::create_dir_all(&context).unwrap();
+        fs::write(dir.join("request.md"), "Find durable lessons\n").unwrap();
+        fs::write(
+            dir.join("summary.md"),
+            "Use folder sessions as source material.\n",
+        )
+        .unwrap();
+        fs::write(
+            context.join("compacted.md"),
+            "Compacted decision evidence.\n",
+        )
+        .unwrap();
+        fs::write(turn.join("request.md"), "What should promotion cite?\n").unwrap();
+        fs::write(
+            turn.join("response.md"),
+            "Cite summary.md and turns/turn-1/response.md.\n",
+        )
+        .unwrap();
+
+        let report =
+            build_session_promote_report(&[dir.clone()], SessionPromoteTarget::Memories, 200)
+                .unwrap();
+
+        assert_eq!(report.session_count, 1);
+        assert_eq!(report.sessions[0].turn_count, 1);
+        assert_eq!(report.sessions[0].artifact_count, 5);
+        assert!(report
+            .packet
+            .starts_with("# Djinn Folder Session Promotion Packet"));
+        assert!(report.packet.contains("Target: `memories`"));
+        assert!(report.packet.contains("`summary`: `summary.md`"));
+        assert!(report
+            .packet
+            .contains("`compacted_context`: `context/compacted.md`"));
+        assert!(report
+            .packet
+            .contains("`turn:turn-1:response`: `turns/turn-1/response.md`"));
+        assert!(report
+            .packet
+            .contains("Use folder sessions as source material."));
+        assert!(report
+            .packet
+            .contains("Cite summary.md and turns/turn-1/response.md."));
 
         let _ = fs::remove_dir_all(&root);
     }

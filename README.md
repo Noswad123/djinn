@@ -236,9 +236,9 @@ djinn accept suggestion ratatui-tui-checklist
 ```
 
 `djinn add memory` writes active memories directly. Use `djinn review memory` to
-derive follow-up suggestions, `djinn ingest memory --as skill|idea|action` to
-route a memory into a downstream artifact, or `djinn reject memory` to remove
-stale/noisy memories.
+derive follow-up suggestions, `djinn ingest memory --as skill|action` to route a
+memory into a downstream artifact, or `djinn reject memory` to remove stale/noisy
+memories.
 
 Define a context:
 
@@ -257,12 +257,19 @@ Compact or review folder-backed sessions via their files:
 ```bash
 djinn session compact ./debugging-session
 djinn session open ./debugging-session --target compacted
+djinn session promote ./debugging-session --target memories
 ```
 
 The legacy saved-row session store and `djinn promote session(s)` commands have
-been removed. A future folder-backed promotion flow should operate directly on
-session folders and preserve provenance to `summary.md`, `context/`, and
-`turns/<id>/` artifacts.
+been removed. Folder-backed `djinn session promote` now renders a deterministic
+promotion packet from session artifacts and preserves provenance to `summary.md`,
+`context/compacted.md`, and `turns/<id>/` files. It does not write memories or run
+a model yet.
+
+The roadmap direction is promotion as a special folder-backed session that uses
+one or more source sessions as context. Promotion types should be `memory`,
+`todo`, `skill`, and `pattern`; sources and promotion sessions are kept by
+default rather than removed automatically.
 
 Review memories for suggestions without mutating the memories:
 
@@ -294,7 +301,7 @@ Cargo.toml                         # Rust workspace
 crates/djinn-cli/                  # clap command surface and binary
 crates/djinn-contexts/             # context/scope registry
 crates/djinn-core/                 # shared paths and file helpers
-crates/djinn-memory/               # memories, suggestions, ideas, and actions
+crates/djinn-memory/               # memories, suggestions, and follow-up artifacts
 crates/djinn-opencode/             # OpenCode adapter
 crates/djinn-skills/               # skill discovery and lifecycle
 crates/djinn-tools/                # tool discovery and indexing

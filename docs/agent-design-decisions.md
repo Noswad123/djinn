@@ -709,9 +709,9 @@ The first non-interactive agent slice is implemented as:
     over an in-memory transcript renderer.
 28. Superseded by decision 84 and the folder-backed pivot: the removed legacy
     saved-session picker was for JSONL/projected rows. It is no longer visible in
-    the main dashboard. Legacy saved conversations remain source material for CLI
-    promotion/import/archive flows until they are migrated into folder-backed
-    sessions.
+    the main dashboard. Legacy saved conversations are migration/import source
+    material only; new promotion and cleanup behavior belongs to folder-backed
+    sessions, not the removed saved-row archive/promote flows.
 29. Djinn runtime sessions auto-title from the first user prompt when the session
     still has a generated placeholder title. Explicit titles and
     imported/converted session titles are preserved. Folder display names hide
@@ -1066,13 +1066,20 @@ The first non-interactive agent slice is implemented as:
     should consume the same status projection as `djinn session status`,
     `djinn session ls`, and `djinn session watch <session>` rather than
     maintaining a separate status model.
-85. Folder-backed promotion remains a desired product capability, but it should
-    not recreate the removed legacy saved-session picker. Promotion should select
-    one or more session folders and explicit artifacts, then write durable local
-    outputs such as memories, skills, reusable patterns, compacted context,
-    ideas, or suggested follow-up actions with evidence links back to files under
-    the session folder. Legacy JSONL row identity and the removed saved-row CLI
-    should not define the new UX or data model.
+85. Folder-backed promotion should not recreate the removed legacy saved-session
+    picker. The first slice, `djinn session promote ...`, renders a deterministic
+    promotion packet from one or more session folders with evidence links back to
+    files under the session folder. The target product model is stronger than a
+    packet renderer: a promotion should be a special folder-backed session whose
+    context is one or more source sessions. Promotion types are `memory`, `todo`,
+    `skill`, and `pattern`: a memory is a durable nugget of wisdom to revisit; a
+    todo is an actionable next step; a skill is a recurring workflow/instruction
+    set for future agents; and a pattern session synthesizes common threads,
+    themes, or suggestions across the source sessions. Source sessions and
+    promotion sessions must not be removed by default; cleanup or archive behavior
+    should be explicit after provenance and recovery semantics are settled. Legacy
+    JSONL row identity and the removed saved-row CLI should not define the new UX
+    or data model.
 
 Not in the first slice unless explicitly reopened:
 

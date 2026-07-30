@@ -81,28 +81,34 @@ Sessions are folder-backed capsules. Keep new work in `djinn ask` / `djinn sessi
 djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
 djinn session compact ./debugging-session
+djinn session promote ./debugging-session --target memories
 ```
 
 The old saved-row session store, OpenCode watcher/plugin integration, and legacy
 `djinn add/list/show/search/rm/clear/promote session(s)` commands have been
 removed.
 
-Promotion is still a useful idea, but the canonical folder-backed workflow should
-promote from session folders and selected artifacts rather than from the removed
-legacy dashboard picker. A future `djinn session promote ...` flow should let one
-or more folder sessions produce durable outputs such as memories, skills,
-patterns, compacted context, or suggested follow-up actions with explicit evidence
-links back to `summary.md`, `context/`, and `turns/<id>/` files. Existing legacy
-design lessons may still be reused where they fit, especially bounded selection,
-redaction warnings, memory-writing safeguards, and dry-run preview semantics.
+`djinn session promote ...` is the first folder-backed promotion slice. It renders
+a deterministic promotion packet from one or more session folders and explicit
+artifacts. Targets include `memories`, `suggestions`, `skills`, `patterns`, and
+`context`; the packet preserves evidence links back to `summary.md`,
+`context/compacted.md`, and `turns/<id>/` files. This slice is preview-only: it
+does not write memories or run a model yet.
+
+The roadmap direction is to make promotion a special folder-backed session that
+uses one or more source sessions as context. Its durable type taxonomy should be
+`memory`, `todo`, `skill`, and `pattern`: wisdom to revisit, an immediate action,
+a reusable agent workflow, or a synthesis of common threads across sessions.
+Source sessions and promotion sessions should remain on disk by default.
 
 ```bash
 djinn review memory <id> --dry-run
 ```
 
 The legacy `djinn review sessions` and `djinn review opencode` saved-row review
-entrypoints have been removed. Use memory review today, and wait for
-folder-backed session promotion for session-to-knowledge workflows.
+entrypoints have been removed. Use memory review today, and use preview-only
+folder-backed promotion packets while the promotion-session writeback workflow is
+designed.
 
 ## Memories and suggestions
 
@@ -140,7 +146,7 @@ Accepting a suggestion means the follow-up is done or intentionally handled; it
 removes the suggestion from the list. Rejecting also removes it.
 
 `djinn ingest memory` routes active memories into downstream collections such as
-suggestions, skills, ideas, or actions. Without `--keep`, the source memory is
+suggestions, skills, or concrete actions. Without `--keep`, the source memory is
 consumed after the downstream artifact is written.
 
 Use `--not-before YYYY-MM-DD` when a memory is true and worth preserving, but
