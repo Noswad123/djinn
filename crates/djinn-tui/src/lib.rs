@@ -176,6 +176,48 @@ pub enum FolderSessionAction {
     OpenCandidate(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FolderSessionCommand {
+    Action(FolderSessionAction),
+    OpenHelp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FolderSessionCommandEntry {
+    section: String,
+    label: String,
+    description: String,
+    command: FolderSessionCommand,
+}
+
+impl GroupedSelectItem for FolderSessionCommandEntry {
+    fn section(&self) -> &str {
+        &self.section
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+fn folder_session_command_entry(
+    section: &str,
+    label: &str,
+    description: &str,
+    command: FolderSessionCommand,
+) -> FolderSessionCommandEntry {
+    FolderSessionCommandEntry {
+        section: section.to_string(),
+        label: label.to_string(),
+        description: description.to_string(),
+        command,
+    }
+}
+
 pub fn run_tools(tools: Vec<ToolEntry>) -> Result<()> {
     let mut terminal = enter_terminal()?;
     let result = run_tools_loop(&mut terminal, tools);
@@ -378,17 +420,103 @@ where
     F: FnMut() -> Result<FolderSessionStatusView>,
 {
     let mut selected_candidate = 0usize;
+    let mut palette = GroupedSelectState::default();
+    let mut help_open = false;
     loop {
         let view = load()?;
         if selected_candidate >= view.candidate_entries.len() {
             selected_candidate = view.candidate_entries.len().saturating_sub(1);
         }
-        terminal.draw(|frame| draw_folder_session_status(frame, &view, selected_candidate))?;
+        terminal.draw(|frame| {
+            draw_folder_session_status(frame, &view, selected_candidate, &mut palette, help_open)
+        })?;
         if event::poll(Duration::from_millis(1000))? {
             if let Event::Key(key) = event::read()? {
                 if !actionable_key_event(&key) {
                     continue;
                 }
+                if help_open {
+                    match key.code {
+                        _ if dashboard_help_key(key.code, key.modifiers) => help_open = false,
+                        KeyCode::Esc | KeyCode::Enter => help_open = false,
+                        KeyCode::Char('q') => return Ok(None),
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                if palette.open {
+                    match key.code {
+                        KeyCode::Esc => palette.close(),
+                        KeyCode::Backspace => {
+                            palette.backspace_query_or_close();
+                            normalize_folder_session_palette_selection(
+                                &mut palette,
+                                &view,
+                                selected_candidate,
+                            );
+                        }
+                        _ if palette_next_key(key.code, key.modifiers) => {
+                            let visible = visible_folder_session_palette_indices(
+                                &view,
+                                selected_candidate,
+                                &palette,
+                            );
+                            palette.next(&visible);
+                        }
+                        _ if palette_previous_key(key.code, key.modifiers) => {
+                            let visible = visible_folder_session_palette_indices(
+                                &view,
+                                selected_candidate,
+                                &palette,
+                            );
+                            palette.previous(&visible);
+                        }
+                        KeyCode::Enter => {
+                            if let Some(command) = selected_folder_session_palette_command(
+                                &view,
+                                selected_candidate,
+                                &palette,
+                            ) {
+                                palette.close();
+                                match command {
+                                    FolderSessionCommand::Action(action) => {
+                                        return Ok(Some(action))
+                                    }
+                                    FolderSessionCommand::OpenHelp => help_open = true,
+                                }
+                            } else {
+                                palette.close();
+                            }
+                        }
+                        KeyCode::Char(ch) if palette_text_key(key.modifiers) => {
+                            palette.push_query(ch);
+                            normalize_folder_session_palette_selection(
+                                &mut palette,
+                                &view,
+                                selected_candidate,
+                            );
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                if dashboard_palette_key(key.code, key.modifiers) {
+                    palette.open();
+                    normalize_folder_session_palette_selection(
+                        &mut palette,
+                        &view,
+                        selected_candidate,
+                    );
+                    continue;
+                }
+
+                if dashboard_help_key(key.code, key.modifiers) {
+                    help_open = true;
+                    continue;
+                }
+
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
                     KeyCode::Char('j') | KeyCode::Down if !view.candidate_entries.is_empty() => {
@@ -430,6 +558,125 @@ fn folder_session_action_for_key(code: KeyCode) -> Option<FolderSessionAction> {
     }
 }
 
+fn folder_session_command_palette(
+    view: &FolderSessionStatusView,
+    selected_candidate: usize,
+) -> Vec<FolderSessionCommandEntry> {
+    let mut entries = vec![
+        folder_session_command_entry(
+            "Session",
+            "Run session",
+            "Run request.md for this folder-backed session",
+            FolderSessionCommand::Action(FolderSessionAction::Run),
+        ),
+        folder_session_command_entry(
+            "Session",
+            "Watch session",
+            "Poll this session until it is no longer running",
+            FolderSessionCommand::Action(FolderSessionAction::Watch),
+        ),
+        folder_session_command_entry(
+            "Artifacts",
+            "Open summary",
+            "Open summary.md in your editor",
+            FolderSessionCommand::Action(FolderSessionAction::OpenSummary),
+        ),
+        folder_session_command_entry(
+            "Artifacts",
+            "Edit request",
+            "Open request.md in your editor",
+            FolderSessionCommand::Action(FolderSessionAction::EditRequest),
+        ),
+        folder_session_command_entry(
+            "Artifacts",
+            "Open context",
+            "Open the session context directory",
+            FolderSessionCommand::Action(FolderSessionAction::OpenContext),
+        ),
+        folder_session_command_entry(
+            "Artifacts",
+            "Discover context",
+            "Link high-signal project context into this session",
+            FolderSessionCommand::Action(FolderSessionAction::DiscoverContext),
+        ),
+        folder_session_command_entry(
+            "Help",
+            "Show keybindings",
+            "Show focused session keybindings",
+            FolderSessionCommand::OpenHelp,
+        ),
+    ];
+    if let Some(candidate) = view.candidate_entries.get(selected_candidate) {
+        entries.extend([
+            folder_session_command_entry(
+                "Candidate",
+                "Accept selected candidate",
+                &format!("Accept {} through the canonical CLI path", candidate.id),
+                FolderSessionCommand::Action(FolderSessionAction::AcceptCandidate(
+                    candidate.id.clone(),
+                )),
+            ),
+            folder_session_command_entry(
+                "Candidate",
+                "Accept selected candidate and sync MindWeaver",
+                &format!("Accept {} and run mw todos sync", candidate.id),
+                FolderSessionCommand::Action(
+                    FolderSessionAction::AcceptCandidateAndSyncMindweaver(candidate.id.clone()),
+                ),
+            ),
+            folder_session_command_entry(
+                "Candidate",
+                "Deny selected candidate",
+                &format!("Deny {} through the canonical CLI path", candidate.id),
+                FolderSessionCommand::Action(FolderSessionAction::DenyCandidate(
+                    candidate.id.clone(),
+                )),
+            ),
+            folder_session_command_entry(
+                "Candidate",
+                "Open selected candidate file",
+                &format!("Open {}", candidate.path),
+                FolderSessionCommand::Action(FolderSessionAction::OpenCandidate(
+                    candidate.path.clone(),
+                )),
+            ),
+        ]);
+    }
+    entries
+}
+
+fn visible_folder_session_palette_indices(
+    view: &FolderSessionStatusView,
+    selected_candidate: usize,
+    palette: &GroupedSelectState,
+) -> Vec<usize> {
+    grouped_select::visible_indices(
+        &folder_session_command_palette(view, selected_candidate),
+        &palette.query,
+    )
+}
+
+fn normalize_folder_session_palette_selection(
+    palette: &mut GroupedSelectState,
+    view: &FolderSessionStatusView,
+    selected_candidate: usize,
+) {
+    let visible = visible_folder_session_palette_indices(view, selected_candidate, palette);
+    palette.normalize_selection(&visible);
+}
+
+fn selected_folder_session_palette_command(
+    view: &FolderSessionStatusView,
+    selected_candidate: usize,
+    palette: &GroupedSelectState,
+) -> Option<FolderSessionCommand> {
+    let entries = folder_session_command_palette(view, selected_candidate);
+    let visible = grouped_select::visible_indices(&entries, &palette.query);
+    grouped_select::selected_item(&entries, &visible, palette.selected, |entry| {
+        entry.command.clone()
+    })
+}
+
 fn folder_session_candidate_action_for_key(
     code: KeyCode,
     view: &FolderSessionStatusView,
@@ -453,6 +700,8 @@ fn draw_folder_session_status(
     frame: &mut ratatui::Frame<'_>,
     view: &FolderSessionStatusView,
     selected_candidate: usize,
+    palette: &mut GroupedSelectState,
+    help_open: bool,
 ) {
     let area = frame.area();
     let chunks = Layout::default()
@@ -551,11 +800,138 @@ fn draw_folder_session_status(
         .block(block(" Artifacts "));
     frame.render_widget(body, chunks[1]);
 
-    let footer = Paragraph::new(
-        "r run · a accept · m accept+mw sync · x deny · p/Enter open cand · o summary · q/Esc quit",
-    )
-    .style(dim_style());
+    let footer =
+        Paragraph::new("r run · o summary · Ctrl+P commands · q/Esc quit").style(dim_style());
     frame.render_widget(footer, chunks[2]);
+
+    if help_open {
+        draw_folder_session_help(frame);
+    }
+    if palette.open {
+        draw_folder_session_palette(frame, view, selected_candidate, palette);
+    }
+}
+
+fn draw_folder_session_palette(
+    frame: &mut ratatui::Frame<'_>,
+    view: &FolderSessionStatusView,
+    selected_candidate: usize,
+    palette: &mut GroupedSelectState,
+) {
+    let entries = folder_session_command_palette(view, selected_candidate);
+    let visible = grouped_select::visible_indices(&entries, &palette.query);
+    let (body_lines, selected_row) =
+        grouped_select::body_lines_and_selected_row(&entries, &visible, palette.selected);
+    let area = centered_rect(68, 50, frame.area());
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+    palette.ensure_selection_visible(chunks[2].height as usize, selected_row, body_lines.len());
+    let search_line = Line::from(vec![
+        Span::styled("Search: ", dim_style()),
+        if palette.query.is_empty() {
+            Span::styled("find action…", dim_style())
+        } else {
+            Span::raw(palette.query.clone())
+        },
+    ]);
+    let body = Paragraph::new(body_lines)
+        .style(base_style())
+        .scroll((palette.scroll.min(u16::MAX as usize) as u16, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(block("Command palette"), area);
+    frame.render_widget(Paragraph::new(search_line).style(base_style()), chunks[0]);
+    frame.render_widget(body, chunks[2]);
+    let cursor_x = area
+        .x
+        .saturating_add(1)
+        .saturating_add("Search: ".len() as u16)
+        .saturating_add(palette.query.chars().count() as u16)
+        .min(area.right().saturating_sub(2));
+    frame.set_cursor_position(Position::new(cursor_x, area.y.saturating_add(1)));
+}
+
+fn draw_folder_session_help(frame: &mut ratatui::Frame<'_>) {
+    let area = centered_rect(68, 62, frame.area());
+    let lines = vec![
+        Line::from(Span::styled("Focused session", title_style())),
+        Line::from(""),
+        Line::from(Span::styled("Global", title_style())),
+        Line::from(vec![
+            Span::styled("Ctrl+P", selected_style()),
+            Span::raw(" open command palette"),
+        ]),
+        Line::from(vec![
+            Span::styled("Ctrl+/", selected_style()),
+            Span::raw(" open or close this help"),
+        ]),
+        Line::from(vec![
+            Span::styled("q / Esc", selected_style()),
+            Span::raw(" quit focused session view"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Session", title_style())),
+        Line::from(vec![
+            Span::styled("r", selected_style()),
+            Span::raw(" run request.md"),
+        ]),
+        Line::from(vec![
+            Span::styled("w", selected_style()),
+            Span::raw(" watch session status"),
+        ]),
+        Line::from(vec![
+            Span::styled("o", selected_style()),
+            Span::raw(" open summary.md"),
+        ]),
+        Line::from(vec![
+            Span::styled("e", selected_style()),
+            Span::raw(" edit request.md"),
+        ]),
+        Line::from(vec![
+            Span::styled("c / d", selected_style()),
+            Span::raw(" open or discover context"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Promotion candidates", title_style())),
+        Line::from(vec![
+            Span::styled("↑/↓ or j/k", selected_style()),
+            Span::raw(" move selected candidate"),
+        ]),
+        Line::from(vec![
+            Span::styled("a", selected_style()),
+            Span::raw(" accept selected candidate"),
+        ]),
+        Line::from(vec![
+            Span::styled("m", selected_style()),
+            Span::raw(" accept selected candidate and run MindWeaver sync"),
+        ]),
+        Line::from(vec![
+            Span::styled("x", selected_style()),
+            Span::raw(" deny selected candidate"),
+        ]),
+        Line::from(vec![
+            Span::styled("p / Enter", selected_style()),
+            Span::raw(" open selected candidate file"),
+        ]),
+    ];
+    let help = Paragraph::new(lines)
+        .block(block("Keybindings"))
+        .style(base_style())
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(help, area);
 }
 
 fn status_style(state: &str) -> Style {
@@ -3026,6 +3402,22 @@ mod tests {
             Some(FolderSessionAction::OpenCandidate(
                 "/tmp/promotion/outputs/candidates/todo-001.toml".to_string()
             ))
+        );
+
+        let palette = folder_session_command_palette(&view, 0);
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Show keybindings"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Accept selected candidate"));
+        let mut palette_state = GroupedSelectState::default();
+        palette_state.open();
+        palette_state.query = "key".to_string();
+        normalize_folder_session_palette_selection(&mut palette_state, &view, 0);
+        assert_eq!(
+            selected_folder_session_palette_command(&view, 0, &palette_state),
+            Some(FolderSessionCommand::OpenHelp)
         );
     }
 

@@ -4742,12 +4742,17 @@ fn run_session(args: SessionArgs) -> Result<()> {
 fn run_folder_session_tui(dir: PathBuf) -> Result<()> {
     let session_dir = resolve_session_dir(&dir)?;
     let mut tui = djinn_tui::TuiSession::enter()?;
-    let action = tui.run_folder_session_status(|| folder_session_status_tui_view(&session_dir))?;
-    tui.finish()?;
-    if let Some(action) = action {
-        handle_folder_session_tui_action(action, session_dir)?;
+    loop {
+        let action =
+            tui.run_folder_session_status(|| folder_session_status_tui_view(&session_dir))?;
+        let Some(action) = action else {
+            tui.finish()?;
+            return Ok(());
+        };
+        tui.suspend()?;
+        handle_folder_session_tui_action(action, session_dir.clone())?;
+        tui.resume()?;
     }
-    Ok(())
 }
 
 fn handle_folder_session_tui_action(
