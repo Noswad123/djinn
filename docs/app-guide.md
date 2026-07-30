@@ -176,8 +176,11 @@ djinn session export-pattern ./promotion-pattern pattern-002 --to ~/notes/patter
 
 `export-pattern` renders clean Markdown with the insight, rationale, evidence, and
 source promotion session. It refuses to overwrite existing files unless `--append`
-is used. After exporting, you can remove source sessions with `session cleanup` and
-the promotion session with `session rm` if you no longer need the provenance.
+is used. The focused Sessions TUI exposes `Ctrl+P` pattern handoff actions that
+show the exact `djinn session export-pattern ... --to <notes.md>` command for all
+pattern candidates or the selected pattern candidate. After exporting, you can
+remove source sessions with `session cleanup` and the promotion session with
+`session rm` if you no longer need the provenance.
 
 Candidate generation also writes `outputs/candidate-index.toml`, and accept/deny
 appends status events to `outputs/candidate-status.toml`. Accept writeback refuses

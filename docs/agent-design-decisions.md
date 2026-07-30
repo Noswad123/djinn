@@ -1097,9 +1097,11 @@ The first non-interactive agent slice is implemented as:
     `memory` candidates write memories, `todo` candidates default to durable
     actions as Djinn's standalone fallback, `skill` candidates write
     Djinn-managed `SKILL.md` files, and `pattern` candidates write accepted
-    Markdown summaries under
-    `outputs/accepted/`. Every writeback-capable candidate must carry explicit
-    evidence links and type-specific fields: memories require `scope`, `kind`, and
+    Markdown summaries under `outputs/accepted/`; the focused Sessions TUI exposes
+    pattern export handoff commands for copying the exact `djinn session
+    export-pattern ... --to <notes.md>` invocation. Every writeback-capable
+    candidate must carry explicit evidence links and type-specific fields:
+    memories require `scope`, `kind`, and
     `confidence`; todos require `kind` and `confidence`; skills require
     `description`; and patterns require `rationale`. Candidate generation writes
     `outputs/candidate-index.toml`, decisions append `outputs/candidate-status.toml`,

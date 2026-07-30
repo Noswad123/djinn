@@ -4822,6 +4822,10 @@ fn folder_session_action_message(
         djinn_tui::FolderSessionAction::ValidateCandidate(candidate) => {
             format!("Validated candidate {candidate}")
         }
+        djinn_tui::FolderSessionAction::ShowPatternExportCommand(candidate) => format!(
+            "Pattern export command: {}",
+            pattern_export_command_hint(session_dir, candidate.as_deref())
+        ),
         djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => {
             format!("Accepted candidate {candidate}")
         }
@@ -4898,6 +4902,7 @@ fn handle_folder_session_tui_action(
                 json: false,
             })
         }
+        djinn_tui::FolderSessionAction::ShowPatternExportCommand(_) => Ok(()),
         djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => session_decide(
             SessionDecisionArgs {
                 dir: session_dir,
@@ -4937,6 +4942,19 @@ fn handle_folder_session_tui_action(
     }
 }
 
+fn pattern_export_command_hint(session_dir: &Path, candidate: Option<&str>) -> String {
+    let mut command = format!(
+        "djinn session export-pattern {}",
+        shell_quote(&session_dir.display().to_string())
+    );
+    if let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
+        command.push(' ');
+        command.push_str(&shell_quote(candidate));
+    }
+    command.push_str(" --to <notes.md>");
+    command
+}
+
 fn folder_session_is_promotion(session_dir: &Path) -> Result<bool> {
     Ok(read_folder_session_manifest(session_dir)?
         .and_then(|manifest| manifest.kind)
@@ -4948,6 +4966,7 @@ fn folder_session_status_tui_view(
     session_dir: &Path,
 ) -> Result<djinn_tui::FolderSessionStatusView> {
     let report = folder_session_status(session_dir)?;
+    let manifest = read_folder_session_manifest(session_dir)?;
     let session_path = PathBuf::from(&report.session_dir);
     let title = session_path
         .file_name()
@@ -4958,6 +4977,7 @@ fn folder_session_status_tui_view(
         title,
         state: report.lifecycle.state.clone(),
         mode: report.lifecycle.mode.clone(),
+        promotion_type: manifest.and_then(|manifest| manifest.promotion_type),
         session_dir: report.session_dir.clone(),
         summary_path: report
             .files
@@ -20155,6 +20175,18 @@ link = "context/repo"
                 &session_dir,
             ),
             "Accepted candidate todo-001"
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::ShowPatternExportCommand(Some(
+                    "pattern-001".to_string(),
+                )),
+                &session_dir,
+            ),
+            format!(
+                "Pattern export command: djinn session export-pattern '{}' 'pattern-001' --to <notes.md>",
+                session_dir.display()
+            )
         );
 
         let _ = fs::remove_dir_all(&root);

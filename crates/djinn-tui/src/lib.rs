@@ -122,6 +122,7 @@ pub struct FolderSessionStatusView {
     pub title: String,
     pub state: String,
     pub mode: Option<String>,
+    pub promotion_type: Option<String>,
     pub session_dir: String,
     pub summary_path: Option<String>,
     pub request_path: Option<String>,
@@ -180,6 +181,7 @@ pub enum FolderSessionAction {
     DiscoverContext,
     ValidateCandidates,
     ValidateCandidate(String),
+    ShowPatternExportCommand(Option<String>),
     AcceptCandidate(String),
     AcceptCandidateAndSyncMindweaver(String),
     DenyCandidate(String),
@@ -637,6 +639,14 @@ fn folder_session_command_palette(
             "Check candidate TOML without accepting or rerunning the model",
             FolderSessionCommand::Action(FolderSessionAction::ValidateCandidates),
         ));
+        if view.promotion_type.as_deref() == Some("pattern") {
+            entries.push(folder_session_command_entry(
+                "Promotion",
+                "Show pattern export command",
+                "Show the exact export-pattern command for all pattern candidates",
+                FolderSessionCommand::Action(FolderSessionAction::ShowPatternExportCommand(None)),
+            ));
+        }
     }
     if let Some(path) = &view.latest_generation_response_path {
         entries.push(folder_session_command_entry(
@@ -679,6 +689,16 @@ fn folder_session_command_palette(
         ));
     }
     if let Some(candidate) = view.candidate_entries.get(selected_candidate) {
+        if candidate.candidate_type.as_deref() == Some("pattern") {
+            entries.push(folder_session_command_entry(
+                "Candidate",
+                "Show selected pattern export command",
+                &format!("Show export-pattern command for {}", candidate.id),
+                FolderSessionCommand::Action(FolderSessionAction::ShowPatternExportCommand(Some(
+                    candidate.id.clone(),
+                ))),
+            ));
+        }
         entries.extend([
             folder_session_command_entry(
                 "Candidate",
@@ -3631,6 +3651,7 @@ mod tests {
             title: "promotion".to_string(),
             state: "complete".to_string(),
             mode: Some("promotion".to_string()),
+            promotion_type: Some("pattern".to_string()),
             session_dir: "/tmp/promotion".to_string(),
             summary_path: None,
             request_path: None,
@@ -3640,7 +3661,7 @@ mod tests {
             candidate_details: Vec::new(),
             candidate_entries: vec![PromotionCandidateRow {
                 id: "todo-001".to_string(),
-                candidate_type: Some("todo".to_string()),
+                candidate_type: Some("pattern".to_string()),
                 status: "pending".to_string(),
                 path: "/tmp/promotion/outputs/candidates/todo-001.toml".to_string(),
                 text: Some("Polish promotion review workflow.".to_string()),
@@ -3692,6 +3713,12 @@ mod tests {
         assert!(palette
             .iter()
             .any(|entry| entry.label == "Validate selected candidate"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Show pattern export command"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Show selected pattern export command"));
         assert!(palette
             .iter()
             .any(|entry| entry.label == "Accept selected candidate"));

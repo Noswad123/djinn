@@ -40,10 +40,6 @@ schemas evolvable; durable behavior belongs in the app guide and design decision
 
 Ready implementation slices:
 
-- **Pattern notes handoff in TUI:** expose pattern export from the focused-session
-  command palette. If interactive path prompting is too much for the first slice,
-  show the exact `djinn session export-pattern ... --to <notes.md>` command and
-  open the candidate/summary for copying.
 - **Promotion summary quality:** tune generated `summary.md` for pattern sessions
   from real examples. The goal is a readable synthesis that can stand alone before
   any accept/export step.

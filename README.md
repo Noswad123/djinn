@@ -291,7 +291,9 @@ the exact sync command instead of silently running it; the focused Sessions TUI
 also offers `m` for accept-and-sync. `pattern` candidates are accepted as Markdown
 summaries under the promotion session, and `djinn session export-pattern
 <promotion-session> [candidate] --to <notes.md>` exports clean insight/rationale
-Markdown to your notes.
+Markdown to your notes. The focused Sessions TUI exposes pattern export handoff
+commands from `Ctrl+P` so you can copy the exact `export-pattern` invocation for
+all pattern candidates or the selected one.
 Use `djinn session validate-candidates <promotion-session> [candidate]` after
 editing candidate TOML to check required fields and evidence links without
 rerunning the model or mutating any durable store. Candidate generation writes
