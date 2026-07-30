@@ -53,15 +53,15 @@ configured MindWeaver inbox while rejecting exact or near-duplicate open inbox
 todos. Candidate validation enforces per-type fields (`scope`/`kind`/`confidence`
 for memories, `kind`/`confidence` for todos, `description` for skills, and
 `rationale` for patterns). `djinn session status` and the Sessions TUI surface
-candidate totals and accepted/denied/pending counts. The local actions store
-remains the mutating fallback. `djinn session accept --sync-mindweaver` is the
-explicit post-capture handoff for running `mw todos sync`. The exact source-packet
-structure may evolve.
+candidate totals, accepted/denied/pending counts, and individual candidate
+id/type/status/destination previews. The local actions store remains the mutating
+fallback. `djinn session accept --sync-mindweaver` is the explicit post-capture
+handoff for running `mw todos sync`. The exact source-packet structure may evolve.
 
 Ready implementation slices:
 
 - Continue tightening candidate writeback as real model output appears: richer TUI
-  review affordances for individual candidate status/actions, tuning fuzzy
+  affordances for accepting/denying individual candidates directly, tuning fuzzy
   duplicate thresholds from real generated candidates, and follow-up UX around the
   explicit post-capture `mw todos sync` handoff.
   Prefer interoperating with MindWeaver

@@ -128,6 +128,7 @@ pub struct FolderSessionStatusView {
     pub response_path: Option<String>,
     pub turn_count: usize,
     pub candidate_status: Option<String>,
+    pub candidate_details: Vec<String>,
     pub next_action: Option<String>,
     pub note: Option<String>,
 }
@@ -144,6 +145,7 @@ pub struct SessionRecord {
     pub summary_preview: Option<String>,
     pub turn_count: usize,
     pub candidate_status: Option<String>,
+    pub candidate_details: Vec<String>,
     pub next_action: Option<String>,
 }
 
@@ -457,6 +459,12 @@ fn draw_folder_session_status(frame: &mut ratatui::Frame<'_>, view: &FolderSessi
             Span::styled("Candidates:", dim_style()),
             Span::raw(format!(" {candidates}")),
         ]));
+        for detail in view.candidate_details.iter().take(4) {
+            lines.push(Line::from(vec![
+                Span::styled("  - ", dim_style()),
+                Span::raw(detail.clone()),
+            ]));
+        }
     }
     if let Some(next) = &view.next_action {
         lines.push(Line::from(vec![
@@ -1671,6 +1679,9 @@ fn session_preview(session: &SessionRecord) -> String {
     }
     if let Some(candidates) = &session.candidate_status {
         lines.push(format!("Candidates: {candidates}"));
+        for detail in session.candidate_details.iter().take(8) {
+            lines.push(format!("  - {detail}"));
+        }
     }
     lines.push(String::new());
     lines.push("Enter opens the focused session view.".to_string());
@@ -2885,6 +2896,10 @@ mod tests {
             summary_preview: Some("Latest answer preview".to_string()),
             turn_count: 2,
             candidate_status: Some("3 total, 1 accepted, 1 denied, 1 pending".to_string()),
+            candidate_details: vec![
+                "memory-001 [memory] accepted -> memory".to_string(),
+                "todo-001 [todo] pending".to_string(),
+            ],
             next_action: Some("edit request.md or run again".to_string()),
         };
         let mut app = SessionsApp::new(vec![session]);
@@ -2900,6 +2915,7 @@ mod tests {
         assert!(preview.contains("Name: repo-review"));
         assert!(preview.contains("Focused shortcuts"));
         assert!(preview.contains("Candidates: 3 total"));
+        assert!(preview.contains("memory-001 [memory] accepted"));
         assert!(preview.contains("Latest answer preview"));
         assert!(
             session_list_metadata(app.selected_session().unwrap()).contains("candidates 3 total")

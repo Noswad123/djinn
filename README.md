@@ -292,7 +292,7 @@ before mutating durable stores, including existing open MindWeaver inbox todos. 
 writeback prefers interop with MindWeaver (`~/Projects/mind-weaver`) when
 requested, while keeping Djinn's actions store as the standalone fallback. `djinn
 session status` and the Sessions TUI summarize candidate totals and
-accepted/denied/pending counts.
+accepted/denied/pending counts, plus individual candidate id/type/status previews.
 
 The roadmap direction is promotion as a special folder-backed session that uses
 one or more source sessions as context. Promotion types should be `memory`,

@@ -155,7 +155,9 @@ system, not a premature parallel Djinn todo store.
 
 `djinn session status` and the Sessions TUI show candidate counts when a
 promotion session has `outputs/candidates/` or decision status events: total,
-accepted, denied, and pending.
+accepted, denied, and pending. Status output and TUI previews also list individual
+candidate ids with type, status, and accepted destination/writeback path when
+available.
 
 ```bash
 djinn review memory <id> --dry-run
