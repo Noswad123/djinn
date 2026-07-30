@@ -97,7 +97,7 @@ The intended loop is:
 
 sessions → promote/add memories → suggestions → actions/skills
 
-Analyze the active memories, recent sessions, OpenCode watcher state, and discovered local tools below. Deferred memories with future `not_before` dates are included for awareness only; do not propose actions based on them until their date has arrived. Suggest:
+Analyze the active memories, recent sessions, external session-import notes, and discovered local tools below. Deferred memories with future `not_before` dates are included for awareness only; do not propose actions based on them until their date has arrived. Suggest:
 
 1. Workflow patterns or preferences worth preserving.
 2. Stale, noisy, or overly narrow memories to rewrite or remove.
@@ -127,7 +127,7 @@ Return concise Markdown with sections: `Pipeline Health`, `Memory Cleanup`, `Mem
 {chat_lines}
 ```
 
-## OpenCode watcher state
+## External session-import notes
 
 ```text
 {watcher_state}

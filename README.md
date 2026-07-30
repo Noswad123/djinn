@@ -199,12 +199,13 @@ djinn list memories
 djinn review memory <id> --dry-run
 ```
 
-Import OpenCode sessions:
+Import OpenCode output explicitly when you need legacy source material. For new
+work, prefer folder-backed `djinn ask` / `djinn session ...` flows:
 
 ```bash
-djinn watch opencode <session-id>
-djinn install opencode
-djinn status opencode
+opencode export <session-id> --sanitize | djinn add session - --source opencode --source-id <session-id>
+djinn ask "Summarize the debugging path" --session ./my-session
+djinn session status ./my-session
 ```
 
 Add a deferred memory:
@@ -274,21 +275,17 @@ sends a notification when complete if `osascript` is available. The review is
 advisory and returns exact `djinn add suggestion ...` commands for you to run
 manually.
 
-Archive imported session clutter after extracting useful memories:
+Cleanup imported session clutter after extracting useful memories:
 
 ```bash
-djinn archive sessions --source opencode --limit 50 --dry-run
-djinn archive sessions --source opencode --limit 50 --force
-djinn archive list
-djinn archive show manual-20260724-120000.jsonl --content
-djinn archive restore manual-20260724-120000.jsonl --dry-run
-djinn archive rm manual-20260724-120000.jsonl --force
+djinn promote sessions --source opencode --limit 50 --mode merge --dry-run
+djinn promote sessions --source opencode --limit 50 --mode merge --archive
 ```
 
-Archives are written under `~/.cache/djinn/chat-archives/` before the selected
-session rows are removed from the active session index. Use `archive show` to inspect
-contents before restoring. Restore with `--force` to replace existing rows with
-matching IDs or source IDs. Remove old archive files with `archive rm --force`.
+The standalone `djinn archive ...` browser/restore/remove commands have been
+removed with the legacy saved-row cleanup surface. The remaining `--archive`
+option on legacy merge promotion is kept only as a migration safeguard while
+folder-backed promotion is designed.
 
 ## Storage
 

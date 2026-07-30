@@ -242,6 +242,18 @@ Ready follow-up slices:
   deterministic digest. Compaction should be threshold-friendly (manual first,
   later after N turns) and should update context instead of creating another
   transcript/history log.
+- Add folder-backed session promotion. The useful product idea is not the old
+  legacy row picker; it is promoting one or more session folders and selected
+  artifacts into durable local knowledge: memories, skills, reusable patterns,
+  compacted context, ideas, or suggested follow-up actions. The folder workflow
+  should keep provenance file-native by linking outputs back to `summary.md`,
+  `context/`, and `turns/<id>/{request,response}.md`, support dry-runs, and make
+  the target explicit (`--as memory|skill|pattern|context|suggestion`, or a
+  better final taxonomy). Reuse old promotion internals only where they remain a
+  good fit: bounded selection, role-labeled OpenCode digesting, redaction
+  warnings, memory merge/write safeguards, archive-after-success semantics, and
+  prompt templates that can be adapted to file evidence. Do not preserve the old
+  dashboard picker model or legacy JSONL row identity as the product shape.
 - Allow symlinked context intentionally. A session may contain links such as
   `context/repo -> /path/to/repo` or `context/roadmap.md -> /path/to/roadmap.md`;
   Djinn should preserve links and treat them as explicit context references while

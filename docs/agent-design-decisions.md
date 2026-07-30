@@ -733,13 +733,10 @@ The first non-interactive agent slice is implemented as:
 32. The command palette keeps its search row fixed and scrolls only the action
     list. This keeps config-driven profile/model lists usable without hiding the
     search affordance or letting actions overflow the dialog.
-33. The Sessions picker search matches more than titles: title, id,
-    source, source id/path, content path, and content are fuzzy-searchable. The
-    selected preview shows the available session actions so resume/promote/remove
-    affordances are visible without relying only on the footer. Because projected
-    Djinn-agent role and parent-session metadata are included in the synthetic
-    session content, those fields are searchable without a separate raw JSONL
-    event browser.
+33. Superseded by decisions 84-85: the legacy saved-session picker searched
+    imported JSONL/source rows and exposed resume/promote/remove actions. That
+    picker and its dashboard actions are removed. Folder-backed Sessions search
+    folder status, paths, repo metadata, summaries, and artifact previews instead.
 34. The dashboard also uses Ctrl+/ for detailed help. Per-tab keybinding
     guidance belongs in the help overlay, while the dashboard footer stays short
     and points to help.
@@ -762,9 +759,10 @@ The first non-interactive agent slice is implemented as:
     action. Persisted chat/source rows and old JSONL sessions should be cleaned up
     through explicit CLI archive/delete/migration commands with dry-run or
     confirmation semantics as appropriate.
-40. Superseded by decision 84: legacy saved-session promotion is not a dashboard
-    action. Folder-backed promotion should be added to the session
-    surface; legacy `djinn promote session(s)` remains a CLI source-material flow.
+40. Superseded by decisions 84-85: legacy saved-session promotion is not a
+    dashboard action. Folder-backed promotion should be added to the session
+    surface; legacy `djinn promote session(s)` remains a CLI source-material flow
+    only while old rows still need migration/review.
 41. Session promotion emits context material rather than executing a model. Summary
     mode is human-facing in direct CLI use and renders a local digest, not an
     agent-review prompt; patterns/memories modes remain prompt-oriented review
@@ -781,15 +779,10 @@ The first non-interactive agent slice is implemented as:
     Merge should not introduce another memory-candidate/inbox step; later memory
     review should focus on turning active memories into skills, suggestions, or
     concrete user actions, and on clearing stale inbox/source material.
-43. Manual session cleanup should be safe and reversible by default. `djinn archive
-    sessions` selects session rows with the same id/source/query/limit semantics
-    as promotion, supports `--dry-run` previews, requires `--force` before removal,
-    and writes full JSONL archives under `~/.cache/djinn/chat-archives/` before
-    deleting rows from the active session index. Archive files should be listable,
-    inspectable with bounded content previews, and restorable; restore skips
-    conflicting active rows by default and requires `--force` to replace rows
-    with matching IDs or source/source-id pairs. Archive removal should require
-    `--force` and refuse to delete files outside Djinn's chat archive directory.
+43. Superseded by decision 85: manual saved-row cleanup via `djinn archive ...`
+    has been removed with the legacy session-row surface. Archive-after-success
+    remains available only as a guarded migration behavior on legacy merge
+    promotion until folder-backed session promotion defines its own cleanup model.
 44. Superseded by decision 84: rich Markdown rendering belongs in focused artifact
     viewers if reopened. The canonical copy/export surfaces are Markdown files
     (`summary.md`, `request.md`, turn files, and compacted context), which already
@@ -1086,6 +1079,16 @@ The first non-interactive agent slice is implemented as:
     should consume the same status projection as `djinn session status`,
     `djinn session ls`, and `djinn session watch <session>` rather than
     maintaining a separate status model.
+85. Folder-backed promotion remains a desired product capability, but it should
+    not recreate the removed legacy saved-session picker. Promotion should select
+    one or more session folders and explicit artifacts, then write durable local
+    outputs such as memories, skills, reusable patterns, compacted context,
+    ideas, or suggested follow-up actions with evidence links back to files under
+    the session folder. Existing legacy promotion internals may be harvested when
+    they fit the file-first model: bounded selection, digest rendering,
+    redaction/sanitization warnings, memory merge/write safeguards, prompt
+    templates, dry-run previews, and archive-after-success cleanup. Legacy JSONL
+    row identity should not define the new UX or data model.
 
 Not in the first slice unless explicitly reopened:
 

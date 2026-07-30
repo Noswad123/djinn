@@ -79,19 +79,30 @@ Sessions are raw source material for later learning.
 ```bash
 djinn add session ./session.md --title "Debugging session"
 opencode export <session-id> | djinn add session - --source opencode --source-id <session-id>
-djinn watch opencode <session-id>
-djinn install opencode
-djinn status opencode
-djinn uninstall opencode
+djinn ask "Summarize the debugging path" --session ./debugging-session
+djinn session status ./debugging-session
 ```
 
-Promotion is session-focused. In the TUI, the Sessions picker is for legacy saved
-session rows: resume/convert where supported, or promote selected rows into local
-digest/prompt material. In the CLI, `--mode summary` prints a local,
-human-facing digest and does not run a model. `--mode pattern` and `--mode
-memories` emit agent-ready prompts without writing memories automatically. For
-OpenCode exports, Djinn renders a readable digest of message/tool parts instead of
-raw JSON when possible; sanitized exports may still have redacted message text.
+The old OpenCode watcher/plugin integration has been removed. Use explicit
+imports only when you need legacy saved-row source material; otherwise keep new
+work in folder-backed session capsules.
+
+Promotion is still a useful idea, but the canonical folder-backed workflow should
+promote from session folders and selected artifacts rather than from the removed
+legacy dashboard picker. A future `djinn session promote ...` flow should let one
+or more folder sessions produce durable outputs such as memories, skills,
+patterns, compacted context, or suggested follow-up actions with explicit evidence
+links back to `summary.md`, `context/`, and `turns/<id>/` files. Existing legacy
+promotion code may still be reused where it fits, especially bounded selection,
+OpenCode export digestion, redaction warnings, memory-writing safeguards, and
+dry-run/archive semantics.
+
+For legacy saved session rows, the CLI `djinn promote session(s)` commands remain
+source-material tools. `--mode summary` prints a local, human-facing digest and
+does not run a model. `--mode pattern` and `--mode memories` emit agent-ready
+prompts without writing memories automatically. For OpenCode exports, Djinn
+renders a readable digest of message/tool parts instead of raw JSON when possible;
+sanitized exports may still have redacted message text.
 
 `--mode merge` is the cleanup-oriented promotion mode: it asks the model to group
 the selected sessions and distill durable lessons into active memories directly.
@@ -103,31 +114,18 @@ djinn promote session debugging-session
 djinn promote sessions --source opencode --limit 20 --mode pattern
 djinn promote sessions --source opencode --limit 50 --mode merge --dry-run
 djinn promote sessions --source opencode --limit 50 --mode merge --archive
-djinn archive sessions --source opencode --limit 50 --dry-run
-djinn archive sessions --source opencode --limit 50 --force
-djinn archive list
-djinn archive show manual-20260724-120000.jsonl --content
-djinn archive restore manual-20260724-120000.jsonl --dry-run
-djinn archive restore manual-20260724-120000.jsonl --force
-djinn archive rm manual-20260724-120000.jsonl --dry-run
-djinn archive rm manual-20260724-120000.jsonl --force
-djinn review sessions --source opencode --dry-run
-djinn review sessions --source opencode --limit 20
+djinn review memory <id> --dry-run
 ```
 
-`djinn review opencode` reviews OpenCode-only sessions.
+The legacy `djinn review sessions` and `djinn review opencode` saved-row review
+entrypoints have been removed. Use `djinn promote sessions --mode memories` for
+legacy saved-row prompt generation, or wait for folder-backed session promotion
+for the canonical workflow.
 
-`djinn archive sessions` is a safe manual cleanup command. It selects sessions by id,
-source, query, limit, or `--all`, writes full session records to
-`~/.cache/djinn/chat-archives/manual-*.jsonl`, then removes those rows from the
-active session index. It requires `--force`; use `--dry-run` first to preview the
-selection. `djinn archive list` shows available archive files, and
-`djinn archive show <archive>` previews the archived session rows, with optional
-content snippets via `--content`. `djinn archive restore <archive>` restores
-archived sessions. Restore skips rows with matching IDs or source/source-id pairs
-unless `--force` is provided. `djinn archive rm <archive>` removes an archive
-file only after `--force` and refuses to delete files outside Djinn's archive
-directory.
+The standalone `djinn archive ...` legacy cleanup family has been removed. The
+only remaining archive behavior is the guarded `--archive` option on legacy
+`--mode merge` promotion, retained as a migration safeguard until folder-backed
+session promotion lands.
 
 ## Memories and suggestions
 

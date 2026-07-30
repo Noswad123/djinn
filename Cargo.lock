@@ -520,7 +520,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
- "djinn-chats",
  "djinn-contexts",
  "djinn-memory",
  "djinn-skills",

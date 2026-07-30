@@ -1,7 +1,6 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, IsTerminal, Read, Write};
 use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
@@ -20,7 +19,7 @@ use djinn_agent::{
     PermissionDecision, PermissionEffect, PermissionGate, PermissionPolicy, PermissionRequest,
     PermissionRule, ReadAccessEffect, ReadAccessPolicy, ReadAccessRule, ToolSpec,
 };
-use djinn_chats::{ChatRecord, ChatRestoreReport};
+use djinn_chats::ChatRecord;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
     lifecycle_for, ActionRecord, ActionStore, AgentSession, AgentSessionEvent,
@@ -80,24 +79,12 @@ enum Command {
     Rm(RmArgs),
     /// Clear a collection after confirmation.
     Clear(ClearArgs),
-    /// Archive selected records before removing them from active views.
-    Archive(ArchiveArgs),
-    /// Prune old transient/cache records.
-    Prune(PruneArgs),
     /// Discover without writing durable state.
     Scan(ScanArgs),
     /// Write a machine-readable cache/index.
     Index(IndexArgs),
     /// Search a collection.
     Search(SearchArgs),
-    /// Watch an external source for new knowledge.
-    Watch(WatchArgs),
-    /// Install Djinn integrations into external tools.
-    Install(InstallArgs),
-    /// Uninstall Djinn integrations from external tools.
-    Uninstall(UninstallArgs),
-    /// Show integration health/status.
-    Status(StatusArgs),
     /// Switch active context.
     Switch(SwitchArgs),
     /// Open an item in the user's editor.
@@ -580,14 +567,10 @@ struct ReviewArgs {
 
 #[derive(Debug, Subcommand)]
 enum ReviewSource {
-    /// Ask OpenCode to review recent Djinn sessions and add active memories.
-    Sessions(ReviewChatsArgs),
     /// Ask OpenCode to review one or more memories and create suggestions.
     Memories(ReviewMemoriesArgs),
     /// Ask OpenCode to review one memory and create suggestions.
     Memory(ReviewMemoriesArgs),
-    /// Review recent OpenCode sessions.
-    Opencode(ReviewOpencodeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -608,59 +591,6 @@ struct ReviewMemoriesArgs {
     agent: Option<String>,
     /// OpenCode run title.
     #[arg(long, default_value = "djinn memory curation review")]
-    title: String,
-    /// OpenCode binary to execute.
-    #[arg(long, default_value = "opencode")]
-    opencode_bin: String,
-    /// Print the prompt instead of running OpenCode.
-    #[arg(long)]
-    dry_run: bool,
-}
-
-#[derive(Debug, Args)]
-struct ReviewChatsArgs {
-    /// Optional chat source filter, for example: opencode.
-    #[arg(long)]
-    source: Option<String>,
-    /// Maximum recent sessions to review.
-    #[arg(long, default_value_t = 20)]
-    limit: usize,
-    /// Review all matching sessions instead of applying --limit.
-    #[arg(long)]
-    all: bool,
-    /// Optional query filter over chat metadata/content.
-    #[arg(long)]
-    query: Option<String>,
-    /// OpenCode agent to use for the review.
-    #[arg(long)]
-    agent: Option<String>,
-    /// OpenCode run title.
-    #[arg(long, default_value = "djinn promotion review")]
-    title: String,
-    /// OpenCode binary to execute.
-    #[arg(long, default_value = "opencode")]
-    opencode_bin: String,
-    /// Print the prompt instead of running OpenCode.
-    #[arg(long)]
-    dry_run: bool,
-}
-
-#[derive(Debug, Args)]
-struct ReviewOpencodeArgs {
-    /// Maximum recent OpenCode sessions to review.
-    #[arg(long, default_value_t = 20)]
-    limit: usize,
-    /// Review all matching OpenCode sessions instead of applying --limit.
-    #[arg(long)]
-    all: bool,
-    /// Optional query filter over chat metadata/content.
-    #[arg(long)]
-    query: Option<String>,
-    /// OpenCode agent to use for the review.
-    #[arg(long)]
-    agent: Option<String>,
-    /// OpenCode run title.
-    #[arg(long, default_value = "djinn promotion review")]
     title: String,
     /// OpenCode binary to execute.
     #[arg(long, default_value = "opencode")]
@@ -700,12 +630,6 @@ struct ClearArgs {
     noun: ClearNoun,
 }
 
-#[derive(Debug, Args)]
-struct ArchiveArgs {
-    #[command(subcommand)]
-    noun: ArchiveNoun,
-}
-
 #[derive(Debug, Subcommand)]
 enum ClearNoun {
     /// Clear all memories after interactive confirmation.
@@ -720,32 +644,6 @@ enum ClearNoun {
         #[arg(long)]
         no_backup: bool,
     },
-}
-
-#[derive(Debug, Subcommand)]
-enum ArchiveNoun {
-    /// Archive selected session rows and remove them from the active session index.
-    Sessions(ArchiveChatsArgs),
-    /// List session archive files.
-    List(ArchiveListArgs),
-    /// Show the contents of one session archive file.
-    Show(ArchiveShowArgs),
-    /// Restore sessions from an archive file.
-    Restore(ArchiveRestoreArgs),
-    /// Remove one session archive file after confirmation.
-    Rm(ArchiveRemoveArgs),
-}
-
-#[derive(Debug, Args)]
-struct PruneArgs {
-    #[command(subcommand)]
-    noun: PruneNoun,
-}
-
-#[derive(Debug, Subcommand)]
-enum PruneNoun {
-    /// Remove sessions older than a duration such as 30d or 12days.
-    Sessions(PruneChatsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -788,54 +686,6 @@ enum SearchNoun {
     Memories { query: String },
     /// Search suggestions.
     Suggestions { query: String },
-}
-
-#[derive(Debug, Args)]
-struct WatchArgs {
-    #[command(subcommand)]
-    source: WatchSource,
-}
-
-#[derive(Debug, Subcommand)]
-enum WatchSource {
-    /// Watch OpenCode conversations.
-    Opencode(WatchOpencodeArgs),
-}
-
-#[derive(Debug, Args)]
-struct InstallArgs {
-    #[command(subcommand)]
-    target: InstallTarget,
-}
-
-#[derive(Debug, Args)]
-struct UninstallArgs {
-    #[command(subcommand)]
-    target: UninstallTarget,
-}
-
-#[derive(Debug, Subcommand)]
-enum UninstallTarget {
-    /// Uninstall the OpenCode Djinn watcher plugin.
-    Opencode(OpencodeIntegrationArgs),
-}
-
-#[derive(Debug, Args)]
-struct StatusArgs {
-    #[command(subcommand)]
-    target: StatusTarget,
-}
-
-#[derive(Debug, Subcommand)]
-enum StatusTarget {
-    /// Show OpenCode Djinn watcher plugin status.
-    Opencode(OpencodeIntegrationArgs),
-}
-
-#[derive(Debug, Subcommand)]
-enum InstallTarget {
-    /// Install the OpenCode plugin that auto-imports sessions into Djinn.
-    Opencode(InstallOpencodeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1788,92 +1638,6 @@ struct ShowChatArgs {
     json: bool,
 }
 
-#[derive(Debug, Args)]
-struct PruneChatsArgs {
-    /// Prune sessions older than this duration, for example: 30d or 12days.
-    #[arg(long = "older-than")]
-    older_than: String,
-    /// Skip creating sessions.backup-*.jsonl before pruning.
-    #[arg(long)]
-    no_backup: bool,
-}
-
-#[derive(Debug, Args)]
-struct ArchiveChatsArgs {
-    /// Optional session ids, source ids, or unambiguous title fragments to archive.
-    ids: Vec<String>,
-    /// Filter by source, for example: opencode.
-    #[arg(long)]
-    source: Option<String>,
-    /// Filter sessions by id, title, source metadata, path, or content.
-    #[arg(long)]
-    query: Option<String>,
-    /// Maximum number of sessions to archive unless --all or explicit ids are used.
-    #[arg(long, default_value_t = 50)]
-    limit: usize,
-    /// Include every matching session. Use deliberately.
-    #[arg(long)]
-    all: bool,
-    /// Print selected sessions without writing an archive or removing rows.
-    #[arg(long)]
-    dry_run: bool,
-    /// Required to actually archive and remove selected session rows.
-    #[arg(long)]
-    force: bool,
-}
-
-#[derive(Debug, Args)]
-struct ArchiveListArgs {
-    /// Output JSON instead of text.
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Debug, Args)]
-struct ArchiveShowArgs {
-    /// Archive path, filename, or basename from ~/.cache/djinn/chat-archives.
-    archive: String,
-    /// Include session content previews.
-    #[arg(long)]
-    content: bool,
-    /// Maximum characters to show per session when --content is set.
-    #[arg(long, default_value_t = 1200)]
-    max_chars_per_chat: usize,
-    /// Output JSON instead of text.
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Debug, Args)]
-struct ArchiveRestoreArgs {
-    /// Archive path, filename, or basename from ~/.cache/djinn/chat-archives.
-    archive: String,
-    /// Replace existing session rows with matching id or source/source-id.
-    #[arg(long)]
-    force: bool,
-    /// Print what would be restored without mutating the active session index.
-    #[arg(long)]
-    dry_run: bool,
-    /// Output JSON instead of text.
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Debug, Args)]
-struct ArchiveRemoveArgs {
-    /// Archive path, filename, or basename from ~/.cache/djinn/chat-archives.
-    archive: String,
-    /// Print what would be removed without deleting the archive file.
-    #[arg(long)]
-    dry_run: bool,
-    /// Required to actually delete the archive file.
-    #[arg(long)]
-    force: bool,
-    /// Output JSON instead of text.
-    #[arg(long)]
-    json: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum TuiView {
     Tools,
@@ -2051,305 +1815,10 @@ enum ShareChatsMode {
     Merge,
 }
 
-#[derive(Debug, Args)]
-struct WatchOpencodeArgs {
-    /// OpenCode session id. Defaults to the first row from `opencode session list`.
-    session_id: Option<String>,
-    /// OpenCode binary to execute.
-    #[arg(long, default_value = "opencode")]
-    opencode_bin: String,
-    /// Store unsanitized OpenCode export output. By default Djinn passes --sanitize.
-    #[arg(long)]
-    unsafe_unsanitized: bool,
-    /// Poll every N seconds instead of importing once. If no session id is provided,
-    /// each poll imports the current latest session.
-    #[arg(long)]
-    interval: Option<u64>,
-    /// Override the stored chat title.
-    #[arg(long)]
-    title: Option<String>,
-}
-
-#[derive(Debug, Args)]
-struct InstallOpencodeArgs {
-    /// OpenCode config file to patch. Defaults to ~/.config/opencode/opencode.json.
-    #[arg(long)]
-    config: Option<PathBuf>,
-    /// Plugin file to write. Defaults to ~/.config/opencode/plugins/djinn-watch.js.
-    #[arg(long = "plugin-path")]
-    plugin_path: Option<PathBuf>,
-    /// Only write the plugin file; do not patch opencode.json.
-    #[arg(long)]
-    no_config_patch: bool,
-    /// Print the planned changes without writing files.
-    #[arg(long)]
-    dry_run: bool,
-}
-
-#[derive(Debug, Args)]
-struct OpencodeIntegrationArgs {
-    /// OpenCode config file to inspect/patch. Defaults to ~/.config/opencode/opencode.json.
-    #[arg(long)]
-    config: Option<PathBuf>,
-    /// Plugin file path. Defaults to ~/.config/opencode/plugins/djinn-watch.js.
-    #[arg(long = "plugin-path")]
-    plugin_path: Option<PathBuf>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum OutputFormat {
     Text,
     Json,
-}
-
-const OPENCODE_PLUGIN: &str = r#"/**
- * Djinn OpenCode watcher plugin.
- *
- * Keeps Djinn's Rust importer as the source of truth by spawning:
- *   djinn watch opencode <session-id>
- *
- * Environment variables:
- *   DJINN_OPENCODE_DISABLED=1          disable this plugin
- *   DJINN_OPENCODE_DEBUG=1             append debug logs under ~/.cache/djinn
- *   DJINN_OPENCODE_IMPORT_COOLDOWN_MS  debounce assistant-message imports
- *   DJINN_OPENCODE_AUTO_REVIEW=1       opt into background memory reviews
- *   DJINN_OPENCODE_REVIEW_COOLDOWN_MS  debounce background reviews
-  *   DJINN_OPENCODE_REVIEW_LIMIT        recent OpenCode sessions per review
- *   DJINN_OPENCODE_REVIEW_AGENT        optional OpenCode review agent
- *   DJINN_BIN=/path/to/djinn           override djinn executable
- */
-
-import { appendFileSync, mkdirSync, readFileSync } from "fs"
-import { homedir } from "os"
-import { join } from "path"
-
-const DEBUG = process.env.DJINN_OPENCODE_DEBUG === "1"
-const DISABLED = process.env.DJINN_OPENCODE_DISABLED === "1"
-const CHILD = process.env.DJINN_OPENCODE_PLUGIN_CHILD === "1" || process.env.DJINN_REVIEWER === "1"
-const AUTO_REVIEW = process.env.DJINN_OPENCODE_AUTO_REVIEW === "1"
-const DJINN_BIN = process.env.DJINN_BIN || "djinn"
-const CACHE_DIR = process.env.DJINN_CACHE_DIR || join(homedir(), ".cache", "djinn")
-const CONFIG_DIR = process.env.DJINN_CONFIG_DIR || join(homedir(), ".config", "djinn")
-const WATCH_STATE_FILE = join(CONFIG_DIR, "watchers", "opencode.json")
-const LOG_FILE = join(CACHE_DIR, "opencode-plugin.log")
-const DEFAULT_COOLDOWN_MS = 30000
-const DEFAULT_REVIEW_COOLDOWN_MS = 3600000
-
-function cooldownMs() {
-  const raw = Number(process.env.DJINN_OPENCODE_IMPORT_COOLDOWN_MS || DEFAULT_COOLDOWN_MS)
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_COOLDOWN_MS
-}
-
-function reviewCooldownMs() {
-  const raw = Number(process.env.DJINN_OPENCODE_REVIEW_COOLDOWN_MS || DEFAULT_REVIEW_COOLDOWN_MS)
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_REVIEW_COOLDOWN_MS
-}
-
-function reviewLimit() {
-  const raw = Number(process.env.DJINN_OPENCODE_REVIEW_LIMIT || 20)
-  return Number.isFinite(raw) && raw > 0 ? String(Math.floor(raw)) : "20"
-}
-
-function dbg(...args) {
-  if (!DEBUG) return
-  try {
-    mkdirSync(CACHE_DIR, { recursive: true })
-    appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${args.join(" ")}\n`)
-  } catch {}
-}
-
-export const DjinnWatchPlugin = async (input) => {
-  if (DISABLED || CHILD) {
-    dbg("disabled", { DISABLED, CHILD })
-    return {}
-  }
-
-  let currentSessionId = null
-  let timer = null
-  let lastReviewAt = 0
-  const lastImportAt = new Map()
-  const hydrated = new Set()
-
-  function rememberSession(sessionId) {
-    if (sessionId) currentSessionId = sessionId
-    return currentSessionId
-  }
-
-  function spawnImport(sessionId, reason, force = false) {
-    sessionId = rememberSession(sessionId)
-    if (!sessionId) {
-      dbg("skip import: missing session id", reason)
-      return
-    }
-
-    const now = Date.now()
-    const last = lastImportAt.get(sessionId) || 0
-    const cooldown = cooldownMs()
-    if (!force && now - last < cooldown) {
-      dbg("skip import: cooldown", sessionId, reason)
-      return
-    }
-    lastImportAt.set(sessionId, now)
-
-    try {
-      const proc = Bun.spawn([DJINN_BIN, "watch", "opencode", sessionId], {
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-        detached: true,
-        env: { ...process.env, DJINN_OPENCODE_PLUGIN_CHILD: "1" },
-      })
-      try { proc.unref() } catch {}
-      dbg("spawned import", sessionId, reason)
-    } catch (err) {
-      dbg("spawn failed", sessionId, reason, err?.message || err)
-    }
-  }
-
-  function scheduleImport(sessionId, reason, waitMs = cooldownMs()) {
-    rememberSession(sessionId)
-    if (!currentSessionId) return
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(() => {
-      timer = null
-      spawnImport(currentSessionId, reason)
-    }, waitMs)
-    try { timer.unref() } catch {}
-    dbg("scheduled import", currentSessionId, reason, waitMs)
-  }
-
-  function bridgeFor(sessionId) {
-    if (!sessionId) return null
-    try {
-      const raw = readFileSync(WATCH_STATE_FILE, "utf8")
-      const state = JSON.parse(raw)
-      const session = state?.sessions?.[sessionId]
-      if (!session?.djinn_session_id) return null
-      return {
-        source: "djinn",
-        agentSessionId: session.djinn_session_id,
-        agentSessionPath: session.djinn_session_path || undefined,
-        convertedAt: session.converted_at || undefined,
-      }
-    } catch (err) {
-      dbg("bridge read failed", sessionId, err?.message || err)
-      return null
-    }
-  }
-
-  async function hydrateDjinnBridge(client, sessionId) {
-    sessionId = rememberSession(sessionId)
-    if (!sessionId || hydrated.has(sessionId)) return
-    const bridge = bridgeFor(sessionId)
-    if (!bridge) return
-    try {
-      const current = await client.session.get({ sessionID: sessionId })
-      if (current?.error) {
-        dbg("bridge get failed", sessionId, current.error?.message || current.error)
-        return
-      }
-      const metadata = { ...(current?.data?.metadata || {}), djinn: bridge }
-      const updated = await client.session.update({ sessionID: sessionId, metadata })
-      if (updated?.error) {
-        dbg("bridge update failed", sessionId, updated.error?.message || updated.error)
-        return
-      }
-      hydrated.add(sessionId)
-      dbg("hydrated bridge", sessionId, bridge.agentSessionId)
-    } catch (err) {
-      dbg("bridge hydrate failed", sessionId, err?.message || err)
-    }
-  }
-
-  function spawnReview(reason, force = false) {
-    if (!AUTO_REVIEW) return
-    const now = Date.now()
-    const cooldown = reviewCooldownMs()
-    if (!force && now - lastReviewAt < cooldown) {
-      dbg("skip review: cooldown", reason)
-      return
-    }
-    lastReviewAt = now
-
-    const args = [DJINN_BIN, "review", "sessions", "--source", "opencode", "--limit", reviewLimit()]
-    const agent = process.env.DJINN_OPENCODE_REVIEW_AGENT
-    if (agent) args.push("--agent", agent)
-
-    try {
-      const proc = Bun.spawn(args, {
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-        detached: true,
-        env: { ...process.env, DJINN_OPENCODE_PLUGIN_CHILD: "1", DJINN_REVIEWER: "1" },
-      })
-      try { proc.unref() } catch {}
-      dbg("spawned review", reason)
-    } catch (err) {
-      dbg("review spawn failed", reason, err?.message || err)
-    }
-  }
-
-  process.once("beforeExit", () => {
-    spawnImport(currentSessionId, "beforeExit", true)
-    spawnReview("beforeExit")
-  })
-
-  return {
-    event: async ({ event }) => {
-      try {
-        const props = event?.properties || {}
-        const info = props.info || {}
-        const sessionId = info.id || info.sessionID || props.sessionID
-        await hydrateDjinnBridge(input.client, sessionId || currentSessionId)
-
-        switch (event?.type) {
-          case "session.created":
-            scheduleImport(sessionId, "session.created", 2000)
-            break
-          case "message.updated":
-            rememberSession(sessionId)
-            if (info.role === "assistant") {
-              scheduleImport(currentSessionId, "assistant-message")
-            }
-            break
-          case "session.idle":
-            spawnImport(sessionId || currentSessionId, "session.idle", true)
-            spawnReview("session.idle")
-            break
-        }
-      } catch (err) {
-        dbg("event error", err?.message || err)
-      }
-    },
-  }
-}
-
-export default DjinnWatchPlugin
-"#;
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct OpencodeWatchState {
-    #[serde(default)]
-    sessions: HashMap<String, OpencodeSessionState>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct OpencodeSessionState {
-    #[serde(default)]
-    content_hash: String,
-    #[serde(default)]
-    imported_at: String,
-    #[serde(default)]
-    chat_id: String,
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    djinn_session_id: String,
-    #[serde(default)]
-    djinn_session_path: String,
-    #[serde(default)]
-    converted_at: String,
 }
 
 fn main() -> Result<()> {
@@ -2373,15 +1842,9 @@ fn main() -> Result<()> {
         Command::Review(args) => run_review(args),
         Command::Rm(args) => run_rm(args),
         Command::Clear(args) => run_clear(args),
-        Command::Archive(args) => run_archive(args),
-        Command::Prune(args) => run_prune(args),
         Command::Scan(args) => run_scan(args),
         Command::Index(args) => run_index(args),
         Command::Search(args) => run_search(args),
-        Command::Watch(args) => run_watch(args),
-        Command::Install(args) => run_install(args),
-        Command::Uninstall(args) => run_uninstall(args),
-        Command::Status(args) => run_status(args),
         Command::Switch(args) => run_switch(args),
         Command::Open(args) => run_open(args),
         Command::Config(args) => run_config(args),
@@ -2477,9 +1940,7 @@ fn run_promote(args: PromoteArgs) -> Result<()> {
 
 fn run_review(args: ReviewArgs) -> Result<()> {
     match args.source {
-        ReviewSource::Sessions(args) => review_chats(args),
         ReviewSource::Memory(args) | ReviewSource::Memories(args) => review_memories(args),
-        ReviewSource::Opencode(args) => review_opencode(args),
     }
 }
 
@@ -2495,22 +1956,6 @@ fn run_clear(args: ClearArgs) -> Result<()> {
     match args.noun {
         ClearNoun::Memories { no_backup } => clear_memories(no_backup),
         ClearNoun::Sessions { no_backup } => clear_chats(no_backup),
-    }
-}
-
-fn run_archive(args: ArchiveArgs) -> Result<()> {
-    match args.noun {
-        ArchiveNoun::Sessions(args) => archive_chats(args),
-        ArchiveNoun::List(args) => list_archives(args),
-        ArchiveNoun::Show(args) => show_archive(args),
-        ArchiveNoun::Restore(args) => restore_archive(args),
-        ArchiveNoun::Rm(args) => remove_archive(args),
-    }
-}
-
-fn run_prune(args: PruneArgs) -> Result<()> {
-    match args.noun {
-        PruneNoun::Sessions(args) => prune_chats(args),
     }
 }
 
@@ -2559,30 +2004,6 @@ fn run_search(args: SearchArgs) -> Result<()> {
         SearchNoun::Tools(args) => search_tools(args),
         SearchNoun::Memories { query } => search_memories(&query),
         SearchNoun::Suggestions { query } => search_suggestions(&query),
-    }
-}
-
-fn run_watch(args: WatchArgs) -> Result<()> {
-    match args.source {
-        WatchSource::Opencode(args) => watch_opencode(args),
-    }
-}
-
-fn run_install(args: InstallArgs) -> Result<()> {
-    match args.target {
-        InstallTarget::Opencode(args) => install_opencode(args),
-    }
-}
-
-fn run_uninstall(args: UninstallArgs) -> Result<()> {
-    match args.target {
-        UninstallTarget::Opencode(args) => uninstall_opencode(args),
-    }
-}
-
-fn run_status(args: StatusArgs) -> Result<()> {
-    match args.target {
-        StatusTarget::Opencode(args) => status_opencode(args),
     }
 }
 
@@ -4685,8 +4106,8 @@ fn opencode_config_doctor_from_value(path: &Path, value: &Value) -> ConfigDoctor
                 &mut file,
                 &pointer,
                 "OpenCode plugin entries",
-                "Djinn integration metadata",
-                "Djinn installs an OpenCode watcher plugin, but does not import plugin config.",
+                "harness-specific extension points",
+                "Djinn does not import or install OpenCode plugins; keep plugin config in OpenCode.",
             ),
             _ if is_secret_key(key) => push_secret(
                 &mut file.secrets,
@@ -13583,370 +13004,11 @@ fn memory_source_from_chat(record: &ChatRecord) -> MemorySource {
     }
 }
 
-fn watch_opencode(args: WatchOpencodeArgs) -> Result<()> {
-    if let Some(0) = args.interval {
-        bail!("--interval must be greater than zero seconds");
-    }
-
-    let cli = djinn_opencode::OpencodeCli::new(args.opencode_bin.clone());
-    let sanitize = !args.unsafe_unsanitized;
-
-    loop {
-        let mut state = load_opencode_watch_state()?;
-        let session_id = match &args.session_id {
-            Some(id) => id.clone(),
-            None => cli.latest_session_id()?,
-        };
-        let export = cli.export_session(&session_id, sanitize)?;
-        let content_hash = content_hash(&export);
-        if state
-            .sessions
-            .get(&session_id)
-            .map(|session| session.content_hash == content_hash)
-            .unwrap_or(false)
-        {
-            println!("OpenCode session unchanged (source-id: {session_id})");
-            let Some(seconds) = args.interval else {
-                break;
-            };
-            thread::sleep(Duration::from_secs(seconds));
-            continue;
-        }
-        let title = args
-            .title
-            .clone()
-            .unwrap_or_else(|| djinn_opencode::infer_export_title(&session_id, &export));
-        let source_path = if sanitize {
-            format!("{} export {} --sanitize", args.opencode_bin, session_id)
-        } else {
-            format!("{} export {}", args.opencode_bin, session_id)
-        };
-        let (record, updated) = chat_store().upsert_content(
-            title,
-            export,
-            source_path,
-            Some("opencode"),
-            Some(&session_id),
-        )?;
-        state.sessions.insert(
-            session_id.clone(),
-            OpencodeSessionState {
-                content_hash,
-                imported_at: chrono::Local::now().to_rfc3339(),
-                chat_id: record.id.clone(),
-                title: record.title.clone(),
-                ..state.sessions.get(&session_id).cloned().unwrap_or_default()
-            },
-        );
-        save_opencode_watch_state(&state)?;
-        let action = if updated { "updated" } else { "imported" };
-        println!(
-            "OpenCode session {action} as chat [{}] (source-id: {})",
-            record.id, record.source_id
-        );
-
-        let Some(seconds) = args.interval else {
-            break;
-        };
-        thread::sleep(Duration::from_secs(seconds));
-    }
-
-    Ok(())
-}
-
-fn install_opencode(args: InstallOpencodeArgs) -> Result<()> {
-    let config_path = args.config.unwrap_or_else(default_opencode_config_path);
-    let plugin_path = args
-        .plugin_path
-        .map(absolute_path)
-        .unwrap_or_else(default_opencode_plugin_path);
-    let plugin_entry = opencode_plugin_entry(&config_path, &plugin_path);
-
-    if args.dry_run {
-        println!(
-            "Would write OpenCode Djinn plugin: {}",
-            plugin_path.display()
-        );
-    } else {
-        let changed = djinn_core::write_if_changed(&plugin_path, OPENCODE_PLUGIN.as_bytes())?;
-        let status = if changed { "wrote" } else { "unchanged" };
-        println!("OpenCode Djinn plugin {status}: {}", plugin_path.display());
-    }
-
-    if args.no_config_patch {
-        println!("Skipped opencode.json patch. Add this plugin entry manually: {plugin_entry}");
-    } else if args.dry_run {
-        println!(
-            "Would patch OpenCode config: {} (plugin: {plugin_entry})",
-            config_path.display()
-        );
-    } else {
-        let changed = patch_opencode_config(&config_path, &plugin_entry)?;
-        let status = if changed { "updated" } else { "unchanged" };
-        println!(
-            "OpenCode config {status}: {} (plugin: {plugin_entry})",
-            config_path.display()
-        );
-    }
-
-    println!("Restart OpenCode for the Djinn plugin to load.");
-    Ok(())
-}
-
-fn uninstall_opencode(args: OpencodeIntegrationArgs) -> Result<()> {
-    let config_path = args.config.unwrap_or_else(default_opencode_config_path);
-    let plugin_path = args
-        .plugin_path
-        .map(absolute_path)
-        .unwrap_or_else(default_opencode_plugin_path);
-    let plugin_entry = opencode_plugin_entry(&config_path, &plugin_path);
-
-    if plugin_path.exists() {
-        fs::remove_file(&plugin_path)
-            .with_context(|| format!("removing {}", plugin_path.display()))?;
-        println!("Removed OpenCode Djinn plugin: {}", plugin_path.display());
-    } else {
-        println!(
-            "OpenCode Djinn plugin already absent: {}",
-            plugin_path.display()
-        );
-    }
-
-    let changed = unpatch_opencode_config(&config_path, &plugin_entry)?;
-    let status = if changed { "updated" } else { "unchanged" };
-    println!("OpenCode config {status}: {}", config_path.display());
-    println!("Restart OpenCode for plugin changes to take effect.");
-    Ok(())
-}
-
-fn status_opencode(args: OpencodeIntegrationArgs) -> Result<()> {
-    let config_path = args.config.unwrap_or_else(default_opencode_config_path);
-    let plugin_path = args
-        .plugin_path
-        .map(absolute_path)
-        .unwrap_or_else(default_opencode_plugin_path);
-    let plugin_entry = opencode_plugin_entry(&config_path, &plugin_path);
-    let config_contains = opencode_config_contains_plugin(&config_path, &plugin_entry)?;
-    let state = load_opencode_watch_state().unwrap_or_default();
-    println!("OpenCode Djinn plugin file: {}", plugin_path.display());
-    println!("  present: {}", yes_no(plugin_path.exists()));
-    println!("OpenCode config: {}", config_path.display());
-    println!("  contains plugin entry: {}", yes_no(config_contains));
-    println!("Watcher state: {}", opencode_watch_state_path().display());
-    println!("  tracked sessions: {}", state.sessions.len());
-    for (session_id, session) in state.sessions.iter().take(10) {
-        let bridge = if session.djinn_session_id.is_empty() {
-            String::new()
-        } else {
-            format!(", djinn {}", session.djinn_session_id)
-        };
-        println!(
-            "  - {} -> chat {} ({}, {}{})",
-            session_id, session.chat_id, session.title, session.imported_at, bridge
-        );
-    }
-    Ok(())
-}
-
-fn patch_opencode_config(config_path: &Path, plugin_entry: &str) -> Result<bool> {
-    let existing = match fs::read_to_string(config_path) {
-        Ok(content) => Some(content),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-        Err(err) => return Err(err).with_context(|| format!("reading {}", config_path.display())),
-    };
-    let (rendered, changed) = patch_opencode_config_content(existing.as_deref(), plugin_entry)
-        .with_context(|| format!("patching {}", config_path.display()))?;
-    if changed {
-        djinn_core::ensure_parent(config_path)?;
-        fs::write(config_path, rendered)
-            .with_context(|| format!("writing {}", config_path.display()))?;
-    }
-    Ok(changed)
-}
-
-fn unpatch_opencode_config(config_path: &Path, plugin_entry: &str) -> Result<bool> {
-    let existing = match fs::read_to_string(config_path) {
-        Ok(content) => Some(content),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-        Err(err) => return Err(err).with_context(|| format!("reading {}", config_path.display())),
-    };
-    let Some(existing) = existing else {
-        return Ok(false);
-    };
-    let (rendered, changed) = unpatch_opencode_config_content(&existing, plugin_entry)
-        .with_context(|| format!("patching {}", config_path.display()))?;
-    if changed {
-        djinn_core::ensure_parent(config_path)?;
-        fs::write(config_path, rendered)
-            .with_context(|| format!("writing {}", config_path.display()))?;
-    }
-    Ok(changed)
-}
-
-fn patch_opencode_config_content(
-    existing: Option<&str>,
-    plugin_entry: &str,
-) -> Result<(String, bool)> {
-    let mut value = match existing
-        .map(str::trim)
-        .filter(|content| !content.is_empty())
-    {
-        Some(content) => serde_json::from_str::<Value>(content)?,
-        None => Value::Object(Map::new()),
-    };
-
-    let Value::Object(ref mut object) = value else {
-        bail!("OpenCode config must be a JSON object");
-    };
-
-    object
-        .entry("$schema".to_string())
-        .or_insert_with(|| Value::String("https://opencode.ai/config.json".to_string()));
-    ensure_opencode_plugin_entry(object, plugin_entry)?;
-
-    let mut rendered = serde_json::to_string_pretty(&value)?;
-    rendered.push('\n');
-    let changed = existing.map(|content| content != rendered).unwrap_or(true);
-    Ok((rendered, changed))
-}
-
-fn unpatch_opencode_config_content(existing: &str, plugin_entry: &str) -> Result<(String, bool)> {
-    let mut value = serde_json::from_str::<Value>(existing)?;
-    let Value::Object(ref mut object) = value else {
-        bail!("OpenCode config must be a JSON object");
-    };
-    let Some(plugin) = object.get_mut("plugin") else {
-        let mut rendered = serde_json::to_string_pretty(&value)?;
-        rendered.push('\n');
-        return Ok((rendered, false));
-    };
-
-    let mut changed = false;
-    match plugin {
-        Value::String(existing_plugin) => {
-            if existing_plugin == plugin_entry {
-                object.remove("plugin");
-                changed = true;
-            }
-        }
-        Value::Array(entries) => {
-            let before = entries.len();
-            entries.retain(|entry| entry != &Value::String(plugin_entry.to_string()));
-            changed = entries.len() != before;
-            if entries.is_empty() {
-                object.remove("plugin");
-            }
-        }
-        _ => {}
-    }
-    let mut rendered = serde_json::to_string_pretty(&value)?;
-    rendered.push('\n');
-    let changed = changed && existing != rendered;
-    Ok((rendered, changed))
-}
-
-fn opencode_config_contains_plugin(config_path: &Path, plugin_entry: &str) -> Result<bool> {
-    let content = match fs::read_to_string(config_path) {
-        Ok(content) => content,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err).with_context(|| format!("reading {}", config_path.display())),
-    };
-    let value = serde_json::from_str::<Value>(&content)?;
-    Ok(match value.get("plugin") {
-        Some(Value::String(entry)) => entry == plugin_entry,
-        Some(Value::Array(entries)) => entries.iter().any(|entry| entry == plugin_entry),
-        _ => false,
-    })
-}
-
-fn ensure_opencode_plugin_entry(object: &mut Map<String, Value>, plugin_entry: &str) -> Result<()> {
-    let new_entry = Value::String(plugin_entry.to_string());
-    match object.get_mut("plugin") {
-        None => {
-            object.insert("plugin".to_string(), Value::Array(vec![new_entry]));
-        }
-        Some(Value::String(existing)) => {
-            if existing != plugin_entry {
-                let previous = Value::String(existing.clone());
-                object.insert(
-                    "plugin".to_string(),
-                    Value::Array(vec![previous, new_entry]),
-                );
-            }
-        }
-        Some(Value::Array(entries)) => {
-            if !entries.iter().any(|entry| entry == &new_entry) {
-                entries.push(new_entry);
-            }
-        }
-        Some(_) => bail!("OpenCode config field `plugin` must be a string or array"),
-    }
-    Ok(())
-}
-
 fn default_opencode_config_path() -> PathBuf {
     djinn_core::home_dir()
         .join(".config")
         .join("opencode")
         .join("opencode.json")
-}
-
-fn default_opencode_plugin_path() -> PathBuf {
-    default_opencode_config_path()
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("plugins")
-        .join("djinn-watch.js")
-}
-
-fn absolute_path(path: PathBuf) -> PathBuf {
-    if path.is_absolute() {
-        path
-    } else {
-        env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-    }
-}
-
-fn opencode_plugin_entry(config_path: &Path, plugin_path: &Path) -> String {
-    let config_parent = config_path.parent().unwrap_or_else(|| Path::new("."));
-    let default_plugin_dir = config_parent.join("plugins");
-    if plugin_path.parent() == Some(default_plugin_dir.as_path()) {
-        if let Some(file_name) = plugin_path.file_name().and_then(|name| name.to_str()) {
-            return format!("./plugins/{file_name}");
-        }
-    }
-    format!("file://{}", plugin_path.display())
-}
-
-fn opencode_watch_state_path() -> PathBuf {
-    djinn_core::default_data_dir()
-        .join("watchers")
-        .join("opencode.json")
-}
-
-fn load_opencode_watch_state() -> Result<OpencodeWatchState> {
-    let path = opencode_watch_state_path();
-    if !path.exists() {
-        return Ok(OpencodeWatchState::default());
-    }
-    let content =
-        fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&content).with_context(|| format!("parsing {}", path.display()))
-}
-
-fn save_opencode_watch_state(state: &OpencodeWatchState) -> Result<()> {
-    let path = opencode_watch_state_path();
-    djinn_core::ensure_parent(&path)?;
-    fs::write(&path, serde_json::to_string_pretty(state)? + "\n")
-        .with_context(|| format!("writing {}", path.display()))
-}
-
-fn content_hash(content: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
 }
 
 fn yes_no(value: bool) -> &'static str {
@@ -14043,408 +13105,6 @@ fn delete_chats_silent(ids: &[String]) -> Result<Vec<ChatRecord>> {
     let chats = chat_store().list()?;
     let resolved = resolve_chat_ids(&chats, ids)?;
     chat_store().remove_ids(&resolved)
-}
-
-fn archive_chats(args: ArchiveChatsArgs) -> Result<()> {
-    let records = chat_store().list()?;
-    let selection_args = ShareChatsArgs {
-        ids: args.ids,
-        source: args.source,
-        query: args.query,
-        limit: args.limit,
-        all: args.all,
-        mode: ShareChatsMode::Summary,
-        max_chars_per_chat: 0,
-        max_memories: 20,
-        archive: false,
-        dry_run: false,
-        profile: "default".to_string(),
-        model: None,
-        api_key: None,
-        base_url: None,
-    };
-    let selected = select_chats_for_share(&records, &selection_args)?;
-    if args.dry_run {
-        print_archive_chat_selection(&selected, true);
-        return Ok(());
-    }
-    if !args.force {
-        print_archive_chat_selection(&selected, false);
-        bail!("refusing to archive sessions without --force; rerun with --dry-run to inspect only");
-    }
-
-    let Some(path) = archive_chat_records_with_label(&selected, "manual")? else {
-        println!("No sessions archived.");
-        return Ok(());
-    };
-    println!(
-        "Archived {} sessions to {} and removed them from the active session index.",
-        selected.len(),
-        path.display()
-    );
-    for record in selected {
-        println!(
-            "  - [{}] {}{}",
-            record.id,
-            record.title,
-            format_chat_source_suffix(&record)
-        );
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ChatArchiveSummary {
-    name: String,
-    path: String,
-    record_count: usize,
-    byte_size: u64,
-}
-
-fn list_archives(args: ArchiveListArgs) -> Result<()> {
-    let summaries = chat_archive_summaries()?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&summaries)?);
-        return Ok(());
-    }
-    if summaries.is_empty() {
-        println!("No chat archives found.");
-        return Ok(());
-    }
-    for summary in &summaries {
-        println!(
-            "{}\t{} sessions\t{} bytes\t{}",
-            summary.name, summary.record_count, summary.byte_size, summary.path
-        );
-    }
-    println!("\nTotal: {} chat archives", summaries.len());
-    Ok(())
-}
-
-fn show_archive(args: ArchiveShowArgs) -> Result<()> {
-    let path = resolve_chat_archive_path(&args.archive)?;
-    let records = read_chat_archive_records(&path)?;
-
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "archive": path,
-                "record_count": records.len(),
-                "records": records,
-            }))?
-        );
-        return Ok(());
-    }
-
-    println!("# Chat Archive\n");
-    println!("Path: {}", path.display());
-    println!("Records: {}", records.len());
-    if records.is_empty() {
-        return Ok(());
-    }
-
-    println!("\n## Sessions\n");
-    for (idx, record) in records.iter().enumerate() {
-        println!(
-            "{}. [{}] {} — {} chars{}",
-            idx + 1,
-            record.id,
-            record.title,
-            record.content.chars().count(),
-            format_chat_source_suffix(record)
-        );
-        if !record.source_path.trim().is_empty() {
-            println!("   source path: {}", record.source_path);
-        }
-        if args.content {
-            let (content, truncated) = truncate_with_flag(&record.content, args.max_chars_per_chat);
-            println!("\n```text");
-            println!("{content}");
-            if truncated {
-                println!(
-                    "... chat content truncated to {} chars ...",
-                    args.max_chars_per_chat
-                );
-            }
-            println!("```\n");
-        }
-    }
-    Ok(())
-}
-
-fn restore_archive(args: ArchiveRestoreArgs) -> Result<()> {
-    let path = resolve_chat_archive_path(&args.archive)?;
-    let records = read_chat_archive_records(&path)?;
-    let report = if args.dry_run {
-        preview_chat_restore(records, args.force)?
-    } else {
-        chat_store().restore_records(records, args.force)?
-    };
-
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "archive": path,
-                "dry_run": args.dry_run,
-                "force": args.force,
-                "report": report,
-            }))?
-        );
-        return Ok(());
-    }
-
-    let verb = if args.dry_run {
-        "Would restore"
-    } else {
-        "Restored"
-    };
-    println!(
-        "{verb} {} sessions from {}{}.",
-        report.restored.len(),
-        path.display(),
-        if report.replaced.is_empty() {
-            String::new()
-        } else {
-            format!(" (replacing {} existing)", report.replaced.len())
-        }
-    );
-    for record in &report.restored {
-        println!(
-            "  - [{}] {}{}",
-            record.id,
-            record.title,
-            format_chat_source_suffix(record)
-        );
-    }
-    if !report.skipped.is_empty() {
-        println!(
-            "Skipped {} sessions with existing id/source matches{}:",
-            report.skipped.len(),
-            if args.force {
-                ""
-            } else {
-                " (use --force to replace)"
-            }
-        );
-        for record in &report.skipped {
-            println!(
-                "  - [{}] {}{}",
-                record.id,
-                record.title,
-                format_chat_source_suffix(record)
-            );
-        }
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ChatArchiveRemovalSummary {
-    name: String,
-    path: String,
-    record_count: Option<usize>,
-    byte_size: u64,
-    dry_run: bool,
-    removed: bool,
-}
-
-fn remove_archive(args: ArchiveRemoveArgs) -> Result<()> {
-    let path = resolve_chat_archive_path(&args.archive)?;
-    ensure_removable_chat_archive_path(&path)?;
-    let metadata = fs::metadata(&path)
-        .with_context(|| format!("reading chat archive metadata {}", path.display()))?;
-    let record_count = read_chat_archive_records(&path)
-        .map(|records| records.len())
-        .ok();
-    let summary = ChatArchiveRemovalSummary {
-        name: path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_string(),
-        path: path.display().to_string(),
-        record_count,
-        byte_size: metadata.len(),
-        dry_run: args.dry_run,
-        removed: !args.dry_run && args.force,
-    };
-
-    if args.dry_run {
-        print_archive_removal_summary(&summary, args.json)?;
-        return Ok(());
-    }
-    if !args.force {
-        print_archive_removal_summary(&summary, args.json)?;
-        bail!("refusing to remove archive without --force; rerun with --dry-run to inspect only");
-    }
-
-    fs::remove_file(&path).with_context(|| format!("removing chat archive {}", path.display()))?;
-    print_archive_removal_summary(&summary, args.json)
-}
-
-fn print_archive_removal_summary(summary: &ChatArchiveRemovalSummary, json: bool) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(summary)?);
-        return Ok(());
-    }
-    let record_count = summary
-        .record_count
-        .map(|count| count.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    if summary.removed {
-        println!(
-            "Removed archive {} ({} sessions, {} bytes).",
-            summary.path, record_count, summary.byte_size
-        );
-    } else if summary.dry_run {
-        println!(
-            "Would remove archive {} ({} sessions, {} bytes).",
-            summary.path, record_count, summary.byte_size
-        );
-    } else {
-        println!(
-            "Selected archive {} ({} sessions, {} bytes).",
-            summary.path, record_count, summary.byte_size
-        );
-    }
-    Ok(())
-}
-
-fn ensure_removable_chat_archive_path(path: &Path) -> Result<()> {
-    let archive_dir = chat_archive_dir().canonicalize().with_context(|| {
-        format!(
-            "resolving chat archive dir {}",
-            chat_archive_dir().display()
-        )
-    })?;
-    let canonical = path
-        .canonicalize()
-        .with_context(|| format!("resolving chat archive {}", path.display()))?;
-    if !canonical.starts_with(&archive_dir) {
-        bail!(
-            "refusing to remove archive outside {}; use a file from `djinn archive list`",
-            archive_dir.display()
-        );
-    }
-    if canonical.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-        bail!(
-            "refusing to remove non-jsonl archive {}",
-            canonical.display()
-        );
-    }
-    Ok(())
-}
-
-fn chat_archive_summaries() -> Result<Vec<ChatArchiveSummary>> {
-    let dir = chat_archive_dir();
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut summaries = Vec::new();
-    for entry in fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let metadata = entry.metadata()?;
-        let records = read_chat_archive_records(&path)?;
-        summaries.push(ChatArchiveSummary {
-            name: path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_string(),
-            path: path.display().to_string(),
-            record_count: records.len(),
-            byte_size: metadata.len(),
-        });
-    }
-    summaries.sort_by(|a, b| b.name.cmp(&a.name));
-    Ok(summaries)
-}
-
-fn read_chat_archive_records(path: &Path) -> Result<Vec<ChatRecord>> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("reading chat archive {}", path.display()))?;
-    let mut records = Vec::new();
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        records.push(
-            serde_json::from_str::<ChatRecord>(line)
-                .with_context(|| format!("parsing chat archive {}", path.display()))?,
-        );
-    }
-    Ok(records)
-}
-
-fn resolve_chat_archive_path(value: &str) -> Result<PathBuf> {
-    let candidate = PathBuf::from(value);
-    if candidate.exists() {
-        return Ok(candidate);
-    }
-    let archive_dir = chat_archive_dir();
-    let named = archive_dir.join(value);
-    if named.exists() {
-        return Ok(named);
-    }
-    if Path::new(value).extension().is_none() {
-        let jsonl = archive_dir.join(format!("{value}.jsonl"));
-        if jsonl.exists() {
-            return Ok(jsonl);
-        }
-    }
-    bail!(
-        "chat archive {value:?} not found; run `djinn archive list` to inspect available archives"
-    )
-}
-
-fn preview_chat_restore(records: Vec<ChatRecord>, overwrite: bool) -> Result<ChatRestoreReport> {
-    let existing = chat_store().list()?;
-    let mut restored = Vec::new();
-    let mut skipped = Vec::new();
-    let mut replaced = Vec::new();
-    for record in records {
-        let matches = existing
-            .iter()
-            .filter(|existing| chat_restore_conflicts(existing, &record))
-            .cloned()
-            .collect::<Vec<_>>();
-        if !matches.is_empty() && !overwrite {
-            skipped.push(record);
-        } else {
-            restored.push(record);
-            replaced.extend(matches);
-        }
-    }
-    Ok(ChatRestoreReport {
-        restored,
-        skipped,
-        replaced,
-    })
-}
-
-fn chat_restore_conflicts(existing: &ChatRecord, incoming: &ChatRecord) -> bool {
-    existing.id == incoming.id
-        || (!existing.source.trim().is_empty()
-            && !existing.source_id.trim().is_empty()
-            && existing.source == incoming.source
-            && existing.source_id == incoming.source_id)
-}
-
-fn print_archive_chat_selection(records: &[ChatRecord], dry_run: bool) {
-    let label = if dry_run { "Would archive" } else { "Selected" };
-    println!("{label} {} sessions:", records.len());
-    for record in records {
-        println!(
-            "  - [{}] {} — {} chars{}",
-            record.id,
-            record.title,
-            record.content.chars().count(),
-            format_chat_source_suffix(record)
-        );
-    }
 }
 
 fn ingest_memories(args: IngestMemoriesArgs) -> Result<()> {
@@ -14646,57 +13306,6 @@ fn non_empty_option(value: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
-    }
-}
-
-fn prune_chats(args: PruneChatsArgs) -> Result<()> {
-    let days = parse_days(&args.older_than)?;
-    let (pruned, backup) = chat_store().prune_older_than_days(days, !args.no_backup)?;
-    if pruned.is_empty() {
-        println!("No sessions older than {} were pruned.", args.older_than);
-    } else {
-        println!(
-            "Pruned {} sessions older than {}:",
-            pruned.len(),
-            args.older_than
-        );
-        for record in &pruned {
-            println!(
-                "  - [{}] {} ({})",
-                record.id, record.title, record.created_at
-            );
-        }
-    }
-    if let Some(info) = backup {
-        println!(
-            "Backup written to {} and metadata to {}{}",
-            info.path.display(),
-            info.metadata_path.display(),
-            info.bodies_path
-                .as_ref()
-                .map(|path| format!("; bodies copied to {}", path.display()))
-                .unwrap_or_default()
-        );
-    }
-    Ok(())
-}
-
-fn parse_days(value: &str) -> Result<i64> {
-    let trimmed = value.trim().to_lowercase();
-    let digits = trimmed
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>();
-    let suffix = trimmed[digits.len()..].trim();
-    let days = digits
-        .parse::<i64>()
-        .with_context(|| format!("parsing duration {value:?}"))?;
-    if days <= 0 {
-        bail!("--older-than must be greater than zero days");
-    }
-    match suffix {
-        "" | "d" | "day" | "days" => Ok(days),
-        _ => bail!("unsupported duration {value:?}; use forms like 30d or 30days"),
     }
 }
 
@@ -15111,58 +13720,6 @@ fn promote_merge(args: ShareChatsArgs) -> Result<()> {
     Ok(())
 }
 
-fn build_promote_chats_prompt(mut args: ShareChatsArgs) -> Result<String> {
-    args.mode = ShareChatsMode::Memories;
-    let records = chat_store().list()?;
-    let selected = select_chats_for_share(&records, &args)?;
-    let memories = memory_store().list()?;
-    Ok(format_chats_promotion_prompt(&selected, &args, &memories))
-}
-
-fn review_opencode(args: ReviewOpencodeArgs) -> Result<()> {
-    review_chats(ReviewChatsArgs {
-        source: Some("opencode".to_string()),
-        limit: args.limit,
-        all: args.all,
-        query: args.query,
-        agent: args.agent,
-        title: args.title,
-        opencode_bin: args.opencode_bin,
-        dry_run: args.dry_run,
-    })
-}
-
-fn review_chats(args: ReviewChatsArgs) -> Result<()> {
-    let prompt = build_promote_chats_prompt(ShareChatsArgs {
-        ids: Vec::new(),
-        source: args.source.clone(),
-        query: args.query,
-        limit: args.limit,
-        all: args.all,
-        mode: ShareChatsMode::Memories,
-        max_chars_per_chat: 4000,
-        max_memories: 20,
-        archive: false,
-        dry_run: false,
-        profile: "default".to_string(),
-        model: None,
-        api_key: None,
-        base_url: None,
-    })?;
-
-    if args.dry_run {
-        println!("{prompt}");
-        return Ok(());
-    }
-
-    run_opencode_review_prompt(
-        &args.opencode_bin,
-        &args.title,
-        args.agent.as_deref(),
-        &prompt,
-    )
-}
-
 fn review_memories(args: ReviewMemoriesArgs) -> Result<()> {
     let memories = memory_store().list()?;
     let selected = select_memories_for_review(&memories, &args)?;
@@ -15274,28 +13831,6 @@ exit "$REVIEW_STATUS"
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn run_opencode_review_prompt(
-    opencode_bin: &str,
-    title: &str,
-    agent: Option<&str>,
-    prompt: &str,
-) -> Result<()> {
-    let mut command = ProcessCommand::new(opencode_bin);
-    command.arg("run").arg(prompt).arg("--title").arg(title);
-    if let Some(agent) = agent.map(str::trim).filter(|value| !value.is_empty()) {
-        command.arg("--agent").arg(agent);
-    }
-    command.env("DJINN_REVIEWER", "1");
-    command.env("DJINN_OPENCODE_PLUGIN_CHILD", "1");
-    let status = command
-        .status()
-        .with_context(|| format!("running {opencode_bin} run"))?;
-    if !status.success() {
-        bail!("{opencode_bin} run exited with status {status}");
-    }
-    Ok(())
 }
 
 fn open_tool(args: OpenToolArgs) -> Result<()> {
@@ -15749,19 +14284,6 @@ fn format_chats_review_prompt(
     out.push_str("```\n");
 
     append_chats_bundle(&mut out, records, args.max_chars_per_chat);
-    out
-}
-
-fn format_chats_promotion_prompt(
-    records: &[ChatRecord],
-    args: &ShareChatsArgs,
-    memories: &[MemoryRecord],
-) -> String {
-    let mut out = format_chats_review_prompt(records, args, memories);
-    out = out.replace("# Djinn Multi-Chat Review", "# Djinn Multi-Chat Promotion");
-    out.push_str(
-        "\n\n## Promotion Output\n\nReturn reviewed `djinn add memory` commands. Include scope, kind, confidence, copied evidence, and one or more `--source-chat` pointers when available. Use `--not-before YYYY-MM-DD` when a future activation date is appropriate. Example:\n\n```bash\ndjinn add memory \"...\" --scope project --kind convention --confidence high --not-before 2026-10-01 --evidence \"Repeated across reviewed sessions ...\" --source-chat SESSION_ID\n```\n\nThe user can review memories for downstream suggestions with `djinn accept memory <id>` or remove them with `djinn reject memory <id>`.\n",
-    );
     out
 }
 
@@ -18395,25 +16917,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_archive_sessions_selection_command() {
-        let cli = Cli::try_parse_from([
-            "djinn", "archive", "sessions", "--source", "opencode", "--limit", "25", "--force",
-        ])
-        .unwrap();
-
-        let Some(Command::Archive(args)) = cli.command else {
-            panic!("expected archive command");
-        };
-        let ArchiveNoun::Sessions(args) = args.noun else {
-            panic!("expected archive sessions command");
-        };
-
-        assert_eq!(args.source.as_deref(), Some("opencode"));
-        assert_eq!(args.limit, 25);
-        assert!(args.force);
-    }
-
-    #[test]
     fn parses_session_nouns_and_rejects_share_command() {
         let cli = Cli::try_parse_from(["djinn", "list", "sessions", "--json"]).unwrap();
         let Some(Command::List(args)) = cli.command else {
@@ -18525,73 +17028,22 @@ mod tests {
     }
 
     #[test]
-    fn parses_archive_list_show_restore_and_rm_commands() {
-        let cli = Cli::try_parse_from(["djinn", "archive", "list", "--json"]).unwrap();
-        let Some(Command::Archive(args)) = cli.command else {
-            panic!("expected archive command");
-        };
-        let ArchiveNoun::List(args) = args.noun else {
-            panic!("expected archive list command");
-        };
-        assert!(args.json);
+    fn rejects_removed_archive_command() {
+        assert!(Cli::try_parse_from(["djinn", "archive", "list"]).is_err());
+        assert!(Cli::try_parse_from(["djinn", "archive", "sessions", "--dry-run"]).is_err());
+    }
 
-        let cli = Cli::try_parse_from([
-            "djinn",
-            "archive",
-            "show",
-            "manual-20260724.jsonl",
-            "--content",
-            "--max-chars-per-chat",
-            "500",
-        ])
-        .unwrap();
-        let Some(Command::Archive(args)) = cli.command else {
-            panic!("expected archive command");
-        };
-        let ArchiveNoun::Show(args) = args.noun else {
-            panic!("expected archive show command");
-        };
-        assert_eq!(args.archive, "manual-20260724.jsonl");
-        assert!(args.content);
-        assert_eq!(args.max_chars_per_chat, 500);
+    #[test]
+    fn rejects_removed_saved_row_review_commands() {
+        assert!(Cli::try_parse_from(["djinn", "review", "sessions", "--dry-run"]).is_err());
+        assert!(Cli::try_parse_from(["djinn", "review", "opencode"]).is_err());
+    }
 
-        let cli = Cli::try_parse_from([
-            "djinn",
-            "archive",
-            "restore",
-            "manual-20260724.jsonl",
-            "--force",
-            "--dry-run",
-        ])
-        .unwrap();
-        let Some(Command::Archive(args)) = cli.command else {
-            panic!("expected archive command");
-        };
-        let ArchiveNoun::Restore(args) = args.noun else {
-            panic!("expected archive restore command");
-        };
-        assert_eq!(args.archive, "manual-20260724.jsonl");
-        assert!(args.force);
-        assert!(args.dry_run);
-
-        let cli = Cli::try_parse_from([
-            "djinn",
-            "archive",
-            "rm",
-            "manual-20260724.jsonl",
-            "--force",
-            "--json",
-        ])
-        .unwrap();
-        let Some(Command::Archive(args)) = cli.command else {
-            panic!("expected archive command");
-        };
-        let ArchiveNoun::Rm(args) = args.noun else {
-            panic!("expected archive rm command");
-        };
-        assert_eq!(args.archive, "manual-20260724.jsonl");
-        assert!(args.force);
-        assert!(args.json);
+    #[test]
+    fn rejects_removed_prune_sessions_command() {
+        assert!(
+            Cli::try_parse_from(["djinn", "prune", "sessions", "--older-than", "30d",]).is_err()
+        );
     }
 
     #[test]
@@ -20501,55 +18953,6 @@ link = "context/repo"
 
         let loaded = store.load_session(&id).unwrap();
         assert_eq!(loaded.meta.title, "Explicit title");
-    }
-
-    #[test]
-    fn patch_opencode_config_adds_schema_and_plugin_array() {
-        let (rendered, changed) =
-            patch_opencode_config_content(Some("{}\n"), "./plugins/djinn-watch.js").unwrap();
-        assert!(changed);
-        let parsed: Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(
-            parsed["$schema"],
-            Value::String("https://opencode.ai/config.json".to_string())
-        );
-        assert_eq!(
-            parsed["plugin"],
-            Value::Array(vec![Value::String("./plugins/djinn-watch.js".to_string())])
-        );
-    }
-
-    #[test]
-    fn patch_opencode_config_preserves_existing_plugin_entries() {
-        let existing = r#"{"plugin":"opencode-gemini-auth"}
-"#;
-        let (rendered, _) =
-            patch_opencode_config_content(Some(existing), "./plugins/djinn-watch.js").unwrap();
-        let parsed: Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(
-            parsed["plugin"],
-            Value::Array(vec![
-                Value::String("opencode-gemini-auth".to_string()),
-                Value::String("./plugins/djinn-watch.js".to_string())
-            ])
-        );
-    }
-
-    #[test]
-    fn patch_opencode_config_is_idempotent() {
-        let (first, _) = patch_opencode_config_content(None, "./plugins/djinn-watch.js").unwrap();
-        let (second, changed) =
-            patch_opencode_config_content(Some(&first), "./plugins/djinn-watch.js").unwrap();
-        assert!(!changed);
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn opencode_plugin_hydrates_djinn_session_metadata() {
-        assert!(OPENCODE_PLUGIN.contains("hydrateDjinnBridge"));
-        assert!(OPENCODE_PLUGIN.contains("client.session.update"));
-        assert!(OPENCODE_PLUGIN
-            .contains("metadata = { ...(current?.data?.metadata || {}), djinn: bridge }"));
     }
 
     #[test]
