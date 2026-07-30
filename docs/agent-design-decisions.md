@@ -1076,8 +1076,10 @@ The first non-interactive agent slice is implemented as:
     todo is an actionable next step; a skill is a recurring workflow/instruction
     set for future agents; and a pattern session synthesizes common threads,
     themes, or suggestions across the source sessions. Source sessions and
-    promotion sessions must not be removed by default; cleanup or archive behavior
-    should be explicit after provenance and recovery semantics are settled. Running
+    promotion sessions must not be removed by default; cleanup must be explicit and
+    may be destructive when the user asks for it. There is no archive/revival
+    requirement for now, but the provenance impact should be visible before
+    deletion. Running
     a promotion session is the model-backed candidate-generation step: `djinn
     session run <promotion-session>` reads `context/source-packet.md`, asks the
     configured model for fenced TOML candidates, and writes validated candidates
@@ -1107,7 +1109,9 @@ The first non-interactive agent slice is implemented as:
     checkbox, and accept appends it to the configured MindWeaver inbox while
     refusing exact or near-duplicate open inbox todos. Running `mw todos sync` is
     a separate explicit mutation boundary via `djinn session accept
-    --sync-mindweaver`. Todo writeback should prefer interop with MindWeaver
+    --sync-mindweaver` or the focused Sessions TUI `m` accept-and-sync shortcut;
+    accepting without sync records a pending follow-up command instead of silently
+    running it. Todo writeback should prefer interop with MindWeaver
     (`~/Projects/mind-weaver`) for users who use that notes/todo app rather than
     prematurely creating a parallel first-class Djinn todo store.
     Legacy JSONL row identity and the removed saved-row CLI should not define the

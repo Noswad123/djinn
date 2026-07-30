@@ -137,7 +137,10 @@ evidence = ["./debugging-session/summary.md"]
   `energy`, `due`, `start`, `estimate`); `--dry-run` renders the checkbox, while
   accept appends it to the configured MindWeaver inbox (`MW_TODO_INBOX`,
   `MW_INBOX_PATH`, or `INBOX_PATH`). Add `--sync-mindweaver` to explicitly run
-  `mw todos sync` after the inbox append.
+  `mw todos sync` after the inbox append. Without the flag, Djinn records a
+  pending follow-up with the exact `mw todos sync` command rather than silently
+  crossing that mutation boundary. In the focused Sessions TUI, `m` accepts the
+  selected candidate and runs the explicit MindWeaver sync handoff.
 - `skill` candidates require `name`, `description`, plus `body`, `body_path`, or
   `text`, then write a Djinn-managed `SKILL.md` with an evidence section.
 - `pattern` candidates require `rationale`, then write accepted Markdown summaries under
@@ -157,7 +160,8 @@ system, not a premature parallel Djinn todo store.
 promotion session has `outputs/candidates/` or decision status events: total,
 accepted, denied, and pending. Status output and TUI previews also list individual
 candidate ids with type, status, and accepted destination/writeback path when
-available.
+available. Candidate rows can be accepted with `a`, accepted with explicit
+MindWeaver sync handoff via `m`, denied with `x`, or opened with `p`/Enter.
 
 ```bash
 djinn review memory <id> --dry-run

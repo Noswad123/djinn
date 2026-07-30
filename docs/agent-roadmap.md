@@ -53,23 +53,21 @@ configured MindWeaver inbox while rejecting exact or near-duplicate open inbox
 todos. Candidate validation enforces per-type fields (`scope`/`kind`/`confidence`
 for memories, `kind`/`confidence` for todos, `description` for skills, and
 `rationale` for patterns). `djinn session status` and the Sessions TUI surface
-candidate totals, accepted/denied/pending counts, and individual candidate
-id/type/status/destination previews. The local actions store remains the mutating
-fallback. `djinn session accept --sync-mindweaver` is the explicit post-capture
-handoff for running `mw todos sync`. The exact source-packet structure may evolve.
+candidate totals, accepted/denied/pending counts, individual candidate
+id/type/status/evidence/destination previews, and focused shortcuts to accept,
+deny, or open candidate files through the canonical CLI accept/deny paths.
+Duplicate guards use tuned lexical thresholds for generated candidate variants
+while allowing related but distinct follow-up work. The local actions store
+remains the mutating fallback. `djinn session accept --sync-mindweaver` is the
+explicit post-capture handoff for running `mw todos sync`; accepting without the
+flag records a pending follow-up command, and the focused Sessions TUI exposes `m`
+as an accept-and-sync shortcut. The exact source-packet structure may evolve.
 
 Ready implementation slices:
 
-- Continue tightening candidate writeback as real model output appears: richer TUI
-  affordances for accepting/denying individual candidates directly, tuning fuzzy
-  duplicate thresholds from real generated candidates, and follow-up UX around the
-  explicit post-capture `mw todos sync` handoff.
-  Prefer interoperating with MindWeaver
-  (`~/Projects/mind-weaver`) as the user's notes/todo system rather than
-  prematurely building a parallel first-class Djinn todo store; keep Djinn's local
-  actions store as the standalone fallback for users who install only Djinn.
-- Add explicit cleanup/archive flags only after provenance and recovery behavior
-  is clear. Source sessions and promotion sessions must remain on disk by default.
+- Add explicit destructive cleanup flags only after the provenance impact is clear.
+  Source sessions and promotion sessions must remain on disk by default, but when
+  the user opts into removing them there is no archive/revival requirement for now.
 
 ### Session TUI polish
 
@@ -144,6 +142,34 @@ Folder-backed sessions are now the canonical work capsules; implemented behavior
 belongs in [`agent-design-decisions.md`](./agent-design-decisions.md) and the app
 guide rather than being repeated here. Remaining ready slices should build on the
 file-first surfaces without restoring the removed legacy saved-row model.
+
+#### Stale background run detection
+
+`djinn session watch <session>` can currently block forever when a background
+worker dies after appending `running/background` but before appending a terminal
+`completed` or `failed` lifecycle event. The observed `rebrand-opencode` session
+had no live Djinn worker, an empty `summary.md`, no projected `turns/`, and a
+native JSONL transcript that stopped after successful file edits. Because
+`watch` only polls the derived lifecycle state, the stale `running` event remained
+authoritative even though execution was no longer progressing.
+
+Ready implementation slice:
+
+- Persist background run metadata when `djinn session run <dir>` spawns a worker:
+  run id, pid, started_at, command, log path, and native session id.
+- Have `djinn session status` and `djinn session watch` detect stale background
+  runs when lifecycle is `running/background` but the pid is gone, the log has no
+  recent activity, or no heartbeat/progress marker has advanced for a conservative
+  threshold.
+- Surface the state as `stale` or `failed` with a clear reason such as
+  "background worker exited before terminal lifecycle event" and next actions:
+  inspect log/transcript, rerun foreground, mark failed/cancelled, or resume.
+- Prefer append-only recovery events over silently rewriting history. If a stale
+  detector promotes the lifecycle to `failed`, record the detector, run metadata,
+  and last observed transcript event for provenance.
+- Add focused tests for: healthy running worker, completed worker, failed worker,
+  stale pid with no terminal lifecycle event, and `watch --timeout-seconds`
+  returning a useful diagnostic instead of an unqualified timeout.
 
 - Keep the top-level UX canonical around `djinn ask` and `djinn session ...`.
   Legacy `djinn agent ...` commands and the global `agent-sessions` JSONL root

@@ -129,8 +129,20 @@ pub struct FolderSessionStatusView {
     pub turn_count: usize,
     pub candidate_status: Option<String>,
     pub candidate_details: Vec<String>,
+    pub candidate_entries: Vec<PromotionCandidateRow>,
     pub next_action: Option<String>,
     pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionCandidateRow {
+    pub id: String,
+    pub candidate_type: Option<String>,
+    pub status: String,
+    pub path: String,
+    pub evidence: Vec<String>,
+    pub destination: Option<String>,
+    pub writeback_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,10 +158,11 @@ pub struct SessionRecord {
     pub turn_count: usize,
     pub candidate_status: Option<String>,
     pub candidate_details: Vec<String>,
+    pub candidate_entries: Vec<PromotionCandidateRow>,
     pub next_action: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FolderSessionAction {
     Run,
     Watch,
@@ -157,6 +170,10 @@ pub enum FolderSessionAction {
     EditRequest,
     OpenContext,
     DiscoverContext,
+    AcceptCandidate(String),
+    AcceptCandidateAndSyncMindweaver(String),
+    DenyCandidate(String),
+    OpenCandidate(String),
 }
 
 pub fn run_tools(tools: Vec<ToolEntry>) -> Result<()> {
@@ -360,9 +377,13 @@ fn run_folder_session_status_loop<F>(
 where
     F: FnMut() -> Result<FolderSessionStatusView>,
 {
+    let mut selected_candidate = 0usize;
     loop {
         let view = load()?;
-        terminal.draw(|frame| draw_folder_session_status(frame, &view))?;
+        if selected_candidate >= view.candidate_entries.len() {
+            selected_candidate = view.candidate_entries.len().saturating_sub(1);
+        }
+        terminal.draw(|frame| draw_folder_session_status(frame, &view, selected_candidate))?;
         if event::poll(Duration::from_millis(1000))? {
             if let Event::Key(key) = event::read()? {
                 if !actionable_key_event(&key) {
@@ -370,7 +391,23 @@ where
                 }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
+                    KeyCode::Char('j') | KeyCode::Down if !view.candidate_entries.is_empty() => {
+                        selected_candidate =
+                            (selected_candidate + 1) % view.candidate_entries.len();
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if !view.candidate_entries.is_empty() => {
+                        selected_candidate = if selected_candidate == 0 {
+                            view.candidate_entries.len().saturating_sub(1)
+                        } else {
+                            selected_candidate.saturating_sub(1)
+                        };
+                    }
                     code => {
+                        if let Some(action) =
+                            folder_session_candidate_action_for_key(code, &view, selected_candidate)
+                        {
+                            return Ok(Some(action));
+                        }
                         if let Some(action) = folder_session_action_for_key(code) {
                             return Ok(Some(action));
                         }
@@ -393,7 +430,30 @@ fn folder_session_action_for_key(code: KeyCode) -> Option<FolderSessionAction> {
     }
 }
 
-fn draw_folder_session_status(frame: &mut ratatui::Frame<'_>, view: &FolderSessionStatusView) {
+fn folder_session_candidate_action_for_key(
+    code: KeyCode,
+    view: &FolderSessionStatusView,
+    selected_candidate: usize,
+) -> Option<FolderSessionAction> {
+    let candidate = view.candidate_entries.get(selected_candidate)?;
+    match code {
+        KeyCode::Char('a') => Some(FolderSessionAction::AcceptCandidate(candidate.id.clone())),
+        KeyCode::Char('m') => Some(FolderSessionAction::AcceptCandidateAndSyncMindweaver(
+            candidate.id.clone(),
+        )),
+        KeyCode::Char('x') => Some(FolderSessionAction::DenyCandidate(candidate.id.clone())),
+        KeyCode::Char('p') | KeyCode::Enter => {
+            Some(FolderSessionAction::OpenCandidate(candidate.path.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn draw_folder_session_status(
+    frame: &mut ratatui::Frame<'_>,
+    view: &FolderSessionStatusView,
+    selected_candidate: usize,
+) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -459,11 +519,25 @@ fn draw_folder_session_status(frame: &mut ratatui::Frame<'_>, view: &FolderSessi
             Span::styled("Candidates:", dim_style()),
             Span::raw(format!(" {candidates}")),
         ]));
-        for detail in view.candidate_details.iter().take(4) {
-            lines.push(Line::from(vec![
-                Span::styled("  - ", dim_style()),
-                Span::raw(detail.clone()),
-            ]));
+        if view.candidate_entries.is_empty() {
+            for detail in view.candidate_details.iter().take(4) {
+                lines.push(Line::from(vec![
+                    Span::styled("  - ", dim_style()),
+                    Span::raw(detail.clone()),
+                ]));
+            }
+        } else {
+            for (idx, candidate) in view.candidate_entries.iter().take(4).enumerate() {
+                let marker = if idx == selected_candidate {
+                    "> "
+                } else {
+                    "  "
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(marker, dim_style()),
+                    Span::raw(format_promotion_candidate_row(candidate)),
+                ]));
+            }
         }
     }
     if let Some(next) = &view.next_action {
@@ -478,7 +552,7 @@ fn draw_folder_session_status(frame: &mut ratatui::Frame<'_>, view: &FolderSessi
     frame.render_widget(body, chunks[1]);
 
     let footer = Paragraph::new(
-        "r run · w watch · o summary · e request · c context · d discover · q/Esc quit",
+        "r run · a accept · m accept+mw sync · x deny · p/Enter open cand · o summary · q/Esc quit",
     )
     .style(dim_style());
     frame.render_widget(footer, chunks[2]);
@@ -1658,6 +1732,24 @@ fn session_list_metadata(session: &SessionRecord) -> String {
     )
 }
 
+fn format_promotion_candidate_row(candidate: &PromotionCandidateRow) -> String {
+    let candidate_type = candidate.candidate_type.as_deref().unwrap_or("unknown");
+    let mut detail = format!("{} [{}] {}", candidate.id, candidate_type, candidate.status);
+    if let Some(destination) = &candidate.destination {
+        detail.push_str(&format!(" -> {destination}"));
+    }
+    if let Some(evidence) = candidate.evidence.first() {
+        detail.push_str(&format!(" · evidence {evidence}"));
+        if candidate.evidence.len() > 1 {
+            detail.push_str(&format!(" (+{})", candidate.evidence.len() - 1));
+        }
+    }
+    if let Some(path) = &candidate.writeback_path {
+        detail.push_str(&format!(" ({path})"));
+    }
+    detail
+}
+
 fn session_preview(session: &SessionRecord) -> String {
     let mut lines = vec![
         format!("Name: {}", session.name),
@@ -1679,8 +1771,14 @@ fn session_preview(session: &SessionRecord) -> String {
     }
     if let Some(candidates) = &session.candidate_status {
         lines.push(format!("Candidates: {candidates}"));
-        for detail in session.candidate_details.iter().take(8) {
-            lines.push(format!("  - {detail}"));
+        if session.candidate_entries.is_empty() {
+            for detail in session.candidate_details.iter().take(8) {
+                lines.push(format!("  - {detail}"));
+            }
+        } else {
+            for candidate in session.candidate_entries.iter().take(8) {
+                lines.push(format!("  - {}", format_promotion_candidate_row(candidate)));
+            }
         }
     }
     lines.push(String::new());
@@ -2884,6 +2982,54 @@ mod tests {
     }
 
     #[test]
+    fn folder_session_candidate_shortcuts_map_to_selected_candidate_actions() {
+        let view = FolderSessionStatusView {
+            title: "promotion".to_string(),
+            state: "complete".to_string(),
+            mode: None,
+            session_dir: "/tmp/promotion".to_string(),
+            summary_path: None,
+            request_path: None,
+            response_path: None,
+            turn_count: 0,
+            candidate_status: Some("1 total, 0 accepted, 0 denied, 1 pending".to_string()),
+            candidate_details: Vec::new(),
+            candidate_entries: vec![PromotionCandidateRow {
+                id: "todo-001".to_string(),
+                candidate_type: Some("todo".to_string()),
+                status: "pending".to_string(),
+                path: "/tmp/promotion/outputs/candidates/todo-001.toml".to_string(),
+                evidence: vec!["/tmp/source/summary.md".to_string()],
+                destination: Some("mindweaver".to_string()),
+                writeback_path: None,
+            }],
+            next_action: None,
+            note: None,
+        };
+
+        assert_eq!(
+            folder_session_candidate_action_for_key(KeyCode::Char('a'), &view, 0),
+            Some(FolderSessionAction::AcceptCandidate("todo-001".to_string()))
+        );
+        assert_eq!(
+            folder_session_candidate_action_for_key(KeyCode::Char('m'), &view, 0),
+            Some(FolderSessionAction::AcceptCandidateAndSyncMindweaver(
+                "todo-001".to_string()
+            ))
+        );
+        assert_eq!(
+            folder_session_candidate_action_for_key(KeyCode::Char('x'), &view, 0),
+            Some(FolderSessionAction::DenyCandidate("todo-001".to_string()))
+        );
+        assert_eq!(
+            folder_session_candidate_action_for_key(KeyCode::Enter, &view, 0),
+            Some(FolderSessionAction::OpenCandidate(
+                "/tmp/promotion/outputs/candidates/todo-001.toml".to_string()
+            ))
+        );
+    }
+
+    #[test]
     fn sessions_tab_filters_and_previews_folder_sessions() {
         let session = SessionRecord {
             name: "repo-review".to_string(),
@@ -2899,6 +3045,26 @@ mod tests {
             candidate_details: vec![
                 "memory-001 [memory] accepted -> memory".to_string(),
                 "todo-001 [todo] pending".to_string(),
+            ],
+            candidate_entries: vec![
+                PromotionCandidateRow {
+                    id: "memory-001".to_string(),
+                    candidate_type: Some("memory".to_string()),
+                    status: "accepted".to_string(),
+                    path: "/tmp/repo-review/outputs/candidates/memory-001.toml".to_string(),
+                    evidence: vec!["/tmp/repo-review/summary.md".to_string()],
+                    destination: Some("memory".to_string()),
+                    writeback_path: None,
+                },
+                PromotionCandidateRow {
+                    id: "todo-001".to_string(),
+                    candidate_type: Some("todo".to_string()),
+                    status: "pending".to_string(),
+                    path: "/tmp/repo-review/outputs/candidates/todo-001.toml".to_string(),
+                    evidence: vec!["/tmp/repo-review/turns/turn-1/response.md".to_string()],
+                    destination: None,
+                    writeback_path: None,
+                },
             ],
             next_action: Some("edit request.md or run again".to_string()),
         };
@@ -2916,6 +3082,7 @@ mod tests {
         assert!(preview.contains("Focused shortcuts"));
         assert!(preview.contains("Candidates: 3 total"));
         assert!(preview.contains("memory-001 [memory] accepted"));
+        assert!(preview.contains("evidence /tmp/repo-review/summary.md"));
         assert!(preview.contains("Latest answer preview"));
         assert!(
             session_list_metadata(app.selected_session().unwrap()).contains("candidates 3 total")

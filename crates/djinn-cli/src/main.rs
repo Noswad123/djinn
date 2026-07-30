@@ -4781,6 +4781,41 @@ fn handle_folder_session_tui_action(
                 json: false,
             })
         }
+        djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => session_decide(
+            SessionDecisionArgs {
+                dir: session_dir,
+                candidate: Some(candidate),
+                dry_run: false,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+        ),
+        djinn_tui::FolderSessionAction::AcceptCandidateAndSyncMindweaver(candidate) => {
+            session_decide(
+                SessionDecisionArgs {
+                    dir: session_dir,
+                    candidate: Some(candidate),
+                    dry_run: false,
+                    sync_mindweaver: true,
+                    json: false,
+                },
+                SessionDecisionAction::Accept,
+            )
+        }
+        djinn_tui::FolderSessionAction::DenyCandidate(candidate) => session_decide(
+            SessionDecisionArgs {
+                dir: session_dir,
+                candidate: Some(candidate),
+                dry_run: false,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Deny,
+        ),
+        djinn_tui::FolderSessionAction::OpenCandidate(path) => {
+            open_editor_path(Path::new(&path), None)
+        }
     }
 }
 
@@ -4826,6 +4861,11 @@ fn folder_session_status_tui_view(
                     .map(format_session_candidate_entry)
                     .collect()
             })
+            .unwrap_or_default(),
+        candidate_entries: report
+            .candidates
+            .as_ref()
+            .map(|candidates| candidates.entries.iter().map(tui_candidate_row).collect())
             .unwrap_or_default(),
         next_action: report.next_action.clone(),
         note: report
@@ -5015,7 +5055,12 @@ fn session_decide(args: SessionDecisionArgs, action: SessionDecisionAction) -> R
             }
         }
         for post in &report.post_writebacks {
-            println!("  post-writeback: {} -> {}", post.name, post.status);
+            let label = if post.status == "pending" {
+                "follow-up"
+            } else {
+                "post-writeback"
+            };
+            println!("  {label}: {} -> {}", post.name, post.status);
             println!("    command: {}", post.command);
         }
         println!("  note: {}", report.note);
@@ -5073,6 +5118,8 @@ fn decide_promotion_session_with_stores(
     };
     let post_writebacks = if action == SessionDecisionAction::Accept && args.sync_mindweaver {
         sync_mindweaver_after_writeback(&writebacks, args.dry_run, &stores)?
+    } else if action == SessionDecisionAction::Accept {
+        pending_mindweaver_sync_handoff(&writebacks, args.dry_run, &stores)
     } else {
         Vec::new()
     };
@@ -5081,8 +5128,10 @@ fn decide_promotion_session_with_stores(
         "Decision recorded; no stable promotion candidate files were found, so no durable writeback was attempted."
     } else if args.dry_run {
         "Dry run: candidate writeback was validated but no durable store or decision files were written."
-    } else if !post_writebacks.is_empty() {
+    } else if post_writebacks.iter().any(|post| post.status == "completed") {
         "Decision recorded, accepted candidate(s) were written, and requested post-writeback handoff ran."
+    } else if post_writebacks.iter().any(|post| post.status == "pending") {
+        "Decision recorded and accepted MindWeaver todo candidate(s) were appended; run the listed follow-up command when ready to sync MindWeaver todos."
     } else if durable_writeback {
         "Decision recorded and accepted candidate(s) were written to durable stores/artifacts."
     } else {
@@ -5961,6 +6010,26 @@ fn sync_mindweaver_after_writeback(
     }])
 }
 
+fn pending_mindweaver_sync_handoff(
+    writebacks: &[SessionCandidateWritebackReport],
+    dry_run: bool,
+    stores: &PromotionWritebackStores,
+) -> Vec<SessionPostWritebackReport> {
+    if dry_run
+        || !writebacks
+            .iter()
+            .any(|writeback| writeback.destination == "mindweaver_inbox")
+    {
+        return Vec::new();
+    }
+    vec![SessionPostWritebackReport {
+        name: "mindweaver_todos_sync".to_string(),
+        command: mindweaver_sync_command(stores).join(" "),
+        status: "pending".to_string(),
+        dry_run,
+    }]
+}
+
 fn mindweaver_sync_command(stores: &PromotionWritebackStores) -> Vec<String> {
     stores
         .mindweaver_sync_command
@@ -6181,6 +6250,12 @@ fn normalized_candidate_text(value: &str) -> String {
         .to_lowercase()
 }
 
+const CANDIDATE_DUPLICATE_SUBSTRING_MIN_CHARS: usize = 48;
+const CANDIDATE_DUPLICATE_SUBSTRING_THRESHOLD: f64 = 0.74;
+const CANDIDATE_DUPLICATE_JACCARD_THRESHOLD: f64 = 0.78;
+const CANDIDATE_DUPLICATE_OVERLAP_THRESHOLD: f64 = 0.92;
+const CANDIDATE_DUPLICATE_OVERLAP_MIN_TERMS: usize = 5;
+
 fn candidate_duplicate_similarity(candidate: &str, existing: &str) -> Option<f64> {
     let candidate_text = normalized_candidate_text(candidate);
     let existing_text = normalized_candidate_text(existing);
@@ -6192,12 +6267,12 @@ fn candidate_duplicate_similarity(candidate: &str, existing: &str) -> Option<f64
     }
     let shorter_len = candidate_text.len().min(existing_text.len());
     let longer_len = candidate_text.len().max(existing_text.len());
-    if shorter_len >= 48
+    if shorter_len >= CANDIDATE_DUPLICATE_SUBSTRING_MIN_CHARS
         && longer_len > 0
         && (candidate_text.contains(&existing_text) || existing_text.contains(&candidate_text))
     {
         let similarity = shorter_len as f64 / longer_len as f64;
-        if similarity >= 0.78 {
+        if similarity >= CANDIDATE_DUPLICATE_SUBSTRING_THRESHOLD {
             return Some(similarity);
         }
     }
@@ -6213,16 +6288,55 @@ fn candidate_duplicate_similarity(candidate: &str, existing: &str) -> Option<f64
         return None;
     }
     let similarity = intersection as f64 / union as f64;
-    (similarity >= 0.82).then_some(similarity)
+    if similarity >= CANDIDATE_DUPLICATE_JACCARD_THRESHOLD {
+        return Some(similarity);
+    }
+
+    let overlap = intersection as f64 / candidate_terms.len().min(existing_terms.len()) as f64;
+    (intersection >= CANDIDATE_DUPLICATE_OVERLAP_MIN_TERMS
+        && overlap >= CANDIDATE_DUPLICATE_OVERLAP_THRESHOLD)
+        .then_some(similarity.max(CANDIDATE_DUPLICATE_JACCARD_THRESHOLD))
 }
 
 fn candidate_text_terms(value: &str) -> HashSet<String> {
     value
         .split(|ch: char| !ch.is_alphanumeric())
         .map(str::trim)
+        .map(normalized_candidate_term)
         .filter(|term| term.len() > 2)
-        .map(str::to_string)
+        .filter(|term| !candidate_stop_term(term))
         .collect()
+}
+
+fn normalized_candidate_term(term: &str) -> String {
+    let mut term = term.to_lowercase();
+    if term.len() > 4 && term.ends_with('s') {
+        term.pop();
+    }
+    term
+}
+
+fn candidate_stop_term(term: &str) -> bool {
+    matches!(
+        term,
+        "about"
+            | "after"
+            | "and"
+            | "before"
+            | "during"
+            | "for"
+            | "from"
+            | "into"
+            | "that"
+            | "the"
+            | "this"
+            | "use"
+            | "used"
+            | "using"
+            | "when"
+            | "while"
+            | "with"
+    )
 }
 
 fn promotion_candidate_source(session_dir: &Path, candidate: &PromotionCandidate) -> MemorySource {
@@ -6921,6 +7035,7 @@ struct SessionStatusCandidateEntry {
     candidate_type: Option<String>,
     status: String,
     path: String,
+    evidence: Vec<String>,
     destination: Option<String>,
     writeback_path: Option<String>,
 }
@@ -7659,6 +7774,7 @@ fn read_session_status_candidate_entry(
             .filter(|status| !status.trim().is_empty())
             .unwrap_or_else(|| "pending".to_string()),
         path: path.display().to_string(),
+        evidence: candidate_string_array_value(&content, "evidence"),
         destination: decision.and_then(|decision| decision.destination.clone()),
         writeback_path: decision.and_then(|decision| decision.writeback_path.clone()),
     })
@@ -7765,6 +7881,12 @@ fn format_session_candidate_entry(entry: &SessionStatusCandidateEntry) -> String
     let mut detail = format!("{} [{}] {}", entry.id, candidate_type, entry.status);
     if let Some(destination) = &entry.destination {
         detail.push_str(&format!(" -> {destination}"));
+    }
+    if let Some(evidence) = entry.evidence.first() {
+        detail.push_str(&format!(" · evidence {evidence}"));
+        if entry.evidence.len() > 1 {
+            detail.push_str(&format!(" (+{})", entry.evidence.len() - 1));
+        }
     }
     if let Some(path) = &entry.writeback_path {
         detail.push_str(&format!(" ({path})"));
@@ -14943,9 +15065,26 @@ fn session_records_for_dashboard() -> Result<Vec<djinn_tui::SessionRecord>> {
                         .collect()
                 })
                 .unwrap_or_default(),
+            candidate_entries: session
+                .candidates
+                .as_ref()
+                .map(|candidates| candidates.entries.iter().map(tui_candidate_row).collect())
+                .unwrap_or_default(),
             next_action: session.next_action,
         })
         .collect())
+}
+
+fn tui_candidate_row(entry: &SessionStatusCandidateEntry) -> djinn_tui::PromotionCandidateRow {
+    djinn_tui::PromotionCandidateRow {
+        id: entry.id.clone(),
+        candidate_type: entry.candidate_type.clone(),
+        status: entry.status.clone(),
+        path: entry.path.clone(),
+        evidence: entry.evidence.clone(),
+        destination: entry.destination.clone(),
+        writeback_path: entry.writeback_path.clone(),
+    }
 }
 
 fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
@@ -18872,6 +19011,9 @@ link = "context/repo"
             Some("1 total, 0 accepted, 0 denied, 1 pending")
         );
         assert_eq!(view.candidate_details, vec!["todo-001 [todo] pending"]);
+        assert_eq!(view.candidate_entries.len(), 1);
+        assert_eq!(view.candidate_entries[0].id, "todo-001");
+        assert!(view.candidate_entries[0].path.ends_with("todo-001.toml"));
         assert!(view
             .request_path
             .as_deref()
@@ -19634,6 +19776,61 @@ link = "context/repo"
     }
 
     #[test]
+    fn candidate_duplicate_similarity_matches_generated_candidate_variants() {
+        let duplicate_pairs = [
+            (
+                "Keep source sessions as durable promotion provenance.",
+                "Keep source sessions as durable provenance for promotion writeback.",
+            ),
+            (
+                "Wire promotion todos into the MindWeaver inbox capture.",
+                "Wire Djinn promotion todo candidates into MindWeaver inbox capture.",
+            ),
+            (
+                "Add direct promotion-candidate review actions in Sessions TUI.",
+                "Add direct review actions for promotion candidates in the Sessions TUI.",
+            ),
+            (
+                "Promotion candidate rows should show status, evidence, and destination previews.",
+                "Show promotion candidates with status, evidence links, and destination preview rows.",
+            ),
+        ];
+
+        for (existing, candidate) in duplicate_pairs {
+            assert!(
+                candidate_duplicate_similarity(candidate, existing).is_some(),
+                "expected duplicate match for generated variant: {candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_duplicate_similarity_allows_related_but_distinct_work() {
+        let distinct_pairs = [
+            (
+                "Add direct review actions for promotion candidates in Sessions TUI.",
+                "Tune fuzzy duplicate thresholds from generated promotion candidates.",
+            ),
+            (
+                "Wire Djinn promotion todo candidates into MindWeaver inbox capture.",
+                "Run mw todos sync after accepting MindWeaver inbox todos.",
+            ),
+            (
+                "Keep source sessions as durable promotion provenance.",
+                "Link high signal project files during session context discovery.",
+            ),
+        ];
+
+        for (existing, candidate) in distinct_pairs {
+            assert_eq!(
+                candidate_duplicate_similarity(candidate, existing),
+                None,
+                "expected related candidate to remain distinct: {candidate}"
+            );
+        }
+    }
+
+    #[test]
     fn session_accept_writes_stable_memory_candidate_to_durable_store() {
         let root = std::env::temp_dir().join(format!(
             "djinn-session-writeback-test-{}",
@@ -19874,6 +20071,41 @@ link = "context/repo"
         assert!(decision.contains("preview = "));
         assert!(decision.contains("[[post_writebacks]]"));
         assert_eq!(fs::read_to_string(&sync_marker).unwrap(), "synced");
+
+        fs::write(
+            candidates_dir.join("todo-002.toml"),
+            format!(
+                "type = \"todo\"\nid = \"todo-002\"\ntext = \"Polish explicit MindWeaver sync handoff UX.\"\nkind = \"follow-up\"\nconfidence = \"medium\"\ntodo_adapter = \"mindweaver\"\narea = \"Code\"\npriority = \"p3\"\nevidence = [\"{}/turns/turn-1/response.md\"]\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+        let accepted_without_sync = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("todo-002".to_string()),
+                dry_run: false,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap();
+        assert_eq!(accepted_without_sync.post_writebacks.len(), 1);
+        assert_eq!(accepted_without_sync.post_writebacks[0].status, "pending");
+        assert_eq!(
+            accepted_without_sync.post_writebacks[0].command,
+            stores.mindweaver_sync_command.clone().unwrap().join(" ")
+        );
+        assert!(accepted_without_sync
+            .note
+            .contains("run the listed follow-up command"));
+        let pending_decision = fs::read_to_string(&accepted_without_sync.decision_path).unwrap();
+        assert!(pending_decision.contains("status = \"pending\""));
+        assert!(fs::read_to_string(&inbox)
+            .unwrap()
+            .contains("Polish explicit MindWeaver sync handoff UX."));
 
         let duplicate = decide_promotion_session_with_stores(
             &SessionDecisionArgs {

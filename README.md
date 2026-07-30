@@ -284,15 +284,19 @@ candidates default to Djinn's durable actions store. Candidates may also set
 `priority = "p2"`, `energy = "m"`, `due`, `start`, and `estimate`; `--dry-run`
 renders the Markdown checkbox, and accept appends it to the explicitly configured
 MindWeaver inbox (`MW_TODO_INBOX`, `MW_INBOX_PATH`, or `INBOX_PATH`). Add
-`--sync-mindweaver` to explicitly run `mw todos sync` after the append. `pattern`
-candidates are accepted as Markdown summaries under the promotion session.
+`--sync-mindweaver` to explicitly run `mw todos sync` after the append. If you
+accept a MindWeaver todo without that flag, Djinn records a pending follow-up with
+the exact sync command instead of silently running it; the focused Sessions TUI
+also offers `m` for accept-and-sync. `pattern` candidates are accepted as Markdown
+summaries under the promotion session.
 Candidate generation writes `outputs/candidate-index.toml`, accept/deny appends
 `outputs/candidate-status.toml`, and writeback rejects exact or near duplicates
 before mutating durable stores, including existing open MindWeaver inbox todos. Todo
 writeback prefers interop with MindWeaver (`~/Projects/mind-weaver`) when
 requested, while keeping Djinn's actions store as the standalone fallback. `djinn
 session status` and the Sessions TUI summarize candidate totals and
-accepted/denied/pending counts, plus individual candidate id/type/status previews.
+accepted/denied/pending counts, plus individual candidate id/type/status/evidence
+and destination previews.
 
 The roadmap direction is promotion as a special folder-backed session that uses
 one or more source sessions as context. Promotion types should be `memory`,
