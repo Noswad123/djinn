@@ -136,7 +136,8 @@ evidence = ["./debugging-session/summary.md"]
   `todo_adapter = "mindweaver"`, and optionally add metadata (`area`, `priority`,
   `energy`, `due`, `start`, `estimate`); `--dry-run` renders the checkbox, while
   accept appends it to the configured MindWeaver inbox (`MW_TODO_INBOX`,
-  `MW_INBOX_PATH`, or `INBOX_PATH`).
+  `MW_INBOX_PATH`, or `INBOX_PATH`). Add `--sync-mindweaver` to explicitly run
+  `mw todos sync` after the inbox append.
 - `skill` candidates require `name`, `description`, plus `body`, `body_path`, or
   `text`, then write a Djinn-managed `SKILL.md` with an evidence section.
 - `pattern` candidates require `rationale`, then write accepted Markdown summaries under

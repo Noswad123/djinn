@@ -283,7 +283,8 @@ candidates default to Djinn's durable actions store. Candidates may also set
 `todo_adapter = "mindweaver"` with metadata such as `area = "Code"`,
 `priority = "p2"`, `energy = "m"`, `due`, `start`, and `estimate`; `--dry-run`
 renders the Markdown checkbox, and accept appends it to the explicitly configured
-MindWeaver inbox (`MW_TODO_INBOX`, `MW_INBOX_PATH`, or `INBOX_PATH`). `pattern`
+MindWeaver inbox (`MW_TODO_INBOX`, `MW_INBOX_PATH`, or `INBOX_PATH`). Add
+`--sync-mindweaver` to explicitly run `mw todos sync` after the append. `pattern`
 candidates are accepted as Markdown summaries under the promotion session.
 Candidate generation writes `outputs/candidate-index.toml`, accept/deny appends
 `outputs/candidate-status.toml`, and writeback rejects exact or near duplicates

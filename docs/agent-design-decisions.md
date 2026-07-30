@@ -1104,10 +1104,11 @@ The first non-interactive agent slice is implemented as:
     `todo_adapter = "mindweaver"` with validated MindWeaver metadata (`area`,
     `priority`, `energy`, `due`, `start`, `estimate`); dry-run renders the inbox
     checkbox, and accept appends it to the configured MindWeaver inbox while
-    refusing exact or near-duplicate open inbox todos. Todo writeback should prefer
-    interop with MindWeaver (`~/Projects/mind-weaver`) for users who use that
-    notes/todo app rather than prematurely creating a parallel first-class Djinn
-    todo store.
+    refusing exact or near-duplicate open inbox todos. Running `mw todos sync` is
+    a separate explicit mutation boundary via `djinn session accept
+    --sync-mindweaver`. Todo writeback should prefer interop with MindWeaver
+    (`~/Projects/mind-weaver`) for users who use that notes/todo app rather than
+    prematurely creating a parallel first-class Djinn todo store.
     Legacy JSONL row identity and the removed saved-row CLI should not define the
     new UX or data model.
 

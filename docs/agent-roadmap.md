@@ -54,14 +54,16 @@ todos. Candidate validation enforces per-type fields (`scope`/`kind`/`confidence
 for memories, `kind`/`confidence` for todos, `description` for skills, and
 `rationale` for patterns). `djinn session status` and the Sessions TUI surface
 candidate totals and accepted/denied/pending counts. The local actions store
-remains the mutating fallback. The exact source-packet structure may evolve.
+remains the mutating fallback. `djinn session accept --sync-mindweaver` is the
+explicit post-capture handoff for running `mw todos sync`. The exact source-packet
+structure may evolve.
 
 Ready implementation slices:
 
 - Continue tightening candidate writeback as real model output appears: richer TUI
   review affordances for individual candidate status/actions, tuning fuzzy
-  duplicate thresholds from real generated candidates, and an optional
-  post-capture `mw todos sync` handoff once that mutation boundary is explicit.
+  duplicate thresholds from real generated candidates, and follow-up UX around the
+  explicit post-capture `mw todos sync` handoff.
   Prefer interoperating with MindWeaver
   (`~/Projects/mind-weaver`) as the user's notes/todo system rather than
   prematurely building a parallel first-class Djinn todo store; keep Djinn's local

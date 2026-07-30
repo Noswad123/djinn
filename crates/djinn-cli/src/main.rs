@@ -280,6 +280,9 @@ struct SessionDecisionArgs {
     /// Preview the decision without writing the decision record.
     #[arg(long)]
     dry_run: bool,
+    /// After accepting MindWeaver todo candidates, explicitly run `mw todos sync`.
+    #[arg(long = "sync-mindweaver", alias = "mw-sync")]
+    sync_mindweaver: bool,
     /// Output JSON instead of a text summary.
     #[arg(long)]
     json: bool,
@@ -4895,7 +4898,16 @@ struct SessionDecisionReport {
     wrote_decision: bool,
     durable_writeback: bool,
     writebacks: Vec<SessionCandidateWritebackReport>,
+    post_writebacks: Vec<SessionPostWritebackReport>,
     note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionPostWritebackReport {
+    name: String,
+    command: String,
+    status: String,
+    dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -4940,6 +4952,7 @@ struct PromotionWritebackStores {
     action: ActionStore,
     skill: SkillStore,
     mindweaver_inbox: Option<PathBuf>,
+    mindweaver_sync_command: Option<Vec<String>>,
 }
 
 fn session_decide(args: SessionDecisionArgs, action: SessionDecisionAction) -> Result<()> {
@@ -4990,6 +5003,10 @@ fn session_decide(args: SessionDecisionArgs, action: SessionDecisionAction) -> R
                 println!("      preview: {}", preview.replace('\n', "\\n"));
             }
         }
+        for post in &report.post_writebacks {
+            println!("  post-writeback: {} -> {}", post.name, post.status);
+            println!("    command: {}", post.command);
+        }
         println!("  note: {}", report.note);
     }
     Ok(())
@@ -5007,6 +5024,9 @@ fn decide_promotion_session_with_stores(
     action: SessionDecisionAction,
     stores: PromotionWritebackStores,
 ) -> Result<SessionDecisionReport> {
+    if action != SessionDecisionAction::Accept && args.sync_mindweaver {
+        bail!("--sync-mindweaver only applies to `djinn session accept`");
+    }
     let session_dir = resolve_session_dir(&args.dir)?;
     let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
         format!(
@@ -5040,11 +5060,18 @@ fn decide_promotion_session_with_stores(
     } else {
         Vec::new()
     };
+    let post_writebacks = if action == SessionDecisionAction::Accept && args.sync_mindweaver {
+        sync_mindweaver_after_writeback(&writebacks, args.dry_run, &stores)?
+    } else {
+        Vec::new()
+    };
     let durable_writeback = !writebacks.is_empty() && !args.dry_run;
     let note = if candidates.is_empty() {
         "Decision recorded; no stable promotion candidate files were found, so no durable writeback was attempted."
     } else if args.dry_run {
         "Dry run: candidate writeback was validated but no durable store or decision files were written."
+    } else if !post_writebacks.is_empty() {
+        "Decision recorded, accepted candidate(s) were written, and requested post-writeback handoff ran."
     } else if durable_writeback {
         "Decision recorded and accepted candidate(s) were written to durable stores/artifacts."
     } else {
@@ -5067,6 +5094,7 @@ fn decide_promotion_session_with_stores(
                 &promotion_type,
                 args.candidate.as_deref(),
                 &writebacks,
+                &post_writebacks,
                 &note,
             )?,
         )
@@ -5091,6 +5119,7 @@ fn decide_promotion_session_with_stores(
         wrote_decision: !args.dry_run,
         durable_writeback,
         writebacks,
+        post_writebacks,
         note,
     })
 }
@@ -5102,6 +5131,7 @@ impl PromotionWritebackStores {
             action: action_store(),
             skill: skill_store(),
             mindweaver_inbox: None,
+            mindweaver_sync_command: None,
         }
     }
 }
@@ -5875,6 +5905,58 @@ fn writeback_mindweaver_todo_candidate(
     })
 }
 
+fn sync_mindweaver_after_writeback(
+    writebacks: &[SessionCandidateWritebackReport],
+    dry_run: bool,
+    stores: &PromotionWritebackStores,
+) -> Result<Vec<SessionPostWritebackReport>> {
+    if !writebacks
+        .iter()
+        .any(|writeback| writeback.destination.starts_with("mindweaver_inbox"))
+    {
+        return Ok(Vec::new());
+    }
+    let command = mindweaver_sync_command(stores);
+    let command_display = command.join(" ");
+    if dry_run {
+        return Ok(vec![SessionPostWritebackReport {
+            name: "mindweaver_todos_sync".to_string(),
+            command: command_display,
+            status: "dry_run".to_string(),
+            dry_run,
+        }]);
+    }
+    let Some(program) = command.first() else {
+        bail!("MindWeaver sync command is empty");
+    };
+    let status = ProcessCommand::new(program)
+        .args(command.iter().skip(1))
+        .status()
+        .with_context(|| format!("running post-writeback command `{command_display}`"))?;
+    if !status.success() {
+        bail!(
+            "post-writeback command `{command_display}` failed with status {}",
+            status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "terminated by signal".to_string())
+        );
+    }
+    Ok(vec![SessionPostWritebackReport {
+        name: "mindweaver_todos_sync".to_string(),
+        command: command_display,
+        status: "completed".to_string(),
+        dry_run,
+    }])
+}
+
+fn mindweaver_sync_command(stores: &PromotionWritebackStores) -> Vec<String> {
+    stores
+        .mindweaver_sync_command
+        .clone()
+        .unwrap_or_else(|| vec!["mw".to_string(), "todos".to_string(), "sync".to_string()])
+}
+
 fn write_mindweaver_todo_capture_to_path(
     candidate: &PromotionCandidate,
     inbox_path: &Path,
@@ -6251,6 +6333,7 @@ fn render_session_decision_record(
     promotion_type: &str,
     candidate: Option<&str>,
     writebacks: &[SessionCandidateWritebackReport],
+    post_writebacks: &[SessionPostWritebackReport],
     note: &str,
 ) -> Result<String> {
     let mut output = String::new();
@@ -6297,6 +6380,13 @@ fn render_session_decision_record(
         if let Some(preview) = &writeback.preview {
             output.push_str(&format!("preview = {}\n", toml_string(preview)?));
         }
+    }
+    for post in post_writebacks {
+        output.push_str("\n[[post_writebacks]]\n");
+        output.push_str(&format!("name = {}\n", toml_string(&post.name)?));
+        output.push_str(&format!("command = {}\n", toml_string(&post.command)?));
+        output.push_str(&format!("status = {}\n", toml_string(&post.status)?));
+        output.push_str(&format!("dry_run = {}\n", post.dry_run));
     }
     Ok(output)
 }
@@ -19317,6 +19407,7 @@ link = "context/repo"
                 dir: promotion_dir.clone(),
                 candidate: None,
                 dry_run: true,
+                sync_mindweaver: false,
                 json: false,
             },
             SessionDecisionAction::Accept,
@@ -19331,6 +19422,7 @@ link = "context/repo"
                 dir: promotion_dir.clone(),
                 candidate: None,
                 dry_run: false,
+                sync_mindweaver: false,
                 json: false,
             },
             SessionDecisionAction::Accept,
@@ -19349,6 +19441,7 @@ link = "context/repo"
                 dir: promotion_dir.clone(),
                 candidate: None,
                 dry_run: false,
+                sync_mindweaver: false,
                 json: false,
             },
             SessionDecisionAction::Deny,
@@ -19366,6 +19459,7 @@ link = "context/repo"
                 dir: normal,
                 candidate: None,
                 dry_run: false,
+                sync_mindweaver: false,
                 json: false,
             },
             SessionDecisionAction::Accept,
@@ -19415,6 +19509,7 @@ link = "context/repo"
             action: ActionStore::default_in(&data),
             skill: SkillStore::default_in(&data),
             mindweaver_inbox: None,
+            mindweaver_sync_command: None,
         };
 
         let dry_run = decide_promotion_session_with_stores(
@@ -19422,6 +19517,7 @@ link = "context/repo"
                 dir: promotion_dir.clone(),
                 candidate: Some("memory-001".to_string()),
                 dry_run: true,
+                sync_mindweaver: false,
                 json: false,
             },
             SessionDecisionAction::Accept,
@@ -19438,6 +19534,7 @@ link = "context/repo"
                 dir: promotion_dir.clone(),
                 candidate: Some("memory-001".to_string()),
                 dry_run: false,
+                sync_mindweaver: false,
                 json: false,
             },
             SessionDecisionAction::Accept,
@@ -19466,6 +19563,7 @@ link = "context/repo"
                 dir: promotion_dir.clone(),
                 candidate: Some("memory-001".to_string()),
                 dry_run: true,
+                sync_mindweaver: false,
                 json: false,
             },
             SessionDecisionAction::Accept,
@@ -19487,6 +19585,7 @@ link = "context/repo"
                 dir: promotion_dir.clone(),
                 candidate: Some("memory-002".to_string()),
                 dry_run: true,
+                sync_mindweaver: false,
                 json: false,
             },
             SessionDecisionAction::Accept,
@@ -19510,6 +19609,7 @@ link = "context/repo"
         ));
         let data = root.join("data");
         let inbox = root.join("notes/introspection/inbox.md");
+        let sync_marker = root.join("mindweaver-sync-ran");
         let source = root.join("source-session");
         fs::create_dir_all(source.join("turns/turn-1")).unwrap();
         fs::write(
@@ -19544,6 +19644,13 @@ link = "context/repo"
             action: ActionStore::default_in(&data),
             skill: SkillStore::default_in(&data),
             mindweaver_inbox: Some(inbox.clone()),
+            mindweaver_sync_command: Some(vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf synced > \"$1\"".to_string(),
+                "sh".to_string(),
+                sync_marker.display().to_string(),
+            ]),
         };
 
         let dry_run = decide_promotion_session_with_stores(
@@ -19551,6 +19658,7 @@ link = "context/repo"
                 dir: promotion_dir.clone(),
                 candidate: Some("todo-001".to_string()),
                 dry_run: true,
+                sync_mindweaver: true,
                 json: false,
             },
             SessionDecisionAction::Accept,
@@ -19569,14 +19677,18 @@ link = "context/repo"
             )
         );
         assert!(!dry_run.durable_writeback);
+        assert_eq!(dry_run.post_writebacks.len(), 1);
+        assert_eq!(dry_run.post_writebacks[0].status, "dry_run");
         assert!(stores.action.list().unwrap().is_empty());
         assert!(!promotion_dir.join("outputs/decisions").exists());
+        assert!(!sync_marker.exists());
 
         let accepted = decide_promotion_session_with_stores(
             &SessionDecisionArgs {
                 dir: promotion_dir.clone(),
                 candidate: Some("todo-001".to_string()),
                 dry_run: false,
+                sync_mindweaver: true,
                 json: false,
             },
             SessionDecisionAction::Accept,
@@ -19584,6 +19696,8 @@ link = "context/repo"
         )
         .unwrap();
         assert!(accepted.durable_writeback);
+        assert_eq!(accepted.post_writebacks.len(), 1);
+        assert_eq!(accepted.post_writebacks[0].status, "completed");
         assert_eq!(accepted.writebacks[0].destination, "mindweaver_inbox");
         assert_eq!(
             accepted.writebacks[0].path.as_deref(),
@@ -19595,12 +19709,15 @@ link = "context/repo"
         let decision = fs::read_to_string(&accepted.decision_path).unwrap();
         assert!(decision.contains("destination = \"mindweaver_inbox\""));
         assert!(decision.contains("preview = "));
+        assert!(decision.contains("[[post_writebacks]]"));
+        assert_eq!(fs::read_to_string(&sync_marker).unwrap(), "synced");
 
         let duplicate = decide_promotion_session_with_stores(
             &SessionDecisionArgs {
                 dir: promotion_dir.clone(),
                 candidate: Some("todo-001".to_string()),
                 dry_run: true,
+                sync_mindweaver: false,
                 json: false,
             },
             SessionDecisionAction::Accept,
