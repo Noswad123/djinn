@@ -5937,11 +5937,22 @@ fn ensure_no_duplicate_memory_candidate(
         return Ok(());
     }
     for record in store.list()? {
-        if record.status == "active" && normalized_candidate_text(&record.text) == candidate_text {
+        if record.status != "active" {
+            continue;
+        }
+        if let Some(similarity) = candidate_duplicate_similarity(&candidate.text, &record.text) {
+            if similarity >= 1.0 {
+                bail!(
+                    "duplicate memory candidate {} matches existing memory {}",
+                    candidate.id,
+                    record.id
+                );
+            }
             bail!(
-                "duplicate memory candidate {} matches existing memory {}",
+                "near-duplicate memory candidate {} matches existing memory {} (similarity {:.2})",
                 candidate.id,
-                record.id
+                record.id,
+                similarity
             );
         }
     }
@@ -5957,11 +5968,22 @@ fn ensure_no_duplicate_todo_candidate(
         return Ok(());
     }
     for record in store.list()? {
-        if record.status == "open" && normalized_candidate_text(&record.text) == candidate_text {
+        if record.status != "open" {
+            continue;
+        }
+        if let Some(similarity) = candidate_duplicate_similarity(&candidate.text, &record.text) {
+            if similarity >= 1.0 {
+                bail!(
+                    "duplicate todo candidate {} matches existing action {}",
+                    candidate.id,
+                    record.id
+                );
+            }
             bail!(
-                "duplicate todo candidate {} matches existing action {}",
+                "near-duplicate todo candidate {} matches existing action {} (similarity {:.2})",
                 candidate.id,
-                record.id
+                record.id,
+                similarity
             );
         }
     }
@@ -5982,11 +6004,19 @@ fn ensure_no_duplicate_mindweaver_todo_candidate(
         let Some(existing) = open_mindweaver_checkbox_text(line) else {
             continue;
         };
-        if normalized_candidate_text(existing) == candidate_text {
+        if let Some(similarity) = candidate_duplicate_similarity(&candidate.text, existing) {
+            if similarity >= 1.0 {
+                bail!(
+                    "duplicate MindWeaver todo candidate {} matches existing open inbox todo in {}",
+                    candidate.id,
+                    inbox_path.display()
+                );
+            }
             bail!(
-                "duplicate MindWeaver todo candidate {} matches existing open inbox todo in {}",
+                "near-duplicate MindWeaver todo candidate {} matches existing open inbox todo in {} (similarity {:.2})",
                 candidate.id,
-                inbox_path.display()
+                inbox_path.display(),
+                similarity
             );
         }
     }
@@ -6025,6 +6055,50 @@ fn normalized_candidate_text(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+
+fn candidate_duplicate_similarity(candidate: &str, existing: &str) -> Option<f64> {
+    let candidate_text = normalized_candidate_text(candidate);
+    let existing_text = normalized_candidate_text(existing);
+    if candidate_text.is_empty() || existing_text.is_empty() {
+        return None;
+    }
+    if candidate_text == existing_text {
+        return Some(1.0);
+    }
+    let shorter_len = candidate_text.len().min(existing_text.len());
+    let longer_len = candidate_text.len().max(existing_text.len());
+    if shorter_len >= 48
+        && longer_len > 0
+        && (candidate_text.contains(&existing_text) || existing_text.contains(&candidate_text))
+    {
+        let similarity = shorter_len as f64 / longer_len as f64;
+        if similarity >= 0.78 {
+            return Some(similarity);
+        }
+    }
+
+    let candidate_terms = candidate_text_terms(&candidate_text);
+    let existing_terms = candidate_text_terms(&existing_text);
+    if candidate_terms.len().min(existing_terms.len()) < 5 {
+        return None;
+    }
+    let intersection = candidate_terms.intersection(&existing_terms).count();
+    let union = candidate_terms.union(&existing_terms).count();
+    if union == 0 {
+        return None;
+    }
+    let similarity = intersection as f64 / union as f64;
+    (similarity >= 0.82).then_some(similarity)
+}
+
+fn candidate_text_terms(value: &str) -> HashSet<String> {
+    value
+        .split(|ch: char| !ch.is_alphanumeric())
+        .map(str::trim)
+        .filter(|term| term.len() > 2)
+        .map(str::to_string)
+        .collect()
 }
 
 fn promotion_candidate_source(session_dir: &Path, candidate: &PromotionCandidate) -> MemorySource {
@@ -19205,6 +19279,29 @@ link = "context/repo"
         )
         .unwrap_err();
         assert!(duplicate.to_string().contains("duplicate memory candidate"));
+
+        fs::write(
+            candidates_dir.join("memory-002.toml"),
+            format!(
+                "type = \"memory\"\nid = \"memory-002\"\ntext = \"Keep source sessions as durable promotion provenance.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"{}/summary.md\"]\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+        let near_duplicate = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("memory-002".to_string()),
+                dry_run: true,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap_err();
+        assert!(near_duplicate
+            .to_string()
+            .contains("near-duplicate memory candidate"));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -142,13 +142,13 @@ evidence = ["./debugging-session/summary.md"]
 
 Candidate generation also writes `outputs/candidate-index.toml`, and accept/deny
 appends status events to `outputs/candidate-status.toml`. Accept writeback refuses
-exact duplicate active memories, open todos/actions, existing managed or discovered
-skills with the same name, pattern summaries that were already accepted, and open
-MindWeaver inbox todos with the same text. Todo promotion candidates map to the
-durable actions store as Djinn's standalone fallback unless they explicitly opt
-into the MindWeaver adapter. The preferred direction remains interop with
-MindWeaver (`~/Projects/mind-weaver`) for the user's notes/todo system, not a
-premature parallel Djinn todo store.
+exact or near-duplicate active memories, open todos/actions, existing managed or
+discovered skills with the same name, pattern summaries that were already
+accepted, and exact or near-duplicate open MindWeaver inbox todos. Todo promotion
+candidates map to the durable actions store as Djinn's standalone fallback unless
+they explicitly opt into the MindWeaver adapter. The preferred direction remains
+interop with MindWeaver (`~/Projects/mind-weaver`) for the user's notes/todo
+system, not a premature parallel Djinn todo store.
 
 ```bash
 djinn review memory <id> --dry-run

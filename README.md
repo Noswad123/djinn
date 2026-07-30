@@ -284,8 +284,8 @@ the explicitly configured MindWeaver inbox (`MW_TODO_INBOX`, `MW_INBOX_PATH`, or
 `INBOX_PATH`).
 `pattern` candidates are accepted as Markdown summaries under the promotion session.
 Candidate generation writes `outputs/candidate-index.toml`, accept/deny appends
-`outputs/candidate-status.toml`, and writeback rejects exact duplicates before
-mutating durable stores, including existing open MindWeaver inbox todos. Todo
+`outputs/candidate-status.toml`, and writeback rejects exact or near duplicates
+before mutating durable stores, including existing open MindWeaver inbox todos. Todo
 writeback prefers interop with MindWeaver (`~/Projects/mind-weaver`) when
 requested, while keeping Djinn's actions store as the standalone fallback.
 

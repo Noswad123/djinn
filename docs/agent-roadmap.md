@@ -45,19 +45,21 @@ now record dry-runnable decisions under `outputs/decisions/`. `djinn session run
 can write memories, todos (through the current actions store), skills, or accepted
 pattern summaries while preserving evidence links. Candidate generation writes
 `outputs/candidate-index.toml`; accept/deny appends status events to
-`outputs/candidate-status.toml`; writeback rejects exact duplicate active memories,
-open todos/actions, existing skills, and already-accepted pattern files. Todo
-candidates can now declare `todo_adapter = "mindweaver"` with MindWeaver metadata
-validation; dry-run previews the checkbox, and accept appends to the configured
-MindWeaver inbox while rejecting duplicate open inbox todos. The local actions
-store remains the mutating fallback. The exact source-packet structure may evolve.
+`outputs/candidate-status.toml`; writeback rejects exact or near-duplicate active
+memories, open todos/actions, existing skills, and already-accepted pattern files.
+Todo candidates can now declare `todo_adapter = "mindweaver"` with MindWeaver
+metadata validation; dry-run previews the checkbox, and accept appends to the
+configured MindWeaver inbox while rejecting exact or near-duplicate open inbox
+todos. The local actions store remains the mutating fallback. The exact
+source-packet structure may evolve.
 
 Ready implementation slices:
 
-- Continue tightening candidate writeback as real model output appears: fuzzy
-  duplicate detection, richer per-type required fields, TUI review affordances for
-  candidate status, and an optional post-capture `mw todos sync` handoff once that
-  mutation boundary is explicit. Prefer interoperating with MindWeaver
+- Continue tightening candidate writeback as real model output appears: richer
+  per-type required fields, TUI review affordances for candidate status, tuning
+  fuzzy duplicate thresholds from real generated candidates, and an optional
+  post-capture `mw todos sync` handoff once that mutation boundary is explicit.
+  Prefer interoperating with MindWeaver
   (`~/Projects/mind-weaver`) as the user's notes/todo system rather than
   prematurely building a parallel first-class Djinn todo store; keep Djinn's local
   actions store as the standalone fallback for users who install only Djinn.
