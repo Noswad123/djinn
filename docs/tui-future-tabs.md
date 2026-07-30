@@ -26,9 +26,8 @@ actions are concrete enough to justify a permanent place in the TUI.
 ## Ideas
 
 Do not add an Ideas tab until Djinn has a concrete ideas/insights data model and
-workflow. Legacy session promotion is handled by `djinn promote session(s)`
-commands, and folder-backed promotion should live on the session
-surface; memory cleanup is handled by review commands.
+workflow. Folder-backed promotion should live on the session surface; memory
+cleanup is handled by review commands.
 
 An **Ideas** tab may be useful later if Djinn stores or computes actionable
 insights locally, for example:

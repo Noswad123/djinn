@@ -190,22 +190,21 @@ are read only by explicit doctor/import adapter commands. OpenCode and Copilot
 exports can preview or write supported fields; exports refuse to overwrite
 existing files unless `--force` is passed.
 
-Save and promote sessions:
+Work in folder-backed sessions:
 
 ```bash
-djinn add session ./session.md --title "Debugging session"
-djinn promote session debugging-session
+djinn ask "Summarize the debugging path" --session ./debugging-session
+djinn session status ./debugging-session
 djinn list memories
 djinn review memory <id> --dry-run
 ```
 
-Import OpenCode output explicitly when you need legacy source material. For new
-work, prefer folder-backed `djinn ask` / `djinn session ...` flows:
+OpenCode config can still be inspected/imported/exported explicitly, but raw
+OpenCode session rows are no longer imported into a Djinn saved-chat store:
 
 ```bash
-opencode export <session-id> --sanitize | djinn add session - --source opencode --source-id <session-id>
-djinn ask "Summarize the debugging path" --session ./my-session
-djinn session status ./my-session
+djinn config doctor opencode --dry-run
+djinn config import opencode --dry-run
 ```
 
 Add a deferred memory:
@@ -253,13 +252,17 @@ djinn add ctx djinn \
 djinn show ctx
 ```
 
-Promote sessions into a local digest or model-ready review prompt:
+Compact or review folder-backed sessions via their files:
 
 ```bash
-djinn promote session debugging-session
-djinn promote sessions --source opencode --limit 20 --mode pattern
-djinn promote sessions --source opencode --limit 50 --mode merge --dry-run
+djinn session compact ./debugging-session
+djinn session open ./debugging-session --target compacted
 ```
+
+The legacy saved-row session store and `djinn promote session(s)` commands have
+been removed. A future folder-backed promotion flow should operate directly on
+session folders and preserve provenance to `summary.md`, `context/`, and
+`turns/<id>/` artifacts.
 
 Review memories for suggestions without mutating the memories:
 
@@ -275,18 +278,6 @@ sends a notification when complete if `osascript` is available. The review is
 advisory and returns exact `djinn add suggestion ...` commands for you to run
 manually.
 
-Cleanup imported session clutter after extracting useful memories:
-
-```bash
-djinn promote sessions --source opencode --limit 50 --mode merge --dry-run
-djinn promote sessions --source opencode --limit 50 --mode merge --archive
-```
-
-The standalone `djinn archive ...` browser/restore/remove commands have been
-removed with the legacy saved-row cleanup surface. The remaining `--archive`
-option on legacy merge promotion is kept only as a migration safeguard while
-folder-backed promotion is designed.
-
 ## Storage
 
 Djinn uses Linux-style local paths on every platform:
@@ -301,13 +292,11 @@ See the [app guide](docs/app-guide.md#storage) for the exact files.
 ```text
 Cargo.toml                         # Rust workspace
 crates/djinn-cli/                  # clap command surface and binary
-crates/djinn-chats/                # chat/session store
 crates/djinn-contexts/             # context/scope registry
 crates/djinn-core/                 # shared paths and file helpers
 crates/djinn-memory/               # memories, suggestions, ideas, and actions
 crates/djinn-opencode/             # OpenCode adapter
 crates/djinn-skills/               # skill discovery and lifecycle
-crates/djinn-suggest/              # suggestion/review prompt helpers
 crates/djinn-tools/                # tool discovery and indexing
 crates/djinn-tui/                  # ratatui dashboard
 docs/                              # detailed docs

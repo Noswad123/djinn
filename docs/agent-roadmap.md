@@ -458,5 +458,5 @@ git diff --check
 For cross-crate agent/runtime changes, prefer:
 
 ```bash
-cargo test -p djinn-agent -p djinn-memory -p djinn-chats -p djinn-tui -p djinn-cli
+cargo test -p djinn-agent -p djinn-memory -p djinn-tui -p djinn-cli
 ```

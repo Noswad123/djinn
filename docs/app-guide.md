@@ -72,20 +72,20 @@ Default roots come from, in order:
 3. active context roots;
 4. `~/.dotfiles`.
 
-## Sessions, promotion, and review
+## Sessions and review
 
-Sessions are raw source material for later learning.
+Sessions are folder-backed capsules. Keep new work in `djinn ask` / `djinn session
+...` flows so source material remains file-native.
 
 ```bash
-djinn add session ./session.md --title "Debugging session"
-opencode export <session-id> | djinn add session - --source opencode --source-id <session-id>
 djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
+djinn session compact ./debugging-session
 ```
 
-The old OpenCode watcher/plugin integration has been removed. Use explicit
-imports only when you need legacy saved-row source material; otherwise keep new
-work in folder-backed session capsules.
+The old saved-row session store, OpenCode watcher/plugin integration, and legacy
+`djinn add/list/show/search/rm/clear/promote session(s)` commands have been
+removed.
 
 Promotion is still a useful idea, but the canonical folder-backed workflow should
 promote from session folders and selected artifacts rather than from the removed
@@ -93,39 +93,16 @@ legacy dashboard picker. A future `djinn session promote ...` flow should let on
 or more folder sessions produce durable outputs such as memories, skills,
 patterns, compacted context, or suggested follow-up actions with explicit evidence
 links back to `summary.md`, `context/`, and `turns/<id>/` files. Existing legacy
-promotion code may still be reused where it fits, especially bounded selection,
-OpenCode export digestion, redaction warnings, memory-writing safeguards, and
-dry-run/archive semantics.
-
-For legacy saved session rows, the CLI `djinn promote session(s)` commands remain
-source-material tools. `--mode summary` prints a local, human-facing digest and
-does not run a model. `--mode pattern` and `--mode memories` emit agent-ready
-prompts without writing memories automatically. For OpenCode exports, Djinn
-renders a readable digest of message/tool parts instead of raw JSON when possible;
-sanitized exports may still have redacted message text.
-
-`--mode merge` is the cleanup-oriented promotion mode: it asks the model to group
-the selected sessions and distill durable lessons into active memories directly.
-It does not create a memory inbox/candidate queue. With `--archive`, source
-session rows are archived only after memory writes succeed.
+design lessons may still be reused where they fit, especially bounded selection,
+redaction warnings, memory-writing safeguards, and dry-run preview semantics.
 
 ```bash
-djinn promote session debugging-session
-djinn promote sessions --source opencode --limit 20 --mode pattern
-djinn promote sessions --source opencode --limit 50 --mode merge --dry-run
-djinn promote sessions --source opencode --limit 50 --mode merge --archive
 djinn review memory <id> --dry-run
 ```
 
 The legacy `djinn review sessions` and `djinn review opencode` saved-row review
-entrypoints have been removed. Use `djinn promote sessions --mode memories` for
-legacy saved-row prompt generation, or wait for folder-backed session promotion
-for the canonical workflow.
-
-The standalone `djinn archive ...` legacy cleanup family has been removed. The
-only remaining archive behavior is the guarded `--archive` option on legacy
-`--mode merge` promotion, retained as a migration safeguard until folder-backed
-session promotion lands.
+entrypoints have been removed. Use memory review today, and wait for
+folder-backed session promotion for session-to-knowledge workflows.
 
 ## Memories and suggestions
 

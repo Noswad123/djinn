@@ -756,33 +756,20 @@ The first non-interactive agent slice is implemented as:
     same searchable/sectioned command palette pattern, with actions scoped to the
     active tab plus shared navigation/help commands.
 39. Superseded by decision 84: legacy saved-session deletion is not a dashboard
-    action. Persisted chat/source rows and old JSONL sessions should be cleaned up
-    through explicit CLI archive/delete/migration commands with dry-run or
-    confirmation semantics as appropriate.
+    action. Persisted chat/source rows and old JSONL sessions have been removed
+    from the current product surface; folder-backed sessions are canonical.
 40. Superseded by decisions 84-85: legacy saved-session promotion is not a
     dashboard action. Folder-backed promotion should be added to the session
-    surface; legacy `djinn promote session(s)` remains a CLI source-material flow
-    only while old rows still need migration/review.
-41. Session promotion emits context material rather than executing a model. Summary
-    mode is human-facing in direct CLI use and renders a local digest, not an
-    agent-review prompt; patterns/memories modes remain prompt-oriented review
-    helpers. Legacy saved-session promotion stays a CLI source-material workflow
-    and should produce local digest/prompt material or migration targets, not open
-    a removed runtime surface. When promoted session content is an
-    OpenCode JSON export, Djinn renders a compact role-labeled digest of readable
-    message/tool parts instead of embedding raw JSON.
-    Sanitized/redacted exports should state that source text may be unavailable
-    rather than burying that fact in large redacted payloads.
-42. `djinn promote sessions --mode merge` is the cleanup-oriented promotion workflow.
-    It should group selected sessions, distill durable lessons, write active memories
-    directly, and only then archive the source session rows when explicitly requested.
-    Merge should not introduce another memory-candidate/inbox step; later memory
-    review should focus on turning active memories into skills, suggestions, or
-    concrete user actions, and on clearing stale inbox/source material.
+    surface; the legacy `djinn promote session(s)` CLI has also been removed.
+41. Superseded by decision 85: legacy saved-row session promotion emitted local
+    digests or prompt material, but that flow has been deleted. Future promotion
+    must be folder-backed and file-provenance-first.
+42. Superseded by decision 85: legacy saved-row merge promotion has been removed.
+    Memory review should focus on turning active memories into skills,
+    suggestions, or concrete user actions while folder-backed promotion is
+    designed separately.
 43. Superseded by decision 85: manual saved-row cleanup via `djinn archive ...`
-    has been removed with the legacy session-row surface. Archive-after-success
-    remains available only as a guarded migration behavior on legacy merge
-    promotion until folder-backed session promotion defines its own cleanup model.
+    has been removed with the legacy session-row surface.
 44. Superseded by decision 84: rich Markdown rendering belongs in focused artifact
     viewers if reopened. The canonical copy/export surfaces are Markdown files
     (`summary.md`, `request.md`, turn files, and compacted context), which already
@@ -1084,11 +1071,8 @@ The first non-interactive agent slice is implemented as:
     one or more session folders and explicit artifacts, then write durable local
     outputs such as memories, skills, reusable patterns, compacted context,
     ideas, or suggested follow-up actions with evidence links back to files under
-    the session folder. Existing legacy promotion internals may be harvested when
-    they fit the file-first model: bounded selection, digest rendering,
-    redaction/sanitization warnings, memory merge/write safeguards, prompt
-    templates, dry-run previews, and archive-after-success cleanup. Legacy JSONL
-    row identity should not define the new UX or data model.
+    the session folder. Legacy JSONL row identity and the removed saved-row CLI
+    should not define the new UX or data model.
 
 Not in the first slice unless explicitly reopened:
 

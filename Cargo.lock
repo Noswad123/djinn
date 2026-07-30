@@ -408,17 +408,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "djinn-chats"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "djinn-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "djinn-cli"
 version = "0.1.0"
 dependencies = [
@@ -428,13 +417,11 @@ dependencies = [
  "chrono",
  "clap",
  "djinn-agent",
- "djinn-chats",
  "djinn-contexts",
  "djinn-core",
  "djinn-memory",
  "djinn-opencode",
  "djinn-skills",
- "djinn-suggest",
  "djinn-tools",
  "djinn-tui",
  "reqwest",
@@ -491,16 +478,6 @@ dependencies = [
  "djinn-core",
  "serde",
  "walkdir",
-]
-
-[[package]]
-name = "djinn-suggest"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "djinn-chats",
- "djinn-memory",
- "djinn-tools",
 ]
 
 [[package]]
