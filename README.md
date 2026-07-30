@@ -276,13 +276,15 @@ accept <promotion-session> [candidate]` and `djinn session deny <promotion-sessi
 [candidate]` record a decision under `outputs/decisions/`; `--dry-run` previews
 without writing. If accepted candidates exist under `outputs/candidates/*.toml`,
 Djinn can now write guarded `memory`, `todo`, `skill`, or `pattern` outputs while
-retaining evidence links. `todo` candidates default to Djinn's durable actions
-store. Candidates may also set `todo_adapter = "mindweaver"` with metadata such
-as `area = "Code"`, `priority = "p2"`, `energy = "m"`, `due`, `start`, and
-`estimate`; `--dry-run` renders the Markdown checkbox, and accept appends it to
-the explicitly configured MindWeaver inbox (`MW_TODO_INBOX`, `MW_INBOX_PATH`, or
-`INBOX_PATH`).
-`pattern` candidates are accepted as Markdown summaries under the promotion session.
+retaining evidence links. Candidates now enforce type-specific required fields:
+memories need `scope`/`kind`/`confidence`, todos need `kind`/`confidence`, skills
+need `name`/`description` plus body content, and patterns need `rationale`. `todo`
+candidates default to Djinn's durable actions store. Candidates may also set
+`todo_adapter = "mindweaver"` with metadata such as `area = "Code"`,
+`priority = "p2"`, `energy = "m"`, `due`, `start`, and `estimate`; `--dry-run`
+renders the Markdown checkbox, and accept appends it to the explicitly configured
+MindWeaver inbox (`MW_TODO_INBOX`, `MW_INBOX_PATH`, or `INBOX_PATH`). `pattern`
+candidates are accepted as Markdown summaries under the promotion session.
 Candidate generation writes `outputs/candidate-index.toml`, accept/deny appends
 `outputs/candidate-status.toml`, and writeback rejects exact or near duplicates
 before mutating durable stores, including existing open MindWeaver inbox todos. Todo

@@ -50,15 +50,17 @@ memories, open todos/actions, existing skills, and already-accepted pattern file
 Todo candidates can now declare `todo_adapter = "mindweaver"` with MindWeaver
 metadata validation; dry-run previews the checkbox, and accept appends to the
 configured MindWeaver inbox while rejecting exact or near-duplicate open inbox
-todos. The local actions store remains the mutating fallback. The exact
-source-packet structure may evolve.
+todos. Candidate validation enforces per-type fields (`scope`/`kind`/`confidence`
+for memories, `kind`/`confidence` for todos, `description` for skills, and
+`rationale` for patterns). The local actions store remains the mutating fallback.
+The exact source-packet structure may evolve.
 
 Ready implementation slices:
 
-- Continue tightening candidate writeback as real model output appears: richer
-  per-type required fields, TUI review affordances for candidate status, tuning
-  fuzzy duplicate thresholds from real generated candidates, and an optional
-  post-capture `mw todos sync` handoff once that mutation boundary is explicit.
+- Continue tightening candidate writeback as real model output appears: TUI review
+  affordances for candidate status, tuning fuzzy duplicate thresholds from real
+  generated candidates, and an optional post-capture `mw todos sync` handoff once
+  that mutation boundary is explicit.
   Prefer interoperating with MindWeaver
   (`~/Projects/mind-weaver`) as the user's notes/todo system rather than
   prematurely building a parallel first-class Djinn todo store; keep Djinn's local

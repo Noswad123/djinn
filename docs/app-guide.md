@@ -129,15 +129,17 @@ confidence = "high"
 evidence = ["./debugging-session/summary.md"]
 ```
 
-- `memory` candidates write to the durable memory store.
+- `memory` candidates require `scope`, `kind`, and `confidence`, then write to the
+  durable memory store.
 - `todo` candidates write to Djinn's durable actions store by default. To use
-  MindWeaver interop, set `todo_adapter = "mindweaver"` and optional metadata
-  (`area`, `priority`, `energy`, `due`, `start`, `estimate`); `--dry-run` renders
-  the checkbox, while accept appends it to the configured MindWeaver inbox
-  (`MW_TODO_INBOX`, `MW_INBOX_PATH`, or `INBOX_PATH`).
-- `skill` candidates require `name` plus `body`, `body_path`, or `text`, then write
-  a Djinn-managed `SKILL.md` with an evidence section.
-- `pattern` candidates write accepted Markdown summaries under
+  MindWeaver interop, include `kind` and `confidence`, set
+  `todo_adapter = "mindweaver"`, and optionally add metadata (`area`, `priority`,
+  `energy`, `due`, `start`, `estimate`); `--dry-run` renders the checkbox, while
+  accept appends it to the configured MindWeaver inbox (`MW_TODO_INBOX`,
+  `MW_INBOX_PATH`, or `INBOX_PATH`).
+- `skill` candidates require `name`, `description`, plus `body`, `body_path`, or
+  `text`, then write a Djinn-managed `SKILL.md` with an evidence section.
+- `pattern` candidates require `rationale`, then write accepted Markdown summaries under
   `outputs/accepted/` in the promotion session.
 
 Candidate generation also writes `outputs/candidate-index.toml`, and accept/deny

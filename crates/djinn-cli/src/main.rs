@@ -5121,6 +5121,7 @@ fn render_promotion_candidate_generation_prompt(
     );
     prompt.push_str("Return one fenced `toml` block per candidate and no other prose. ");
     prompt.push_str("Every candidate must include `type`, `text` (except skill may use `body`), and non-empty `evidence` links copied from the source packet.\n\n");
+    prompt.push_str("Required per-type fields: memory requires `scope`, `kind`, and `confidence`; todo requires `kind` and `confidence`; skill requires `name`, `description`, and `body`/`body_path`/`text`; pattern requires `text` and `rationale`.\n\n");
     prompt.push_str("Supported candidate shapes:\n\n");
     prompt.push_str("```toml\ntype = \"memory\"\nid = \"memory-001\"\ntext = \"Durable nugget of wisdom.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"/path/to/session/summary.md\"]\n```\n\n");
     prompt.push_str("```toml\ntype = \"todo\"\nid = \"todo-001\"\ntext = \"Concrete next action.\"\nscope = \"project:djinn\"\nkind = \"follow-up\"\nconfidence = \"medium\"\nevidence = [\"/path/to/session/turns/turn-1/response.md\"]\n```\n\n");
@@ -5515,6 +5516,11 @@ fn validate_promotion_candidate(candidate: &PromotionCandidate) -> Result<()> {
             "promotion candidate {} must include non-empty `text`",
             candidate.path.display()
         ),
+        "memory" => {
+            require_candidate_field(candidate, candidate.scope.as_deref(), "scope")?;
+            require_candidate_field(candidate, candidate.kind.as_deref(), "kind")?;
+            require_candidate_field(candidate, candidate.confidence.as_deref(), "confidence")?;
+        }
         "skill" => {
             if candidate
                 .name
@@ -5528,6 +5534,7 @@ fn validate_promotion_candidate(candidate: &PromotionCandidate) -> Result<()> {
                     candidate.path.display()
                 );
             }
+            require_candidate_field(candidate, candidate.description.as_deref(), "description")?;
             if candidate
                 .body
                 .as_deref()
@@ -5543,6 +5550,8 @@ fn validate_promotion_candidate(candidate: &PromotionCandidate) -> Result<()> {
             }
         }
         "todo" => {
+            require_candidate_field(candidate, candidate.kind.as_deref(), "kind")?;
+            require_candidate_field(candidate, candidate.confidence.as_deref(), "confidence")?;
             if candidate.target.as_deref().unwrap_or_default().trim() == "suggestion" {
                 bail!(
                     "promotion todo candidate {} targets the suggestion store; promotion todos currently write to durable actions",
@@ -5551,7 +5560,25 @@ fn validate_promotion_candidate(candidate: &PromotionCandidate) -> Result<()> {
             }
             validate_todo_candidate_adapter(candidate)?;
         }
+        "pattern" => {
+            require_candidate_field(candidate, candidate.rationale.as_deref(), "rationale")?;
+        }
         _ => {}
+    }
+    Ok(())
+}
+
+fn require_candidate_field(
+    candidate: &PromotionCandidate,
+    value: Option<&str>,
+    field: &str,
+) -> Result<()> {
+    if value.map(str::trim).unwrap_or_default().is_empty() {
+        bail!(
+            "promotion {} candidate {} must include `{field}`",
+            candidate.candidate_type,
+            candidate.path.display()
+        );
     }
     Ok(())
 }
@@ -19339,7 +19366,7 @@ link = "context/repo"
         fs::write(
             candidates_dir.join("todo-001.toml"),
             format!(
-                "type = \"todo\"\nid = \"todo-001\"\ntext = \"Wire Djinn promotion todos into MindWeaver inbox capture.\"\ntodo_adapter = \"mindweaver\"\narea = \"Code\"\npriority = \"p2\"\nenergy = \"m\"\ndue = \"2026-08-01\"\nestimate = \"30\"\nevidence = [\"{}/turns/turn-1/response.md\"]\n",
+                "type = \"todo\"\nid = \"todo-001\"\ntext = \"Wire Djinn promotion todos into MindWeaver inbox capture.\"\nkind = \"follow-up\"\nconfidence = \"medium\"\ntodo_adapter = \"mindweaver\"\narea = \"Code\"\npriority = \"p2\"\nenergy = \"m\"\ndue = \"2026-08-01\"\nestimate = \"30\"\nevidence = [\"{}/turns/turn-1/response.md\"]\n",
                 source.display()
             ),
         )
@@ -19416,6 +19443,61 @@ link = "context/repo"
         assert!(duplicate
             .to_string()
             .contains("duplicate MindWeaver todo candidate"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn promotion_candidate_validation_requires_type_specific_fields() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-promotion-validation-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let candidates = root.join("outputs/candidates");
+        fs::create_dir_all(&candidates).unwrap();
+        let evidence = "/tmp/source/summary.md";
+
+        let memory_err = parse_promotion_candidate(
+            &root,
+            &candidates.join("memory.toml"),
+            &format!(
+                "type = \"memory\"\ntext = \"A lesson.\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"{evidence}\"]\n"
+            ),
+        )
+        .unwrap_err();
+        assert!(memory_err.to_string().contains("must include `scope`"));
+
+        let todo_err = parse_promotion_candidate(
+            &root,
+            &candidates.join("todo.toml"),
+            &format!(
+                "type = \"todo\"\ntext = \"Do the thing.\"\nconfidence = \"medium\"\nevidence = [\"{evidence}\"]\n"
+            ),
+        )
+        .unwrap_err();
+        assert!(todo_err.to_string().contains("must include `kind`"));
+
+        let skill_err = parse_promotion_candidate(
+            &root,
+            &candidates.join("skill.toml"),
+            &format!(
+                "type = \"skill\"\nname = \"workflow\"\nbody = \"# Skill: workflow\"\nevidence = [\"{evidence}\"]\n"
+            ),
+        )
+        .unwrap_err();
+        assert!(skill_err.to_string().contains("must include `description`"));
+
+        let pattern_err = parse_promotion_candidate(
+            &root,
+            &candidates.join("pattern.toml"),
+            &format!(
+                "type = \"pattern\"\ntext = \"A repeated theme.\"\nevidence = [\"{evidence}\"]\n"
+            ),
+        )
+        .unwrap_err();
+        assert!(pattern_err.to_string().contains("must include `rationale`"));
 
         let _ = fs::remove_dir_all(&root);
     }
