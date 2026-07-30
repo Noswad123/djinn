@@ -34,45 +34,33 @@ agent turn and makes the rest of the runtime easier to evaluate.
 
 ### Folder-backed promotion sessions
 
-The first promotion-session slice is complete: `djinn session promote ...`
-creates a folder-backed promotion session, records source refs and selected
-artifact refs, and writes the current deterministic evidence packet to
-`context/source-packet.md`. `djinn session accept ...` and `djinn session deny ...`
-now record dry-runnable decisions under `outputs/decisions/`. `djinn session run
-<promotion-session>` performs model-backed candidate generation by reading
-`context/source-packet.md` and writing validated TOML candidates under
-`outputs/candidates/` without mutating durable stores. Accepted stable candidates
-can write memories, todos (through the current actions store), skills, or accepted
-pattern summaries while preserving evidence links. Candidate generation writes
-`outputs/candidate-index.toml`; accept/deny appends status events to
-`outputs/candidate-status.toml`; writeback rejects exact or near-duplicate active
-memories, open todos/actions, existing skills, and already-accepted pattern files.
-Todo candidates can now declare `todo_adapter = "mindweaver"` with MindWeaver
-metadata validation; dry-run previews the checkbox, and accept appends to the
-configured MindWeaver inbox while rejecting exact or near-duplicate open inbox
-todos. Candidate validation enforces per-type fields (`scope`/`kind`/`confidence`
-for memories, `kind`/`confidence` for todos, `description` for skills, and
-`rationale` for patterns). `djinn session status` and the Sessions TUI surface
-candidate totals, accepted/denied/pending counts, individual candidate
-id/type/status/evidence/destination previews, and focused shortcuts to accept,
-deny, or open candidate files through the canonical CLI accept/deny paths.
-Duplicate guards use tuned lexical thresholds for generated candidate variants
-while allowing related but distinct follow-up work. The local actions store
-remains the mutating fallback. `djinn session accept --sync-mindweaver` is the
-explicit post-capture handoff for running `mw todos sync`; accepting without the
-flag records a pending follow-up command, and the focused Sessions TUI exposes `m`
-as an accept-and-sync shortcut. The exact source-packet structure may evolve.
+Future promotion work should target recovery, notes handoff, and review ergonomics
+rather than more hidden artifact formats. Keep the source-packet and candidate
+schemas evolvable; durable behavior belongs in the app guide and design decisions.
 
 Ready implementation slices:
 
-- Consider whether destructive cleanup needs any TUI affordance. The CLI now
-  supports `djinn session cleanup <promotion-session> --delete-sources --dry-run`
-  and permanent `--delete-sources`; promotion sessions still use `djinn session rm`.
+- **Failed-generation recovery:** focused promotion sessions should expose command
+  palette actions to open the latest generation response, latest background log,
+  and candidates directory. This is the fastest path from “generation failed” to
+  understanding whether the model omitted required fields, emitted malformed TOML,
+  or hit a provider/runtime error.
+- **Candidate repair loop:** add a validation command for edited candidate TOML,
+  e.g. `djinn session validate-candidates <promotion-session> [candidate]`, so a
+  user can fix a nearly-valid model output and re-run validation without another
+  model call.
+- **Pattern notes handoff in TUI:** expose pattern export from the focused-session
+  command palette. If interactive path prompting is too much for the first slice,
+  show the exact `djinn session export-pattern ... --to <notes.md>` command and
+  open the candidate/summary for copying.
+- **Promotion summary quality:** tune generated `summary.md` for pattern sessions
+  from real examples. The goal is a readable synthesis that can stand alone before
+  any accept/export step.
 
 ### Session TUI polish
 
-Djinn's folder-backed Sessions dashboard and focused session view are now the
-primary product surfaces. Keep the Ratatui/local-first architecture, but borrow
+Use the folder-backed Sessions dashboard and focused session view as the primary
+UI investment areas. Keep the Ratatui/local-first architecture, but borrow
 OpenCode's strongest UX patterns where they map cleanly to file-backed terminal
 workflows: quiet chrome, easy copy/paste of paths and artifacts, progressive
 disclosure, and visually scannable status/provenance. This is an OpenCode-inspired
@@ -135,13 +123,16 @@ Remaining ready UI slices:
   the folder.
 - **Artifact opening polish:** ensure every focused-session action reports the
   exact delegated command/path and leaves the terminal in a clean state.
+- **Focused artifact actions:** add palette entries for latest run log, latest
+  generation response, candidates directory, source packet, and source manifest
+  where those artifacts exist.
 
 ### Folder-backed session follow-ups
 
-Folder-backed sessions are now the canonical work capsules; implemented behavior
-belongs in [`agent-design-decisions.md`](./agent-design-decisions.md) and the app
-guide rather than being repeated here. Remaining ready slices should build on the
-file-first surfaces without restoring the removed legacy saved-row model.
+Use folder-backed sessions as the work capsule for future slices. Implemented
+behavior belongs in [`agent-design-decisions.md`](./agent-design-decisions.md) and
+the app guide rather than being repeated here. Remaining ready slices should build
+on the file-first surfaces without restoring the removed legacy saved-row model.
 
 #### Buddy-style interactive UI over Djinn-owned sessions
 
@@ -289,23 +280,6 @@ Ready Djinn implementation slices:
 - Define an inspectable scoped grant record for Coven-to-Djinn worker requests:
   parent/orchestration id, child/session id, action, resource, effect, source, and
   session scope.
-
-Completed Djinn worker primitives:
-
-- Early foreground child-session launch created normal agent sessions with
-  `parent_session_id`, preserving current profile/agent/model context while normal
-  New Session cleared parent linkage. That UI path is superseded by the
-  folder-backed workflow; keep the lineage/event lessons, not the removed surface.
-- Child-session tree depth is capped at three levels below the root at creation
-  time.
-- CLI-only lifecycle state is recorded as JSONL session events and derived from
-  the latest event, with states `created`, `running`, `paused`, `completed`,
-  `failed`, and `cancelled`. Review/notification state remains separate and is
-  owned by Coven/family projections rather than the execution lifecycle.
-- Foreground folder-backed runs write lifecycle events: turns become
-  `running/foreground`, successful turns become `paused` or `completed` depending
-  on run mode, failures become `failed`, and exiting an inspectable workflow must
-  not pretend unfinished work is complete.
 
 ## Needs a decision before implementation
 

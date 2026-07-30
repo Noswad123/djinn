@@ -133,6 +133,11 @@ pub struct FolderSessionStatusView {
     pub next_action: Option<String>,
     pub note: Option<String>,
     pub message: Option<String>,
+    pub latest_generation_response_path: Option<String>,
+    pub latest_run_log_path: Option<String>,
+    pub candidates_dir: Option<String>,
+    pub source_packet_path: Option<String>,
+    pub sources_manifest_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +182,7 @@ pub enum FolderSessionAction {
     AcceptCandidateAndSyncMindweaver(String),
     DenyCandidate(String),
     OpenCandidate(String),
+    OpenPath(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -622,6 +628,46 @@ fn folder_session_command_palette(
             FolderSessionCommand::OpenHelp,
         ),
     ];
+    if let Some(path) = &view.latest_generation_response_path {
+        entries.push(folder_session_command_entry(
+            "Artifacts",
+            "Open latest generation response",
+            "Inspect the most recent model response for this promotion session",
+            FolderSessionCommand::Action(FolderSessionAction::OpenPath(path.clone())),
+        ));
+    }
+    if let Some(path) = &view.latest_run_log_path {
+        entries.push(folder_session_command_entry(
+            "Artifacts",
+            "Open latest run log",
+            "Inspect the latest background run log",
+            FolderSessionCommand::Action(FolderSessionAction::OpenPath(path.clone())),
+        ));
+    }
+    if let Some(path) = &view.candidates_dir {
+        entries.push(folder_session_command_entry(
+            "Artifacts",
+            "Open candidates directory",
+            "Browse generated candidate TOML files",
+            FolderSessionCommand::Action(FolderSessionAction::OpenPath(path.clone())),
+        ));
+    }
+    if let Some(path) = &view.source_packet_path {
+        entries.push(folder_session_command_entry(
+            "Artifacts",
+            "Open source packet",
+            "Inspect the evidence packet sent to the model",
+            FolderSessionCommand::Action(FolderSessionAction::OpenPath(path.clone())),
+        ));
+    }
+    if let Some(path) = &view.sources_manifest_path {
+        entries.push(folder_session_command_entry(
+            "Artifacts",
+            "Open sources manifest",
+            "Inspect source session refs and selected artifacts",
+            FolderSessionCommand::Action(FolderSessionAction::OpenPath(path.clone())),
+        ));
+    }
     if let Some(candidate) = view.candidate_entries.get(selected_candidate) {
         entries.extend([
             folder_session_command_entry(
@@ -3588,6 +3634,13 @@ mod tests {
             next_action: None,
             note: None,
             message: Some("Accepted candidate todo-001".to_string()),
+            latest_generation_response_path: Some(
+                "/tmp/promotion/outputs/generation/latest-response.md".to_string(),
+            ),
+            latest_run_log_path: Some("/tmp/promotion/.djinn/runs/latest.log".to_string()),
+            candidates_dir: Some("/tmp/promotion/outputs/candidates".to_string()),
+            source_packet_path: Some("/tmp/promotion/context/source-packet.md".to_string()),
+            sources_manifest_path: Some("/tmp/promotion/context/sources.toml".to_string()),
         };
 
         assert_eq!(
@@ -3618,6 +3671,15 @@ mod tests {
         assert!(palette
             .iter()
             .any(|entry| entry.label == "Accept selected candidate"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Open latest generation response"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Open latest run log"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Open source packet"));
         let mut palette_state = GroupedSelectState::default();
         palette_state.open();
         palette_state.query = "key".to_string();

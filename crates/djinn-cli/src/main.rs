@@ -4813,6 +4813,7 @@ fn folder_session_action_message(
             format!("Denied candidate {candidate}")
         }
         djinn_tui::FolderSessionAction::OpenCandidate(_) => "Opened candidate file".to_string(),
+        djinn_tui::FolderSessionAction::OpenPath(path) => format!("Opened {path}"),
     }
 }
 
@@ -4899,6 +4900,7 @@ fn handle_folder_session_tui_action(
         djinn_tui::FolderSessionAction::OpenCandidate(path) => {
             open_editor_path(Path::new(&path), None)
         }
+        djinn_tui::FolderSessionAction::OpenPath(path) => open_editor_path(Path::new(&path), None),
     }
 }
 
@@ -4964,6 +4966,36 @@ fn folder_session_status_tui_view(
             .clone()
             .or(report.lifecycle.reason.clone()),
         message: None,
+        latest_generation_response_path: latest_promotion_generation_response_path(&session_path)
+            .map(|path| path.display().to_string()),
+        latest_run_log_path: latest_background_session_run_status(&session_path)
+            .and_then(|run| run.log_path),
+        candidates_dir: session_path
+            .join("outputs")
+            .join("candidates")
+            .is_dir()
+            .then(|| {
+                session_path
+                    .join("outputs")
+                    .join("candidates")
+                    .display()
+                    .to_string()
+            }),
+        source_packet_path: session_path
+            .join("context/source-packet.md")
+            .exists()
+            .then(|| {
+                session_path
+                    .join("context/source-packet.md")
+                    .display()
+                    .to_string()
+            }),
+        sources_manifest_path: session_path.join("context/sources.toml").exists().then(|| {
+            session_path
+                .join("context/sources.toml")
+                .display()
+                .to_string()
+        }),
     })
 }
 
@@ -8233,19 +8265,25 @@ fn format_byte_count(bytes: u64) -> String {
 }
 
 fn promotion_generation_has_response(session_dir: &Path) -> bool {
+    latest_promotion_generation_response_path(session_dir).is_some()
+}
+
+fn latest_promotion_generation_response_path(session_dir: &Path) -> Option<PathBuf> {
     session_dir
         .join("outputs")
         .join("generation")
         .read_dir()
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(std::result::Result::ok))
-        .any(|entry| {
-            entry
-                .file_name()
-                .to_str()
+        .ok()?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
                 .is_some_and(|name| name.ends_with("-response.md"))
         })
+        .filter_map(|path| Some((fs::metadata(&path).ok()?.modified().ok()?, path)))
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
 }
 
 fn latest_promotion_generation_modified_at(session_dir: &Path) -> Option<String> {
@@ -19823,6 +19861,33 @@ link = "context/repo"
         fs::write(turn.join("request.md"), "question\n").unwrap();
         fs::write(turn.join("response.md"), "answer\n").unwrap();
         fs::create_dir_all(session_dir.join("outputs/candidates")).unwrap();
+        fs::create_dir_all(session_dir.join("outputs/generation")).unwrap();
+        fs::create_dir_all(session_dir.join("context")).unwrap();
+        fs::create_dir_all(session_dir.join(".djinn/runs")).unwrap();
+        fs::write(
+            session_dir.join("outputs/generation/1-response.md"),
+            "model response\n",
+        )
+        .unwrap();
+        fs::write(session_dir.join("context/source-packet.md"), "packet\n").unwrap();
+        fs::write(
+            session_dir.join("context/sources.toml"),
+            "source_count = 0\n",
+        )
+        .unwrap();
+        fs::write(
+            session_dir.join(".djinn/runs/session-run-test.log"),
+            "log\n",
+        )
+        .unwrap();
+        fs::write(
+            session_dir.join(".djinn/runs/session-run-test.toml"),
+            format!(
+                "version = 1\nstarted_at = \"2026-07-30T12:00:00Z\"\npid = 4294967295\nlog_path = \"{}\"\n",
+                session_dir.join(".djinn/runs/session-run-test.log").display()
+            ),
+        )
+        .unwrap();
         fs::write(
             session_dir.join("outputs/candidates/todo-001.toml"),
             "type = \"todo\"\n",
@@ -19843,6 +19908,31 @@ link = "context/repo"
         assert_eq!(view.candidate_entries[0].id, "todo-001");
         assert!(view.candidate_entries[0].path.ends_with("todo-001.toml"));
         assert!(view.message.is_none());
+        assert!(view
+            .latest_generation_response_path
+            .as_deref()
+            .unwrap()
+            .ends_with("1-response.md"));
+        assert!(view
+            .latest_run_log_path
+            .as_deref()
+            .unwrap()
+            .ends_with("session-run-test.log"));
+        assert!(view
+            .candidates_dir
+            .as_deref()
+            .unwrap()
+            .ends_with("candidates"));
+        assert!(view
+            .source_packet_path
+            .as_deref()
+            .unwrap()
+            .ends_with("source-packet.md"));
+        assert!(view
+            .sources_manifest_path
+            .as_deref()
+            .unwrap()
+            .ends_with("sources.toml"));
         assert!(view
             .request_path
             .as_deref()
