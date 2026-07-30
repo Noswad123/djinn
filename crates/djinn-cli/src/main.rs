@@ -195,6 +195,9 @@ struct SessionRunArgs {
     /// Maximum model/tool-call rounds before stopping.
     #[arg(long = "max-tool-rounds", default_value_t = DEFAULT_AGENT_MAX_TOOL_ROUNDS)]
     max_tool_rounds: usize,
+    /// For promotion sessions, render the model prompt without calling a model or writing candidates.
+    #[arg(long)]
+    dry_run: bool,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -4742,6 +4745,7 @@ fn handle_folder_session_tui_action(
             api_key: None,
             base_url: None,
             max_tool_rounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
+            dry_run: false,
             json: false,
             print: false,
             open: false,
@@ -4883,6 +4887,7 @@ struct SessionDecisionReport {
     candidate: Option<String>,
     candidate_count: usize,
     decision_path: String,
+    candidate_status_path: String,
     wrote_decision: bool,
     durable_writeback: bool,
     writebacks: Vec<SessionCandidateWritebackReport>,
@@ -4896,6 +4901,7 @@ struct SessionCandidateWritebackReport {
     destination: String,
     id: String,
     path: Option<String>,
+    preview: Option<String>,
     dry_run: bool,
 }
 
@@ -4909,6 +4915,13 @@ struct PromotionCandidate {
     kind: Option<String>,
     confidence: Option<String>,
     target: Option<String>,
+    todo_adapter: Option<String>,
+    area: Option<String>,
+    priority: Option<String>,
+    energy: Option<String>,
+    due: Option<String>,
+    start: Option<String>,
+    estimate: Option<String>,
     rationale: Option<String>,
     draft: Option<String>,
     name: Option<String>,
@@ -4968,6 +4981,9 @@ fn session_decide(args: SessionDecisionArgs, action: SessionDecisionAction) -> R
                     writeback.id
                 );
             }
+            if let Some(preview) = &writeback.preview {
+                println!("      preview: {}", preview.replace('\n', "\\n"));
+            }
         }
         println!("  note: {}", report.note);
     }
@@ -5005,6 +5021,7 @@ fn decide_promotion_session_with_stores(
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
     let decisions_dir = session_dir.join("outputs").join("decisions");
+    let candidate_status_path = session_dir.join("outputs").join("candidate-status.toml");
     let decision_path = decisions_dir.join(format!(
         "{}-{}.toml",
         chrono::Local::now()
@@ -5012,11 +5029,7 @@ fn decide_promotion_session_with_stores(
             .unwrap_or_default(),
         session_decision_action_label(action)
     ));
-    let candidates = if action == SessionDecisionAction::Accept {
-        resolve_promotion_candidates(&session_dir, args.candidate.as_deref())?
-    } else {
-        Vec::new()
-    };
+    let candidates = resolve_promotion_candidates(&session_dir, args.candidate.as_deref())?;
     let writebacks = if action == SessionDecisionAction::Accept {
         writeback_promotion_candidates(&session_dir, &candidates, args.dry_run, &stores)?
     } else {
@@ -5053,6 +5066,12 @@ fn decide_promotion_session_with_stores(
             )?,
         )
         .with_context(|| format!("writing {}", decision_path.display()))?;
+        append_promotion_candidate_status_events(
+            &candidate_status_path,
+            action,
+            &candidates,
+            &writebacks,
+        )?;
     }
 
     Ok(SessionDecisionReport {
@@ -5063,6 +5082,7 @@ fn decide_promotion_session_with_stores(
         candidate: args.candidate.clone(),
         candidate_count: candidates.len(),
         decision_path: decision_path.display().to_string(),
+        candidate_status_path: candidate_status_path.display().to_string(),
         wrote_decision: !args.dry_run,
         durable_writeback,
         writebacks,
@@ -5085,6 +5105,202 @@ fn session_decision_action_label(action: SessionDecisionAction) -> &'static str 
         SessionDecisionAction::Accept => "accept",
         SessionDecisionAction::Deny => "deny",
     }
+}
+
+fn render_promotion_candidate_generation_prompt(
+    promotion_type: &str,
+    source_packet: &str,
+) -> String {
+    let mut prompt = String::new();
+    prompt.push_str("# Djinn promotion candidate generation\n\n");
+    prompt.push_str(&format!("Promotion type: `{}`\n\n", promotion_type.trim()));
+    prompt.push_str(
+        "Read the source packet below and propose high-confidence promotion candidates only. ",
+    );
+    prompt.push_str("Return one fenced `toml` block per candidate and no other prose. ");
+    prompt.push_str("Every candidate must include `type`, `text` (except skill may use `body`), and non-empty `evidence` links copied from the source packet.\n\n");
+    prompt.push_str("Supported candidate shapes:\n\n");
+    prompt.push_str("```toml\ntype = \"memory\"\nid = \"memory-001\"\ntext = \"Durable nugget of wisdom.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"/path/to/session/summary.md\"]\n```\n\n");
+    prompt.push_str("```toml\ntype = \"todo\"\nid = \"todo-001\"\ntext = \"Concrete next action.\"\nscope = \"project:djinn\"\nkind = \"follow-up\"\nconfidence = \"medium\"\nevidence = [\"/path/to/session/turns/turn-1/response.md\"]\n```\n\n");
+    prompt.push_str("Todo candidates may optionally include `todo_adapter = \"action\"` (Djinn fallback) or `todo_adapter = \"mindweaver\"` plus MindWeaver metadata such as `area = \"Code\"`, `priority = \"p2\"`, `energy = \"m\"`, `due = \"2026-08-01\"`, `start = \"2026-07-30\"`, or `estimate = \"30\"`. MindWeaver todo accept is currently dry-run preview only.\n\n");
+    prompt.push_str("```toml\ntype = \"skill\"\nid = \"skill-001\"\nname = \"reusable-workflow\"\ndescription = \"When to use this workflow.\"\nbody = \"# Skill: reusable-workflow\\n\\n## When to use\\n...\"\nevidence = [\"/path/to/session/context/compacted.md\"]\n```\n\n");
+    prompt.push_str("```toml\ntype = \"pattern\"\nid = \"pattern-001\"\ntext = \"Common thread across the source sessions.\"\nrationale = \"Why this is a repeated pattern.\"\nevidence = [\"/path/to/session/summary.md\"]\n```\n\n");
+    prompt
+        .push_str("If there are no high-confidence candidates, return no fenced TOML blocks.\n\n");
+    prompt.push_str("## Source packet\n\n");
+    prompt.push_str(source_packet.trim_end());
+    prompt.push('\n');
+    prompt
+}
+
+fn write_generated_promotion_candidates(
+    session_dir: &Path,
+    expected_type: &str,
+    model_output: &str,
+    candidates_dir: &Path,
+) -> Result<Vec<PromotionGeneratedCandidateReport>> {
+    let blocks = extract_toml_fenced_blocks(model_output);
+    let mut reports = Vec::new();
+    for (idx, block) in blocks.iter().enumerate() {
+        let mut content = block.trim().to_string();
+        let default_id = format!("{}-{:03}", expected_type.trim(), idx + 1);
+        if candidate_string_value(&content, "id").is_none() {
+            content = format!("id = {}\n{}", toml_string(&default_id)?, content);
+        }
+        let id = candidate_string_value(&content, "id").unwrap_or(default_id);
+        let path = candidates_dir.join(format!("{}.toml", candidate_file_stem(&id)));
+        let candidate = parse_promotion_candidate(session_dir, &path, &content)?;
+        if candidate.candidate_type != expected_type.trim() {
+            bail!(
+                "generated candidate {} has type `{}` but promotion session type is `{}`",
+                candidate.id,
+                candidate.candidate_type,
+                expected_type
+            );
+        }
+        fs::write(&path, ensure_trailing_newline(&content))
+            .with_context(|| format!("writing generated promotion candidate {}", path.display()))?;
+        reports.push(PromotionGeneratedCandidateReport {
+            id: candidate.id,
+            candidate_type: candidate.candidate_type,
+            path: path.display().to_string(),
+            evidence_count: candidate.evidence.len(),
+        });
+    }
+    if reports.is_empty() {
+        bail!("model response did not contain any fenced TOML promotion candidates");
+    }
+    Ok(reports)
+}
+
+fn extract_toml_fenced_blocks(value: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut in_toml = false;
+    let mut current = String::new();
+    for line in value.lines() {
+        let trimmed = line.trim();
+        if let Some(info) = trimmed.strip_prefix("```") {
+            if in_toml {
+                blocks.push(current.trim().to_string());
+                current.clear();
+                in_toml = false;
+            } else if info.trim().eq_ignore_ascii_case("toml") {
+                in_toml = true;
+            }
+            continue;
+        }
+        if in_toml {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+    blocks
+        .into_iter()
+        .filter(|block| !block.trim().is_empty())
+        .collect()
+}
+
+fn candidate_file_stem(id: &str) -> String {
+    let stem = folder_session_slug(id);
+    if stem.is_empty() {
+        "candidate".to_string()
+    } else {
+        stem
+    }
+}
+
+fn write_promotion_candidate_index(
+    session_dir: &Path,
+    candidates: &[PromotionGeneratedCandidateReport],
+) -> Result<PathBuf> {
+    let index_path = session_dir.join("outputs").join("candidate-index.toml");
+    let mut output = String::new();
+    output.push_str("version = 1\n");
+    output.push_str(&format!(
+        "generated_at = {}\n",
+        toml_string(&chrono::Local::now().to_rfc3339())?
+    ));
+    output.push_str(&format!("candidate_count = {}\n", candidates.len()));
+    for candidate in candidates {
+        output.push_str("\n[[candidates]]\n");
+        output.push_str(&format!("id = {}\n", toml_string(&candidate.id)?));
+        output.push_str(&format!(
+            "type = {}\n",
+            toml_string(&candidate.candidate_type)?
+        ));
+        output.push_str(&format!("path = {}\n", toml_string(&candidate.path)?));
+        output.push_str("status = \"candidate\"\n");
+        output.push_str(&format!("evidence_count = {}\n", candidate.evidence_count));
+    }
+    fs::write(&index_path, output).with_context(|| format!("writing {}", index_path.display()))?;
+    Ok(index_path)
+}
+
+fn append_promotion_candidate_status_events(
+    status_path: &Path,
+    action: SessionDecisionAction,
+    candidates: &[PromotionCandidate],
+    writebacks: &[SessionCandidateWritebackReport],
+) -> Result<()> {
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    if let Some(parent) = status_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating candidate status directory {}", parent.display()))?;
+    }
+    let mut output = String::new();
+    for candidate in candidates {
+        output.push_str("[[events]]\n");
+        output.push_str(&format!(
+            "decided_at = {}\n",
+            toml_string(&chrono::Local::now().to_rfc3339())?
+        ));
+        output.push_str(&format!("candidate = {}\n", toml_string(&candidate.id)?));
+        output.push_str(&format!(
+            "type = {}\n",
+            toml_string(&candidate.candidate_type)?
+        ));
+        output.push_str(&format!(
+            "action = {}\n",
+            toml_string(session_decision_action_label(action))?
+        ));
+        output.push_str(&format!(
+            "status = {}\n",
+            toml_string(match action {
+                SessionDecisionAction::Accept => "accepted",
+                SessionDecisionAction::Deny => "denied",
+            })?
+        ));
+        let durable_writeback = writebacks
+            .iter()
+            .any(|writeback| writeback.candidate == candidate.id);
+        output.push_str(&format!("durable_writeback = {}\n", durable_writeback));
+        if let Some(writeback) = writebacks
+            .iter()
+            .find(|writeback| writeback.candidate == candidate.id)
+        {
+            output.push_str(&format!(
+                "destination = {}\n",
+                toml_string(&writeback.destination)?
+            ));
+            output.push_str(&format!("writeback_id = {}\n", toml_string(&writeback.id)?));
+            if let Some(path) = &writeback.path {
+                output.push_str(&format!("writeback_path = {}\n", toml_string(path)?));
+            }
+            if let Some(preview) = &writeback.preview {
+                output.push_str(&format!("preview = {}\n", toml_string(preview)?));
+            }
+        }
+        output.push('\n');
+    }
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(status_path)
+        .with_context(|| format!("opening {}", status_path.display()))?
+        .write_all(output.as_bytes())
+        .with_context(|| format!("writing {}", status_path.display()))
 }
 
 fn resolve_promotion_candidates(
@@ -5157,6 +5373,14 @@ fn resolve_promotion_candidate_path(session_dir: &Path, candidate: &str) -> Path
 fn read_promotion_candidate(session_dir: &Path, path: &Path) -> Result<PromotionCandidate> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("reading promotion candidate {}", path.display()))?;
+    parse_promotion_candidate(session_dir, path, &content)
+}
+
+fn parse_promotion_candidate(
+    session_dir: &Path,
+    path: &Path,
+    content: &str,
+) -> Result<PromotionCandidate> {
     let id = candidate_string_value(&content, "id").unwrap_or_else(|| {
         path.file_stem()
             .and_then(|name| name.to_str())
@@ -5176,6 +5400,9 @@ fn read_promotion_candidate(session_dir: &Path, path: &Path) -> Result<Promotion
     } else {
         None
     };
+    let confidence = candidate_string_value(&content, "confidence").or_else(|| {
+        (candidate_type.trim() != "todo").then(|| candidate_string_value(&content, "priority"))?
+    });
     let candidate = PromotionCandidate {
         id,
         candidate_type,
@@ -5183,9 +5410,17 @@ fn read_promotion_candidate(session_dir: &Path, path: &Path) -> Result<Promotion
         text,
         scope: candidate_string_value(&content, "scope"),
         kind: candidate_string_value(&content, "kind"),
-        confidence: candidate_string_value(&content, "confidence")
-            .or_else(|| candidate_string_value(&content, "priority")),
+        confidence,
         target: candidate_string_value(&content, "target"),
+        todo_adapter: candidate_string_value(&content, "todo_adapter")
+            .or_else(|| candidate_string_value(&content, "adapter")),
+        area: candidate_string_value(&content, "area"),
+        priority: candidate_string_value(&content, "priority"),
+        energy: candidate_string_value(&content, "energy"),
+        due: candidate_string_value(&content, "due"),
+        start: candidate_string_value(&content, "start"),
+        estimate: candidate_string_value(&content, "estimate")
+            .or_else(|| candidate_string_value(&content, "est")),
         rationale: candidate_string_value(&content, "rationale"),
         draft: candidate_string_value(&content, "draft"),
         name: candidate_string_value(&content, "name"),
@@ -5254,6 +5489,25 @@ fn validate_promotion_candidate(candidate: &PromotionCandidate) -> Result<()> {
             candidate.path.display()
         );
     }
+    if candidate
+        .evidence
+        .iter()
+        .any(|evidence| !is_file_native_promotion_evidence(evidence))
+    {
+        bail!(
+            "promotion candidate {} evidence must cite file-native session artifacts such as summary.md, context/compacted.md, or turns/<id>/ files",
+            candidate.path.display()
+        );
+    }
+    if let Some(confidence) = candidate.confidence.as_deref() {
+        let confidence = confidence.trim();
+        if !confidence.is_empty() && !matches!(confidence, "low" | "medium" | "high") {
+            bail!(
+                "promotion candidate {} confidence must be low, medium, or high",
+                candidate.path.display()
+            );
+        }
+    }
     match candidate_type {
         "memory" | "todo" | "pattern" if candidate.text.trim().is_empty() => bail!(
             "promotion candidate {} must include non-empty `text`",
@@ -5286,9 +5540,135 @@ fn validate_promotion_candidate(candidate: &PromotionCandidate) -> Result<()> {
                 );
             }
         }
+        "todo" => {
+            if candidate.target.as_deref().unwrap_or_default().trim() == "suggestion" {
+                bail!(
+                    "promotion todo candidate {} targets the suggestion store; promotion todos currently write to durable actions",
+                    candidate.path.display()
+                );
+            }
+            validate_todo_candidate_adapter(candidate)?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn validate_todo_candidate_adapter(candidate: &PromotionCandidate) -> Result<()> {
+    let adapter = promotion_todo_adapter(candidate);
+    if !matches!(adapter.as_str(), "action" | "mindweaver") {
+        bail!(
+            "promotion todo candidate {} has unsupported todo_adapter `{adapter}`; expected action or mindweaver",
+            candidate.path.display()
+        );
+    }
+    if adapter == "mindweaver" {
+        if let Some(area) = candidate
+            .area
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if !matches!(
+                area,
+                "Code" | "Action" | "Reading" | "Amusement" | "Music" | "Exercise" | "Love"
+            ) {
+                bail!(
+                    "promotion todo candidate {} has unsupported MindWeaver area `{area}`",
+                    candidate.path.display()
+                );
+            }
+        }
+        if let Some(priority) = candidate
+            .priority
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if !matches!(priority, "p1" | "p2" | "p3" | "p4" | "p5") {
+                bail!(
+                    "promotion todo candidate {} has unsupported MindWeaver priority `{priority}`; expected p1..p5",
+                    candidate.path.display()
+                );
+            }
+        }
+        if let Some(energy) = candidate
+            .energy
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if !matches!(energy, "xsm" | "s" | "m" | "l" | "xl") {
+                bail!(
+                    "promotion todo candidate {} has unsupported MindWeaver energy `{energy}`; expected xsm, s, m, l, or xl",
+                    candidate.path.display()
+                );
+            }
+        }
+        if let Some(due) = candidate
+            .due
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            validate_mindweaver_date(candidate, "due", due)?;
+        }
+        if let Some(start) = candidate
+            .start
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            validate_mindweaver_date(candidate, "start", start)?;
+        }
+        if let Some(estimate) = candidate
+            .estimate
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            if estimate.parse::<u64>().is_err() {
+                bail!(
+                    "promotion todo candidate {} has unsupported MindWeaver estimate `{estimate}`; expected minutes as an integer",
+                    candidate.path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_mindweaver_date(
+    candidate: &PromotionCandidate,
+    field: &str,
+    value: &str,
+) -> Result<()> {
+    if chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err() {
+        bail!(
+            "promotion todo candidate {} has unsupported MindWeaver {field} date `{value}`; expected YYYY-MM-DD",
+            candidate.path.display()
+        );
+    }
+    Ok(())
+}
+
+fn promotion_todo_adapter(candidate: &PromotionCandidate) -> String {
+    candidate
+        .todo_adapter
+        .as_deref()
+        .or(candidate.target.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("action")
+        .to_lowercase()
+}
+
+fn is_file_native_promotion_evidence(evidence: &str) -> bool {
+    let evidence = evidence.trim();
+    !evidence.is_empty()
+        && (evidence.contains("summary.md")
+            || evidence.contains("context/")
+            || evidence.contains("turns/"))
 }
 
 fn writeback_promotion_candidates(
@@ -5311,6 +5691,7 @@ fn writeback_promotion_candidate(
 ) -> Result<SessionCandidateWritebackReport> {
     match candidate.candidate_type.as_str() {
         "memory" => {
+            ensure_no_duplicate_memory_candidate(candidate, &stores.memory)?;
             let input = MemoryInput {
                 text: candidate.text.trim().to_string(),
                 scope: candidate.scope.clone(),
@@ -5331,10 +5712,30 @@ fn writeback_promotion_candidate(
                 destination: "memory".to_string(),
                 id,
                 path: None,
+                preview: None,
                 dry_run,
             })
         }
         "todo" => {
+            let adapter = promotion_todo_adapter(candidate);
+            if adapter == "mindweaver" {
+                if !dry_run {
+                    bail!(
+                        "MindWeaver todo writeback is preview-only in this Djinn slice; rerun with --dry-run or omit todo_adapter/target to use Djinn's action fallback"
+                    );
+                }
+                let preview = render_mindweaver_todo_capture(candidate);
+                return Ok(SessionCandidateWritebackReport {
+                    candidate: candidate.id.clone(),
+                    candidate_type: candidate.candidate_type.clone(),
+                    destination: "mindweaver_inbox_preview".to_string(),
+                    id: candidate.id.clone(),
+                    path: Some(resolve_mindweaver_inbox_preview_path()),
+                    preview: Some(preview),
+                    dry_run,
+                });
+            }
+            ensure_no_duplicate_todo_candidate(candidate, &stores.action)?;
             let input = MemoryInput {
                 text: candidate.text.trim().to_string(),
                 scope: candidate.scope.clone(),
@@ -5355,11 +5756,13 @@ fn writeback_promotion_candidate(
                 destination: "action".to_string(),
                 id,
                 path: None,
+                preview: None,
                 dry_run,
             })
         }
         "skill" => {
             let name = candidate.name.as_deref().unwrap_or(&candidate.id);
+            ensure_no_duplicate_skill_candidate(name, &stores.skill)?;
             let description = candidate.description.as_deref().unwrap_or_default();
             let content = render_skill_candidate_content(candidate);
             let (id, path) = if dry_run {
@@ -5376,12 +5779,19 @@ fn writeback_promotion_candidate(
                 destination: "skill".to_string(),
                 id,
                 path,
+                preview: None,
                 dry_run,
             })
         }
         "pattern" => {
             let accepted_dir = session_dir.join("outputs").join("accepted");
             let accepted_path = accepted_dir.join(format!("{}.md", candidate.id));
+            if accepted_path.exists() {
+                bail!(
+                    "accepted pattern candidate already exists: {}",
+                    accepted_path.display()
+                );
+            }
             if !dry_run {
                 fs::create_dir_all(&accepted_dir).with_context(|| {
                     format!(
@@ -5398,11 +5808,77 @@ fn writeback_promotion_candidate(
                 destination: "pattern_summary".to_string(),
                 id: candidate.id.clone(),
                 path: Some(accepted_path.display().to_string()),
+                preview: None,
                 dry_run,
             })
         }
         other => bail!("unsupported promotion candidate type `{other}`"),
     }
+}
+
+fn ensure_no_duplicate_memory_candidate(
+    candidate: &PromotionCandidate,
+    store: &djinn_memory::MemoryStore,
+) -> Result<()> {
+    let candidate_text = normalized_candidate_text(&candidate.text);
+    if candidate_text.is_empty() {
+        return Ok(());
+    }
+    for record in store.list()? {
+        if record.status == "active" && normalized_candidate_text(&record.text) == candidate_text {
+            bail!(
+                "duplicate memory candidate {} matches existing memory {}",
+                candidate.id,
+                record.id
+            );
+        }
+    }
+    Ok(())
+}
+
+fn ensure_no_duplicate_todo_candidate(
+    candidate: &PromotionCandidate,
+    store: &ActionStore,
+) -> Result<()> {
+    let candidate_text = normalized_candidate_text(&candidate.text);
+    if candidate_text.is_empty() {
+        return Ok(());
+    }
+    for record in store.list()? {
+        if record.status == "open" && normalized_candidate_text(&record.text) == candidate_text {
+            bail!(
+                "duplicate todo candidate {} matches existing action {}",
+                candidate.id,
+                record.id
+            );
+        }
+    }
+    Ok(())
+}
+
+fn ensure_no_duplicate_skill_candidate(name: &str, store: &SkillStore) -> Result<()> {
+    let candidate_name = normalized_candidate_text(name);
+    if candidate_name.is_empty() {
+        return Ok(());
+    }
+    for record in store.list()? {
+        if normalized_candidate_text(&record.name) == candidate_name {
+            bail!(
+                "duplicate skill candidate {} matches existing skill {}",
+                name,
+                record.name
+            );
+        }
+    }
+    Ok(())
+}
+
+fn normalized_candidate_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 fn promotion_candidate_source(session_dir: &Path, candidate: &PromotionCandidate) -> MemorySource {
@@ -5441,6 +5917,59 @@ fn render_pattern_candidate_content(candidate: &PromotionCandidate) -> String {
         content.push_str(&format!("- {evidence}\n"));
     }
     content
+}
+
+fn render_mindweaver_todo_capture(candidate: &PromotionCandidate) -> String {
+    let mut content = format!("- [ ] {}", candidate.text.trim());
+    let metadata = mindweaver_todo_metadata(candidate);
+    if !metadata.is_empty() {
+        content.push_str("\n  - ");
+        content.push_str(&metadata.join(" "));
+    }
+    content
+}
+
+fn mindweaver_todo_metadata(candidate: &PromotionCandidate) -> Vec<String> {
+    let mut metadata = Vec::new();
+    if let Some(priority) = trimmed_non_empty(candidate.priority.as_deref()) {
+        metadata.push(priority.to_string());
+    }
+    if let Some(energy) = trimmed_non_empty(candidate.energy.as_deref()) {
+        metadata.push(format!("e:{energy}"));
+    }
+    if let Some(due) = trimmed_non_empty(candidate.due.as_deref()) {
+        metadata.push(format!("due:{due}"));
+    }
+    if let Some(start) = trimmed_non_empty(candidate.start.as_deref()) {
+        metadata.push(format!("start:{start}"));
+    }
+    if let Some(estimate) = trimmed_non_empty(candidate.estimate.as_deref()) {
+        metadata.push(format!("est:{estimate}"));
+    }
+    if let Some(area) = trimmed_non_empty(candidate.area.as_deref()) {
+        metadata.push(format!("area:{area}"));
+    }
+    metadata
+}
+
+fn trimmed_non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn resolve_mindweaver_inbox_preview_path() -> String {
+    env::var("MW_TODO_INBOX")
+        .or_else(|_| env::var("MW_INBOX_PATH"))
+        .or_else(|_| env::var("INBOX_PATH"))
+        .or_else(|_| {
+            env::var("NOTES_DIR").map(|notes_dir| {
+                PathBuf::from(notes_dir)
+                    .join("introspection")
+                    .join("inbox.md")
+                    .display()
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|_| "$NOTES_DIR/introspection/inbox.md".to_string())
 }
 
 fn render_session_decision_record(
@@ -5491,6 +6020,9 @@ fn render_session_decision_record(
         output.push_str(&format!("id = {}\n", toml_string(&writeback.id)?));
         if let Some(path) = &writeback.path {
             output.push_str(&format!("path = {}\n", toml_string(path)?));
+        }
+        if let Some(preview) = &writeback.preview {
+            output.push_str(&format!("preview = {}\n", toml_string(preview)?));
         }
     }
     Ok(output)
@@ -10032,6 +10564,24 @@ fn session_run(args: SessionRunArgs) -> Result<()> {
     if args.background_worker && args.foreground {
         bail!("--background-worker cannot be combined with --fg");
     }
+    let session_dir = resolve_session_dir(&args.dir)?;
+    let manifest = read_folder_session_manifest(&session_dir)?;
+    if manifest
+        .as_ref()
+        .and_then(|manifest| manifest.kind.as_deref())
+        == Some("promotion")
+    {
+        if args.dry_run && args.background_worker {
+            bail!("--dry-run cannot be combined with --background-worker");
+        }
+        if !args.foreground && !args.background_worker && !args.dry_run {
+            return session_run_background(args);
+        }
+        return session_run_promotion(args, session_dir, manifest.unwrap());
+    }
+    if args.dry_run {
+        bail!("--dry-run is currently only supported for promotion sessions");
+    }
     if !args.foreground && !args.background_worker {
         return session_run_background(args);
     }
@@ -10072,6 +10622,230 @@ struct SessionRunBackgroundReport {
     pid: u32,
     log_path: String,
     watch_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct PromotionCandidateGenerationReport {
+    status: String,
+    dry_run: bool,
+    session_dir: String,
+    promotion_type: String,
+    model: Option<String>,
+    source_packet_path: String,
+    prompt_path: Option<String>,
+    response_path: Option<String>,
+    candidates_dir: String,
+    candidate_index_path: Option<String>,
+    candidate_count: usize,
+    candidates: Vec<PromotionGeneratedCandidateReport>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct PromotionGeneratedCandidateReport {
+    id: String,
+    candidate_type: String,
+    path: String,
+    evidence_count: usize,
+}
+
+fn session_run_promotion(
+    args: SessionRunArgs,
+    session_dir: PathBuf,
+    manifest: FolderSessionManifest,
+) -> Result<()> {
+    if args.print || args.open {
+        bail!("--print and --open are not supported for promotion candidate generation");
+    }
+    let report = generate_promotion_candidates(&args, &session_dir, &manifest)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if args.dry_run {
+        println!(
+            "Promotion candidate generation dry run: {}",
+            report.session_dir
+        );
+        println!("  type: {}", report.promotion_type);
+        if let Some(model) = &report.model {
+            println!("  model: {model}");
+        }
+        println!("  source packet: {}", report.source_packet_path);
+        println!("  candidates dir: {}", report.candidates_dir);
+        if let Some(prompt_path) = &report.prompt_path {
+            println!("  prompt preview: {prompt_path}");
+        }
+    } else {
+        println!("Generated promotion candidates: {}", report.session_dir);
+        println!("  type: {}", report.promotion_type);
+        if let Some(model) = &report.model {
+            println!("  model: {model}");
+        }
+        println!(
+            "  response: {}",
+            report.response_path.as_deref().unwrap_or("none")
+        );
+        println!("  candidates: {}", report.candidate_count);
+        for candidate in &report.candidates {
+            println!(
+                "    - {} {} -> {}",
+                candidate.candidate_type, candidate.id, candidate.path
+            );
+        }
+        println!(
+            "  accept: djinn session accept {} --dry-run",
+            report.session_dir
+        );
+    }
+    Ok(())
+}
+
+fn generate_promotion_candidates(
+    args: &SessionRunArgs,
+    session_dir: &Path,
+    manifest: &FolderSessionManifest,
+) -> Result<PromotionCandidateGenerationReport> {
+    let promotion_type = manifest
+        .promotion_type
+        .clone()
+        .unwrap_or_else(|| "memory".to_string());
+    let source_packet_path = session_dir.join("context").join("source-packet.md");
+    let source_packet = fs::read_to_string(&source_packet_path)
+        .with_context(|| format!("reading {}", source_packet_path.display()))?;
+    let prompt = render_promotion_candidate_generation_prompt(&promotion_type, &source_packet);
+    let outputs_dir = session_dir.join("outputs");
+    let generation_dir = outputs_dir.join("generation");
+    let candidates_dir = outputs_dir.join("candidates");
+    let timestamp = chrono::Local::now()
+        .timestamp_nanos_opt()
+        .unwrap_or_default();
+    fs::create_dir_all(&generation_dir)
+        .with_context(|| format!("creating generation directory {}", generation_dir.display()))?;
+    fs::create_dir_all(&candidates_dir)
+        .with_context(|| format!("creating candidates directory {}", candidates_dir.display()))?;
+    let prompt_path = generation_dir.join(format!("{timestamp}-prompt.md"));
+    fs::write(&prompt_path, ensure_trailing_newline(&prompt))
+        .with_context(|| format!("writing {}", prompt_path.display()))?;
+
+    let (profile, model) = resolve_promotion_generation_profile_model(args, manifest)?;
+    if args.dry_run {
+        return Ok(PromotionCandidateGenerationReport {
+            status: "dry_run".to_string(),
+            dry_run: true,
+            session_dir: session_dir.display().to_string(),
+            promotion_type,
+            model: Some(model),
+            source_packet_path: source_packet_path.display().to_string(),
+            prompt_path: Some(prompt_path.display().to_string()),
+            response_path: None,
+            candidates_dir: candidates_dir.display().to_string(),
+            candidate_index_path: None,
+            candidate_count: 0,
+            candidates: Vec::new(),
+        });
+    }
+
+    let response = complete_promotion_candidate_model(
+        &prompt,
+        model.clone(),
+        args.api_key.clone(),
+        args.base_url.clone(),
+        &profile,
+    )?;
+    let response_path = generation_dir.join(format!("{timestamp}-response.md"));
+    fs::write(
+        &response_path,
+        ensure_trailing_newline(&response.message.content),
+    )
+    .with_context(|| format!("writing {}", response_path.display()))?;
+    let candidates = write_generated_promotion_candidates(
+        session_dir,
+        &promotion_type,
+        &response.message.content,
+        &candidates_dir,
+    )?;
+    let candidate_index_path = write_promotion_candidate_index(session_dir, &candidates)?;
+
+    Ok(PromotionCandidateGenerationReport {
+        status: "generated".to_string(),
+        dry_run: false,
+        session_dir: session_dir.display().to_string(),
+        promotion_type,
+        model: Some(model),
+        source_packet_path: source_packet_path.display().to_string(),
+        prompt_path: Some(prompt_path.display().to_string()),
+        response_path: Some(response_path.display().to_string()),
+        candidates_dir: candidates_dir.display().to_string(),
+        candidate_index_path: Some(candidate_index_path.display().to_string()),
+        candidate_count: candidates.len(),
+        candidates,
+    })
+}
+
+fn resolve_promotion_generation_profile_model(
+    args: &SessionRunArgs,
+    manifest: &FolderSessionManifest,
+) -> Result<(String, String)> {
+    let workspace = session_manifest_workspace_path(Some(manifest))
+        .unwrap_or(env::current_dir().context("resolving current workspace")?);
+    let workspace = resolve_agent_workspace(Some(workspace))?;
+    let config_report = load_djinn_config_for_workspace(&workspace)?;
+    let requested_profile = nonempty_owned_string(args.profile.clone())
+        .or_else(|| manifest.profile.clone())
+        .unwrap_or_else(|| "default".to_string());
+    let requested_agent = args.agent.clone().or_else(|| manifest.agent.clone());
+    let requested_model = args.model.clone().or_else(|| manifest.model.clone());
+    let selection = resolve_agent_role_selection_from_config(
+        &config_report.effective,
+        requested_agent,
+        &requested_profile,
+        requested_model,
+    )?;
+    let profile = selection.profile;
+    let model =
+        resolve_agent_model_from_config(selection.model, &config_report.effective, &profile);
+    Ok((profile, model))
+}
+
+fn complete_promotion_candidate_model(
+    prompt: &str,
+    model: String,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    profile: &str,
+) -> Result<djinn_agent::ModelResponse> {
+    let messages = vec![
+        ModelMessage {
+            role: ModelRole::System,
+            content: format!(
+                "You generate Djinn promotion candidates for profile `{profile}`. Return only fenced TOML candidate blocks; do not write files or mutate durable stores."
+            ),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        },
+        ModelMessage {
+            role: ModelRole::User,
+            content: prompt.to_string(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+        },
+    ];
+    let client: Box<dyn ModelClient> = if is_copilot_model(&model) {
+        let token = resolve_copilot_token(api_key)?;
+        let endpoint = base_url
+            .or_else(|| env::var("GITHUB_COPILOT_CHAT_COMPLETIONS_URL").ok())
+            .unwrap_or_else(|| "https://api.githubcopilot.com/chat/completions".to_string());
+        Box::new(CopilotClient::with_endpoint(token, endpoint))
+    } else {
+        Box::new(resolve_openai_client(api_key, base_url)?)
+    };
+    let tokio = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .with_context(|| "creating Tokio runtime for promotion candidate generation")?;
+    tokio.block_on(client.complete(ModelRequest {
+        model,
+        messages,
+        tools: Vec::new(),
+    }))
 }
 
 fn session_run_background(args: SessionRunArgs) -> Result<()> {
@@ -16939,7 +17713,27 @@ mod tests {
         assert_eq!(args.dir, PathBuf::from("bap-questions"));
         assert!(args.foreground);
         assert!(args.print);
+        assert!(!args.dry_run);
         assert_eq!(args.model.as_deref(), Some("openai/gpt-5.5"));
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "run",
+            "promotion-memory",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Run(args)) = args.command else {
+            panic!("expected session run command");
+        };
+        assert_eq!(args.dir, PathBuf::from("promotion-memory"));
+        assert!(args.dry_run);
+        assert!(args.json);
 
         let cli = Cli::try_parse_from([
             "djinn",
@@ -18226,6 +19020,150 @@ link = "context/repo"
         let record = fs::read_to_string(&accepted.decision_path).unwrap();
         assert!(record.contains("durable_writeback = true"));
         assert!(record.contains("destination = \"memory\""));
+        let status = fs::read_to_string(&accepted.candidate_status_path).unwrap();
+        assert!(status.contains("status = \"accepted\""));
+        assert!(status.contains("durable_writeback = true"));
+
+        let duplicate = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("memory-001".to_string()),
+                dry_run: true,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap_err();
+        assert!(duplicate.to_string().contains("duplicate memory candidate"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_accept_previews_mindweaver_todo_without_mutating_notes() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-mw-todo-preview-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let data = root.join("data");
+        let source = root.join("source-session");
+        fs::create_dir_all(source.join("turns/turn-1")).unwrap();
+        fs::write(
+            source.join("turns/turn-1/response.md"),
+            "A concrete follow-up exists.\n",
+        )
+        .unwrap();
+
+        let promotion_dir = root.join("promotion-todo");
+        create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![source.clone()],
+            promotion_type: SessionPromoteType::Todo,
+            promotion_session_dir: Some(promotion_dir.clone()),
+            max_chars_per_artifact: 200,
+            force: false,
+            json: false,
+        })
+        .unwrap();
+        let candidates_dir = promotion_dir.join("outputs/candidates");
+        fs::create_dir_all(&candidates_dir).unwrap();
+        fs::write(
+            candidates_dir.join("todo-001.toml"),
+            format!(
+                "type = \"todo\"\nid = \"todo-001\"\ntext = \"Wire Djinn promotion todos into MindWeaver inbox capture.\"\ntodo_adapter = \"mindweaver\"\narea = \"Code\"\npriority = \"p2\"\nenergy = \"m\"\ndue = \"2026-08-01\"\nestimate = \"30\"\nevidence = [\"{}/turns/turn-1/response.md\"]\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+
+        let stores = PromotionWritebackStores {
+            memory: djinn_memory::MemoryStore::default_in(&data),
+            action: ActionStore::default_in(&data),
+            skill: SkillStore::default_in(&data),
+        };
+
+        let dry_run = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("todo-001".to_string()),
+                dry_run: true,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap();
+        assert_eq!(dry_run.writebacks.len(), 1);
+        assert_eq!(
+            dry_run.writebacks[0].destination,
+            "mindweaver_inbox_preview"
+        );
+        assert_eq!(
+            dry_run.writebacks[0].preview.as_deref(),
+            Some(
+                "- [ ] Wire Djinn promotion todos into MindWeaver inbox capture.\n  - p2 e:m due:2026-08-01 est:30 area:Code"
+            )
+        );
+        assert!(!dry_run.durable_writeback);
+        assert!(stores.action.list().unwrap().is_empty());
+        assert!(!promotion_dir.join("outputs/decisions").exists());
+
+        let err = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("todo-001".to_string()),
+                dry_run: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("preview-only"));
+        assert!(!promotion_dir.join("outputs/decisions").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn promotion_generation_writes_model_toml_blocks_as_candidate_files() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-promotion-generation-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("promotion-memory");
+        let candidates_dir = session_dir.join("outputs/candidates");
+        fs::create_dir_all(&candidates_dir).unwrap();
+        let model_output = "Here are candidates:\n\n```toml\ntype = \"memory\"\ntext = \"Promotion sessions should preserve source provenance.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"/tmp/source/summary.md\"]\n```\n";
+
+        let reports = write_generated_promotion_candidates(
+            &session_dir,
+            "memory",
+            model_output,
+            &candidates_dir,
+        )
+        .unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].id, "memory-001");
+        assert_eq!(reports[0].candidate_type, "memory");
+        assert_eq!(reports[0].evidence_count, 1);
+        let candidate = fs::read_to_string(&reports[0].path).unwrap();
+        assert!(candidate.contains("id = \"memory-001\""));
+        assert!(candidate.contains("type = \"memory\""));
+        let index_path = write_promotion_candidate_index(&session_dir, &reports).unwrap();
+        let index = fs::read_to_string(index_path).unwrap();
+        assert!(index.contains("candidate_count = 1"));
+        assert!(index.contains("status = \"candidate\""));
+
+        let prompt = render_promotion_candidate_generation_prompt("memory", "Packet evidence");
+        assert!(prompt.contains("Promotion type: `memory`"));
+        assert!(prompt.contains("Return one fenced `toml` block per candidate"));
+        assert!(prompt.contains("Packet evidence"));
 
         let _ = fs::remove_dir_all(&root);
     }

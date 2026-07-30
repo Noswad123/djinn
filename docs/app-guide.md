@@ -82,6 +82,7 @@ djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
 djinn session compact ./debugging-session
 djinn session promote ./debugging-session --type memory
+djinn session run ./promotion-memory --fg
 djinn session accept ./promotion-memory --dry-run
 ```
 
@@ -93,9 +94,12 @@ removed.
 source sessions. It records source refs in `context/sources.toml`, writes the
 current deterministic evidence packet to `context/source-packet.md`, and preserves
 evidence links back to `summary.md`, `context/compacted.md`, and `turns/<id>/`
-files. Types include `memory`, `todo`, `skill`, and `pattern`. This slice is
-still preview-only: it does not write memories or run a model yet, and the exact
-source-packet contents may evolve.
+files. Types include `memory`, `todo`, `skill`, and `pattern`. Running a promotion
+session with `djinn session run <promotion-session> --fg` reads the source packet,
+calls the configured model, and writes generated candidate TOML files under
+`outputs/candidates/`. This generation step does not mutate durable stores; use
+`djinn session run <promotion-session> --dry-run` to write only the model prompt
+preview under `outputs/generation/`. The exact source-packet contents may evolve.
 
 The promotion session is itself folder-backed and uses one or more source sessions
 as context. Its durable type taxonomy is `memory`, `todo`, `skill`, and `pattern`:
@@ -126,20 +130,32 @@ evidence = ["./debugging-session/summary.md"]
 ```
 
 - `memory` candidates write to the durable memory store.
-- `todo` candidates write to Djinn's durable actions store for now.
+- `todo` candidates write to Djinn's durable actions store by default. To preview
+  MindWeaver interop, set `todo_adapter = "mindweaver"` and optional metadata
+  (`area`, `priority`, `energy`, `due`, `start`, `estimate`); accepting such a
+  candidate is currently `--dry-run` only and renders the checkbox that would be
+  appended to the MindWeaver inbox.
 - `skill` candidates require `name` plus `body`, `body_path`, or `text`, then write
   a Djinn-managed `SKILL.md` with an evidence section.
 - `pattern` candidates write accepted Markdown summaries under
   `outputs/accepted/` in the promotion session.
+
+Candidate generation also writes `outputs/candidate-index.toml`, and accept/deny
+appends status events to `outputs/candidate-status.toml`. Accept writeback refuses
+exact duplicate active memories, open todos/actions, existing managed or discovered
+skills with the same name, and pattern summaries that were already accepted. Todo
+promotion candidates map to the durable actions store as Djinn's standalone
+fallback unless they explicitly opt into the preview-only MindWeaver adapter. The
+preferred future direction is interop with MindWeaver (`~/Projects/mind-weaver`)
+for the user's notes/todo system, not a premature parallel Djinn todo store.
 
 ```bash
 djinn review memory <id> --dry-run
 ```
 
 The legacy `djinn review sessions` and `djinn review opencode` saved-row review
-entrypoints have been removed. Use memory review today, and use preview-only
-folder-backed promotion packets while the promotion-session writeback workflow is
-designed.
+entrypoints have been removed. Use memory review for memory-to-suggestion flows,
+and use folder-backed promotion sessions for session-to-knowledge workflows.
 
 ## Memories and suggestions
 

@@ -258,6 +258,7 @@ Compact or review folder-backed sessions via their files:
 djinn session compact ./debugging-session
 djinn session open ./debugging-session --target compacted
 djinn session promote ./debugging-session --type memory
+djinn session run ./promotion-memory --fg
 djinn session accept ./promotion-memory --dry-run
 ```
 
@@ -266,16 +267,25 @@ been removed. Folder-backed `djinn session promote` now creates a promotion
 session folder, writes the deterministic source packet to
 `context/source-packet.md`, records source refs in `context/sources.toml`, and
 preserves provenance to `summary.md`, `context/compacted.md`, and `turns/<id>/`
-files. It does not write memories or run a model yet.
+files. Running the promotion session asks the configured model to write candidate
+TOML files under `outputs/candidates/`; this generation step does not mutate
+durable memory/todo/skill stores.
 
 Promotion outcomes are reviewed through the session surface. `djinn session
 accept <promotion-session> [candidate]` and `djinn session deny <promotion-session>
 [candidate]` record a decision under `outputs/decisions/`; `--dry-run` previews
 without writing. If accepted candidates exist under `outputs/candidates/*.toml`,
 Djinn can now write guarded `memory`, `todo`, `skill`, or `pattern` outputs while
-retaining evidence links. `todo` candidates currently write to Djinn's durable
-actions store; `pattern` candidates are accepted as Markdown summaries under the
-promotion session.
+retaining evidence links. `todo` candidates default to Djinn's durable actions
+store. Candidates may also set `todo_adapter = "mindweaver"` with metadata such
+as `area = "Code"`, `priority = "p2"`, `energy = "m"`, `due`, `start`, and
+`estimate`; that adapter is currently preview-only via `--dry-run` and renders
+the Markdown checkbox Djinn would append to MindWeaver's inbox. `pattern`
+candidates are accepted as Markdown summaries under the promotion session.
+Candidate generation writes `outputs/candidate-index.toml`, accept/deny appends
+`outputs/candidate-status.toml`, and writeback rejects exact duplicates before
+mutating durable stores. Future todo writeback should prefer interop with
+MindWeaver (`~/Projects/mind-weaver`) when available, while keeping Djinn's
 
 The roadmap direction is promotion as a special folder-backed session that uses
 one or more source sessions as context. Promotion types should be `memory`,

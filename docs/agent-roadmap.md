@@ -38,20 +38,28 @@ The first promotion-session slice is complete: `djinn session promote ...`
 creates a folder-backed promotion session, records source refs and selected
 artifact refs, and writes the current deterministic evidence packet to
 `context/source-packet.md`. `djinn session accept ...` and `djinn session deny ...`
-now record dry-runnable decisions under `outputs/decisions/`. Accepted stable
-candidate TOML files under `outputs/candidates/` can write memories, todos
-(through the current actions store), skills, or accepted pattern summaries while
-preserving evidence links. Djinn does not generate those candidates with a model
-yet, and the exact source-packet structure may evolve.
+now record dry-runnable decisions under `outputs/decisions/`. `djinn session run
+<promotion-session>` performs model-backed candidate generation by reading
+`context/source-packet.md` and writing validated TOML candidates under
+`outputs/candidates/` without mutating durable stores. Accepted stable candidates
+can write memories, todos (through the current actions store), skills, or accepted
+pattern summaries while preserving evidence links. Candidate generation writes
+`outputs/candidate-index.toml`; accept/deny appends status events to
+`outputs/candidate-status.toml`; writeback rejects exact duplicate active memories,
+open todos/actions, existing skills, and already-accepted pattern files. Todo
+candidates can now declare a preview-only `todo_adapter = "mindweaver"` with
+MindWeaver metadata validation, while the local actions store remains the
+mutating fallback. The exact source-packet structure may evolve.
 
 Ready implementation slices:
 
-- After the promotion-session folder exists, add model-backed dry-run generation
-  that writes candidate artifacts into the promotion session without mutating
-  durable memory/todo/skill stores.
-- Tighten candidate writeback safeguards as real model output appears: duplicate
-  detection, richer validation per type, candidate status/index files, and clearer
-  todo-vs-suggestion storage semantics.
+- Continue tightening candidate writeback as real model output appears: fuzzy
+  duplicate detection, richer per-type required fields, TUI review affordances for
+  candidate status, and promoting the MindWeaver todo preview into a safe capture
+  adapter once the append/sync API is explicit. Prefer interoperating with
+  MindWeaver (`~/Projects/mind-weaver`) as the user's notes/todo system rather
+  than prematurely building a parallel first-class Djinn todo store; keep Djinn's
+  local actions store as the standalone fallback for users who install only Djinn.
 - Add explicit cleanup/archive flags only after provenance and recovery behavior
   is clear. Source sessions and promotion sessions must remain on disk by default.
 

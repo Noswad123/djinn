@@ -1077,18 +1077,34 @@ The first non-interactive agent slice is implemented as:
     set for future agents; and a pattern session synthesizes common threads,
     themes, or suggestions across the source sessions. Source sessions and
     promotion sessions must not be removed by default; cleanup or archive behavior
-    should be explicit after provenance and recovery semantics are settled.
+    should be explicit after provenance and recovery semantics are settled. Running
+    a promotion session is the model-backed candidate-generation step: `djinn
+    session run <promotion-session>` reads `context/source-packet.md`, asks the
+    configured model for fenced TOML candidates, and writes validated candidates
+    under `outputs/candidates/` without mutating durable stores. `djinn session run
+    <promotion-session> --dry-run` writes only the prompt preview under
+    `outputs/generation/`.
     Promotion outcomes are reviewed with `djinn session accept <promotion-session>`
     and `djinn session deny <promotion-session>` rather than a separate
     `promote accept` command or `--write` flag. Accept/deny supports `--dry-run`
     and records decision files under `outputs/decisions/`. Guarded writeback is
     driven by stable candidate TOML files under `outputs/candidates/`: accepted
-    `memory` candidates write memories, `todo` candidates currently write durable
-    actions, `skill` candidates write Djinn-managed `SKILL.md` files, and
-    `pattern` candidates write accepted Markdown summaries under
+    `memory` candidates write memories, `todo` candidates default to durable
+    actions as Djinn's standalone fallback, `skill` candidates write
+    Djinn-managed `SKILL.md` files, and `pattern` candidates write accepted
+    Markdown summaries under
     `outputs/accepted/`. Every writeback-capable candidate must carry explicit
-    evidence links. Legacy JSONL row identity and the removed saved-row CLI should
-    not define the new UX or data model.
+    evidence links. Candidate generation writes `outputs/candidate-index.toml`,
+    decisions append `outputs/candidate-status.toml`, and guarded writeback refuses
+    exact duplicate active memories, open todos/actions, existing skills, and
+    already-accepted pattern summary files. Todo candidates can opt into a
+    preview-only `todo_adapter = "mindweaver"` with validated MindWeaver metadata
+    (`area`, `priority`, `energy`, `due`, `start`, `estimate`) that renders the
+    inbox checkbox but does not mutate notes yet. Future todo writeback should
+    prefer interop with MindWeaver (`~/Projects/mind-weaver`) for users who use
+    that notes/todo app rather than prematurely creating a parallel first-class
+    Djinn todo store. Legacy JSONL row identity and the removed saved-row CLI
+    should not define the new UX or data model.
 
 Not in the first slice unless explicitly reopened:
 
