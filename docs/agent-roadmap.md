@@ -65,9 +65,9 @@ as an accept-and-sync shortcut. The exact source-packet structure may evolve.
 
 Ready implementation slices:
 
-- Add explicit destructive cleanup flags only after the provenance impact is clear.
-  Source sessions and promotion sessions must remain on disk by default, but when
-  the user opts into removing them there is no archive/revival requirement for now.
+- Consider whether destructive cleanup needs any TUI affordance. The CLI now
+  supports `djinn session cleanup <promotion-session> --delete-sources --dry-run`
+  and permanent `--delete-sources`; promotion sessions still use `djinn session rm`.
 
 ### Session TUI polish
 

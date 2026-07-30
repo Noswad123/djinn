@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
@@ -138,6 +138,8 @@ enum SessionCommand {
     Accept(SessionDecisionArgs),
     /// Deny a promotion session outcome and record the decision.
     Deny(SessionDecisionArgs),
+    /// Permanently clean up explicit promotion-session source material.
+    Cleanup(SessionCleanupArgs),
     /// Manage session-local context files and links.
     Context(SessionContextArgs),
     /// Inspect a folder-backed Djinn work session without running a model.
@@ -283,6 +285,21 @@ struct SessionDecisionArgs {
     /// After accepting MindWeaver todo candidates, explicitly run `mw todos sync`.
     #[arg(long = "sync-mindweaver", alias = "mw-sync")]
     sync_mindweaver: bool,
+    /// Output JSON instead of a text summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionCleanupArgs {
+    /// Promotion session name or directory whose source sessions should be removed.
+    dir: PathBuf,
+    /// Permanently delete source sessions recorded in context/sources.toml.
+    #[arg(long)]
+    delete_sources: bool,
+    /// Preview source session deletion without removing anything.
+    #[arg(long)]
+    dry_run: bool,
     /// Output JSON instead of a text summary.
     #[arg(long)]
     json: bool,
@@ -4885,6 +4902,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Promote(args) => session_promote(args),
         SessionCommand::Accept(args) => session_decide(args, SessionDecisionAction::Accept),
         SessionCommand::Deny(args) => session_decide(args, SessionDecisionAction::Deny),
+        SessionCommand::Cleanup(args) => session_cleanup(args),
         SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
         SessionCommand::Ls(args) => session_ls(args),
@@ -5182,6 +5200,148 @@ fn decide_promotion_session_with_stores(
         post_writebacks,
         note,
     })
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionCleanupReport {
+    dry_run: bool,
+    session_dir: String,
+    delete_sources: bool,
+    source_count: usize,
+    sources: Vec<SessionCleanupSourceReport>,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionCleanupSourceReport {
+    session_dir: String,
+    exists: bool,
+    removed: bool,
+    removed_native_session: bool,
+    status: String,
+}
+
+fn session_cleanup(args: SessionCleanupArgs) -> Result<()> {
+    let report = cleanup_promotion_session(&args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        let verb = if report.dry_run {
+            "Would clean"
+        } else {
+            "Cleaned"
+        };
+        println!("{verb} promotion session sources: {}", report.session_dir);
+        for source in &report.sources {
+            println!(
+                "  - {}: {}",
+                source.session_dir,
+                if source.removed {
+                    "removed"
+                } else {
+                    source.status.as_str()
+                }
+            );
+            if source.removed_native_session {
+                println!("    native session: removed");
+            }
+        }
+        println!("  note: {}", report.note);
+    }
+    Ok(())
+}
+
+fn cleanup_promotion_session(args: &SessionCleanupArgs) -> Result<SessionCleanupReport> {
+    if !args.delete_sources {
+        bail!("nothing to clean up; pass --delete-sources to permanently remove source sessions");
+    }
+    let session_dir = resolve_session_dir(&args.dir)?;
+    let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
+        format!(
+            "missing promotion session manifest: {}",
+            session_dir.display()
+        )
+    })?;
+    if manifest.kind.as_deref() != Some("promotion") {
+        bail!(
+            "session {} is not a promotion session; `djinn session cleanup` only applies to kind = \"promotion\"",
+            session_dir.display()
+        );
+    }
+
+    let source_paths = promotion_source_session_dirs(&session_dir)?;
+    let mut sources = Vec::new();
+    for source in source_paths {
+        let exists = source.exists();
+        if args.dry_run || !exists {
+            sources.push(SessionCleanupSourceReport {
+                session_dir: source.display().to_string(),
+                exists,
+                removed: false,
+                removed_native_session: false,
+                status: if args.dry_run && exists {
+                    "would_remove".to_string()
+                } else {
+                    "missing".to_string()
+                },
+            });
+            continue;
+        }
+        let removed = remove_folder_session(&source)?;
+        sources.push(SessionCleanupSourceReport {
+            session_dir: removed.session_dir,
+            exists,
+            removed: removed.removed_folder,
+            removed_native_session: removed.removed_native_session,
+            status: "removed".to_string(),
+        });
+    }
+
+    let source_count = sources.len();
+    let note = if args.dry_run {
+        "Dry run: no source sessions were removed. Re-run without --dry-run to permanently delete them."
+    } else {
+        "Source cleanup complete. The promotion session remains on disk; use `djinn session rm` if you also want to remove it."
+    }
+    .to_string();
+
+    Ok(SessionCleanupReport {
+        dry_run: args.dry_run,
+        session_dir: session_dir.display().to_string(),
+        delete_sources: args.delete_sources,
+        source_count,
+        sources,
+        note,
+    })
+}
+
+fn promotion_source_session_dirs(session_dir: &Path) -> Result<Vec<PathBuf>> {
+    let sources_path = session_dir.join("context").join("sources.toml");
+    let content = fs::read_to_string(&sources_path)
+        .with_context(|| format!("reading promotion sources {}", sources_path.display()))?;
+    let mut seen = BTreeSet::new();
+    let mut sources = Vec::new();
+    for line in content.lines().map(str::trim) {
+        let Some(value) = line
+            .strip_prefix("session_dir =")
+            .and_then(|value| parse_manifest_string_value(value.trim()))
+        else {
+            continue;
+        };
+        let path = expand_tilde_path(&value);
+        let key = path.display().to_string();
+        if seen.insert(key) {
+            sources.push(path);
+        }
+    }
+    if sources.is_empty() {
+        bail!(
+            "promotion session {} has no source sessions in {}",
+            session_dir.display(),
+            sources_path.display()
+        );
+    }
+    Ok(sources)
 }
 
 impl PromotionWritebackStores {
@@ -17288,6 +17448,27 @@ mod tests {
         };
         assert_eq!(args.dir, PathBuf::from("small-question"));
         assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "cleanup",
+            "promotion-memory",
+            "--delete-sources",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Cleanup(args)) = session_args.command else {
+            panic!("expected session cleanup command");
+        };
+        assert_eq!(args.dir, PathBuf::from("promotion-memory"));
+        assert!(args.delete_sources);
+        assert!(args.dry_run);
+        assert!(args.json);
     }
 
     #[test]
@@ -19680,6 +19861,70 @@ link = "context/repo"
         let request = fs::read_to_string(promotion_dir.join("request.md"))
             .expect("promotion request should be written");
         assert!(request.contains("Use `context/source-packet.md`"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_cleanup_deletes_promotion_sources_only_when_requested() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-cleanup-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let source = root.join("source-session");
+        fs::create_dir_all(source.join("context")).unwrap();
+        fs::write(source.join("djinn.toml"), "version = 1\n").unwrap();
+        fs::write(source.join("summary.md"), "A useful lesson.\n").unwrap();
+
+        let promotion_dir = root.join("promotion-memory");
+        create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![source.clone()],
+            promotion_type: SessionPromoteType::Memory,
+            promotion_session_dir: Some(promotion_dir.clone()),
+            max_chars_per_artifact: 200,
+            force: false,
+            json: false,
+        })
+        .unwrap();
+
+        let no_flag = cleanup_promotion_session(&SessionCleanupArgs {
+            dir: promotion_dir.clone(),
+            delete_sources: false,
+            dry_run: false,
+            json: false,
+        })
+        .unwrap_err();
+        assert!(no_flag.to_string().contains("--delete-sources"));
+
+        let dry_run = cleanup_promotion_session(&SessionCleanupArgs {
+            dir: promotion_dir.clone(),
+            delete_sources: true,
+            dry_run: true,
+            json: false,
+        })
+        .unwrap();
+        assert!(dry_run.dry_run);
+        assert_eq!(dry_run.source_count, 1);
+        assert_eq!(dry_run.sources[0].status, "would_remove");
+        assert!(!dry_run.sources[0].removed);
+        assert!(source.exists());
+        assert!(promotion_dir.exists());
+
+        let removed = cleanup_promotion_session(&SessionCleanupArgs {
+            dir: promotion_dir.clone(),
+            delete_sources: true,
+            dry_run: false,
+            json: false,
+        })
+        .unwrap();
+        assert_eq!(removed.source_count, 1);
+        assert!(removed.sources[0].removed);
+        assert_eq!(removed.sources[0].status, "removed");
+        assert!(!source.exists());
+        assert!(promotion_dir.exists());
+        assert!(removed.note.contains("djinn session rm"));
 
         let _ = fs::remove_dir_all(&root);
     }

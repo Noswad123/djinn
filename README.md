@@ -301,7 +301,11 @@ and destination previews.
 The roadmap direction is promotion as a special folder-backed session that uses
 one or more source sessions as context. Promotion types should be `memory`,
 `todo`, `skill`, and `pattern`; sources and promotion sessions are kept by
-default rather than removed automatically.
+default rather than removed automatically. To permanently remove the recorded
+source sessions after review, preview first with `djinn session cleanup
+<promotion-session> --delete-sources --dry-run`, then run the same command without
+`--dry-run`. The promotion session itself remains on disk; use `djinn session rm`
+separately when you want it gone too.
 
 Review memories for suggestions without mutating the memories:
 

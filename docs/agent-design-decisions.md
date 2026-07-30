@@ -1079,7 +1079,10 @@ The first non-interactive agent slice is implemented as:
     promotion sessions must not be removed by default; cleanup must be explicit and
     may be destructive when the user asks for it. There is no archive/revival
     requirement for now, but the provenance impact should be visible before
-    deletion. Running
+    deletion. `djinn session cleanup <promotion-session> --delete-sources` removes
+    the source sessions recorded in `context/sources.toml` after an optional
+    `--dry-run` preview; the promotion session itself is removed separately with
+    `djinn session rm`. Running
     a promotion session is the model-backed candidate-generation step: `djinn
     session run <promotion-session>` reads `context/source-packet.md`, asks the
     configured model for fenced TOML candidates, and writes validated candidates

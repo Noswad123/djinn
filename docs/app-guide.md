@@ -105,7 +105,17 @@ The promotion session is itself folder-backed and uses one or more source sessio
 as context. Its durable type taxonomy is `memory`, `todo`, `skill`, and `pattern`:
 wisdom to revisit, an immediate action, a reusable agent workflow, or a synthesis
 of common threads across sessions. Source sessions and promotion sessions remain
-on disk by default.
+on disk by default. If you decide the recorded sources should be removed
+permanently, use explicit cleanup:
+
+```bash
+djinn session cleanup ./promotion-memory --delete-sources --dry-run
+djinn session cleanup ./promotion-memory --delete-sources
+```
+
+Cleanup reads `context/sources.toml`, previews or deletes only those source
+sessions, and leaves the promotion session itself on disk. Use `djinn session rm`
+separately when you also want to remove the promotion session.
 
 Promotion outcomes are accepted or denied through the same session surface:
 
