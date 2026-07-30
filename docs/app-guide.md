@@ -81,25 +81,26 @@ Sessions are folder-backed capsules. Keep new work in `djinn ask` / `djinn sessi
 djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
 djinn session compact ./debugging-session
-djinn session promote ./debugging-session --target memories
+djinn session promote ./debugging-session --type memory
 ```
 
 The old saved-row session store, OpenCode watcher/plugin integration, and legacy
 `djinn add/list/show/search/rm/clear/promote session(s)` commands have been
 removed.
 
-`djinn session promote ...` is the first folder-backed promotion slice. It renders
-a deterministic promotion packet from one or more session folders and explicit
-artifacts. Targets include `memories`, `suggestions`, `skills`, `patterns`, and
-`context`; the packet preserves evidence links back to `summary.md`,
-`context/compacted.md`, and `turns/<id>/` files. This slice is preview-only: it
-does not write memories or run a model yet.
+`djinn session promote ...` creates a promotion session folder from one or more
+source sessions. It records source refs in `context/sources.toml`, writes the
+current deterministic evidence packet to `context/source-packet.md`, and preserves
+evidence links back to `summary.md`, `context/compacted.md`, and `turns/<id>/`
+files. Types include `memory`, `todo`, `skill`, and `pattern`. This slice is
+still preview-only: it does not write memories or run a model yet, and the exact
+source-packet contents may evolve.
 
-The roadmap direction is to make promotion a special folder-backed session that
-uses one or more source sessions as context. Its durable type taxonomy should be
-`memory`, `todo`, `skill`, and `pattern`: wisdom to revisit, an immediate action,
-a reusable agent workflow, or a synthesis of common threads across sessions.
-Source sessions and promotion sessions should remain on disk by default.
+The promotion session is itself folder-backed and uses one or more source sessions
+as context. Its durable type taxonomy is `memory`, `todo`, `skill`, and `pattern`:
+wisdom to revisit, an immediate action, a reusable agent workflow, or a synthesis
+of common threads across sessions. Source sessions and promotion sessions remain
+on disk by default.
 
 ```bash
 djinn review memory <id> --dry-run

@@ -1067,11 +1067,11 @@ The first non-interactive agent slice is implemented as:
     `djinn session ls`, and `djinn session watch <session>` rather than
     maintaining a separate status model.
 85. Folder-backed promotion should not recreate the removed legacy saved-session
-    picker. The first slice, `djinn session promote ...`, renders a deterministic
-    promotion packet from one or more session folders with evidence links back to
-    files under the session folder. The target product model is stronger than a
-    packet renderer: a promotion should be a special folder-backed session whose
-    context is one or more source sessions. Promotion types are `memory`, `todo`,
+    picker. `djinn session promote ...` creates a special folder-backed promotion
+    session whose context is one or more source sessions. It writes the current
+    deterministic evidence packet to `context/source-packet.md` and source refs /
+    selected artifact refs to `context/sources.toml`; the exact source-packet
+    structure may evolve independently. Promotion types are `memory`, `todo`,
     `skill`, and `pattern`: a memory is a durable nugget of wisdom to revisit; a
     todo is an actionable next step; a skill is a recurring workflow/instruction
     set for future agents; and a pattern session synthesizes common threads,

@@ -32,6 +32,25 @@ These items are small enough or well-defined enough to implement without another
 product-design pass. UI work is the current priority because it affects every
 agent turn and makes the rest of the runtime easier to evaluate.
 
+### Folder-backed promotion sessions
+
+The first promotion-session slice is complete: `djinn session promote ...`
+creates a folder-backed promotion session, records source refs and selected
+artifact refs, and writes the current deterministic evidence packet to
+`context/source-packet.md`. It does not run a model or write memories yet, and the
+exact source-packet structure may evolve.
+
+Ready implementation slices:
+
+- After the promotion-session folder exists, add model-backed dry-run generation
+  that writes candidate artifacts into the promotion session without mutating
+  durable memory/todo/skill stores.
+- Add guarded writeback only after candidate formats stabilize: memories, todos,
+  skills, or pattern summaries should be accepted explicitly and retain evidence
+  links to `summary.md`, `context/compacted.md`, and `turns/<id>/` files.
+- Add explicit cleanup/archive flags only after provenance and recovery behavior
+  is clear. Source sessions and promotion sessions must remain on disk by default.
+
 ### Session TUI polish
 
 Djinn's folder-backed Sessions dashboard and focused session view are now the
@@ -127,35 +146,6 @@ file-first surfaces without restoring the removed legacy saved-row model.
   be `request.md`, `summary.md`, selected `context/` files/links, and explicit
   turn evidence only when cited or requested.
 
-### Folder-backed promotion sessions
-
-The first promotion slice is complete: `djinn session promote ...` renders a
-deterministic preview packet with file-native provenance and does not run a model
-or write memories. The next product shape should be a **promotion session**: a
-special folder-backed session whose context is one or more source sessions.
-
-Ready implementation slices:
-
-- Create a promotion session folder from one or more source sessions. The folder
-  should record source session refs, selected artifacts, promotion type, and the
-  deterministic source packet, likely under `context/source-packet.md` or an
-  equivalent provenance-preserving path.
-- Use the promotion type taxonomy `memory|todo|skill|pattern`:
-  - `memory`: a nugget of wisdom worth returning to later.
-  - `todo`: something concrete the user can take immediate action on.
-  - `skill`: a recurring task or instruction set to reuse in future agent
-    harnesses.
-  - `pattern`: a synthesis session whose purpose is to understand the common
-    thread, theme, or suggestion across the source sessions.
-- Keep source sessions and promotion sessions by default. Do not delete or archive
-  derivatives automatically; add explicit cleanup flags only after provenance and
-  recovery behavior is clear.
-- After the promotion-session folder exists, add model-backed dry-run generation
-  that writes candidate artifacts into the promotion session without mutating
-  durable memory/todo/skill stores.
-- Add guarded writeback only after candidate formats stabilize: memories, todos,
-  skills, or pattern summaries should be accepted explicitly and retain evidence
-  links to `summary.md`, `context/compacted.md`, and `turns/<id>/` files.
 
 ### Coven-led orchestration and Djinn worker primitives
 

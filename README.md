@@ -257,14 +257,15 @@ Compact or review folder-backed sessions via their files:
 ```bash
 djinn session compact ./debugging-session
 djinn session open ./debugging-session --target compacted
-djinn session promote ./debugging-session --target memories
+djinn session promote ./debugging-session --type memory
 ```
 
 The legacy saved-row session store and `djinn promote session(s)` commands have
-been removed. Folder-backed `djinn session promote` now renders a deterministic
-promotion packet from session artifacts and preserves provenance to `summary.md`,
-`context/compacted.md`, and `turns/<id>/` files. It does not write memories or run
-a model yet.
+been removed. Folder-backed `djinn session promote` now creates a promotion
+session folder, writes the deterministic source packet to
+`context/source-packet.md`, records source refs in `context/sources.toml`, and
+preserves provenance to `summary.md`, `context/compacted.md`, and `turns/<id>/`
+files. It does not write memories or run a model yet.
 
 The roadmap direction is promotion as a special folder-backed session that uses
 one or more source sessions as context. Promotion types should be `memory`,

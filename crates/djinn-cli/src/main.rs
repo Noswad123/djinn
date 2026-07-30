@@ -247,25 +247,39 @@ struct SessionPromoteArgs {
     /// Folder-backed session names or directories to promote from.
     #[arg(required = true)]
     dirs: Vec<PathBuf>,
-    /// Promotion target to prepare for.
-    #[arg(long, value_enum, default_value_t = SessionPromoteTarget::Memories)]
-    target: SessionPromoteTarget,
+    /// Promotion type to prepare for.
+    #[arg(long = "type", alias = "target", value_enum, default_value_t = SessionPromoteType::Memory)]
+    promotion_type: SessionPromoteType,
+    /// Promotion session folder to create. Bare names live under Djinn's cache session root.
+    #[arg(long = "session-dir", alias = "output-dir")]
+    promotion_session_dir: Option<PathBuf>,
     /// Maximum characters to include from each artifact excerpt.
     #[arg(long = "max-chars-per-artifact", default_value_t = 1200)]
     max_chars_per_artifact: usize,
-    /// Output JSON instead of Markdown.
+    /// Replace generated promotion-session files if they already exist.
+    #[arg(long)]
+    force: bool,
+    /// Output JSON instead of a text summary.
     #[arg(long)]
     json: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum SessionPromoteTarget {
-    Memories,
-    Suggestions,
-    Skills,
-    Patterns,
-    Context,
+enum SessionPromoteType {
+    #[value(alias = "memories")]
+    Memory,
+    #[value(
+        alias = "suggestion",
+        alias = "suggestions",
+        alias = "action",
+        alias = "actions"
+    )]
+    Todo,
+    #[value(alias = "skills")]
+    Skill,
+    #[value(alias = "patterns")]
+    Pattern,
 }
 
 #[derive(Debug, Args)]
@@ -4835,10 +4849,17 @@ fn session_compact(args: SessionCompactArgs) -> Result<()> {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SessionPromoteReport {
-    target: SessionPromoteTarget,
+    promotion_type: SessionPromoteType,
+    promotion_session_dir: String,
+    manifest_path: String,
+    request_path: String,
+    summary_path: String,
+    source_packet_path: String,
+    sources_path: String,
     session_count: usize,
     sessions: Vec<SessionPromoteSessionReport>,
     packet: String,
+    created: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -4874,28 +4895,147 @@ struct SessionPromoteSession {
 }
 
 fn session_promote(args: SessionPromoteArgs) -> Result<()> {
-    let report =
-        build_session_promote_report(&args.dirs, args.target, args.max_chars_per_artifact)?;
+    let report = create_promotion_session(&args)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        print!("{}", report.packet);
+        println!(
+            "Created Djinn promotion session: {}",
+            report.promotion_session_dir
+        );
+        println!(
+            "  type: {}",
+            session_promote_type_label(report.promotion_type)
+        );
+        println!("  sources: {}", report.session_count);
+        println!("  source packet: {}", report.source_packet_path);
+        println!("  source refs: {}", report.sources_path);
+        println!("  request: {}", report.request_path);
+        println!("  summary: {}", report.summary_path);
+        println!("  run: djinn session run {}", report.promotion_session_dir);
     }
     Ok(())
 }
 
-fn build_session_promote_report(
+fn create_promotion_session(args: &SessionPromoteArgs) -> Result<SessionPromoteReport> {
+    let material = build_session_promote_material(
+        &args.dirs,
+        args.promotion_type,
+        args.max_chars_per_artifact,
+    )?;
+    let promotion_session_dir = match &args.promotion_session_dir {
+        Some(dir) => resolve_session_dir(dir)?,
+        None => default_promotion_session_dir(args.promotion_type),
+    };
+    write_promotion_session(&promotion_session_dir, &material, args.force)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionPromoteMaterial {
+    promotion_type: SessionPromoteType,
+    sessions: Vec<SessionPromoteSession>,
+    packet: String,
+}
+
+fn build_session_promote_material(
     dirs: &[PathBuf],
-    target: SessionPromoteTarget,
+    promotion_type: SessionPromoteType,
     max_chars_per_artifact: usize,
-) -> Result<SessionPromoteReport> {
+) -> Result<SessionPromoteMaterial> {
     let sessions = dirs
         .iter()
         .map(|dir| collect_session_promote_artifacts(dir))
         .collect::<Result<Vec<_>>>()?;
-    let packet = render_session_promote_packet(&sessions, target, max_chars_per_artifact);
+    let packet = render_session_promote_packet(&sessions, promotion_type, max_chars_per_artifact);
+    Ok(SessionPromoteMaterial {
+        promotion_type,
+        sessions,
+        packet,
+    })
+}
+
+fn write_promotion_session(
+    promotion_session_dir: &Path,
+    material: &SessionPromoteMaterial,
+    force: bool,
+) -> Result<SessionPromoteReport> {
+    let context_dir = promotion_session_dir.join("context");
+    let turns_dir = promotion_session_dir.join("turns");
+    let outputs_dir = promotion_session_dir.join("outputs");
+    fs::create_dir_all(&context_dir)
+        .with_context(|| format!("creating context directory {}", context_dir.display()))?;
+    fs::create_dir_all(&turns_dir)
+        .with_context(|| format!("creating turns directory {}", turns_dir.display()))?;
+    fs::create_dir_all(&outputs_dir)
+        .with_context(|| format!("creating outputs directory {}", outputs_dir.display()))?;
+
+    let manifest_path = promotion_session_dir.join("djinn.toml");
+    let request_path = promotion_session_dir.join("request.md");
+    let summary_path = promotion_session_dir.join("summary.md");
+    let source_packet_path = context_dir.join("source-packet.md");
+    let sources_path = context_dir.join("sources.toml");
+    let context_readme_path = context_dir.join("djinn-context.md");
+
+    let mut created = Vec::new();
+    write_promotion_session_file(
+        &manifest_path,
+        &render_promotion_session_manifest(material)?,
+        force,
+        &mut created,
+    )?;
+    write_promotion_session_file(
+        &request_path,
+        &render_promotion_session_request(material.promotion_type),
+        force,
+        &mut created,
+    )?;
+    write_promotion_session_file(&summary_path, "", force, &mut created)?;
+    write_promotion_session_file(
+        &context_readme_path,
+        &promotion_session_context_readme(material.promotion_type),
+        force,
+        &mut created,
+    )?;
+    write_promotion_session_file(&source_packet_path, &material.packet, force, &mut created)?;
+    write_promotion_session_file(
+        &sources_path,
+        &render_promotion_sources_manifest(material)?,
+        force,
+        &mut created,
+    )?;
+
+    session_promote_report_from_material(
+        promotion_session_dir,
+        material,
+        created,
+        manifest_path,
+        request_path,
+        summary_path,
+        source_packet_path,
+        sources_path,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn session_promote_report_from_material(
+    promotion_session_dir: &Path,
+    material: &SessionPromoteMaterial,
+    created: Vec<String>,
+    manifest_path: PathBuf,
+    request_path: PathBuf,
+    summary_path: PathBuf,
+    source_packet_path: PathBuf,
+    sources_path: PathBuf,
+) -> Result<SessionPromoteReport> {
+    let sessions = &material.sessions;
     Ok(SessionPromoteReport {
-        target,
+        promotion_type: material.promotion_type,
+        promotion_session_dir: promotion_session_dir.display().to_string(),
+        manifest_path: manifest_path.display().to_string(),
+        request_path: request_path.display().to_string(),
+        summary_path: summary_path.display().to_string(),
+        source_packet_path: source_packet_path.display().to_string(),
+        sources_path: sources_path.display().to_string(),
         session_count: sessions.len(),
         sessions: sessions
             .iter()
@@ -4915,8 +5055,114 @@ fn build_session_promote_report(
                     .collect(),
             })
             .collect(),
-        packet,
+        packet: material.packet.clone(),
+        created,
     })
+}
+
+fn write_promotion_session_file(
+    path: &Path,
+    content: &str,
+    force: bool,
+    created: &mut Vec<String>,
+) -> Result<()> {
+    if path.exists() && !force {
+        bail!(
+            "promotion session file already exists: {} (use --force to replace generated files)",
+            path.display()
+        );
+    }
+    fs::write(path, content).with_context(|| format!("writing {}", path.display()))?;
+    created.push(path.display().to_string());
+    Ok(())
+}
+
+fn default_promotion_session_dir(promotion_type: SessionPromoteType) -> PathBuf {
+    let now = chrono::Local::now();
+    default_folder_session_root().join(format!(
+        "promotion-{}-{}-{}",
+        session_promote_type_label(promotion_type),
+        now.format("%Y%m%dT%H%M%S"),
+        now.timestamp_nanos_opt().unwrap_or_default()
+    ))
+}
+
+fn render_promotion_session_manifest(material: &SessionPromoteMaterial) -> Result<String> {
+    let workspace = env::current_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| String::new());
+    let mut output = String::new();
+    output.push_str("version = 1\n");
+    output.push_str("kind = \"promotion\"\n");
+    output.push_str(&format!(
+        "created_at = {}\n",
+        toml_string(&chrono::Local::now().to_rfc3339())?
+    ));
+    output.push_str(&format!(
+        "promotion_type = {}\n",
+        toml_string(session_promote_type_label(material.promotion_type))?
+    ));
+    if !workspace.is_empty() {
+        output.push_str(&format!("workspace = {}\n", toml_string(&workspace)?));
+    }
+    output.push_str("\n[context]\n");
+    output.push_str("path = \"context\"\n");
+    output.push_str("source_packet = \"context/source-packet.md\"\n");
+    output.push_str("sources = \"context/sources.toml\"\n");
+    output.push_str("\n[promotion]\n");
+    output.push_str(&format!(
+        "type = {}\n",
+        toml_string(session_promote_type_label(material.promotion_type))?
+    ));
+    output.push_str(&format!("source_count = {}\n", material.sessions.len()));
+    Ok(output)
+}
+
+fn render_promotion_session_request(promotion_type: SessionPromoteType) -> String {
+    format!(
+        "# Promotion request\n\nPromotion type: `{}`\n\nUse `context/source-packet.md` as the source material. Preserve evidence links to the source session files when proposing promoted outputs.\n",
+        session_promote_type_label(promotion_type)
+    )
+}
+
+fn promotion_session_context_readme(promotion_type: SessionPromoteType) -> String {
+    format!(
+        "# Djinn promotion session context\n\nThis folder contains source material for a `{}` promotion session.\n\n- `source-packet.md`: deterministic evidence packet assembled from source sessions.\n- `sources.toml`: source session refs and selected artifact refs.\n\nDo not delete source sessions by default; promoted outputs should keep file-native provenance.\n",
+        session_promote_type_label(promotion_type)
+    )
+}
+
+fn render_promotion_sources_manifest(material: &SessionPromoteMaterial) -> Result<String> {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "promotion_type = {}\n",
+        toml_string(session_promote_type_label(material.promotion_type))?
+    ));
+    output.push_str(&format!("source_count = {}\n", material.sessions.len()));
+    for session in &material.sessions {
+        output.push_str("\n[[source_sessions]]\n");
+        output.push_str(&format!(
+            "session_dir = {}\n",
+            toml_string(&session.session_dir.display().to_string())?
+        ));
+        output.push_str(&format!("title = {}\n", toml_string(&session.title)?));
+        output.push_str(&format!("turn_count = {}\n", session.turn_count));
+        output.push_str(&format!("artifact_count = {}\n", session.artifacts.len()));
+        for artifact in &session.artifacts {
+            output.push_str("\n[[source_sessions.artifacts]]\n");
+            output.push_str(&format!("kind = {}\n", toml_string(&artifact.kind)?));
+            output.push_str(&format!(
+                "path = {}\n",
+                toml_string(&artifact.path.display().to_string())?
+            ));
+            output.push_str(&format!(
+                "relative_path = {}\n",
+                toml_string(&artifact.relative_path)?
+            ));
+            output.push_str(&format!("chars = {}\n", artifact.content.chars().count()));
+        }
+    }
+    Ok(output)
 }
 
 fn collect_session_promote_artifacts(dir: &Path) -> Result<SessionPromoteSession> {
@@ -5010,17 +5256,17 @@ fn session_relative_path(session_dir: &Path, path: &Path) -> String {
 
 fn render_session_promote_packet(
     sessions: &[SessionPromoteSession],
-    target: SessionPromoteTarget,
+    promotion_type: SessionPromoteType,
     max_chars_per_artifact: usize,
 ) -> String {
     let mut out = String::from("# Djinn Folder Session Promotion Packet\n\n");
     out.push_str(&format!(
-        "Target: `{}`\n",
-        session_promote_target_label(target)
+        "Promotion type: `{}`\n",
+        session_promote_type_label(promotion_type)
     ));
     out.push_str(&format!("Sessions: `{}`\n\n", sessions.len()));
     out.push_str("## Instructions\n\n");
-    out.push_str(session_promote_target_instructions(target));
+    out.push_str(session_promote_type_instructions(promotion_type));
     out.push_str("\n\nUse only the evidence below. Preserve file-native provenance by citing `session_dir` plus artifact paths such as `summary.md`, `context/compacted.md`, and `turns/<id>/response.md`. Do not invent facts that are not supported by copied evidence.\n");
 
     for (idx, session) in sessions.iter().enumerate() {
@@ -5055,32 +5301,28 @@ fn render_session_promote_packet(
     out
 }
 
-fn session_promote_target_label(target: SessionPromoteTarget) -> &'static str {
-    match target {
-        SessionPromoteTarget::Memories => "memories",
-        SessionPromoteTarget::Suggestions => "suggestions",
-        SessionPromoteTarget::Skills => "skills",
-        SessionPromoteTarget::Patterns => "patterns",
-        SessionPromoteTarget::Context => "context",
+fn session_promote_type_label(promotion_type: SessionPromoteType) -> &'static str {
+    match promotion_type {
+        SessionPromoteType::Memory => "memory",
+        SessionPromoteType::Todo => "todo",
+        SessionPromoteType::Skill => "skill",
+        SessionPromoteType::Pattern => "pattern",
     }
 }
 
-fn session_promote_target_instructions(target: SessionPromoteTarget) -> &'static str {
-    match target {
-        SessionPromoteTarget::Memories => {
-            "Identify durable, reusable memories. Return reviewed `djinn add memory ... --evidence ...` commands or say `No durable memories recommended.`"
+fn session_promote_type_instructions(promotion_type: SessionPromoteType) -> &'static str {
+    match promotion_type {
+        SessionPromoteType::Memory => {
+            "Identify durable, reusable memories: nuggets of wisdom worth returning to. Return reviewed `djinn add memory ... --evidence ...` commands or say `No durable memories recommended.`"
         }
-        SessionPromoteTarget::Suggestions => {
-            "Identify concrete follow-up suggestions. Return reviewed `djinn add suggestion ... --evidence ...` commands or say `No suggestions recommended.`"
+        SessionPromoteType::Todo => {
+            "Identify concrete follow-up todos the user can take action on soon. Return reviewed todo candidates with evidence links or say `No actionable todos recommended.`"
         }
-        SessionPromoteTarget::Skills => {
+        SessionPromoteType::Skill => {
             "Identify reusable workflow knowledge that should become or update a skill. Return a short skill proposal with evidence links."
         }
-        SessionPromoteTarget::Patterns => {
-            "Extract repeated patterns, conventions, gotchas, and workflow decisions. Separate high-confidence patterns from one-off observations."
-        }
-        SessionPromoteTarget::Context => {
-            "Identify compact context that would help resume this work. Prefer concise bullets with direct artifact provenance."
+        SessionPromoteType::Pattern => {
+            "Synthesize common threads, themes, suggestions, conventions, gotchas, and workflow decisions across the source sessions. Separate high-confidence patterns from one-off observations."
         }
     }
 }
@@ -16074,8 +16316,10 @@ mod tests {
             "promote",
             "bap-questions",
             "./other-session",
-            "--target",
-            "patterns",
+            "--type",
+            "pattern",
+            "--session-dir",
+            "./promotion-session",
             "--max-chars-per-artifact",
             "250",
             "--json",
@@ -16094,9 +16338,30 @@ mod tests {
                 PathBuf::from("./other-session")
             ]
         );
-        assert_eq!(args.target, SessionPromoteTarget::Patterns);
+        assert_eq!(args.promotion_type, SessionPromoteType::Pattern);
+        assert_eq!(
+            args.promotion_session_dir,
+            Some(PathBuf::from("./promotion-session"))
+        );
         assert_eq!(args.max_chars_per_artifact, 250);
         assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "promote",
+            "bap-questions",
+            "--target",
+            "memories",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Promote(args)) = args.command else {
+            panic!("expected session promote command");
+        };
+        assert_eq!(args.promotion_type, SessionPromoteType::Memory);
 
         let cli = Cli::try_parse_from(["djinn", "session", "bap-questions"]).unwrap();
         let Some(Command::Session(args)) = cli.command else {
@@ -17052,17 +17317,29 @@ link = "context/repo"
         )
         .unwrap();
 
-        let report =
-            build_session_promote_report(&[dir.clone()], SessionPromoteTarget::Memories, 200)
-                .unwrap();
+        let promotion_dir = root.join("promotion-memory");
+        let report = create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![dir.clone()],
+            promotion_type: SessionPromoteType::Memory,
+            promotion_session_dir: Some(promotion_dir.clone()),
+            max_chars_per_artifact: 200,
+            force: false,
+            json: false,
+        })
+        .unwrap();
 
+        assert_eq!(report.promotion_type, SessionPromoteType::Memory);
+        assert_eq!(
+            report.promotion_session_dir,
+            promotion_dir.display().to_string()
+        );
         assert_eq!(report.session_count, 1);
         assert_eq!(report.sessions[0].turn_count, 1);
         assert_eq!(report.sessions[0].artifact_count, 5);
         assert!(report
             .packet
             .starts_with("# Djinn Folder Session Promotion Packet"));
-        assert!(report.packet.contains("Target: `memories`"));
+        assert!(report.packet.contains("Promotion type: `memory`"));
         assert!(report.packet.contains("`summary`: `summary.md`"));
         assert!(report
             .packet
@@ -17076,6 +17353,22 @@ link = "context/repo"
         assert!(report
             .packet
             .contains("Cite summary.md and turns/turn-1/response.md."));
+
+        let source_packet = fs::read_to_string(promotion_dir.join("context/source-packet.md"))
+            .expect("source packet should be written");
+        assert_eq!(source_packet, report.packet);
+        let sources = fs::read_to_string(promotion_dir.join("context/sources.toml"))
+            .expect("sources manifest should be written");
+        assert!(sources.contains("promotion_type = \"memory\""));
+        assert!(sources.contains(&format!("session_dir = \"{}\"", dir.display())));
+        assert!(sources.contains("relative_path = \"summary.md\""));
+        let manifest = fs::read_to_string(promotion_dir.join("djinn.toml"))
+            .expect("promotion manifest should be written");
+        assert!(manifest.contains("kind = \"promotion\""));
+        assert!(manifest.contains("promotion_type = \"memory\""));
+        let request = fs::read_to_string(promotion_dir.join("request.md"))
+            .expect("promotion request should be written");
+        assert!(request.contains("Use `context/source-packet.md`"));
 
         let _ = fs::remove_dir_all(&root);
     }
