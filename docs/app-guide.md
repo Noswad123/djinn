@@ -152,6 +152,10 @@ they explicitly opt into the MindWeaver adapter. The preferred direction remains
 interop with MindWeaver (`~/Projects/mind-weaver`) for the user's notes/todo
 system, not a premature parallel Djinn todo store.
 
+`djinn session status` and the Sessions TUI show candidate counts when a
+promotion session has `outputs/candidates/` or decision status events: total,
+accepted, denied, and pending.
+
 ```bash
 djinn review memory <id> --dry-run
 ```

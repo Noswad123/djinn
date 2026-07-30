@@ -127,6 +127,7 @@ pub struct FolderSessionStatusView {
     pub request_path: Option<String>,
     pub response_path: Option<String>,
     pub turn_count: usize,
+    pub candidate_status: Option<String>,
     pub next_action: Option<String>,
     pub note: Option<String>,
 }
@@ -142,6 +143,7 @@ pub struct SessionRecord {
     pub repo_path: Option<String>,
     pub summary_preview: Option<String>,
     pub turn_count: usize,
+    pub candidate_status: Option<String>,
     pub next_action: Option<String>,
 }
 
@@ -448,6 +450,12 @@ fn draw_folder_session_status(frame: &mut ratatui::Frame<'_>, view: &FolderSessi
         lines.push(Line::from(vec![
             Span::styled("Note:    ", dim_style()),
             Span::raw(note),
+        ]));
+    }
+    if let Some(candidates) = &view.candidate_status {
+        lines.push(Line::from(vec![
+            Span::styled("Candidates:", dim_style()),
+            Span::raw(format!(" {candidates}")),
         ]));
     }
     if let Some(next) = &view.next_action {
@@ -1631,9 +1639,14 @@ fn session_list_metadata(session: &SessionRecord) -> String {
     let mode = session.mode.as_deref().unwrap_or("-");
     let updated = session.updated_at.as_deref().unwrap_or("unknown");
     let next = session.next_action.as_deref().unwrap_or("-");
+    let candidates = session
+        .candidate_status
+        .as_deref()
+        .map(|status| format!(" · candidates {status}"))
+        .unwrap_or_default();
     format!(
-        "{} / {} · {} turns · updated {} · next {}",
-        session.state, mode, session.turn_count, updated, next
+        "{} / {} · {} turns{} · updated {} · next {}",
+        session.state, mode, session.turn_count, candidates, updated, next
     )
 }
 
@@ -1655,6 +1668,9 @@ fn session_preview(session: &SessionRecord) -> String {
     }
     if let Some(next) = &session.next_action {
         lines.push(format!("Next: {next}"));
+    }
+    if let Some(candidates) = &session.candidate_status {
+        lines.push(format!("Candidates: {candidates}"));
     }
     lines.push(String::new());
     lines.push("Enter opens the focused session view.".to_string());
@@ -2868,6 +2884,7 @@ mod tests {
             repo_path: Some("/tmp/repo".to_string()),
             summary_preview: Some("Latest answer preview".to_string()),
             turn_count: 2,
+            candidate_status: Some("3 total, 1 accepted, 1 denied, 1 pending".to_string()),
             next_action: Some("edit request.md or run again".to_string()),
         };
         let mut app = SessionsApp::new(vec![session]);
@@ -2882,9 +2899,10 @@ mod tests {
         let preview = session_preview(app.selected_session().unwrap());
         assert!(preview.contains("Name: repo-review"));
         assert!(preview.contains("Focused shortcuts"));
+        assert!(preview.contains("Candidates: 3 total"));
         assert!(preview.contains("Latest answer preview"));
         assert!(
-            session_list_metadata(app.selected_session().unwrap()).contains("paused / background")
+            session_list_metadata(app.selected_session().unwrap()).contains("candidates 3 total")
         );
     }
 

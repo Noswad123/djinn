@@ -4809,6 +4809,10 @@ fn folder_session_status_tui_view(
             .as_ref()
             .and_then(|turn| turn.response_path.clone()),
         turn_count: report.turn_count,
+        candidate_status: report
+            .candidates
+            .as_ref()
+            .map(format_session_candidate_status),
         next_action: report.next_action.clone(),
         note: report
             .lifecycle
@@ -6792,9 +6796,21 @@ struct SessionStatusReport {
     files: SessionStatusFileReport,
     turn_count: usize,
     latest_turn: Option<SessionStatusTurnReport>,
+    candidates: Option<SessionStatusCandidateReport>,
     context_ingestible_count: usize,
     context_skipped: Vec<String>,
     next_action: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionStatusCandidateReport {
+    candidate_count: usize,
+    accepted_count: usize,
+    denied_count: usize,
+    pending_count: usize,
+    candidates_dir: String,
+    candidate_index_path: Option<String>,
+    candidate_status_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -6990,6 +7006,7 @@ struct FolderSessionSummary {
     summary_preview: Option<String>,
     turn_count: usize,
     latest_turn: Option<SessionStatusTurnReport>,
+    candidates: Option<SessionStatusCandidateReport>,
     next_action: Option<String>,
     modified_at: Option<String>,
     modified_at_ms: Option<i64>,
@@ -7365,6 +7382,7 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
     let request_exists = session_dir.join("request.md").exists();
     let next_action =
         session_status_next_action(&session_dir, request_exists, turn_count, &lifecycle);
+    let candidates = session_status_candidates(&session_dir)?;
 
     Ok(SessionStatusReport {
         session_dir: session_dir.display().to_string(),
@@ -7396,6 +7414,7 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
         },
         turn_count,
         latest_turn,
+        candidates,
         context_ingestible_count,
         context_skipped,
         next_action,
@@ -7436,6 +7455,97 @@ fn session_status_turn_report(turn: &FolderSessionTurnDigest) -> SessionStatusTu
             .map(|path| path.display().to_string()),
         has_response: turn.response_path.is_some(),
     }
+}
+
+fn session_status_candidates(session_dir: &Path) -> Result<Option<SessionStatusCandidateReport>> {
+    let outputs_dir = session_dir.join("outputs");
+    let candidates_dir = outputs_dir.join("candidates");
+    let candidate_index_path = outputs_dir.join("candidate-index.toml");
+    let candidate_status_path = outputs_dir.join("candidate-status.toml");
+    let candidate_count = count_promotion_candidate_files(&candidates_dir)?;
+    let statuses = read_promotion_candidate_statuses(&candidate_status_path)?;
+    if candidate_count == 0 && statuses.is_empty() && !candidate_index_path.exists() {
+        return Ok(None);
+    }
+    let accepted_count = statuses
+        .values()
+        .filter(|status| status.as_str() == "accepted")
+        .count();
+    let denied_count = statuses
+        .values()
+        .filter(|status| status.as_str() == "denied")
+        .count();
+    let decided_count = statuses.len().min(candidate_count);
+    Ok(Some(SessionStatusCandidateReport {
+        candidate_count,
+        accepted_count,
+        denied_count,
+        pending_count: candidate_count.saturating_sub(decided_count),
+        candidates_dir: candidates_dir.display().to_string(),
+        candidate_index_path: candidate_index_path
+            .exists()
+            .then(|| candidate_index_path.display().to_string()),
+        candidate_status_path: candidate_status_path
+            .exists()
+            .then(|| candidate_status_path.display().to_string()),
+    }))
+}
+
+fn count_promotion_candidate_files(candidates_dir: &Path) -> Result<usize> {
+    if !candidates_dir.is_dir() {
+        return Ok(0);
+    }
+    Ok(fs::read_dir(candidates_dir)
+        .with_context(|| format!("reading promotion candidates {}", candidates_dir.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|entry| {
+            let path = entry.path();
+            path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("toml")
+        })
+        .count())
+}
+
+fn read_promotion_candidate_statuses(status_path: &Path) -> Result<BTreeMap<String, String>> {
+    if !status_path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let content = fs::read_to_string(status_path)
+        .with_context(|| format!("reading {}", status_path.display()))?;
+    let mut statuses = BTreeMap::new();
+    let mut current_candidate: Option<String> = None;
+    for line in content.lines().map(str::trim) {
+        if line.starts_with("[[") {
+            current_candidate = None;
+            continue;
+        }
+        if let Some(value) = line
+            .strip_prefix("candidate =")
+            .and_then(|value| parse_manifest_string_value(value.trim()))
+        {
+            current_candidate = Some(value);
+            continue;
+        }
+        if let Some(status) = line
+            .strip_prefix("status =")
+            .and_then(|value| parse_manifest_string_value(value.trim()))
+        {
+            if let Some(candidate) = current_candidate.clone() {
+                statuses.insert(candidate, status);
+            }
+        }
+    }
+    Ok(statuses)
+}
+
+fn format_session_candidate_status(candidates: &SessionStatusCandidateReport) -> String {
+    format!(
+        "{} total, {} accepted, {} denied, {} pending",
+        candidates.candidate_count,
+        candidates.accepted_count,
+        candidates.denied_count,
+        candidates.pending_count
+    )
 }
 
 fn session_status_next_action(
@@ -7588,6 +7698,7 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
     let latest_turn = turns.last().map(session_status_turn_report);
     let request_md = path.join("request.md").exists();
     let next_action = session_status_next_action(path, request_md, turn_count, &lifecycle);
+    let candidates = session_status_candidates(path)?;
     Ok(FolderSessionSummary {
         display_name: folder_session_display_name(&name),
         reference_name: folder_session_reference_name(&name),
@@ -7610,6 +7721,7 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         summary_preview: folder_session_summary_preview(path),
         turn_count,
         latest_turn,
+        candidates,
         next_action,
         modified_at: folder_session_modified_at(path),
         modified_at_ms: folder_session_modified_at_ms(path),
@@ -9025,6 +9137,20 @@ fn format_folder_session_status(report: &SessionStatusReport) -> String {
             lines.push(format!("  response: {response_path}"));
         }
         lines.push(format!("  has response: {}", yes_no(turn.has_response)));
+    }
+    if let Some(candidates) = &report.candidates {
+        lines.push("Candidates:".to_string());
+        lines.push(format!(
+            "  status: {}",
+            format_session_candidate_status(candidates)
+        ));
+        lines.push(format!("  dir: {}", candidates.candidates_dir));
+        if let Some(index_path) = &candidates.candidate_index_path {
+            lines.push(format!("  index: {index_path}"));
+        }
+        if let Some(status_path) = &candidates.candidate_status_path {
+            lines.push(format!("  decisions: {status_path}"));
+        }
     }
     lines.push(format!(
         "Ingestible context files: {}",
@@ -14572,6 +14698,10 @@ fn session_records_for_dashboard() -> Result<Vec<djinn_tui::SessionRecord>> {
             repo_path: session.repo_path.or(session.workspace),
             summary_preview: session.summary_preview,
             turn_count: session.turn_count,
+            candidate_status: session
+                .candidates
+                .as_ref()
+                .map(format_session_candidate_status),
             next_action: session.next_action,
         })
         .collect())
@@ -18304,6 +18434,27 @@ link = "context/repo"
         fs::write(context.join("notes.md"), "note\n").unwrap();
         fs::write(context.join("data.bin"), "binary-ish\n").unwrap();
         fs::write(dir.join("turns/turn-1/request.md"), "turn request\n").unwrap();
+        fs::create_dir_all(dir.join("outputs/candidates")).unwrap();
+        fs::write(
+            dir.join("outputs/candidates/memory-001.toml"),
+            "type = \"memory\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("outputs/candidates/memory-002.toml"),
+            "type = \"memory\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("outputs/candidate-index.toml"),
+            "candidate_count = 2\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("outputs/candidate-status.toml"),
+            "[[events]]\ncandidate = \"memory-001\"\nstatus = \"accepted\"\n",
+        )
+        .unwrap();
         create_dir_symlink(&repo, &context.join("repo")).unwrap();
 
         let report = folder_session_status(&dir).unwrap();
@@ -18322,6 +18473,9 @@ link = "context/repo"
         assert_eq!(report.lifecycle.state, "not_started");
         assert_eq!(report.latest_turn.as_ref().unwrap().id, "turn-1");
         assert!(!report.latest_turn.as_ref().unwrap().has_response);
+        assert_eq!(report.candidates.as_ref().unwrap().candidate_count, 2);
+        assert_eq!(report.candidates.as_ref().unwrap().accepted_count, 1);
+        assert_eq!(report.candidates.as_ref().unwrap().pending_count, 1);
         assert_eq!(report.context_ingestible_count, 1);
         let repo_status = report.repo.as_ref().unwrap();
         assert!(repo_status.link_exists);
@@ -18330,6 +18484,8 @@ link = "context/repo"
         assert!(text.contains("Skipped context:"));
         assert!(text.contains("State: not_started"));
         assert!(text.contains("Latest turn:"));
+        assert!(text.contains("Candidates:"));
+        assert!(text.contains("2 total, 1 accepted, 0 denied, 1 pending"));
         assert!(text.contains("context/data.bin: unsupported file type"));
         assert!(text.contains("context/repo: symlink directory not ingested"));
 
@@ -18447,12 +18603,22 @@ link = "context/repo"
         fs::write(session_dir.join("summary.md"), "answer\n").unwrap();
         fs::write(turn.join("request.md"), "question\n").unwrap();
         fs::write(turn.join("response.md"), "answer\n").unwrap();
+        fs::create_dir_all(session_dir.join("outputs/candidates")).unwrap();
+        fs::write(
+            session_dir.join("outputs/candidates/todo-001.toml"),
+            "type = \"todo\"\n",
+        )
+        .unwrap();
 
         let view = folder_session_status_tui_view(&session_dir).unwrap();
 
         assert_eq!(view.title, "bap-questions");
         assert_eq!(view.state, "not_started");
         assert_eq!(view.turn_count, 1);
+        assert_eq!(
+            view.candidate_status.as_deref(),
+            Some("1 total, 0 accepted, 0 denied, 1 pending")
+        );
         assert!(view
             .request_path
             .as_deref()
@@ -18505,6 +18671,7 @@ link = "context/repo"
                 response_path: None,
                 has_response: false,
             }),
+            candidates: None,
             context_ingestible_count: 0,
             context_skipped: Vec::new(),
             next_action: Some("check again: djinn session status /tmp/session".to_string()),

@@ -52,15 +52,16 @@ metadata validation; dry-run previews the checkbox, and accept appends to the
 configured MindWeaver inbox while rejecting exact or near-duplicate open inbox
 todos. Candidate validation enforces per-type fields (`scope`/`kind`/`confidence`
 for memories, `kind`/`confidence` for todos, `description` for skills, and
-`rationale` for patterns). The local actions store remains the mutating fallback.
-The exact source-packet structure may evolve.
+`rationale` for patterns). `djinn session status` and the Sessions TUI surface
+candidate totals and accepted/denied/pending counts. The local actions store
+remains the mutating fallback. The exact source-packet structure may evolve.
 
 Ready implementation slices:
 
-- Continue tightening candidate writeback as real model output appears: TUI review
-  affordances for candidate status, tuning fuzzy duplicate thresholds from real
-  generated candidates, and an optional post-capture `mw todos sync` handoff once
-  that mutation boundary is explicit.
+- Continue tightening candidate writeback as real model output appears: richer TUI
+  review affordances for individual candidate status/actions, tuning fuzzy
+  duplicate thresholds from real generated candidates, and an optional
+  post-capture `mw todos sync` handoff once that mutation boundary is explicit.
   Prefer interoperating with MindWeaver
   (`~/Projects/mind-weaver`) as the user's notes/todo system rather than
   prematurely building a parallel first-class Djinn todo store; keep Djinn's local

@@ -1098,7 +1098,7 @@ The first non-interactive agent slice is implemented as:
     `confidence`; todos require `kind` and `confidence`; skills require
     `description`; and patterns require `rationale`. Candidate generation writes
     `outputs/candidate-index.toml`, decisions append `outputs/candidate-status.toml`,
-    and guarded writeback refuses
+    `djinn session status` and the Sessions TUI summarize candidate counts, and guarded writeback refuses
     exact or near-duplicate active memories, open todos/actions, existing skills,
     and already-accepted pattern summary files. Todo candidates can opt into
     `todo_adapter = "mindweaver"` with validated MindWeaver metadata (`area`,

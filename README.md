@@ -289,7 +289,9 @@ Candidate generation writes `outputs/candidate-index.toml`, accept/deny appends
 `outputs/candidate-status.toml`, and writeback rejects exact or near duplicates
 before mutating durable stores, including existing open MindWeaver inbox todos. Todo
 writeback prefers interop with MindWeaver (`~/Projects/mind-weaver`) when
-requested, while keeping Djinn's actions store as the standalone fallback.
+requested, while keeping Djinn's actions store as the standalone fallback. `djinn
+session status` and the Sessions TUI summarize candidate totals and
+accepted/denied/pending counts.
 
 The roadmap direction is promotion as a special folder-backed session that uses
 one or more source sessions as context. Promotion types should be `memory`,
