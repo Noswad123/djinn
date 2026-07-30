@@ -259,6 +259,7 @@ djinn session compact ./debugging-session
 djinn session open ./debugging-session --target compacted
 djinn session promote ./debugging-session --type memory
 djinn session run ./promotion-memory --fg
+djinn session validate-candidates ./promotion-memory
 djinn session accept ./promotion-memory --dry-run
 ```
 
@@ -291,7 +292,10 @@ also offers `m` for accept-and-sync. `pattern` candidates are accepted as Markdo
 summaries under the promotion session, and `djinn session export-pattern
 <promotion-session> [candidate] --to <notes.md>` exports clean insight/rationale
 Markdown to your notes.
-Candidate generation writes `outputs/candidate-index.toml`, accept/deny appends
+Use `djinn session validate-candidates <promotion-session> [candidate]` after
+editing candidate TOML to check required fields and evidence links without
+rerunning the model or mutating any durable store. Candidate generation writes
+`outputs/candidate-index.toml`, accept/deny appends
 `outputs/candidate-status.toml`, and writeback rejects exact or near duplicates
 before mutating durable stores, including existing open MindWeaver inbox todos. Todo
 writeback prefers interop with MindWeaver (`~/Projects/mind-weaver`) when

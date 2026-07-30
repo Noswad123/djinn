@@ -123,6 +123,8 @@ Promotion outcomes are accepted or denied through the same session surface:
 djinn session accept ./promotion-memory --dry-run
 djinn session accept ./promotion-memory memory-001
 djinn session deny ./promotion-memory memory-002
+djinn session validate-candidates ./promotion-memory
+djinn session validate-candidates ./promotion-memory memory-001
 ```
 
 The current accept/deny slice records the decision under
@@ -157,6 +159,12 @@ evidence = ["./debugging-session/summary.md"]
   to `summary.md`; accepting marks/reifies selected pattern candidates under
   `outputs/accepted/`, but the more useful long-term path is exporting the insight
   into your notes.
+
+`djinn session validate-candidates <promotion-session> [candidate]` is a read-only
+repair loop for edited or failed candidate TOML. It reports valid/invalid counts
+and per-candidate errors, but does not rerun the model, write decisions, append
+candidate status, or mutate durable stores. The focused Sessions TUI exposes both
+"Validate all candidates" and "Validate selected candidate" from `Ctrl+P`.
 
 Export pattern insight(s) to notes:
 

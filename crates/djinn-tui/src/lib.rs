@@ -178,6 +178,8 @@ pub enum FolderSessionAction {
     EditRequest,
     OpenContext,
     DiscoverContext,
+    ValidateCandidates,
+    ValidateCandidate(String),
     AcceptCandidate(String),
     AcceptCandidateAndSyncMindweaver(String),
     DenyCandidate(String),
@@ -628,6 +630,14 @@ fn folder_session_command_palette(
             FolderSessionCommand::OpenHelp,
         ),
     ];
+    if view.mode.as_deref() == Some("promotion") {
+        entries.push(folder_session_command_entry(
+            "Promotion",
+            "Validate all candidates",
+            "Check candidate TOML without accepting or rerunning the model",
+            FolderSessionCommand::Action(FolderSessionAction::ValidateCandidates),
+        ));
+    }
     if let Some(path) = &view.latest_generation_response_path {
         entries.push(folder_session_command_entry(
             "Artifacts",
@@ -670,6 +680,14 @@ fn folder_session_command_palette(
     }
     if let Some(candidate) = view.candidate_entries.get(selected_candidate) {
         entries.extend([
+            folder_session_command_entry(
+                "Candidate",
+                "Validate selected candidate",
+                &format!("Check {} without accepting it", candidate.id),
+                FolderSessionCommand::Action(FolderSessionAction::ValidateCandidate(
+                    candidate.id.clone(),
+                )),
+            ),
             folder_session_command_entry(
                 "Candidate",
                 "Accept selected candidate",
@@ -3612,7 +3630,7 @@ mod tests {
         let view = FolderSessionStatusView {
             title: "promotion".to_string(),
             state: "complete".to_string(),
-            mode: None,
+            mode: Some("promotion".to_string()),
             session_dir: "/tmp/promotion".to_string(),
             summary_path: None,
             request_path: None,
@@ -3668,6 +3686,12 @@ mod tests {
         assert!(palette
             .iter()
             .any(|entry| entry.label == "Show keybindings"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Validate all candidates"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Validate selected candidate"));
         assert!(palette
             .iter()
             .any(|entry| entry.label == "Accept selected candidate"));

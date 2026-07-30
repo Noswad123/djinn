@@ -1103,10 +1103,12 @@ The first non-interactive agent slice is implemented as:
     `confidence`; todos require `kind` and `confidence`; skills require
     `description`; and patterns require `rationale`. Candidate generation writes
     `outputs/candidate-index.toml`, decisions append `outputs/candidate-status.toml`,
-    `djinn session status` and the Sessions TUI summarize candidate counts and
-    individual candidate id/type/status/destination previews, and guarded writeback refuses
-    exact or near-duplicate active memories, open todos/actions, existing skills,
-    and already-accepted pattern summary files. Todo candidates can opt into
+    and `djinn session validate-candidates <promotion-session> [candidate]` provides
+    a read-only repair loop for edited TOML without rerunning the model or mutating
+    durable stores. `djinn session status` and the Sessions TUI summarize candidate
+    counts and individual candidate id/type/status/destination previews, and guarded
+    writeback refuses exact or near-duplicate active memories, open todos/actions,
+    existing skills, and already-accepted pattern summary files. Todo candidates can opt into
     `todo_adapter = "mindweaver"` with validated MindWeaver metadata (`area`,
     `priority`, `energy`, `due`, `start`, `estimate`); dry-run renders the inbox
     checkbox, and accept appends it to the configured MindWeaver inbox while

@@ -40,15 +40,6 @@ schemas evolvable; durable behavior belongs in the app guide and design decision
 
 Ready implementation slices:
 
-- **Failed-generation recovery:** focused promotion sessions should expose command
-  palette actions to open the latest generation response, latest background log,
-  and candidates directory. This is the fastest path from “generation failed” to
-  understanding whether the model omitted required fields, emitted malformed TOML,
-  or hit a provider/runtime error.
-- **Candidate repair loop:** add a validation command for edited candidate TOML,
-  e.g. `djinn session validate-candidates <promotion-session> [candidate]`, so a
-  user can fix a nearly-valid model output and re-run validation without another
-  model call.
 - **Pattern notes handoff in TUI:** expose pattern export from the focused-session
   command palette. If interactive path prompting is too much for the first slice,
   show the exact `djinn session export-pattern ... --to <notes.md>` command and
@@ -123,9 +114,6 @@ Remaining ready UI slices:
   the folder.
 - **Artifact opening polish:** ensure every focused-session action reports the
   exact delegated command/path and leaves the terminal in a clean state.
-- **Focused artifact actions:** add palette entries for latest run log, latest
-  generation response, candidates directory, source packet, and source manifest
-  where those artifacts exist.
 
 ### Folder-backed session follow-ups
 

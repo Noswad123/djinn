@@ -140,6 +140,8 @@ enum SessionCommand {
     Deny(SessionDecisionArgs),
     /// Export pattern promotion insight(s) to a Markdown notes file.
     ExportPattern(SessionExportPatternArgs),
+    /// Validate generated promotion candidate TOML without accepting or rerunning the model.
+    ValidateCandidates(SessionValidateCandidatesArgs),
     /// Permanently clean up explicit promotion-session source material.
     Cleanup(SessionCleanupArgs),
     /// Manage session-local context files and links.
@@ -322,6 +324,17 @@ struct SessionExportPatternArgs {
     /// Preview the exported Markdown without writing.
     #[arg(long)]
     dry_run: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionValidateCandidatesArgs {
+    /// Promotion session name or directory.
+    dir: PathBuf,
+    /// Optional candidate id/path within the promotion session. Defaults to all candidates.
+    candidate: Option<String>,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -4803,6 +4816,12 @@ fn folder_session_action_message(
         djinn_tui::FolderSessionAction::EditRequest => "Opened request.md".to_string(),
         djinn_tui::FolderSessionAction::OpenContext => "Opened context".to_string(),
         djinn_tui::FolderSessionAction::DiscoverContext => "Discovered session context".to_string(),
+        djinn_tui::FolderSessionAction::ValidateCandidates => {
+            "Validated promotion candidates".to_string()
+        }
+        djinn_tui::FolderSessionAction::ValidateCandidate(candidate) => {
+            format!("Validated candidate {candidate}")
+        }
         djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => {
             format!("Accepted candidate {candidate}")
         }
@@ -4862,6 +4881,20 @@ fn handle_folder_session_tui_action(
             session_context_discover(SessionContextDiscoverArgs {
                 session: session_dir,
                 dry_run: false,
+                json: false,
+            })
+        }
+        djinn_tui::FolderSessionAction::ValidateCandidates => {
+            session_validate_candidates(SessionValidateCandidatesArgs {
+                dir: session_dir,
+                candidate: None,
+                json: false,
+            })
+        }
+        djinn_tui::FolderSessionAction::ValidateCandidate(candidate) => {
+            session_validate_candidates(SessionValidateCandidatesArgs {
+                dir: session_dir,
+                candidate: Some(candidate),
                 json: false,
             })
         }
@@ -5009,6 +5042,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Accept(args) => session_decide(args, SessionDecisionAction::Accept),
         SessionCommand::Deny(args) => session_decide(args, SessionDecisionAction::Deny),
         SessionCommand::ExportPattern(args) => session_export_pattern(args),
+        SessionCommand::ValidateCandidates(args) => session_validate_candidates(args),
         SessionCommand::Cleanup(args) => session_cleanup(args),
         SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
@@ -5307,6 +5341,150 @@ fn decide_promotion_session_with_stores(
         post_writebacks,
         note,
     })
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionValidateCandidatesReport {
+    session_dir: String,
+    promotion_type: String,
+    candidate: Option<String>,
+    candidate_count: usize,
+    valid_count: usize,
+    invalid_count: usize,
+    all_valid: bool,
+    candidates: Vec<SessionValidateCandidateEntry>,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionValidateCandidateEntry {
+    id: String,
+    candidate_type: Option<String>,
+    path: String,
+    valid: bool,
+    error: Option<String>,
+}
+
+fn session_validate_candidates(args: SessionValidateCandidatesArgs) -> Result<()> {
+    let report = validate_promotion_session_candidates(&args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Validated promotion candidates: {}", report.session_dir);
+        println!("  type: {}", report.promotion_type);
+        if let Some(candidate) = &report.candidate {
+            println!("  candidate: {candidate}");
+        } else {
+            println!("  candidate: all");
+        }
+        println!(
+            "  result: {} valid, {} invalid",
+            report.valid_count, report.invalid_count
+        );
+        for candidate in &report.candidates {
+            let status = if candidate.valid { "valid" } else { "invalid" };
+            let candidate_type = candidate.candidate_type.as_deref().unwrap_or("unknown");
+            println!("    - {} ({candidate_type}): {status}", candidate.id);
+            println!("      path: {}", candidate.path);
+            if let Some(error) = &candidate.error {
+                println!("      error: {error}");
+            }
+        }
+        println!("  note: {}", report.note);
+    }
+    Ok(())
+}
+
+fn validate_promotion_session_candidates(
+    args: &SessionValidateCandidatesArgs,
+) -> Result<SessionValidateCandidatesReport> {
+    let session_dir = resolve_session_dir(&args.dir)?;
+    let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
+        format!(
+            "missing promotion session manifest: {}",
+            session_dir.display()
+        )
+    })?;
+    if manifest.kind.as_deref() != Some("promotion") {
+        bail!(
+            "session {} is not a promotion session; `djinn session validate-candidates` only applies to kind = \"promotion\"",
+            session_dir.display()
+        );
+    }
+    let promotion_type = manifest
+        .promotion_type
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let paths = promotion_candidate_paths(&session_dir, args.candidate.as_deref())?;
+    let candidates = paths
+        .iter()
+        .map(|path| validate_promotion_candidate_path(&session_dir, path))
+        .collect::<Vec<_>>();
+    let valid_count = candidates
+        .iter()
+        .filter(|candidate| candidate.valid)
+        .count();
+    let invalid_count = candidates.len().saturating_sub(valid_count);
+    let all_valid = invalid_count == 0;
+    let note = if candidates.is_empty() {
+        "No promotion candidate TOML files were found. Run `djinn session run <promotion-session>` or add candidate files under outputs/candidates/."
+    } else if all_valid {
+        "All checked promotion candidates are structurally valid. You can accept, deny, export, or continue editing them."
+    } else {
+        "One or more promotion candidates need repair. Edit the listed TOML files, then run validation again."
+    }
+    .to_string();
+
+    Ok(SessionValidateCandidatesReport {
+        session_dir: session_dir.display().to_string(),
+        promotion_type,
+        candidate: args.candidate.clone(),
+        candidate_count: candidates.len(),
+        valid_count,
+        invalid_count,
+        all_valid,
+        candidates,
+        note,
+    })
+}
+
+fn validate_promotion_candidate_path(
+    session_dir: &Path,
+    path: &Path,
+) -> SessionValidateCandidateEntry {
+    let (id, candidate_type) = promotion_candidate_metadata(path);
+    match read_promotion_candidate(session_dir, path) {
+        Ok(candidate) => SessionValidateCandidateEntry {
+            id: candidate.id,
+            candidate_type: Some(candidate.candidate_type),
+            path: candidate.path.display().to_string(),
+            valid: true,
+            error: None,
+        },
+        Err(err) => SessionValidateCandidateEntry {
+            id,
+            candidate_type,
+            path: path.display().to_string(),
+            valid: false,
+            error: Some(format!("{err:#}")),
+        },
+    }
+}
+
+fn promotion_candidate_metadata(path: &Path) -> (String, Option<String>) {
+    let fallback_id = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("candidate")
+        .to_string();
+    let Ok(content) = fs::read_to_string(path) else {
+        return (fallback_id, None);
+    };
+    let id = candidate_string_value(&content, "id").unwrap_or(fallback_id);
+    let candidate_type = candidate_string_value(&content, "type")
+        .or_else(|| candidate_string_value(&content, "candidate_type"))
+        .filter(|value| !value.trim().is_empty());
+    (id, candidate_type)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -5865,6 +6043,13 @@ fn resolve_promotion_candidates(
     session_dir: &Path,
     candidate: Option<&str>,
 ) -> Result<Vec<PromotionCandidate>> {
+    promotion_candidate_paths(session_dir, candidate)?
+        .iter()
+        .map(|path| read_promotion_candidate(session_dir, path))
+        .collect()
+}
+
+fn promotion_candidate_paths(session_dir: &Path, candidate: Option<&str>) -> Result<Vec<PathBuf>> {
     let candidates_dir = session_dir.join("outputs").join("candidates");
     if let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
         let path = resolve_promotion_candidate_path(session_dir, candidate);
@@ -5876,7 +6061,7 @@ fn resolve_promotion_candidates(
             );
         }
         ensure_promotion_candidate_inside_session(session_dir, &path)?;
-        return Ok(vec![read_promotion_candidate(session_dir, &path)?]);
+        return Ok(vec![path]);
     }
 
     if !candidates_dir.is_dir() {
@@ -5892,10 +6077,7 @@ fn resolve_promotion_candidates(
         })
         .collect::<Vec<_>>();
     paths.sort();
-    paths
-        .iter()
-        .map(|path| read_promotion_candidate(session_dir, path))
-        .collect()
+    Ok(paths)
 }
 
 fn ensure_promotion_candidate_inside_session(session_dir: &Path, path: &Path) -> Result<()> {
@@ -19488,6 +19670,25 @@ mod tests {
         assert!(args.candidate.is_none());
         assert!(!args.dry_run);
 
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "validate-candidates",
+            "./promotion-session",
+            "memory-001",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::ValidateCandidates(args)) = args.command else {
+            panic!("expected session validate-candidates command");
+        };
+        assert_eq!(args.dir, PathBuf::from("./promotion-session"));
+        assert_eq!(args.candidate.as_deref(), Some("memory-001"));
+        assert!(args.json);
+
         let cli = Cli::try_parse_from(["djinn", "session", "bap-questions"]).unwrap();
         let Some(Command::Session(args)) = cli.command else {
             panic!("expected session command");
@@ -20759,6 +20960,101 @@ link = "context/repo"
             },
             SessionDecisionAction::Accept,
         )
+        .unwrap_err();
+        assert!(err.to_string().contains("is not a promotion session"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_validate_candidates_reports_valid_and_invalid_files_without_writeback() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-validate-candidates-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let source = root.join("source-session");
+        fs::create_dir_all(source.join("context")).unwrap();
+        fs::write(source.join("summary.md"), "A useful promotion lesson.\n").unwrap();
+
+        let promotion_dir = root.join("promotion-memory");
+        create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![source.clone()],
+            promotion_type: SessionPromoteType::Memory,
+            promotion_session_dir: Some(promotion_dir.clone()),
+            max_chars_per_artifact: 200,
+            force: false,
+            json: false,
+        })
+        .unwrap();
+        let candidates_dir = promotion_dir.join("outputs/candidates");
+        fs::create_dir_all(&candidates_dir).unwrap();
+        fs::write(
+            candidates_dir.join("memory-001.toml"),
+            format!(
+                "type = \"memory\"\nid = \"memory-001\"\ntext = \"Keep source sessions as promotion provenance.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"{}/summary.md\"]\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            candidates_dir.join("memory-002.toml"),
+            format!(
+                "type = \"memory\"\nid = \"memory-002\"\ntext = \"Missing confidence should be invalid.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nevidence = [\"{}/summary.md\"]\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+
+        let report = validate_promotion_session_candidates(&SessionValidateCandidatesArgs {
+            dir: promotion_dir.clone(),
+            candidate: None,
+            json: false,
+        })
+        .unwrap();
+
+        assert_eq!(report.promotion_type, "memory");
+        assert_eq!(report.candidate_count, 2);
+        assert_eq!(report.valid_count, 1);
+        assert_eq!(report.invalid_count, 1);
+        assert!(!report.all_valid);
+        assert!(report
+            .candidates
+            .iter()
+            .any(|candidate| candidate.id == "memory-001" && candidate.valid));
+        let invalid = report
+            .candidates
+            .iter()
+            .find(|candidate| candidate.id == "memory-002")
+            .unwrap();
+        assert!(!invalid.valid);
+        assert_eq!(invalid.candidate_type.as_deref(), Some("memory"));
+        assert!(invalid
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("memory candidate"));
+        assert!(!promotion_dir.join("outputs/decisions").exists());
+        assert!(!promotion_dir.join("outputs/candidate-status.toml").exists());
+
+        let single = validate_promotion_session_candidates(&SessionValidateCandidatesArgs {
+            dir: promotion_dir.clone(),
+            candidate: Some("memory-001".to_string()),
+            json: false,
+        })
+        .unwrap();
+        assert!(single.all_valid);
+        assert_eq!(single.candidate_count, 1);
+
+        let normal = root.join("normal-session");
+        fs::create_dir_all(&normal).unwrap();
+        fs::write(normal.join("djinn.toml"), "version = 1\n").unwrap();
+        let err = validate_promotion_session_candidates(&SessionValidateCandidatesArgs {
+            dir: normal,
+            candidate: None,
+            json: false,
+        })
         .unwrap_err();
         assert!(err.to_string().contains("is not a promotion session"));
 
