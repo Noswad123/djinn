@@ -130,11 +130,11 @@ evidence = ["./debugging-session/summary.md"]
 ```
 
 - `memory` candidates write to the durable memory store.
-- `todo` candidates write to Djinn's durable actions store by default. To preview
+- `todo` candidates write to Djinn's durable actions store by default. To use
   MindWeaver interop, set `todo_adapter = "mindweaver"` and optional metadata
-  (`area`, `priority`, `energy`, `due`, `start`, `estimate`); accepting such a
-  candidate is currently `--dry-run` only and renders the checkbox that would be
-  appended to the MindWeaver inbox.
+  (`area`, `priority`, `energy`, `due`, `start`, `estimate`); `--dry-run` renders
+  the checkbox, while accept appends it to the configured MindWeaver inbox
+  (`MW_TODO_INBOX`, `MW_INBOX_PATH`, or `INBOX_PATH`).
 - `skill` candidates require `name` plus `body`, `body_path`, or `text`, then write
   a Djinn-managed `SKILL.md` with an evidence section.
 - `pattern` candidates write accepted Markdown summaries under
@@ -143,11 +143,12 @@ evidence = ["./debugging-session/summary.md"]
 Candidate generation also writes `outputs/candidate-index.toml`, and accept/deny
 appends status events to `outputs/candidate-status.toml`. Accept writeback refuses
 exact duplicate active memories, open todos/actions, existing managed or discovered
-skills with the same name, and pattern summaries that were already accepted. Todo
-promotion candidates map to the durable actions store as Djinn's standalone
-fallback unless they explicitly opt into the preview-only MindWeaver adapter. The
-preferred future direction is interop with MindWeaver (`~/Projects/mind-weaver`)
-for the user's notes/todo system, not a premature parallel Djinn todo store.
+skills with the same name, pattern summaries that were already accepted, and open
+MindWeaver inbox todos with the same text. Todo promotion candidates map to the
+durable actions store as Djinn's standalone fallback unless they explicitly opt
+into the MindWeaver adapter. The preferred direction remains interop with
+MindWeaver (`~/Projects/mind-weaver`) for the user's notes/todo system, not a
+premature parallel Djinn todo store.
 
 ```bash
 djinn review memory <id> --dry-run

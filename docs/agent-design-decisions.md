@@ -1097,14 +1097,15 @@ The first non-interactive agent slice is implemented as:
     evidence links. Candidate generation writes `outputs/candidate-index.toml`,
     decisions append `outputs/candidate-status.toml`, and guarded writeback refuses
     exact duplicate active memories, open todos/actions, existing skills, and
-    already-accepted pattern summary files. Todo candidates can opt into a
-    preview-only `todo_adapter = "mindweaver"` with validated MindWeaver metadata
-    (`area`, `priority`, `energy`, `due`, `start`, `estimate`) that renders the
-    inbox checkbox but does not mutate notes yet. Future todo writeback should
-    prefer interop with MindWeaver (`~/Projects/mind-weaver`) for users who use
-    that notes/todo app rather than prematurely creating a parallel first-class
-    Djinn todo store. Legacy JSONL row identity and the removed saved-row CLI
-    should not define the new UX or data model.
+    already-accepted pattern summary files. Todo candidates can opt into
+    `todo_adapter = "mindweaver"` with validated MindWeaver metadata (`area`,
+    `priority`, `energy`, `due`, `start`, `estimate`); dry-run renders the inbox
+    checkbox, and accept appends it to the configured MindWeaver inbox while
+    refusing duplicate open inbox todos. Todo writeback should prefer interop with
+    MindWeaver (`~/Projects/mind-weaver`) for users who use that notes/todo app
+    rather than prematurely creating a parallel first-class Djinn todo store.
+    Legacy JSONL row identity and the removed saved-row CLI should not define the
+    new UX or data model.
 
 Not in the first slice unless explicitly reopened:
 

@@ -47,19 +47,20 @@ pattern summaries while preserving evidence links. Candidate generation writes
 `outputs/candidate-index.toml`; accept/deny appends status events to
 `outputs/candidate-status.toml`; writeback rejects exact duplicate active memories,
 open todos/actions, existing skills, and already-accepted pattern files. Todo
-candidates can now declare a preview-only `todo_adapter = "mindweaver"` with
-MindWeaver metadata validation, while the local actions store remains the
-mutating fallback. The exact source-packet structure may evolve.
+candidates can now declare `todo_adapter = "mindweaver"` with MindWeaver metadata
+validation; dry-run previews the checkbox, and accept appends to the configured
+MindWeaver inbox while rejecting duplicate open inbox todos. The local actions
+store remains the mutating fallback. The exact source-packet structure may evolve.
 
 Ready implementation slices:
 
 - Continue tightening candidate writeback as real model output appears: fuzzy
   duplicate detection, richer per-type required fields, TUI review affordances for
-  candidate status, and promoting the MindWeaver todo preview into a safe capture
-  adapter once the append/sync API is explicit. Prefer interoperating with
-  MindWeaver (`~/Projects/mind-weaver`) as the user's notes/todo system rather
-  than prematurely building a parallel first-class Djinn todo store; keep Djinn's
-  local actions store as the standalone fallback for users who install only Djinn.
+  candidate status, and an optional post-capture `mw todos sync` handoff once that
+  mutation boundary is explicit. Prefer interoperating with MindWeaver
+  (`~/Projects/mind-weaver`) as the user's notes/todo system rather than
+  prematurely building a parallel first-class Djinn todo store; keep Djinn's local
+  actions store as the standalone fallback for users who install only Djinn.
 - Add explicit cleanup/archive flags only after provenance and recovery behavior
   is clear. Source sessions and promotion sessions must remain on disk by default.
 

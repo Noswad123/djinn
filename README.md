@@ -279,13 +279,15 @@ Djinn can now write guarded `memory`, `todo`, `skill`, or `pattern` outputs whil
 retaining evidence links. `todo` candidates default to Djinn's durable actions
 store. Candidates may also set `todo_adapter = "mindweaver"` with metadata such
 as `area = "Code"`, `priority = "p2"`, `energy = "m"`, `due`, `start`, and
-`estimate`; that adapter is currently preview-only via `--dry-run` and renders
-the Markdown checkbox Djinn would append to MindWeaver's inbox. `pattern`
-candidates are accepted as Markdown summaries under the promotion session.
+`estimate`; `--dry-run` renders the Markdown checkbox, and accept appends it to
+the explicitly configured MindWeaver inbox (`MW_TODO_INBOX`, `MW_INBOX_PATH`, or
+`INBOX_PATH`).
+`pattern` candidates are accepted as Markdown summaries under the promotion session.
 Candidate generation writes `outputs/candidate-index.toml`, accept/deny appends
 `outputs/candidate-status.toml`, and writeback rejects exact duplicates before
-mutating durable stores. Future todo writeback should prefer interop with
-MindWeaver (`~/Projects/mind-weaver`) when available, while keeping Djinn's
+mutating durable stores, including existing open MindWeaver inbox todos. Todo
+writeback prefers interop with MindWeaver (`~/Projects/mind-weaver`) when
+requested, while keeping Djinn's actions store as the standalone fallback.
 
 The roadmap direction is promotion as a special folder-backed session that uses
 one or more source sessions as context. Promotion types should be `memory`,

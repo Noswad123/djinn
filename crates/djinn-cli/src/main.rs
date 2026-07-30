@@ -4935,6 +4935,7 @@ struct PromotionWritebackStores {
     memory: djinn_memory::MemoryStore,
     action: ActionStore,
     skill: SkillStore,
+    mindweaver_inbox: Option<PathBuf>,
 }
 
 fn session_decide(args: SessionDecisionArgs, action: SessionDecisionAction) -> Result<()> {
@@ -5096,6 +5097,7 @@ impl PromotionWritebackStores {
             memory: memory_store(),
             action: action_store(),
             skill: skill_store(),
+            mindweaver_inbox: None,
         }
     }
 }
@@ -5122,7 +5124,7 @@ fn render_promotion_candidate_generation_prompt(
     prompt.push_str("Supported candidate shapes:\n\n");
     prompt.push_str("```toml\ntype = \"memory\"\nid = \"memory-001\"\ntext = \"Durable nugget of wisdom.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"/path/to/session/summary.md\"]\n```\n\n");
     prompt.push_str("```toml\ntype = \"todo\"\nid = \"todo-001\"\ntext = \"Concrete next action.\"\nscope = \"project:djinn\"\nkind = \"follow-up\"\nconfidence = \"medium\"\nevidence = [\"/path/to/session/turns/turn-1/response.md\"]\n```\n\n");
-    prompt.push_str("Todo candidates may optionally include `todo_adapter = \"action\"` (Djinn fallback) or `todo_adapter = \"mindweaver\"` plus MindWeaver metadata such as `area = \"Code\"`, `priority = \"p2\"`, `energy = \"m\"`, `due = \"2026-08-01\"`, `start = \"2026-07-30\"`, or `estimate = \"30\"`. MindWeaver todo accept is currently dry-run preview only.\n\n");
+    prompt.push_str("Todo candidates may optionally include `todo_adapter = \"action\"` (Djinn fallback) or `todo_adapter = \"mindweaver\"` plus MindWeaver metadata such as `area = \"Code\"`, `priority = \"p2\"`, `energy = \"m\"`, `due = \"2026-08-01\"`, `start = \"2026-07-30\"`, or `estimate = \"30\"`. MindWeaver todo accept appends a valid checkbox to the configured MindWeaver inbox; use `--dry-run` to preview the checkbox first.\n\n");
     prompt.push_str("```toml\ntype = \"skill\"\nid = \"skill-001\"\nname = \"reusable-workflow\"\ndescription = \"When to use this workflow.\"\nbody = \"# Skill: reusable-workflow\\n\\n## When to use\\n...\"\nevidence = [\"/path/to/session/context/compacted.md\"]\n```\n\n");
     prompt.push_str("```toml\ntype = \"pattern\"\nid = \"pattern-001\"\ntext = \"Common thread across the source sessions.\"\nrationale = \"Why this is a repeated pattern.\"\nevidence = [\"/path/to/session/summary.md\"]\n```\n\n");
     prompt
@@ -5719,21 +5721,7 @@ fn writeback_promotion_candidate(
         "todo" => {
             let adapter = promotion_todo_adapter(candidate);
             if adapter == "mindweaver" {
-                if !dry_run {
-                    bail!(
-                        "MindWeaver todo writeback is preview-only in this Djinn slice; rerun with --dry-run or omit todo_adapter/target to use Djinn's action fallback"
-                    );
-                }
-                let preview = render_mindweaver_todo_capture(candidate);
-                return Ok(SessionCandidateWritebackReport {
-                    candidate: candidate.id.clone(),
-                    candidate_type: candidate.candidate_type.clone(),
-                    destination: "mindweaver_inbox_preview".to_string(),
-                    id: candidate.id.clone(),
-                    path: Some(resolve_mindweaver_inbox_preview_path()),
-                    preview: Some(preview),
-                    dry_run,
-                });
+                return writeback_mindweaver_todo_candidate(candidate, dry_run, stores);
             }
             ensure_no_duplicate_todo_candidate(candidate, &stores.action)?;
             let input = MemoryInput {
@@ -5816,6 +5804,130 @@ fn writeback_promotion_candidate(
     }
 }
 
+fn writeback_mindweaver_todo_candidate(
+    candidate: &PromotionCandidate,
+    dry_run: bool,
+    stores: &PromotionWritebackStores,
+) -> Result<SessionCandidateWritebackReport> {
+    let preview = render_mindweaver_todo_capture(candidate);
+    let inbox_path = if dry_run {
+        stores.mindweaver_inbox.clone()
+    } else {
+        Some(resolve_mindweaver_inbox_path(
+            stores.mindweaver_inbox.as_deref(),
+        )?)
+    };
+
+    if let Some(path) = inbox_path.as_deref() {
+        ensure_no_duplicate_mindweaver_todo_candidate(candidate, path)?;
+        if !dry_run {
+            write_mindweaver_todo_capture_to_path(candidate, path)?;
+        }
+    }
+
+    Ok(SessionCandidateWritebackReport {
+        candidate: candidate.id.clone(),
+        candidate_type: candidate.candidate_type.clone(),
+        destination: if dry_run {
+            "mindweaver_inbox_preview".to_string()
+        } else {
+            "mindweaver_inbox".to_string()
+        },
+        id: candidate.id.clone(),
+        path: Some(
+            inbox_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(resolve_mindweaver_inbox_preview_path),
+        ),
+        preview: Some(preview),
+        dry_run,
+    })
+}
+
+fn write_mindweaver_todo_capture_to_path(
+    candidate: &PromotionCandidate,
+    inbox_path: &Path,
+) -> Result<()> {
+    let existing = match fs::read_to_string(inbox_path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", inbox_path.display())),
+    };
+    let mut lines = if existing.trim().is_empty() {
+        Vec::new()
+    } else {
+        existing.lines().map(str::to_string).collect::<Vec<_>>()
+    };
+    insert_mindweaver_todo_capture_lines(&mut lines, &render_mindweaver_todo_capture(candidate));
+    if let Some(parent) = inbox_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating MindWeaver inbox directory {}", parent.display()))?;
+    }
+    fs::write(inbox_path, ensure_trailing_newline(&lines.join("\n")))
+        .with_context(|| format!("writing MindWeaver inbox {}", inbox_path.display()))
+}
+
+fn insert_mindweaver_todo_capture_lines(lines: &mut Vec<String>, capture: &str) {
+    ensure_mindweaver_inbox_lines(lines);
+    let mut todo_idx = None;
+    let mut inbox_idx = None;
+    for (idx, line) in lines.iter().enumerate() {
+        if line.trim().eq_ignore_ascii_case("## Todo") {
+            todo_idx = Some(idx);
+        } else if todo_idx.is_some() && line.trim().eq_ignore_ascii_case("### Inbox") {
+            inbox_idx = Some(idx);
+            break;
+        }
+    }
+    let inbox_idx = if let Some(idx) = inbox_idx {
+        idx
+    } else {
+        if !lines.last().is_none_or(|line| line.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.extend([
+            "## Todo".to_string(),
+            "### Inbox".to_string(),
+            "### Next".to_string(),
+            "### Waiting".to_string(),
+        ]);
+        lines.len().saturating_sub(3)
+    };
+
+    let mut insert_at = inbox_idx + 1;
+    while insert_at < lines.len() {
+        if lines[insert_at].trim().starts_with("### ") {
+            break;
+        }
+        insert_at += 1;
+    }
+    let new_lines = capture.lines().map(str::to_string).collect::<Vec<_>>();
+    for (offset, line) in new_lines.into_iter().enumerate() {
+        lines.insert(insert_at + offset, line);
+    }
+}
+
+fn ensure_mindweaver_inbox_lines(lines: &mut Vec<String>) {
+    if !lines.is_empty() {
+        return;
+    }
+    lines.extend([
+        "---".to_string(),
+        "id: \"inbox\"".to_string(),
+        "domains: [task-index]".to_string(),
+        "task_active: true".to_string(),
+        "task_scope: inbox".to_string(),
+        "task_area: Action".to_string(),
+        "---".to_string(),
+        String::new(),
+        "# Inbox".to_string(),
+        "## Todo".to_string(),
+        "### Inbox".to_string(),
+        "### Next".to_string(),
+        "### Waiting".to_string(),
+    ]);
+}
+
 fn ensure_no_duplicate_memory_candidate(
     candidate: &PromotionCandidate,
     store: &djinn_memory::MemoryStore,
@@ -5854,6 +5966,40 @@ fn ensure_no_duplicate_todo_candidate(
         }
     }
     Ok(())
+}
+
+fn ensure_no_duplicate_mindweaver_todo_candidate(
+    candidate: &PromotionCandidate,
+    inbox_path: &Path,
+) -> Result<()> {
+    let candidate_text = normalized_candidate_text(&candidate.text);
+    if candidate_text.is_empty() || !inbox_path.exists() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(inbox_path)
+        .with_context(|| format!("reading MindWeaver inbox {}", inbox_path.display()))?;
+    for line in content.lines() {
+        let Some(existing) = open_mindweaver_checkbox_text(line) else {
+            continue;
+        };
+        if normalized_candidate_text(existing) == candidate_text {
+            bail!(
+                "duplicate MindWeaver todo candidate {} matches existing open inbox todo in {}",
+                candidate.id,
+                inbox_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn open_mindweaver_checkbox_text(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    trimmed
+        .strip_prefix("- [ ] ")
+        .or_else(|| trimmed.strip_prefix("* [ ] "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn ensure_no_duplicate_skill_candidate(name: &str, store: &SkillStore) -> Result<()> {
@@ -5960,16 +6106,38 @@ fn resolve_mindweaver_inbox_preview_path() -> String {
     env::var("MW_TODO_INBOX")
         .or_else(|_| env::var("MW_INBOX_PATH"))
         .or_else(|_| env::var("INBOX_PATH"))
-        .or_else(|_| {
-            env::var("NOTES_DIR").map(|notes_dir| {
-                PathBuf::from(notes_dir)
-                    .join("introspection")
-                    .join("inbox.md")
-                    .display()
-                    .to_string()
-            })
-        })
-        .unwrap_or_else(|_| "$NOTES_DIR/introspection/inbox.md".to_string())
+        .unwrap_or_else(|_| "<set MW_TODO_INBOX>".to_string())
+}
+
+fn resolve_mindweaver_inbox_path(override_path: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = override_path {
+        return Ok(path.to_path_buf());
+    }
+    if let Some(path) = env_path("MW_TODO_INBOX")
+        .or_else(|| env_path("MW_INBOX_PATH"))
+        .or_else(|| env_path("INBOX_PATH"))
+    {
+        return Ok(path);
+    }
+    bail!(
+        "MindWeaver inbox path is not configured; set MW_TODO_INBOX, MW_INBOX_PATH, or INBOX_PATH before accepting a mindweaver todo candidate"
+    )
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    let value = env::var(name).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(expand_tilde_path(value))
+}
+
+fn expand_tilde_path(value: &str) -> PathBuf {
+    if let Some(rest) = value.strip_prefix("~/") {
+        return djinn_core::home_dir().join(rest);
+    }
+    PathBuf::from(value)
 }
 
 fn render_session_decision_record(
@@ -18978,6 +19146,7 @@ link = "context/repo"
             memory: djinn_memory::MemoryStore::default_in(&data),
             action: ActionStore::default_in(&data),
             skill: SkillStore::default_in(&data),
+            mindweaver_inbox: None,
         };
 
         let dry_run = decide_promotion_session_with_stores(
@@ -19041,7 +19210,7 @@ link = "context/repo"
     }
 
     #[test]
-    fn session_accept_previews_mindweaver_todo_without_mutating_notes() {
+    fn session_accept_writes_mindweaver_todo_to_inbox() {
         let root = std::env::temp_dir().join(format!(
             "djinn-session-mw-todo-preview-test-{}",
             chrono::Local::now()
@@ -19049,6 +19218,7 @@ link = "context/repo"
                 .unwrap_or_default()
         ));
         let data = root.join("data");
+        let inbox = root.join("notes/introspection/inbox.md");
         let source = root.join("source-session");
         fs::create_dir_all(source.join("turns/turn-1")).unwrap();
         fs::write(
@@ -19082,6 +19252,7 @@ link = "context/repo"
             memory: djinn_memory::MemoryStore::default_in(&data),
             action: ActionStore::default_in(&data),
             skill: SkillStore::default_in(&data),
+            mindweaver_inbox: Some(inbox.clone()),
         };
 
         let dry_run = decide_promotion_session_with_stores(
@@ -19110,7 +19281,7 @@ link = "context/repo"
         assert!(stores.action.list().unwrap().is_empty());
         assert!(!promotion_dir.join("outputs/decisions").exists());
 
-        let err = decide_promotion_session_with_stores(
+        let accepted = decide_promotion_session_with_stores(
             &SessionDecisionArgs {
                 dir: promotion_dir.clone(),
                 candidate: Some("todo-001".to_string()),
@@ -19118,11 +19289,36 @@ link = "context/repo"
                 json: false,
             },
             SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap();
+        assert!(accepted.durable_writeback);
+        assert_eq!(accepted.writebacks[0].destination, "mindweaver_inbox");
+        assert_eq!(
+            accepted.writebacks[0].path.as_deref(),
+            Some(inbox.to_str().unwrap())
+        );
+        let inbox_content = fs::read_to_string(&inbox).unwrap();
+        assert!(inbox_content.contains("domains: [task-index]"));
+        assert!(inbox_content.contains("### Inbox\n- [ ] Wire Djinn promotion todos into MindWeaver inbox capture.\n  - p2 e:m due:2026-08-01 est:30 area:Code\n### Next"));
+        let decision = fs::read_to_string(&accepted.decision_path).unwrap();
+        assert!(decision.contains("destination = \"mindweaver_inbox\""));
+        assert!(decision.contains("preview = "));
+
+        let duplicate = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("todo-001".to_string()),
+                dry_run: true,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
             stores,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("preview-only"));
-        assert!(!promotion_dir.join("outputs/decisions").exists());
+        assert!(duplicate
+            .to_string()
+            .contains("duplicate MindWeaver todo candidate"));
 
         let _ = fs::remove_dir_all(&root);
     }
