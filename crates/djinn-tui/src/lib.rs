@@ -132,6 +132,7 @@ pub struct FolderSessionStatusView {
     pub candidate_entries: Vec<PromotionCandidateRow>,
     pub next_action: Option<String>,
     pub note: Option<String>,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -761,6 +762,12 @@ fn draw_folder_session_status(
         lines.push(Line::from(vec![
             Span::styled("Note:    ", dim_style()),
             Span::raw(note),
+        ]));
+    }
+    if let Some(message) = &view.message {
+        lines.push(Line::from(vec![
+            Span::styled("Status:  ", dim_style()),
+            Span::raw(message),
         ]));
     }
     if let Some(candidates) = &view.candidate_status {
@@ -3381,6 +3388,7 @@ mod tests {
             }],
             next_action: None,
             note: None,
+            message: Some("Accepted candidate todo-001".to_string()),
         };
 
         assert_eq!(

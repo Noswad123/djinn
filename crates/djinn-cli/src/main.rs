@@ -4742,16 +4742,46 @@ fn run_session(args: SessionArgs) -> Result<()> {
 fn run_folder_session_tui(dir: PathBuf) -> Result<()> {
     let session_dir = resolve_session_dir(&dir)?;
     let mut tui = djinn_tui::TuiSession::enter()?;
+    let mut message = None::<String>;
     loop {
-        let action =
-            tui.run_folder_session_status(|| folder_session_status_tui_view(&session_dir))?;
+        let action = tui.run_folder_session_status(|| {
+            let mut view = folder_session_status_tui_view(&session_dir)?;
+            view.message = message.clone();
+            Ok(view)
+        })?;
         let Some(action) = action else {
             tui.finish()?;
             return Ok(());
         };
+        let action_message = folder_session_action_message(&action);
         tui.suspend()?;
-        handle_folder_session_tui_action(action, session_dir.clone())?;
+        let action_result = handle_folder_session_tui_action(action, session_dir.clone());
         tui.resume()?;
+        message = Some(match action_result {
+            Ok(()) => action_message,
+            Err(err) => format!("Error: {err:#}"),
+        });
+    }
+}
+
+fn folder_session_action_message(action: &djinn_tui::FolderSessionAction) -> String {
+    match action {
+        djinn_tui::FolderSessionAction::Run => "Ran session request".to_string(),
+        djinn_tui::FolderSessionAction::Watch => "Watched session status".to_string(),
+        djinn_tui::FolderSessionAction::OpenSummary => "Opened summary.md".to_string(),
+        djinn_tui::FolderSessionAction::EditRequest => "Opened request.md".to_string(),
+        djinn_tui::FolderSessionAction::OpenContext => "Opened context".to_string(),
+        djinn_tui::FolderSessionAction::DiscoverContext => "Discovered session context".to_string(),
+        djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => {
+            format!("Accepted candidate {candidate}")
+        }
+        djinn_tui::FolderSessionAction::AcceptCandidateAndSyncMindweaver(candidate) => {
+            format!("Accepted candidate {candidate} and ran MindWeaver sync handoff")
+        }
+        djinn_tui::FolderSessionAction::DenyCandidate(candidate) => {
+            format!("Denied candidate {candidate}")
+        }
+        djinn_tui::FolderSessionAction::OpenCandidate(_) => "Opened candidate file".to_string(),
     }
 }
 
@@ -4895,6 +4925,7 @@ fn folder_session_status_tui_view(
             .note
             .clone()
             .or(report.lifecycle.reason.clone()),
+        message: None,
     })
 }
 
@@ -19200,6 +19231,7 @@ link = "context/repo"
         assert_eq!(view.candidate_entries.len(), 1);
         assert_eq!(view.candidate_entries[0].id, "todo-001");
         assert!(view.candidate_entries[0].path.ends_with("todo-001.toml"));
+        assert!(view.message.is_none());
         assert!(view
             .request_path
             .as_deref()
@@ -19215,6 +19247,12 @@ link = "context/repo"
             .as_deref()
             .unwrap()
             .ends_with("response.md"));
+        assert_eq!(
+            folder_session_action_message(&djinn_tui::FolderSessionAction::AcceptCandidate(
+                "todo-001".to_string()
+            )),
+            "Accepted candidate todo-001"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
