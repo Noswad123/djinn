@@ -82,6 +82,7 @@ djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
 djinn session compact ./debugging-session
 djinn session promote ./debugging-session --type memory
+djinn session accept ./promotion-memory --dry-run
 ```
 
 The old saved-row session store, OpenCode watcher/plugin integration, and legacy
@@ -101,6 +102,35 @@ as context. Its durable type taxonomy is `memory`, `todo`, `skill`, and `pattern
 wisdom to revisit, an immediate action, a reusable agent workflow, or a synthesis
 of common threads across sessions. Source sessions and promotion sessions remain
 on disk by default.
+
+Promotion outcomes are accepted or denied through the same session surface:
+
+```bash
+djinn session accept ./promotion-memory --dry-run
+djinn session accept ./promotion-memory memory-001
+djinn session deny ./promotion-memory memory-002
+```
+
+The current accept/deny slice records the decision under
+`outputs/decisions/`. `--dry-run` previews without writing. When accepted
+candidates exist under `outputs/candidates/*.toml`, Djinn validates required
+fields and evidence links before writing guarded outputs:
+
+```toml
+type = "memory" # memory | todo | skill | pattern
+text = "Keep source sessions as promotion provenance."
+scope = "project:djinn"
+kind = "product-decision"
+confidence = "high"
+evidence = ["./debugging-session/summary.md"]
+```
+
+- `memory` candidates write to the durable memory store.
+- `todo` candidates write to Djinn's durable actions store for now.
+- `skill` candidates require `name` plus `body`, `body_path`, or `text`, then write
+  a Djinn-managed `SKILL.md` with an evidence section.
+- `pattern` candidates write accepted Markdown summaries under
+  `outputs/accepted/` in the promotion session.
 
 ```bash
 djinn review memory <id> --dry-run

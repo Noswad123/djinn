@@ -37,17 +37,21 @@ agent turn and makes the rest of the runtime easier to evaluate.
 The first promotion-session slice is complete: `djinn session promote ...`
 creates a folder-backed promotion session, records source refs and selected
 artifact refs, and writes the current deterministic evidence packet to
-`context/source-packet.md`. It does not run a model or write memories yet, and the
-exact source-packet structure may evolve.
+`context/source-packet.md`. `djinn session accept ...` and `djinn session deny ...`
+now record dry-runnable decisions under `outputs/decisions/`. Accepted stable
+candidate TOML files under `outputs/candidates/` can write memories, todos
+(through the current actions store), skills, or accepted pattern summaries while
+preserving evidence links. Djinn does not generate those candidates with a model
+yet, and the exact source-packet structure may evolve.
 
 Ready implementation slices:
 
 - After the promotion-session folder exists, add model-backed dry-run generation
   that writes candidate artifacts into the promotion session without mutating
   durable memory/todo/skill stores.
-- Add guarded writeback only after candidate formats stabilize: memories, todos,
-  skills, or pattern summaries should be accepted explicitly and retain evidence
-  links to `summary.md`, `context/compacted.md`, and `turns/<id>/` files.
+- Tighten candidate writeback safeguards as real model output appears: duplicate
+  detection, richer validation per type, candidate status/index files, and clearer
+  todo-vs-suggestion storage semantics.
 - Add explicit cleanup/archive flags only after provenance and recovery behavior
   is clear. Source sessions and promotion sessions must remain on disk by default.
 

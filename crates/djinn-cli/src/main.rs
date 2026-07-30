@@ -132,8 +132,12 @@ enum SessionCommand {
     Watch(SessionWatchArgs),
     /// Deterministically compact turn request/response evidence into context/compacted.md.
     Compact(SessionCompactArgs),
-    /// Render a folder-backed promotion packet with file-native provenance.
+    /// Create a folder-backed promotion session with file-native provenance.
     Promote(SessionPromoteArgs),
+    /// Accept a promotion session outcome and record the decision.
+    Accept(SessionDecisionArgs),
+    /// Deny a promotion session outcome and record the decision.
+    Deny(SessionDecisionArgs),
     /// Manage session-local context files and links.
     Context(SessionContextArgs),
     /// Inspect a folder-backed Djinn work session without running a model.
@@ -259,6 +263,20 @@ struct SessionPromoteArgs {
     /// Replace generated promotion-session files if they already exist.
     #[arg(long)]
     force: bool,
+    /// Output JSON instead of a text summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionDecisionArgs {
+    /// Promotion session name or directory.
+    dir: PathBuf,
+    /// Optional candidate id/path within the promotion session. Defaults to the whole promotion outcome.
+    candidate: Option<String>,
+    /// Preview the decision without writing the decision record.
+    #[arg(long)]
+    dry_run: bool,
     /// Output JSON instead of a text summary.
     #[arg(long)]
     json: bool,
@@ -4803,6 +4821,8 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Watch(args) => session_watch(args),
         SessionCommand::Compact(args) => session_compact(args),
         SessionCommand::Promote(args) => session_promote(args),
+        SessionCommand::Accept(args) => session_decide(args, SessionDecisionAction::Accept),
+        SessionCommand::Deny(args) => session_decide(args, SessionDecisionAction::Deny),
         SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
         SessionCommand::Ls(args) => session_ls(args),
@@ -4845,6 +4865,635 @@ fn session_compact(args: SessionCompactArgs) -> Result<()> {
         println!("Output: {}", report.output_path);
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionDecisionAction {
+    Accept,
+    Deny,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionDecisionReport {
+    action: SessionDecisionAction,
+    dry_run: bool,
+    session_dir: String,
+    promotion_type: String,
+    candidate: Option<String>,
+    candidate_count: usize,
+    decision_path: String,
+    wrote_decision: bool,
+    durable_writeback: bool,
+    writebacks: Vec<SessionCandidateWritebackReport>,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionCandidateWritebackReport {
+    candidate: String,
+    candidate_type: String,
+    destination: String,
+    id: String,
+    path: Option<String>,
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromotionCandidate {
+    id: String,
+    candidate_type: String,
+    path: PathBuf,
+    text: String,
+    scope: Option<String>,
+    kind: Option<String>,
+    confidence: Option<String>,
+    target: Option<String>,
+    rationale: Option<String>,
+    draft: Option<String>,
+    name: Option<String>,
+    description: Option<String>,
+    body: Option<String>,
+    evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PromotionWritebackStores {
+    memory: djinn_memory::MemoryStore,
+    action: ActionStore,
+    skill: SkillStore,
+}
+
+fn session_decide(args: SessionDecisionArgs, action: SessionDecisionAction) -> Result<()> {
+    let report = decide_promotion_session(&args, action)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        let verb = if args.dry_run {
+            "Would record"
+        } else {
+            "Recorded"
+        };
+        println!(
+            "{verb} {} decision for promotion session: {}",
+            session_decision_action_label(action),
+            report.session_dir
+        );
+        println!("  type: {}", report.promotion_type);
+        if let Some(candidate) = &report.candidate {
+            println!("  candidate: {candidate}");
+        } else {
+            println!("  candidate: all");
+        }
+        println!("  decision: {}", report.decision_path);
+        if report.writebacks.is_empty() {
+            println!("  durable writeback: none");
+        } else if report.dry_run {
+            println!("  durable writeback: dry-run preview");
+        } else {
+            println!("  durable writeback: yes");
+        }
+        for writeback in &report.writebacks {
+            if let Some(path) = &writeback.path {
+                println!(
+                    "    - {} {} -> {} ({path})",
+                    writeback.candidate_type, writeback.candidate, writeback.destination
+                );
+            } else {
+                println!(
+                    "    - {} {} -> {} [{}]",
+                    writeback.candidate_type,
+                    writeback.candidate,
+                    writeback.destination,
+                    writeback.id
+                );
+            }
+        }
+        println!("  note: {}", report.note);
+    }
+    Ok(())
+}
+
+fn decide_promotion_session(
+    args: &SessionDecisionArgs,
+    action: SessionDecisionAction,
+) -> Result<SessionDecisionReport> {
+    decide_promotion_session_with_stores(args, action, PromotionWritebackStores::default())
+}
+
+fn decide_promotion_session_with_stores(
+    args: &SessionDecisionArgs,
+    action: SessionDecisionAction,
+    stores: PromotionWritebackStores,
+) -> Result<SessionDecisionReport> {
+    let session_dir = resolve_session_dir(&args.dir)?;
+    let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
+        format!(
+            "missing promotion session manifest: {}",
+            session_dir.display()
+        )
+    })?;
+    if manifest.kind.as_deref() != Some("promotion") {
+        bail!(
+            "session {} is not a promotion session; `djinn session {}` only applies to kind = \"promotion\"",
+            session_dir.display(),
+            session_decision_action_label(action)
+        );
+    }
+    let promotion_type = manifest
+        .promotion_type
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let decisions_dir = session_dir.join("outputs").join("decisions");
+    let decision_path = decisions_dir.join(format!(
+        "{}-{}.toml",
+        chrono::Local::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default(),
+        session_decision_action_label(action)
+    ));
+    let candidates = if action == SessionDecisionAction::Accept {
+        resolve_promotion_candidates(&session_dir, args.candidate.as_deref())?
+    } else {
+        Vec::new()
+    };
+    let writebacks = if action == SessionDecisionAction::Accept {
+        writeback_promotion_candidates(&session_dir, &candidates, args.dry_run, &stores)?
+    } else {
+        Vec::new()
+    };
+    let durable_writeback = !writebacks.is_empty() && !args.dry_run;
+    let note = if candidates.is_empty() {
+        "Decision recorded; no stable promotion candidate files were found, so no durable writeback was attempted."
+    } else if args.dry_run {
+        "Dry run: candidate writeback was validated but no durable store or decision files were written."
+    } else if durable_writeback {
+        "Decision recorded and accepted candidate(s) were written to durable stores/artifacts."
+    } else {
+        "Decision recorded; no durable writeback was performed."
+    }
+    .to_string();
+
+    if !args.dry_run {
+        fs::create_dir_all(&decisions_dir).with_context(|| {
+            format!(
+                "creating promotion decisions directory {}",
+                decisions_dir.display()
+            )
+        })?;
+        fs::write(
+            &decision_path,
+            render_session_decision_record(
+                action,
+                &session_dir,
+                &promotion_type,
+                args.candidate.as_deref(),
+                &writebacks,
+                &note,
+            )?,
+        )
+        .with_context(|| format!("writing {}", decision_path.display()))?;
+    }
+
+    Ok(SessionDecisionReport {
+        action,
+        dry_run: args.dry_run,
+        session_dir: session_dir.display().to_string(),
+        promotion_type,
+        candidate: args.candidate.clone(),
+        candidate_count: candidates.len(),
+        decision_path: decision_path.display().to_string(),
+        wrote_decision: !args.dry_run,
+        durable_writeback,
+        writebacks,
+        note,
+    })
+}
+
+impl PromotionWritebackStores {
+    fn default() -> Self {
+        Self {
+            memory: memory_store(),
+            action: action_store(),
+            skill: skill_store(),
+        }
+    }
+}
+
+fn session_decision_action_label(action: SessionDecisionAction) -> &'static str {
+    match action {
+        SessionDecisionAction::Accept => "accept",
+        SessionDecisionAction::Deny => "deny",
+    }
+}
+
+fn resolve_promotion_candidates(
+    session_dir: &Path,
+    candidate: Option<&str>,
+) -> Result<Vec<PromotionCandidate>> {
+    let candidates_dir = session_dir.join("outputs").join("candidates");
+    if let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
+        let path = resolve_promotion_candidate_path(session_dir, candidate);
+        if !path.exists() {
+            bail!(
+                "promotion candidate not found: {} (expected a .toml candidate under {})",
+                candidate,
+                candidates_dir.display()
+            );
+        }
+        ensure_promotion_candidate_inside_session(session_dir, &path)?;
+        return Ok(vec![read_promotion_candidate(session_dir, &path)?]);
+    }
+
+    if !candidates_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut paths = fs::read_dir(&candidates_dir)
+        .with_context(|| format!("reading promotion candidates {}", candidates_dir.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("toml")
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| read_promotion_candidate(session_dir, path))
+        .collect()
+}
+
+fn ensure_promotion_candidate_inside_session(session_dir: &Path, path: &Path) -> Result<()> {
+    let session_dir = session_dir
+        .canonicalize()
+        .with_context(|| format!("resolving session directory {}", session_dir.display()))?;
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("resolving promotion candidate {}", path.display()))?;
+    if !path.starts_with(&session_dir) {
+        bail!(
+            "promotion candidate must live inside the promotion session: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn resolve_promotion_candidate_path(session_dir: &Path, candidate: &str) -> PathBuf {
+    let path = PathBuf::from(candidate);
+    if path.is_absolute() {
+        return path;
+    }
+    if candidate.contains(std::path::MAIN_SEPARATOR) || candidate.ends_with(".toml") {
+        return session_dir.join(path);
+    }
+    session_dir
+        .join("outputs")
+        .join("candidates")
+        .join(format!("{candidate}.toml"))
+}
+
+fn read_promotion_candidate(session_dir: &Path, path: &Path) -> Result<PromotionCandidate> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading promotion candidate {}", path.display()))?;
+    let id = candidate_string_value(&content, "id").unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("candidate")
+            .to_string()
+    });
+    let candidate_type = candidate_string_value(&content, "type")
+        .or_else(|| candidate_string_value(&content, "candidate_type"))
+        .unwrap_or_default();
+    let text = candidate_string_value(&content, "text")
+        .or_else(|| candidate_string_value(&content, "summary"))
+        .unwrap_or_default();
+    let body = if let Some(body) = candidate_string_value(&content, "body") {
+        Some(body)
+    } else if let Some(body) = read_candidate_body_path(session_dir, path, &content) {
+        Some(body?)
+    } else {
+        None
+    };
+    let candidate = PromotionCandidate {
+        id,
+        candidate_type,
+        path: path.to_path_buf(),
+        text,
+        scope: candidate_string_value(&content, "scope"),
+        kind: candidate_string_value(&content, "kind"),
+        confidence: candidate_string_value(&content, "confidence")
+            .or_else(|| candidate_string_value(&content, "priority")),
+        target: candidate_string_value(&content, "target"),
+        rationale: candidate_string_value(&content, "rationale"),
+        draft: candidate_string_value(&content, "draft"),
+        name: candidate_string_value(&content, "name"),
+        description: candidate_string_value(&content, "description"),
+        body,
+        evidence: candidate_string_array_value(&content, "evidence"),
+    };
+    validate_promotion_candidate(&candidate)?;
+    Ok(candidate)
+}
+
+fn read_candidate_body_path(
+    session_dir: &Path,
+    path: &Path,
+    content: &str,
+) -> Option<Result<String>> {
+    let body_path = candidate_string_value(content, "body_path")?;
+    let resolved = path
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(body_path);
+    Some((|| {
+        ensure_promotion_candidate_inside_session(session_dir, &resolved)?;
+        fs::read_to_string(&resolved)
+            .with_context(|| format!("reading promotion candidate body {}", resolved.display()))
+    })())
+}
+
+fn candidate_string_value(content: &str, key: &str) -> Option<String> {
+    manifest_root_string_value(content, key)
+}
+
+fn candidate_string_array_value(content: &str, key: &str) -> Vec<String> {
+    let prefix = format!("{key} =");
+    content
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            let value = line.strip_prefix(&prefix)?.trim();
+            serde_json::from_str::<Vec<String>>(value).ok()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn validate_promotion_candidate(candidate: &PromotionCandidate) -> Result<()> {
+    let candidate_type = candidate.candidate_type.trim();
+    if candidate_type.is_empty() {
+        bail!(
+            "promotion candidate {} is missing `type`",
+            candidate.path.display()
+        );
+    }
+    if !matches!(candidate_type, "memory" | "todo" | "skill" | "pattern") {
+        bail!(
+            "promotion candidate {} has unsupported type `{candidate_type}`; expected memory, todo, skill, or pattern",
+            candidate.path.display()
+        );
+    }
+    if candidate.evidence.is_empty() {
+        bail!(
+            "promotion candidate {} must include at least one evidence link",
+            candidate.path.display()
+        );
+    }
+    match candidate_type {
+        "memory" | "todo" | "pattern" if candidate.text.trim().is_empty() => bail!(
+            "promotion candidate {} must include non-empty `text`",
+            candidate.path.display()
+        ),
+        "skill" => {
+            if candidate
+                .name
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                bail!(
+                    "promotion skill candidate {} must include `name`",
+                    candidate.path.display()
+                );
+            }
+            if candidate
+                .body
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+                && candidate.text.trim().is_empty()
+            {
+                bail!(
+                    "promotion skill candidate {} must include `body`, `body_path`, or `text`",
+                    candidate.path.display()
+                );
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn writeback_promotion_candidates(
+    session_dir: &Path,
+    candidates: &[PromotionCandidate],
+    dry_run: bool,
+    stores: &PromotionWritebackStores,
+) -> Result<Vec<SessionCandidateWritebackReport>> {
+    candidates
+        .iter()
+        .map(|candidate| writeback_promotion_candidate(session_dir, candidate, dry_run, stores))
+        .collect()
+}
+
+fn writeback_promotion_candidate(
+    session_dir: &Path,
+    candidate: &PromotionCandidate,
+    dry_run: bool,
+    stores: &PromotionWritebackStores,
+) -> Result<SessionCandidateWritebackReport> {
+    match candidate.candidate_type.as_str() {
+        "memory" => {
+            let input = MemoryInput {
+                text: candidate.text.trim().to_string(),
+                scope: candidate.scope.clone(),
+                kind: candidate.kind.clone(),
+                confidence: candidate.confidence.clone(),
+                evidence: candidate.evidence.clone(),
+                sources: vec![promotion_candidate_source(session_dir, candidate)],
+                ..MemoryInput::default()
+            };
+            let id = if dry_run {
+                candidate.id.clone()
+            } else {
+                stores.memory.add_input(input)?.id
+            };
+            Ok(SessionCandidateWritebackReport {
+                candidate: candidate.id.clone(),
+                candidate_type: candidate.candidate_type.clone(),
+                destination: "memory".to_string(),
+                id,
+                path: None,
+                dry_run,
+            })
+        }
+        "todo" => {
+            let input = MemoryInput {
+                text: candidate.text.trim().to_string(),
+                scope: candidate.scope.clone(),
+                kind: candidate.kind.clone(),
+                confidence: candidate.confidence.clone(),
+                evidence: candidate.evidence.clone(),
+                sources: vec![promotion_candidate_source(session_dir, candidate)],
+                ..MemoryInput::default()
+            };
+            let id = if dry_run {
+                candidate.id.clone()
+            } else {
+                stores.action.add_input(input)?.id
+            };
+            Ok(SessionCandidateWritebackReport {
+                candidate: candidate.id.clone(),
+                candidate_type: candidate.candidate_type.clone(),
+                destination: "action".to_string(),
+                id,
+                path: None,
+                dry_run,
+            })
+        }
+        "skill" => {
+            let name = candidate.name.as_deref().unwrap_or(&candidate.id);
+            let description = candidate.description.as_deref().unwrap_or_default();
+            let content = render_skill_candidate_content(candidate);
+            let (id, path) = if dry_run {
+                (name.to_string(), None)
+            } else {
+                let record = stores
+                    .skill
+                    .add_with_content(name, description, content, false)?;
+                (record.name, Some(record.path.display().to_string()))
+            };
+            Ok(SessionCandidateWritebackReport {
+                candidate: candidate.id.clone(),
+                candidate_type: candidate.candidate_type.clone(),
+                destination: "skill".to_string(),
+                id,
+                path,
+                dry_run,
+            })
+        }
+        "pattern" => {
+            let accepted_dir = session_dir.join("outputs").join("accepted");
+            let accepted_path = accepted_dir.join(format!("{}.md", candidate.id));
+            if !dry_run {
+                fs::create_dir_all(&accepted_dir).with_context(|| {
+                    format!(
+                        "creating accepted promotion directory {}",
+                        accepted_dir.display()
+                    )
+                })?;
+                fs::write(&accepted_path, render_pattern_candidate_content(candidate))
+                    .with_context(|| format!("writing {}", accepted_path.display()))?;
+            }
+            Ok(SessionCandidateWritebackReport {
+                candidate: candidate.id.clone(),
+                candidate_type: candidate.candidate_type.clone(),
+                destination: "pattern_summary".to_string(),
+                id: candidate.id.clone(),
+                path: Some(accepted_path.display().to_string()),
+                dry_run,
+            })
+        }
+        other => bail!("unsupported promotion candidate type `{other}`"),
+    }
+}
+
+fn promotion_candidate_source(session_dir: &Path, candidate: &PromotionCandidate) -> MemorySource {
+    MemorySource {
+        source_type: "promotion_session".to_string(),
+        source: session_dir.display().to_string(),
+        source_id: candidate.id.clone(),
+        title: candidate.text.chars().take(80).collect(),
+        captured_at: chrono::Local::now().to_rfc3339(),
+        ..MemorySource::default()
+    }
+}
+
+fn render_skill_candidate_content(candidate: &PromotionCandidate) -> String {
+    let mut content = candidate
+        .body
+        .clone()
+        .filter(|body| !body.trim().is_empty())
+        .unwrap_or_else(|| candidate.text.clone());
+    content.push_str("\n\n## Evidence\n\n");
+    for evidence in &candidate.evidence {
+        content.push_str(&format!("- {evidence}\n"));
+    }
+    content
+}
+
+fn render_pattern_candidate_content(candidate: &PromotionCandidate) -> String {
+    let mut content = format!("# {}\n\n{}\n\n", candidate.id, candidate.text.trim());
+    if let Some(rationale) = &candidate.rationale {
+        if !rationale.trim().is_empty() {
+            content.push_str(&format!("## Rationale\n\n{}\n\n", rationale.trim()));
+        }
+    }
+    content.push_str("## Evidence\n\n");
+    for evidence in &candidate.evidence {
+        content.push_str(&format!("- {evidence}\n"));
+    }
+    content
+}
+
+fn render_session_decision_record(
+    action: SessionDecisionAction,
+    session_dir: &Path,
+    promotion_type: &str,
+    candidate: Option<&str>,
+    writebacks: &[SessionCandidateWritebackReport],
+    note: &str,
+) -> Result<String> {
+    let mut output = String::new();
+    output.push_str("version = 1\n");
+    output.push_str(&format!(
+        "action = {}\n",
+        toml_string(session_decision_action_label(action))?
+    ));
+    output.push_str(&format!(
+        "decided_at = {}\n",
+        toml_string(&chrono::Local::now().to_rfc3339())?
+    ));
+    output.push_str(&format!(
+        "session_dir = {}\n",
+        toml_string(&session_dir.display().to_string())?
+    ));
+    output.push_str(&format!(
+        "promotion_type = {}\n",
+        toml_string(promotion_type)?
+    ));
+    if let Some(candidate) = candidate {
+        output.push_str(&format!("candidate = {}\n", toml_string(candidate)?));
+    }
+    output.push_str(&format!("durable_writeback = {}\n", !writebacks.is_empty()));
+    output.push_str(&format!("note = {}\n", toml_string(note)?));
+    for writeback in writebacks {
+        output.push_str("\n[[writebacks]]\n");
+        output.push_str(&format!(
+            "candidate = {}\n",
+            toml_string(&writeback.candidate)?
+        ));
+        output.push_str(&format!(
+            "candidate_type = {}\n",
+            toml_string(&writeback.candidate_type)?
+        ));
+        output.push_str(&format!(
+            "destination = {}\n",
+            toml_string(&writeback.destination)?
+        ));
+        output.push_str(&format!("id = {}\n", toml_string(&writeback.id)?));
+        if let Some(path) = &writeback.path {
+            output.push_str(&format!("path = {}\n", toml_string(path)?));
+        }
+    }
+    Ok(output)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -9136,8 +9785,10 @@ fn agent_session_turn_dir_name() -> String {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct FolderSessionManifest {
+    kind: Option<String>,
     session_id: Option<AgentSessionId>,
     created_at: Option<String>,
+    promotion_type: Option<String>,
     profile: Option<String>,
     agent: Option<String>,
     model: Option<String>,
@@ -9158,8 +9809,11 @@ fn read_folder_session_manifest(session_dir: &Path) -> Result<Option<FolderSessi
 
 fn parse_folder_session_manifest(manifest: &str) -> FolderSessionManifest {
     FolderSessionManifest {
+        kind: manifest_root_string_value(manifest, "kind"),
         session_id: manifest_root_string_value(manifest, "session_id").map(AgentSessionId::new),
         created_at: manifest_root_string_value(manifest, "created_at"),
+        promotion_type: manifest_root_string_value(manifest, "promotion_type")
+            .or_else(|| manifest_section_string_value(manifest, "promotion", "type")),
         profile: manifest_root_string_value(manifest, "profile"),
         agent: manifest_root_string_value(manifest, "agent"),
         model: manifest_root_string_value(manifest, "model"),
@@ -16363,6 +17017,38 @@ mod tests {
         };
         assert_eq!(args.promotion_type, SessionPromoteType::Memory);
 
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "accept",
+            "./promotion-session",
+            "memory-001",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Accept(args)) = args.command else {
+            panic!("expected session accept command");
+        };
+        assert_eq!(args.dir, PathBuf::from("./promotion-session"));
+        assert_eq!(args.candidate.as_deref(), Some("memory-001"));
+        assert!(args.dry_run);
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from(["djinn", "session", "deny", "./promotion-session"]).unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Deny(args)) = args.command else {
+            panic!("expected session deny command");
+        };
+        assert_eq!(args.dir, PathBuf::from("./promotion-session"));
+        assert!(args.candidate.is_none());
+        assert!(!args.dry_run);
+
         let cli = Cli::try_parse_from(["djinn", "session", "bap-questions"]).unwrap();
         let Some(Command::Session(args)) = cli.command else {
             panic!("expected session command");
@@ -17369,6 +18055,177 @@ link = "context/repo"
         let request = fs::read_to_string(promotion_dir.join("request.md"))
             .expect("promotion request should be written");
         assert!(request.contains("Use `context/source-packet.md`"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_accept_and_deny_record_promotion_decisions_with_dry_run() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-decision-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let source = root.join("source-session");
+        fs::create_dir_all(source.join("context")).unwrap();
+        fs::write(source.join("summary.md"), "A useful lesson.\n").unwrap();
+
+        let promotion_dir = root.join("promotion-memory");
+        create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![source.clone()],
+            promotion_type: SessionPromoteType::Memory,
+            promotion_session_dir: Some(promotion_dir.clone()),
+            max_chars_per_artifact: 200,
+            force: false,
+            json: false,
+        })
+        .unwrap();
+
+        let dry_run = decide_promotion_session(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: None,
+                dry_run: true,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+        )
+        .unwrap();
+        assert!(dry_run.dry_run);
+        assert!(!dry_run.wrote_decision);
+        assert!(!promotion_dir.join("outputs/decisions").exists());
+
+        let accepted = decide_promotion_session(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: None,
+                dry_run: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+        )
+        .unwrap();
+        assert_eq!(accepted.action, SessionDecisionAction::Accept);
+        assert_eq!(accepted.promotion_type, "memory");
+        assert!(accepted.wrote_decision);
+        assert!(!accepted.durable_writeback);
+        let accepted_record = fs::read_to_string(&accepted.decision_path).unwrap();
+        assert!(accepted_record.contains("action = \"accept\""));
+        assert!(accepted_record.contains("durable_writeback = false"));
+
+        let denied = decide_promotion_session(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: None,
+                dry_run: false,
+                json: false,
+            },
+            SessionDecisionAction::Deny,
+        )
+        .unwrap();
+        let denied_record = fs::read_to_string(&denied.decision_path).unwrap();
+        assert!(denied_record.contains("action = \"deny\""));
+        assert!(!denied_record.contains("candidate ="));
+
+        let normal = root.join("normal-session");
+        fs::create_dir_all(&normal).unwrap();
+        fs::write(normal.join("djinn.toml"), "version = 1\n").unwrap();
+        let err = decide_promotion_session(
+            &SessionDecisionArgs {
+                dir: normal,
+                candidate: None,
+                dry_run: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("is not a promotion session"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_accept_writes_stable_memory_candidate_to_durable_store() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-writeback-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let data = root.join("data");
+        let source = root.join("source-session");
+        fs::create_dir_all(source.join("context")).unwrap();
+        fs::write(source.join("summary.md"), "A useful promotion lesson.\n").unwrap();
+
+        let promotion_dir = root.join("promotion-memory");
+        create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![source.clone()],
+            promotion_type: SessionPromoteType::Memory,
+            promotion_session_dir: Some(promotion_dir.clone()),
+            max_chars_per_artifact: 200,
+            force: false,
+            json: false,
+        })
+        .unwrap();
+        let candidates_dir = promotion_dir.join("outputs/candidates");
+        fs::create_dir_all(&candidates_dir).unwrap();
+        fs::write(
+            candidates_dir.join("memory-001.toml"),
+            format!(
+                "type = \"memory\"\ntext = \"Keep source sessions as promotion provenance.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"{}/summary.md\"]\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+
+        let stores = PromotionWritebackStores {
+            memory: djinn_memory::MemoryStore::default_in(&data),
+            action: ActionStore::default_in(&data),
+            skill: SkillStore::default_in(&data),
+        };
+
+        let dry_run = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("memory-001".to_string()),
+                dry_run: true,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap();
+        assert_eq!(dry_run.candidate_count, 1);
+        assert_eq!(dry_run.writebacks.len(), 1);
+        assert!(!dry_run.durable_writeback);
+        assert!(stores.memory.list().unwrap().is_empty());
+
+        let accepted = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("memory-001".to_string()),
+                dry_run: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap();
+        assert!(accepted.durable_writeback);
+        assert_eq!(accepted.writebacks[0].destination, "memory");
+        let memories = stores.memory.list().unwrap();
+        assert_eq!(memories.len(), 1);
+        assert_eq!(
+            memories[0].text,
+            "Keep source sessions as promotion provenance."
+        );
+        assert_eq!(memories[0].scope, "project:djinn");
+        assert_eq!(memories[0].evidence.len(), 1);
+        let record = fs::read_to_string(&accepted.decision_path).unwrap();
+        assert!(record.contains("durable_writeback = true"));
+        assert!(record.contains("destination = \"memory\""));
 
         let _ = fs::remove_dir_all(&root);
     }

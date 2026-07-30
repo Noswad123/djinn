@@ -258,6 +258,7 @@ Compact or review folder-backed sessions via their files:
 djinn session compact ./debugging-session
 djinn session open ./debugging-session --target compacted
 djinn session promote ./debugging-session --type memory
+djinn session accept ./promotion-memory --dry-run
 ```
 
 The legacy saved-row session store and `djinn promote session(s)` commands have
@@ -266,6 +267,15 @@ session folder, writes the deterministic source packet to
 `context/source-packet.md`, records source refs in `context/sources.toml`, and
 preserves provenance to `summary.md`, `context/compacted.md`, and `turns/<id>/`
 files. It does not write memories or run a model yet.
+
+Promotion outcomes are reviewed through the session surface. `djinn session
+accept <promotion-session> [candidate]` and `djinn session deny <promotion-session>
+[candidate]` record a decision under `outputs/decisions/`; `--dry-run` previews
+without writing. If accepted candidates exist under `outputs/candidates/*.toml`,
+Djinn can now write guarded `memory`, `todo`, `skill`, or `pattern` outputs while
+retaining evidence links. `todo` candidates currently write to Djinn's durable
+actions store; `pattern` candidates are accepted as Markdown summaries under the
+promotion session.
 
 The roadmap direction is promotion as a special folder-backed session that uses
 one or more source sessions as context. Promotion types should be `memory`,

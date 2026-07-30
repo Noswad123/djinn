@@ -1077,9 +1077,18 @@ The first non-interactive agent slice is implemented as:
     set for future agents; and a pattern session synthesizes common threads,
     themes, or suggestions across the source sessions. Source sessions and
     promotion sessions must not be removed by default; cleanup or archive behavior
-    should be explicit after provenance and recovery semantics are settled. Legacy
-    JSONL row identity and the removed saved-row CLI should not define the new UX
-    or data model.
+    should be explicit after provenance and recovery semantics are settled.
+    Promotion outcomes are reviewed with `djinn session accept <promotion-session>`
+    and `djinn session deny <promotion-session>` rather than a separate
+    `promote accept` command or `--write` flag. Accept/deny supports `--dry-run`
+    and records decision files under `outputs/decisions/`. Guarded writeback is
+    driven by stable candidate TOML files under `outputs/candidates/`: accepted
+    `memory` candidates write memories, `todo` candidates currently write durable
+    actions, `skill` candidates write Djinn-managed `SKILL.md` files, and
+    `pattern` candidates write accepted Markdown summaries under
+    `outputs/accepted/`. Every writeback-capable candidate must carry explicit
+    evidence links. Legacy JSONL row identity and the removed saved-row CLI should
+    not define the new UX or data model.
 
 Not in the first slice unless explicitly reopened:
 
