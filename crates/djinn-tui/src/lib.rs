@@ -290,11 +290,23 @@ pub fn run_approval_dialog(metadata: Value) -> Result<ApprovalDecision> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiAction {
     OpenSession(SessionRecord),
+    PromoteSessions {
+        promotion_type: DashboardPromotionType,
+        sessions: Vec<SessionRecord>,
+    },
     OpenTool(ToolEntry),
     OpenSkill(SkillRecord),
     ReviewMemory(String),
     DeleteMemories(Vec<String>),
     DeleteSuggestions(Vec<String>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashboardPromotionType {
+    Memory,
+    Todo,
+    Skill,
+    Pattern,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,6 +351,7 @@ enum DashboardCommand {
     OpenHelp,
     ToggleFilter,
     OpenSelected,
+    PromoteSelectedSessions(DashboardPromotionType),
     ToggleSelected,
     ToggleAll,
     AcceptSelected,
@@ -794,6 +807,10 @@ fn draw_folder_session_status(
                     Span::raw(format_promotion_candidate_row(candidate)),
                 ]));
             }
+            if let Some(candidate) = view.candidate_entries.get(selected_candidate) {
+                lines.push(Line::from(""));
+                lines.extend(selected_promotion_candidate_detail_lines(candidate));
+            }
         }
     }
     if let Some(next) = &view.next_action {
@@ -1171,6 +1188,15 @@ fn handle_dashboard_command(
             }
             DashboardTab::Memories | DashboardTab::Suggestions => {}
         },
+        DashboardCommand::PromoteSelectedSessions(promotion_type) => {
+            let sessions = app.sessions.selected_sessions();
+            if !sessions.is_empty() {
+                return Ok(Some(TuiAction::PromoteSessions {
+                    promotion_type,
+                    sessions,
+                }));
+            }
+        }
         DashboardCommand::ToggleSelected => app.toggle_selected(),
         DashboardCommand::ToggleAll => app.toggle_all(),
         DashboardCommand::AcceptSelected => {
@@ -1359,6 +1385,42 @@ impl DashboardApp {
                 ),
                 dashboard_command_entry(
                     "Sessions",
+                    "Promote selected sessions to memories",
+                    "Create a memory promotion session from checked sessions",
+                    DashboardCommand::PromoteSelectedSessions(DashboardPromotionType::Memory),
+                ),
+                dashboard_command_entry(
+                    "Sessions",
+                    "Promote selected sessions to todos",
+                    "Create a todo promotion session from checked sessions",
+                    DashboardCommand::PromoteSelectedSessions(DashboardPromotionType::Todo),
+                ),
+                dashboard_command_entry(
+                    "Sessions",
+                    "Promote selected sessions to skills",
+                    "Create a skill promotion session from checked sessions",
+                    DashboardCommand::PromoteSelectedSessions(DashboardPromotionType::Skill),
+                ),
+                dashboard_command_entry(
+                    "Sessions",
+                    "Promote selected sessions to patterns",
+                    "Create a pattern promotion session from checked sessions",
+                    DashboardCommand::PromoteSelectedSessions(DashboardPromotionType::Pattern),
+                ),
+                dashboard_command_entry(
+                    "Sessions",
+                    "Toggle selected session",
+                    "Check or uncheck the highlighted session",
+                    DashboardCommand::ToggleSelected,
+                ),
+                dashboard_command_entry(
+                    "Sessions",
+                    "Select all visible sessions",
+                    "Toggle all filtered session rows",
+                    DashboardCommand::ToggleAll,
+                ),
+                dashboard_command_entry(
+                    "Sessions",
                     "Filter sessions",
                     "Edit the Sessions filter",
                     DashboardCommand::ToggleFilter,
@@ -1541,17 +1603,19 @@ impl DashboardApp {
 
     fn toggle_selected(&mut self) {
         match self.active_tab {
+            DashboardTab::Sessions => self.sessions.toggle_selected(),
             DashboardTab::Memories => self.memories.toggle_selected(),
             DashboardTab::Suggestions => self.suggestions.toggle_selected(),
-            DashboardTab::Tools | DashboardTab::Sessions | DashboardTab::Skills => {}
+            DashboardTab::Tools | DashboardTab::Skills => {}
         }
     }
 
     fn toggle_all(&mut self) {
         match self.active_tab {
+            DashboardTab::Sessions => self.sessions.toggle_all(),
             DashboardTab::Memories => self.memories.toggle_all(),
             DashboardTab::Suggestions => self.suggestions.toggle_all(),
-            DashboardTab::Tools | DashboardTab::Sessions | DashboardTab::Skills => {}
+            DashboardTab::Tools | DashboardTab::Skills => {}
         }
     }
 
@@ -1600,6 +1664,7 @@ impl DashboardApp {
             TuiAction::DeleteMemories(ids) => self.memories.remove_ids(ids),
             TuiAction::DeleteSuggestions(ids) => self.suggestions.remove_ids(ids),
             TuiAction::OpenSession(_)
+            | TuiAction::PromoteSessions { .. }
             | TuiAction::OpenTool(_)
             | TuiAction::OpenSkill(_)
             | TuiAction::ReviewMemory(_) => {}
@@ -1744,6 +1809,14 @@ impl DashboardApp {
             Line::from(vec![
                 Span::styled("Enter", selected_style()),
                 Span::raw(" open focused folder-backed session"),
+            ]),
+            Line::from(vec![
+                Span::styled("Space", selected_style()),
+                Span::raw(" check/uncheck session for promotion"),
+            ]),
+            Line::from(vec![
+                Span::styled("Ctrl+P", selected_style()),
+                Span::raw(" promote checked sessions to memory/todo/skill/pattern"),
             ]),
             Line::from(vec![
                 Span::styled("/", selected_style()),
@@ -1945,6 +2018,7 @@ struct SessionsApp {
     sessions: Vec<SessionRecord>,
     selected: usize,
     preview_scroll: u16,
+    checked: HashSet<String>,
     filter: FilterState,
 }
 
@@ -1954,6 +2028,7 @@ impl SessionsApp {
             sessions,
             selected: 0,
             preview_scroll: 0,
+            checked: HashSet::new(),
             filter: FilterState::default(),
         }
     }
@@ -1990,6 +2065,14 @@ impl SessionsApp {
         self.sessions
             .get(self.selected)
             .filter(|session| self.session_matches(session))
+    }
+
+    fn selected_sessions(&self) -> Vec<SessionRecord> {
+        self.sessions
+            .iter()
+            .filter(|session| self.checked.contains(&session.path))
+            .cloned()
+            .collect()
     }
 
     fn visible_indices(&self) -> Vec<usize> {
@@ -2040,6 +2123,33 @@ impl SessionsApp {
         self.ensure_selection_visible();
     }
 
+    fn toggle_selected(&mut self) {
+        if let Some(path) = self.selected_session().map(|session| session.path.clone()) {
+            if !self.checked.insert(path.clone()) {
+                self.checked.remove(&path);
+            }
+        }
+    }
+
+    fn toggle_all(&mut self) {
+        let visible = self.visible_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let all_checked = visible
+            .iter()
+            .all(|idx| self.checked.contains(&self.sessions[*idx].path));
+        if all_checked {
+            for idx in visible {
+                self.checked.remove(&self.sessions[idx].path);
+            }
+        } else {
+            for idx in visible {
+                self.checked.insert(self.sessions[idx].path.clone());
+            }
+        }
+    }
+
     fn draw_body(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         let body = Layout::default()
             .direction(Direction::Horizontal)
@@ -2056,8 +2166,16 @@ impl SessionsApp {
                 .iter()
                 .map(|idx| {
                     let session = &self.sessions[*idx];
+                    let checkbox = if self.checked.contains(&session.path) {
+                        "[x] "
+                    } else {
+                        "[ ] "
+                    };
                     ListItem::new(vec![
-                        Line::from(Span::styled(session.name.clone(), title_style())),
+                        Line::from(vec![
+                            Span::styled(checkbox, dim_style()),
+                            Span::styled(session.name.clone(), title_style()),
+                        ]),
                         Line::from(Span::styled(session_list_metadata(session), dim_style())),
                     ])
                 })
@@ -2069,9 +2187,10 @@ impl SessionsApp {
             state.select(selected_visible_position(self.selected, &visible));
         }
         let title = format!(
-            "Sessions ({} / {} visible, {})",
+            "Sessions ({} / {} visible, {} selected, {})",
             visible.len(),
             self.sessions.len(),
+            self.checked.len(),
             self.filter.label()
         );
         let list = List::new(items)
@@ -2131,6 +2250,60 @@ fn format_promotion_candidate_row(candidate: &PromotionCandidateRow) -> String {
         detail.push_str(&format!(" ({path})"));
     }
     detail
+}
+
+fn selected_promotion_candidate_detail_lines(
+    candidate: &PromotionCandidateRow,
+) -> Vec<Line<'static>> {
+    let candidate_type = candidate.candidate_type.as_deref().unwrap_or("unknown");
+    let mut lines = vec![
+        Line::from(Span::styled("Selected candidate", title_style())),
+        Line::from(vec![
+            Span::styled("Id:      ", dim_style()),
+            Span::raw(candidate.id.clone()),
+            Span::styled("  Type: ", dim_style()),
+            Span::raw(candidate_type.to_string()),
+            Span::styled("  Status: ", dim_style()),
+            Span::raw(candidate.status.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("File:    ", dim_style()),
+            Span::raw(candidate.path.clone()),
+        ]),
+    ];
+    if let Some(destination) = &candidate.destination {
+        lines.push(Line::from(vec![
+            Span::styled("Dest:    ", dim_style()),
+            Span::raw(destination.clone()),
+        ]));
+    }
+    if let Some(path) = &candidate.writeback_path {
+        lines.push(Line::from(vec![
+            Span::styled("Wrote:   ", dim_style()),
+            Span::raw(path.clone()),
+        ]));
+    }
+    if candidate.evidence.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("Evidence:", dim_style()),
+            Span::raw(" -"),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled("Evidence:", dim_style())));
+        for evidence in candidate.evidence.iter().take(3) {
+            lines.push(Line::from(vec![
+                Span::styled("  - ", dim_style()),
+                Span::raw(evidence.clone()),
+            ]));
+        }
+        if candidate.evidence.len() > 3 {
+            lines.push(Line::from(Span::styled(
+                format!("  +{} more evidence links", candidate.evidence.len() - 3),
+                dim_style(),
+            )));
+        }
+    }
+    lines
 }
 
 fn session_preview(session: &SessionRecord) -> String {
@@ -3427,6 +3600,21 @@ mod tests {
             selected_folder_session_palette_command(&view, 0, &palette_state),
             Some(FolderSessionCommand::OpenHelp)
         );
+
+        let detail = selected_promotion_candidate_detail_lines(&view.candidate_entries[0])
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(detail.contains("Selected candidate"));
+        assert!(detail.contains("Id:      todo-001"));
+        assert!(detail.contains("Dest:    mindweaver"));
+        assert!(detail.contains("/tmp/source/summary.md"));
     }
 
     #[test]
@@ -3487,6 +3675,10 @@ mod tests {
         assert!(
             session_list_metadata(app.selected_session().unwrap()).contains("candidates 3 total")
         );
+        assert!(app.selected_sessions().is_empty());
+        app.toggle_selected();
+        assert_eq!(app.selected_sessions().len(), 1);
+        assert_eq!(app.selected_sessions()[0].name, "repo-review");
     }
 
     #[test]
@@ -3523,6 +3715,11 @@ mod tests {
 
         assert!(session_entries.iter().any(|entry| {
             entry.section == "Sessions" && entry.command == DashboardCommand::OpenSelected
+        }));
+        assert!(session_entries.iter().any(|entry| {
+            entry.section == "Sessions"
+                && entry.command
+                    == DashboardCommand::PromoteSelectedSessions(DashboardPromotionType::Memory)
         }));
         assert!(session_entries.iter().any(|entry| {
             entry.section == "Navigation"

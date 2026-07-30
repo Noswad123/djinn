@@ -15199,6 +15199,7 @@ fn run_tui_in_session(
             djinn_tui::TuiAction::DeleteMemories(ids) => remove_memories_silent(&ids).map(|_| ()),
             djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| ()),
             djinn_tui::TuiAction::OpenSession(_)
+            | djinn_tui::TuiAction::PromoteSessions { .. }
             | djinn_tui::TuiAction::OpenTool(_)
             | djinn_tui::TuiAction::OpenSkill(_)
             | djinn_tui::TuiAction::ReviewMemory(_) => Ok(()),
@@ -15216,6 +15217,10 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
         djinn_tui::TuiAction::OpenSession(session) => {
             run_folder_session_tui(PathBuf::from(session.path)).map(|_| false)
         }
+        djinn_tui::TuiAction::PromoteSessions {
+            promotion_type,
+            sessions,
+        } => promote_tui_sessions(promotion_type, sessions).map(|_| false),
         djinn_tui::TuiAction::OpenTool(entry) => open_tool_entry(&entry, editor).map(|_| false),
         djinn_tui::TuiAction::OpenSkill(entry) => open_skill_entry(&entry, editor).map(|_| false),
         djinn_tui::TuiAction::ReviewMemory(id) => accept_memory(AcceptMemoryArgs {
@@ -15228,6 +15233,46 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
         .map(|_| false),
         djinn_tui::TuiAction::DeleteMemories(ids) => remove_memories_silent(&ids).map(|_| false),
         djinn_tui::TuiAction::DeleteSuggestions(ids) => remove_suggestions(&ids).map(|_| false),
+    }
+}
+
+fn promote_tui_sessions(
+    promotion_type: djinn_tui::DashboardPromotionType,
+    sessions: Vec<djinn_tui::SessionRecord>,
+) -> Result<()> {
+    if sessions.is_empty() {
+        bail!("select at least one session to promote");
+    }
+    let args = SessionPromoteArgs {
+        dirs: sessions
+            .iter()
+            .map(|session| PathBuf::from(&session.path))
+            .collect(),
+        promotion_type: session_promote_type_from_dashboard(promotion_type),
+        promotion_session_dir: None,
+        max_chars_per_artifact: 1200,
+        force: false,
+        json: false,
+    };
+    let report = create_promotion_session(&args)?;
+    println!(
+        "Created {} promotion session from {} selected session{}: {}",
+        session_promote_type_label(args.promotion_type),
+        report.session_count,
+        plural_suffix(report.session_count),
+        report.promotion_session_dir
+    );
+    run_folder_session_tui(PathBuf::from(report.promotion_session_dir))
+}
+
+fn session_promote_type_from_dashboard(
+    promotion_type: djinn_tui::DashboardPromotionType,
+) -> SessionPromoteType {
+    match promotion_type {
+        djinn_tui::DashboardPromotionType::Memory => SessionPromoteType::Memory,
+        djinn_tui::DashboardPromotionType::Todo => SessionPromoteType::Todo,
+        djinn_tui::DashboardPromotionType::Skill => SessionPromoteType::Skill,
+        djinn_tui::DashboardPromotionType::Pattern => SessionPromoteType::Pattern,
     }
 }
 

@@ -309,7 +309,9 @@ Keybindings:
 - `↑`/`k`, `↓`/`j`: move selection.
 - `PageUp`/`u`, `PageDown`/`d`: scroll preview.
 - Tools: `Enter` opens the selected tool.
-- Sessions: `Enter` opens the focused folder-backed session view.
+- Sessions: `Enter` opens the focused folder-backed session view; `Space` checks
+  sessions for promotion, and `Ctrl+P` offers memory/todo/skill/pattern promotion
+  actions for checked sessions.
 - Memories: `a` reviews the selected memory, `r` rejects/removes it.
 - Suggestions: `r` removes selected suggestions.
 - Skills: `Enter` opens the selected skill.
