@@ -153,8 +153,23 @@ evidence = ["./debugging-session/summary.md"]
   selected candidate and runs the explicit MindWeaver sync handoff.
 - `skill` candidates require `name`, `description`, plus `body`, `body_path`, or
   `text`, then write a Djinn-managed `SKILL.md` with an evidence section.
-- `pattern` candidates require `rationale`, then write accepted Markdown summaries under
-  `outputs/accepted/` in the promotion session.
+- `pattern` candidates require `rationale`. Generation writes a readable synthesis
+  to `summary.md`; accepting marks/reifies selected pattern candidates under
+  `outputs/accepted/`, but the more useful long-term path is exporting the insight
+  into your notes.
+
+Export pattern insight(s) to notes:
+
+```bash
+djinn session export-pattern ./promotion-pattern --to ~/notes/patterns.md --dry-run
+djinn session export-pattern ./promotion-pattern pattern-001 --to ~/notes/patterns.md
+djinn session export-pattern ./promotion-pattern pattern-002 --to ~/notes/patterns.md --append
+```
+
+`export-pattern` renders clean Markdown with the insight, rationale, evidence, and
+source promotion session. It refuses to overwrite existing files unless `--append`
+is used. After exporting, you can remove source sessions with `session cleanup` and
+the promotion session with `session rm` if you no longer need the provenance.
 
 Candidate generation also writes `outputs/candidate-index.toml`, and accept/deny
 appends status events to `outputs/candidate-status.toml`. Accept writeback refuses

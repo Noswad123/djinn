@@ -138,6 +138,8 @@ enum SessionCommand {
     Accept(SessionDecisionArgs),
     /// Deny a promotion session outcome and record the decision.
     Deny(SessionDecisionArgs),
+    /// Export pattern promotion insight(s) to a Markdown notes file.
+    ExportPattern(SessionExportPatternArgs),
     /// Permanently clean up explicit promotion-session source material.
     Cleanup(SessionCleanupArgs),
     /// Manage session-local context files and links.
@@ -301,6 +303,26 @@ struct SessionCleanupArgs {
     #[arg(long)]
     dry_run: bool,
     /// Output JSON instead of a text summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionExportPatternArgs {
+    /// Pattern promotion session name or directory.
+    dir: PathBuf,
+    /// Optional pattern candidate id/path. Defaults to all generated pattern candidates.
+    candidate: Option<String>,
+    /// Markdown notes path to create or append to.
+    #[arg(long = "to")]
+    to: PathBuf,
+    /// Append to an existing notes file. Without this, existing files are not overwritten.
+    #[arg(long)]
+    append: bool,
+    /// Preview the exported Markdown without writing.
+    #[arg(long)]
+    dry_run: bool,
+    /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
 }
@@ -4753,7 +4775,7 @@ fn run_folder_session_tui(dir: PathBuf) -> Result<()> {
             tui.finish()?;
             return Ok(());
         };
-        let action_message = folder_session_action_message(&action);
+        let action_message = folder_session_action_message(&action, &session_dir);
         tui.suspend()?;
         let action_result = handle_folder_session_tui_action(action, session_dir.clone());
         tui.resume()?;
@@ -4764,9 +4786,18 @@ fn run_folder_session_tui(dir: PathBuf) -> Result<()> {
     }
 }
 
-fn folder_session_action_message(action: &djinn_tui::FolderSessionAction) -> String {
+fn folder_session_action_message(
+    action: &djinn_tui::FolderSessionAction,
+    session_dir: &Path,
+) -> String {
     match action {
-        djinn_tui::FolderSessionAction::Run => "Ran session request".to_string(),
+        djinn_tui::FolderSessionAction::Run => {
+            if folder_session_is_promotion(session_dir).unwrap_or(false) {
+                "Started promotion generation in background".to_string()
+            } else {
+                "Started session run".to_string()
+            }
+        }
         djinn_tui::FolderSessionAction::Watch => "Watched session status".to_string(),
         djinn_tui::FolderSessionAction::OpenSummary => "Opened summary.md".to_string(),
         djinn_tui::FolderSessionAction::EditRequest => "Opened request.md".to_string(),
@@ -4871,6 +4902,13 @@ fn handle_folder_session_tui_action(
     }
 }
 
+fn folder_session_is_promotion(session_dir: &Path) -> Result<bool> {
+    Ok(read_folder_session_manifest(session_dir)?
+        .and_then(|manifest| manifest.kind)
+        .as_deref()
+        == Some("promotion"))
+}
+
 fn folder_session_status_tui_view(
     session_dir: &Path,
 ) -> Result<djinn_tui::FolderSessionStatusView> {
@@ -4938,6 +4976,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Promote(args) => session_promote(args),
         SessionCommand::Accept(args) => session_decide(args, SessionDecisionAction::Accept),
         SessionCommand::Deny(args) => session_decide(args, SessionDecisionAction::Deny),
+        SessionCommand::ExportPattern(args) => session_export_pattern(args),
         SessionCommand::Cleanup(args) => session_cleanup(args),
         SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
@@ -5351,6 +5390,138 @@ fn cleanup_promotion_session(args: &SessionCleanupArgs) -> Result<SessionCleanup
     })
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionExportPatternReport {
+    dry_run: bool,
+    session_dir: String,
+    output_path: String,
+    append: bool,
+    candidate_count: usize,
+    candidates: Vec<String>,
+    wrote: bool,
+    preview: Option<String>,
+}
+
+fn session_export_pattern(args: SessionExportPatternArgs) -> Result<()> {
+    let report = export_pattern_insights(&args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if args.dry_run {
+        println!("Would export pattern insight(s) to: {}", report.output_path);
+        if let Some(preview) = &report.preview {
+            println!("\n{preview}");
+        }
+    } else {
+        let verb = if report.append {
+            "Appended"
+        } else {
+            "Exported"
+        };
+        println!(
+            "{verb} {} pattern candidate{} to {}",
+            report.candidate_count,
+            plural_suffix(report.candidate_count),
+            report.output_path
+        );
+    }
+    Ok(())
+}
+
+fn export_pattern_insights(args: &SessionExportPatternArgs) -> Result<SessionExportPatternReport> {
+    let session_dir = resolve_session_dir(&args.dir)?;
+    let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
+        format!(
+            "missing promotion session manifest: {}",
+            session_dir.display()
+        )
+    })?;
+    if manifest.kind.as_deref() != Some("promotion")
+        || manifest.promotion_type.as_deref() != Some("pattern")
+    {
+        bail!(
+            "session {} is not a pattern promotion session",
+            session_dir.display()
+        );
+    }
+    let candidates = resolve_promotion_candidates(&session_dir, args.candidate.as_deref())?
+        .into_iter()
+        .filter(|candidate| candidate.candidate_type == "pattern")
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        bail!("no pattern candidates found to export");
+    }
+    let output_path = expand_tilde_path(&args.to.display().to_string());
+    if output_path.exists() && !args.append && !args.dry_run {
+        bail!(
+            "notes file already exists: {} (use --append to add pattern insights)",
+            output_path.display()
+        );
+    }
+    let content = render_pattern_export_note(&session_dir, &candidates);
+    if !args.dry_run {
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating notes export directory {}", parent.display()))?;
+        }
+        if args.append && output_path.exists() {
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(&output_path)
+                .with_context(|| format!("opening notes file {}", output_path.display()))?;
+            file.write_all(format!("\n\n{}", content.trim_end()).as_bytes())
+                .with_context(|| format!("appending notes file {}", output_path.display()))?;
+            file.write_all(b"\n")
+                .with_context(|| format!("appending notes file {}", output_path.display()))?;
+        } else {
+            fs::write(&output_path, ensure_trailing_newline(&content))
+                .with_context(|| format!("writing notes file {}", output_path.display()))?;
+        }
+    }
+    Ok(SessionExportPatternReport {
+        dry_run: args.dry_run,
+        session_dir: session_dir.display().to_string(),
+        output_path: output_path.display().to_string(),
+        append: args.append,
+        candidate_count: candidates.len(),
+        candidates: candidates
+            .iter()
+            .map(|candidate| candidate.id.clone())
+            .collect(),
+        wrote: !args.dry_run,
+        preview: args.dry_run.then_some(content),
+    })
+}
+
+fn render_pattern_export_note(session_dir: &Path, candidates: &[PromotionCandidate]) -> String {
+    let mut out = String::new();
+    out.push_str("# Pattern insight\n\n");
+    out.push_str(&format!(
+        "Source promotion session: `{}`\n\n",
+        session_dir.display()
+    ));
+    for candidate in candidates {
+        out.push_str(&format!("## {}\n\n", candidate.id));
+        out.push_str(candidate.text.trim());
+        out.push_str("\n\n");
+        if let Some(rationale) = candidate
+            .rationale
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            out.push_str("### Rationale\n\n");
+            out.push_str(rationale);
+            out.push_str("\n\n");
+        }
+        out.push_str("### Evidence\n\n");
+        for evidence in &candidate.evidence {
+            out.push_str(&format!("- {evidence}\n"));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn promotion_source_session_dirs(session_dir: &Path) -> Result<Vec<PathBuf>> {
     let sources_path = session_dir.join("context").join("sources.toml");
     let content = fs::read_to_string(&sources_path)
@@ -5453,11 +5624,15 @@ fn write_generated_promotion_candidates(
         }
         fs::write(&path, ensure_trailing_newline(&content))
             .with_context(|| format!("writing generated promotion candidate {}", path.display()))?;
+        let evidence = candidate.evidence.clone();
         reports.push(PromotionGeneratedCandidateReport {
             id: candidate.id,
             candidate_type: candidate.candidate_type,
             path: path.display().to_string(),
-            evidence_count: candidate.evidence.len(),
+            text: candidate.text,
+            rationale: candidate.rationale,
+            evidence_count: evidence.len(),
+            evidence,
         });
     }
     if reports.is_empty() {
@@ -5527,6 +5702,64 @@ fn write_promotion_candidate_index(
     }
     fs::write(&index_path, output).with_context(|| format!("writing {}", index_path.display()))?;
     Ok(index_path)
+}
+
+fn write_promotion_generation_summary(
+    session_dir: &Path,
+    promotion_type: &str,
+    candidates: &[PromotionGeneratedCandidateReport],
+) -> Result<PathBuf> {
+    let summary_path = session_dir.join("summary.md");
+    let content = render_promotion_generation_summary(promotion_type, candidates);
+    fs::write(&summary_path, content)
+        .with_context(|| format!("writing {}", summary_path.display()))?;
+    Ok(summary_path)
+}
+
+fn render_promotion_generation_summary(
+    promotion_type: &str,
+    candidates: &[PromotionGeneratedCandidateReport],
+) -> String {
+    let mut output = String::new();
+    output.push_str("# Promotion candidates\n\n");
+    output.push_str(&format!("Promotion type: `{}`\n\n", promotion_type.trim()));
+    output.push_str(&format!(
+        "Generated {} candidate{} for review.\n\n",
+        candidates.len(),
+        plural_suffix(candidates.len())
+    ));
+    output.push_str("Use `djinn session accept <promotion-session> <candidate-id> --dry-run` before accepting, or review candidates in the Sessions TUI.\n\n");
+    for candidate in candidates {
+        output.push_str(&format!(
+            "## {} `{}`\n\n",
+            candidate.candidate_type, candidate.id
+        ));
+        if !candidate.text.trim().is_empty() {
+            output.push_str(candidate.text.trim());
+            output.push_str("\n\n");
+        }
+        if let Some(rationale) = candidate
+            .rationale
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            output.push_str("### Rationale\n\n");
+            output.push_str(rationale);
+            output.push_str("\n\n");
+        }
+        output.push_str("### Evidence\n\n");
+        if candidate.evidence.is_empty() {
+            output.push_str("- _No evidence links recorded._\n\n");
+        } else {
+            for evidence in &candidate.evidence {
+                output.push_str(&format!("- {evidence}\n"));
+            }
+            output.push('\n');
+        }
+        output.push_str(&format!("Candidate file: `{}`\n\n", candidate.path));
+    }
+    output
 }
 
 fn append_promotion_candidate_status_events(
@@ -5748,18 +5981,41 @@ fn candidate_string_value(content: &str, key: &str) -> Option<String> {
 
 fn candidate_string_array_value(content: &str, key: &str) -> Vec<String> {
     let prefix = format!("{key} =");
-    content
-        .lines()
-        .find_map(|line| {
-            let line = line.trim();
-            let value = line.strip_prefix(&prefix)?.trim();
-            serde_json::from_str::<Vec<String>>(value).ok()
-        })
+    candidate_raw_array_value(content, &prefix)
+        .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
         .unwrap_or_default()
         .into_iter()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .collect()
+}
+
+fn candidate_raw_array_value(content: &str, prefix: &str) -> Option<String> {
+    let mut collecting = false;
+    let mut value = String::new();
+    let mut bracket_depth = 0i32;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let part = if collecting {
+            trimmed
+        } else {
+            let Some(part) = trimmed.strip_prefix(prefix).map(str::trim) else {
+                continue;
+            };
+            part
+        };
+        if !value.is_empty() {
+            value.push('\n');
+        }
+        value.push_str(part);
+        bracket_depth += part.matches('[').count() as i32;
+        bracket_depth -= part.matches(']').count() as i32;
+        if bracket_depth <= 0 && value.trim_start().starts_with('[') {
+            return Some(value);
+        }
+        collecting = true;
+    }
+    None
 }
 
 fn validate_promotion_candidate(candidate: &PromotionCandidate) -> Result<()> {
@@ -7231,6 +7487,8 @@ struct SessionStatusCandidateEntry {
     candidate_type: Option<String>,
     status: String,
     path: String,
+    text: Option<String>,
+    rationale: Option<String>,
     evidence: Vec<String>,
     destination: Option<String>,
     writeback_path: Option<String>,
@@ -7805,14 +8063,25 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
     let turns_dir = session_dir.join("turns");
     let (context_ingestible_count, context_skipped) =
         inspect_folder_session_context_dir(&context_dir)?;
+    let request_exists = session_dir.join("request.md").exists();
     let turns = read_folder_session_turns(&turns_dir)?;
     let turn_count = turns.len();
-    let lifecycle = session_status_lifecycle(native_session.as_ref());
     let latest_turn = turns.last().map(session_status_turn_report);
-    let request_exists = session_dir.join("request.md").exists();
-    let next_action =
-        session_status_next_action(&session_dir, request_exists, turn_count, &lifecycle);
     let candidates = session_status_candidates(&session_dir)?;
+    let lifecycle = session_status_lifecycle(
+        &session_dir,
+        manifest.as_ref(),
+        native_session.as_ref(),
+        candidates.as_ref(),
+    );
+    let next_action = session_status_next_action(
+        &session_dir,
+        manifest.as_ref(),
+        request_exists,
+        turn_count,
+        &lifecycle,
+        candidates.as_ref(),
+    );
 
     Ok(SessionStatusReport {
         session_dir: session_dir.display().to_string(),
@@ -7851,7 +8120,12 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
     })
 }
 
-fn session_status_lifecycle(native_session: Option<&AgentSession>) -> SessionStatusLifecycleReport {
+fn session_status_lifecycle(
+    session_dir: &Path,
+    manifest: Option<&FolderSessionManifest>,
+    native_session: Option<&AgentSession>,
+    candidates: Option<&SessionStatusCandidateReport>,
+) -> SessionStatusLifecycleReport {
     if let Some(session) = native_session {
         let lifecycle = lifecycle_for(session);
         SessionStatusLifecycleReport {
@@ -7861,6 +8135,8 @@ fn session_status_lifecycle(native_session: Option<&AgentSession>) -> SessionSta
             reason: lifecycle.reason,
             note: lifecycle.note,
         }
+    } else if manifest.and_then(|manifest| manifest.kind.as_deref()) == Some("promotion") {
+        promotion_session_status_lifecycle(session_dir, candidates)
     } else {
         SessionStatusLifecycleReport {
             state: "not_started".to_string(),
@@ -7870,6 +8146,125 @@ fn session_status_lifecycle(native_session: Option<&AgentSession>) -> SessionSta
             note: None,
         }
     }
+}
+
+fn promotion_session_status_lifecycle(
+    session_dir: &Path,
+    candidates: Option<&SessionStatusCandidateReport>,
+) -> SessionStatusLifecycleReport {
+    if let Some(run) = latest_background_session_run_status(session_dir).filter(|run| run.alive) {
+        return SessionStatusLifecycleReport {
+            state: "running".to_string(),
+            mode: Some("promotion".to_string()),
+            updated_at: run.log_modified_at.clone().or(run.started_at.clone()),
+            reason: Some("background_generation".to_string()),
+            note: Some(format_background_promotion_run_note(&run)),
+        };
+    }
+    if candidates.is_some_and(|candidates| candidates.candidate_count > 0) {
+        return SessionStatusLifecycleReport {
+            state: "completed".to_string(),
+            mode: Some("promotion".to_string()),
+            updated_at: latest_promotion_generation_modified_at(session_dir),
+            reason: Some("candidates_generated".to_string()),
+            note: Some("Promotion candidates are ready for review.".to_string()),
+        };
+    }
+    if let Some(run) = latest_background_session_run_status(session_dir) {
+        return SessionStatusLifecycleReport {
+            state: "failed".to_string(),
+            mode: Some("promotion".to_string()),
+            updated_at: run
+                .started_at
+                .or_else(|| latest_promotion_generation_modified_at(session_dir)),
+            reason: Some("generation_failed".to_string()),
+            note: Some(format!(
+                "Promotion generation exited before writing valid candidates. Inspect the model response or log: {}",
+                run.log_path.as_deref().unwrap_or("unknown")
+            )),
+        };
+    }
+    if promotion_generation_has_response(session_dir) {
+        return SessionStatusLifecycleReport {
+            state: "failed".to_string(),
+            mode: Some("promotion".to_string()),
+            updated_at: latest_promotion_generation_modified_at(session_dir),
+            reason: Some("no_candidates".to_string()),
+            note: Some(
+                "Promotion generation wrote a response but no candidate TOML files.".to_string(),
+            ),
+        };
+    }
+    SessionStatusLifecycleReport {
+        state: "not_started".to_string(),
+        mode: Some("promotion".to_string()),
+        updated_at: latest_promotion_generation_modified_at(session_dir),
+        reason: None,
+        note: None,
+    }
+}
+
+fn format_background_promotion_run_note(run: &BackgroundRunStatus) -> String {
+    let mut note = format!(
+        "Promotion candidate generation is running in the background (pid {}, log {}, {}).",
+        run.pid,
+        run.log_path.as_deref().unwrap_or("unknown"),
+        run.log_bytes
+            .map(format_byte_count)
+            .unwrap_or_else(|| "log size unknown".to_string())
+    );
+    if let Some(updated) = &run.log_modified_at {
+        note.push_str(&format!(" Log updated {updated}."));
+    }
+    if let Some(tail) = &run.log_tail {
+        note.push_str(&format!(" Last log: {tail}"));
+    }
+    note
+}
+
+fn format_byte_count(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+fn promotion_generation_has_response(session_dir: &Path) -> bool {
+    session_dir
+        .join("outputs")
+        .join("generation")
+        .read_dir()
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(std::result::Result::ok))
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with("-response.md"))
+        })
+}
+
+fn latest_promotion_generation_modified_at(session_dir: &Path) -> Option<String> {
+    let generation_dir = session_dir.join("outputs").join("generation");
+    fs::read_dir(generation_dir)
+        .ok()?
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| entry.metadata().ok()?.modified().ok())
+        .max()
+        .and_then(system_time_to_rfc3339)
+}
+
+fn system_time_to_rfc3339(time: SystemTime) -> Option<String> {
+    let duration = time.duration_since(UNIX_EPOCH).ok()?;
+    chrono::DateTime::<chrono::Utc>::from_timestamp(
+        duration.as_secs() as i64,
+        duration.subsec_nanos(),
+    )
+    .map(|time| time.to_rfc3339())
 }
 
 fn session_status_turn_report(turn: &FolderSessionTurnDigest) -> SessionStatusTurnReport {
@@ -7970,6 +8365,8 @@ fn read_session_status_candidate_entry(
             .filter(|status| !status.trim().is_empty())
             .unwrap_or_else(|| "pending".to_string()),
         path: path.display().to_string(),
+        text: candidate_string_value(&content, "text"),
+        rationale: candidate_string_value(&content, "rationale"),
         evidence: candidate_string_array_value(&content, "evidence"),
         destination: decision.and_then(|decision| decision.destination.clone()),
         writeback_path: decision.and_then(|decision| decision.writeback_path.clone()),
@@ -8092,13 +8489,22 @@ fn format_session_candidate_entry(entry: &SessionStatusCandidateEntry) -> String
 
 fn session_status_next_action(
     session_dir: &Path,
+    manifest: Option<&FolderSessionManifest>,
     request_exists: bool,
     turn_count: usize,
     lifecycle: &SessionStatusLifecycleReport,
+    candidates: Option<&SessionStatusCandidateReport>,
 ) -> Option<String> {
     if lifecycle.state == "running" {
         Some(format!(
             "check again: djinn session status {}",
+            session_dir.display()
+        ))
+    } else if manifest.and_then(|manifest| manifest.kind.as_deref()) == Some("promotion")
+        && candidates.is_some_and(|candidates| candidates.candidate_count > 0)
+    {
+        Some(format!(
+            "review candidates: djinn session accept {} --dry-run",
             session_dir.display()
         ))
     } else if lifecycle.state == "failed" {
@@ -8236,11 +8642,23 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         .to_string();
     let turns = read_folder_session_turns(&path.join("turns"))?;
     let turn_count = turns.len();
-    let lifecycle = session_status_lifecycle(native_session.as_ref());
     let latest_turn = turns.last().map(session_status_turn_report);
     let request_md = path.join("request.md").exists();
-    let next_action = session_status_next_action(path, request_md, turn_count, &lifecycle);
     let candidates = session_status_candidates(path)?;
+    let lifecycle = session_status_lifecycle(
+        path,
+        manifest.as_ref(),
+        native_session.as_ref(),
+        candidates.as_ref(),
+    );
+    let next_action = session_status_next_action(
+        path,
+        manifest.as_ref(),
+        request_md,
+        turn_count,
+        &lifecycle,
+        candidates.as_ref(),
+    );
     Ok(FolderSessionSummary {
         display_name: folder_session_display_name(&name),
         reference_name: folder_session_reference_name(&name),
@@ -11567,6 +11985,17 @@ struct SessionRunBackgroundReport {
     watch_command: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BackgroundRunStatus {
+    pid: u32,
+    log_path: Option<String>,
+    log_bytes: Option<u64>,
+    log_modified_at: Option<String>,
+    log_tail: Option<String>,
+    started_at: Option<String>,
+    alive: bool,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct PromotionCandidateGenerationReport {
     status: String,
@@ -11588,6 +12017,9 @@ struct PromotionGeneratedCandidateReport {
     id: String,
     candidate_type: String,
     path: String,
+    text: String,
+    rationale: Option<String>,
+    evidence: Vec<String>,
     evidence_count: usize,
 }
 
@@ -11706,6 +12138,7 @@ fn generate_promotion_candidates(
         &candidates_dir,
     )?;
     let candidate_index_path = write_promotion_candidate_index(session_dir, &candidates)?;
+    write_promotion_generation_summary(session_dir, &promotion_type, &candidates)?;
 
     Ok(PromotionCandidateGenerationReport {
         status: "generated".to_string(),
@@ -11854,6 +12287,7 @@ fn spawn_background_session_run(
         )
     })?;
     let pid = child.id();
+    write_background_session_run_marker(session_dir, &log_path, pid)?;
     Ok(SessionRunBackgroundReport {
         status: "started".to_string(),
         session_dir: session_dir.display().to_string(),
@@ -11861,6 +12295,112 @@ fn spawn_background_session_run(
         log_path: log_path.display().to_string(),
         watch_command: format!("djinn session watch {}", session_dir.display()),
     })
+}
+
+fn write_background_session_run_marker(
+    session_dir: &Path,
+    log_path: &Path,
+    pid: u32,
+) -> Result<()> {
+    let marker_path = log_path.with_extension("toml");
+    let mut content = String::new();
+    content.push_str("version = 1\n");
+    content.push_str(&format!(
+        "started_at = {}\n",
+        toml_string(&chrono::Local::now().to_rfc3339())?
+    ));
+    content.push_str(&format!(
+        "session_dir = {}\n",
+        toml_string(&session_dir.display().to_string())?
+    ));
+    content.push_str(&format!("pid = {pid}\n"));
+    content.push_str(&format!(
+        "log_path = {}\n",
+        toml_string(&log_path.display().to_string())?
+    ));
+    fs::write(&marker_path, content)
+        .with_context(|| format!("writing background run marker {}", marker_path.display()))
+}
+
+fn latest_background_session_run_status(session_dir: &Path) -> Option<BackgroundRunStatus> {
+    let run_dir = session_dir.join(".djinn").join("runs");
+    let marker = fs::read_dir(run_dir)
+        .ok()?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("toml"))
+        .filter_map(|path| {
+            let modified = fs::metadata(&path).ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)?
+        .1;
+    let content = fs::read_to_string(marker).ok()?;
+    let pid = manifest_root_string_value(&content, "pid")?
+        .parse::<u32>()
+        .ok()?;
+    let log_path = manifest_root_string_value(&content, "log_path");
+    let log_path_buf = log_path.as_ref().map(PathBuf::from);
+    let log_metadata = log_path_buf
+        .as_deref()
+        .and_then(|path| fs::metadata(path).ok());
+    Some(BackgroundRunStatus {
+        pid,
+        log_path,
+        log_bytes: log_metadata.as_ref().map(|metadata| metadata.len()),
+        log_modified_at: log_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(system_time_to_rfc3339),
+        log_tail: log_path_buf.as_deref().and_then(latest_nonempty_file_line),
+        started_at: manifest_root_string_value(&content, "started_at"),
+        alive: process_pid_alive(pid),
+    })
+}
+
+fn latest_nonempty_file_line(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.chars().take(220).collect())
+}
+
+#[cfg(unix)]
+fn process_pid_alive(pid: u32) -> bool {
+    if let Ok(output) = ProcessCommand::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("stat=")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if !output.status.success() {
+            return false;
+        }
+        let stat = String::from_utf8_lossy(&output.stdout);
+        let stat = stat.trim();
+        if !stat.is_empty() {
+            return !stat.starts_with('Z');
+        }
+    }
+    ProcessCommand::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn process_pid_alive(_pid: u32) -> bool {
+    false
 }
 
 fn background_session_run_log_path(session_dir: &Path) -> Result<PathBuf> {
@@ -15322,6 +15862,8 @@ fn tui_candidate_row(entry: &SessionStatusCandidateEntry) -> djinn_tui::Promotio
         candidate_type: entry.candidate_type.clone(),
         status: entry.status.clone(),
         path: entry.path.clone(),
+        text: entry.text.clone(),
+        rationale: entry.rationale.clone(),
         evidence: entry.evidence.clone(),
         destination: entry.destination.clone(),
         writeback_path: entry.writeback_path.clone(),
@@ -17550,6 +18092,30 @@ mod tests {
         assert!(args.delete_sources);
         assert!(args.dry_run);
         assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "export-pattern",
+            "promotion-pattern",
+            "pattern-001",
+            "--to",
+            "/tmp/notes/pattern.md",
+            "--append",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::ExportPattern(args)) = session_args.command else {
+            panic!("expected session export-pattern command");
+        };
+        assert_eq!(args.dir, PathBuf::from("promotion-pattern"));
+        assert_eq!(args.candidate.as_deref(), Some("pattern-001"));
+        assert_eq!(args.to, PathBuf::from("/tmp/notes/pattern.md"));
+        assert!(args.append);
+        assert!(args.dry_run);
     }
 
     #[test]
@@ -19293,9 +19859,10 @@ link = "context/repo"
             .unwrap()
             .ends_with("response.md"));
         assert_eq!(
-            folder_session_action_message(&djinn_tui::FolderSessionAction::AcceptCandidate(
-                "todo-001".to_string()
-            )),
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::AcceptCandidate("todo-001".to_string()),
+                &session_dir,
+            ),
             "Accepted candidate todo-001"
         );
 
@@ -20525,7 +21092,13 @@ link = "context/repo"
         let session_dir = root.join("promotion-memory");
         let candidates_dir = session_dir.join("outputs/candidates");
         fs::create_dir_all(&candidates_dir).unwrap();
-        let model_output = "Here are candidates:\n\n```toml\ntype = \"memory\"\ntext = \"Promotion sessions should preserve source provenance.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"/tmp/source/summary.md\"]\n```\n";
+        fs::write(
+            session_dir.join("djinn.toml"),
+            "version = 1\nkind = \"promotion\"\npromotion_type = \"memory\"\n",
+        )
+        .unwrap();
+        fs::write(session_dir.join("request.md"), "promote memories\n").unwrap();
+        let model_output = "Here are candidates:\n\n```toml\ntype = \"memory\"\ntext = \"Promotion sessions should preserve source provenance.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\n  \"/tmp/source/summary.md\"\n]\n```\n";
 
         let reports = write_generated_promotion_candidates(
             &session_dir,
@@ -20546,11 +21119,152 @@ link = "context/repo"
         let index = fs::read_to_string(index_path).unwrap();
         assert!(index.contains("candidate_count = 1"));
         assert!(index.contains("status = \"candidate\""));
+        let summary_path =
+            write_promotion_generation_summary(&session_dir, "memory", &reports).unwrap();
+        let summary = fs::read_to_string(summary_path).unwrap();
+        assert!(summary.contains("# Promotion candidates"));
+        assert!(summary.contains("Promotion sessions should preserve source provenance."));
+        assert!(summary.contains("/tmp/source/summary.md"));
+        let status = folder_session_status(&session_dir).unwrap();
+        assert_eq!(status.lifecycle.state, "completed");
+        assert_eq!(status.lifecycle.mode.as_deref(), Some("promotion"));
+        assert_eq!(
+            status.lifecycle.reason.as_deref(),
+            Some("candidates_generated")
+        );
+        assert!(status
+            .next_action
+            .as_deref()
+            .unwrap_or_default()
+            .contains("djinn session accept"));
 
         let prompt = render_promotion_candidate_generation_prompt("memory", "Packet evidence");
         assert!(prompt.contains("Promotion type: `memory`"));
         assert!(prompt.contains("Return one fenced `toml` block per candidate"));
         assert!(prompt.contains("Packet evidence"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_export_pattern_writes_readable_notes_file() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-pattern-export-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("promotion-pattern");
+        let candidates_dir = session_dir.join("outputs/candidates");
+        fs::create_dir_all(&candidates_dir).unwrap();
+        fs::write(
+            session_dir.join("djinn.toml"),
+            "version = 1\nkind = \"promotion\"\npromotion_type = \"pattern\"\n",
+        )
+        .unwrap();
+        fs::write(
+            candidates_dir.join("pattern-001.toml"),
+            "type = \"pattern\"\nid = \"pattern-001\"\ntext = \"Keep pattern insights in notes after review.\"\nrationale = \"Patterns are synthesis, not durable Djinn records.\"\nevidence = [\n  \"/tmp/source/summary.md\"\n]\n",
+        )
+        .unwrap();
+        let notes_path = root.join("notes/patterns.md");
+
+        let dry_run = export_pattern_insights(&SessionExportPatternArgs {
+            dir: session_dir.clone(),
+            candidate: Some("pattern-001".to_string()),
+            to: notes_path.clone(),
+            append: false,
+            dry_run: true,
+            json: false,
+        })
+        .unwrap();
+        assert!(!notes_path.exists());
+        assert!(dry_run
+            .preview
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Keep pattern insights in notes after review."));
+
+        let written = export_pattern_insights(&SessionExportPatternArgs {
+            dir: session_dir.clone(),
+            candidate: Some("pattern-001".to_string()),
+            to: notes_path.clone(),
+            append: false,
+            dry_run: false,
+            json: false,
+        })
+        .unwrap();
+        assert!(written.wrote);
+        let notes = fs::read_to_string(&notes_path).unwrap();
+        assert!(notes.contains("# Pattern insight"));
+        assert!(notes.contains("Keep pattern insights in notes after review."));
+        assert!(notes.contains("Patterns are synthesis, not durable Djinn records."));
+        assert!(notes.contains("/tmp/source/summary.md"));
+
+        let overwrite = export_pattern_insights(&SessionExportPatternArgs {
+            dir: session_dir,
+            candidate: Some("pattern-001".to_string()),
+            to: notes_path,
+            append: false,
+            dry_run: false,
+            json: false,
+        })
+        .unwrap_err();
+        assert!(overwrite.to_string().contains("already exists"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn promotion_status_reports_failed_background_generation_without_candidates() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-promotion-bg-status-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("promotion-pattern");
+        let run_dir = session_dir.join(".djinn/runs");
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::write(
+            session_dir.join("djinn.toml"),
+            "version = 1\nkind = \"promotion\"\npromotion_type = \"pattern\"\n",
+        )
+        .unwrap();
+        fs::write(session_dir.join("request.md"), "promote patterns\n").unwrap();
+        let log_path = run_dir.join("session-run-test.log");
+        fs::write(&log_path, "candidate validation failed\n").unwrap();
+        fs::write(
+            run_dir.join("session-run-test.toml"),
+            format!(
+                "version = 1\nstarted_at = \"2026-07-30T12:00:00Z\"\nsession_dir = \"{}\"\npid = 4294967295\nlog_path = \"{}\"\n",
+                session_dir.display(),
+                log_path.display()
+            ),
+        )
+        .unwrap();
+
+        let status = folder_session_status(&session_dir).unwrap();
+
+        assert_eq!(status.lifecycle.state, "failed");
+        assert_eq!(status.lifecycle.mode.as_deref(), Some("promotion"));
+        assert_eq!(
+            status.lifecycle.reason.as_deref(),
+            Some("generation_failed")
+        );
+        assert!(status
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Inspect the model response or log"));
+        let run = latest_background_session_run_status(&session_dir).unwrap();
+        assert_eq!(run.log_tail.as_deref(), Some("candidate validation failed"));
+        assert!(run.log_bytes.unwrap_or_default() > 0);
+        let running_note =
+            format_background_promotion_run_note(&BackgroundRunStatus { alive: true, ..run });
+        assert!(running_note.contains("pid 4294967295"));
+        assert!(running_note.contains("Last log: candidate validation failed"));
 
         let _ = fs::remove_dir_all(&root);
     }

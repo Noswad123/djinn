@@ -141,6 +141,8 @@ pub struct PromotionCandidateRow {
     pub candidate_type: Option<String>,
     pub status: String,
     pub path: String,
+    pub text: Option<String>,
+    pub rationale: Option<String>,
     pub evidence: Vec<String>,
     pub destination: Option<String>,
     pub writeback_path: Option<String>,
@@ -2283,6 +2285,28 @@ fn selected_promotion_candidate_detail_lines(
             Span::raw(path.clone()),
         ]));
     }
+    if let Some(text) = candidate
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(Line::from(vec![
+            Span::styled("Text:    ", dim_style()),
+            Span::raw(text.to_string()),
+        ]));
+    }
+    if let Some(rationale) = candidate
+        .rationale
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(Line::from(vec![
+            Span::styled("Why:     ", dim_style()),
+            Span::raw(rationale.to_string()),
+        ]));
+    }
     if candidate.evidence.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("Evidence:", dim_style()),
@@ -3555,6 +3579,8 @@ mod tests {
                 candidate_type: Some("todo".to_string()),
                 status: "pending".to_string(),
                 path: "/tmp/promotion/outputs/candidates/todo-001.toml".to_string(),
+                text: Some("Polish promotion review workflow.".to_string()),
+                rationale: Some("The session asks for a better review flow.".to_string()),
                 evidence: vec!["/tmp/source/summary.md".to_string()],
                 destination: Some("mindweaver".to_string()),
                 writeback_path: None,
@@ -3614,6 +3640,8 @@ mod tests {
         assert!(detail.contains("Selected candidate"));
         assert!(detail.contains("Id:      todo-001"));
         assert!(detail.contains("Dest:    mindweaver"));
+        assert!(detail.contains("Text:    Polish promotion review workflow."));
+        assert!(detail.contains("Why:     The session asks for a better review flow."));
         assert!(detail.contains("/tmp/source/summary.md"));
     }
 
@@ -3640,6 +3668,8 @@ mod tests {
                     candidate_type: Some("memory".to_string()),
                     status: "accepted".to_string(),
                     path: "/tmp/repo-review/outputs/candidates/memory-001.toml".to_string(),
+                    text: Some("Keep source sessions as promotion provenance.".to_string()),
+                    rationale: None,
                     evidence: vec!["/tmp/repo-review/summary.md".to_string()],
                     destination: Some("memory".to_string()),
                     writeback_path: None,
@@ -3649,6 +3679,8 @@ mod tests {
                     candidate_type: Some("todo".to_string()),
                     status: "pending".to_string(),
                     path: "/tmp/repo-review/outputs/candidates/todo-001.toml".to_string(),
+                    text: Some("Wire promotion todos into MindWeaver.".to_string()),
+                    rationale: None,
                     evidence: vec!["/tmp/repo-review/turns/turn-1/response.md".to_string()],
                     destination: None,
                     writeback_path: None,

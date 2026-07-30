@@ -143,6 +143,59 @@ belongs in [`agent-design-decisions.md`](./agent-design-decisions.md) and the ap
 guide rather than being repeated here. Remaining ready slices should build on the
 file-first surfaces without restoring the removed legacy saved-row model.
 
+#### Buddy-style interactive UI over Djinn-owned sessions
+
+Long-term direction: fold the useful parts of the Buddy/OpenCode interactive chat
+experience into Djinn while keeping Djinn's folder-backed session as the durable
+source of truth. Buddy may remain a bridge/runtime during the transition, but the
+session folder belongs to Djinn. Do **not** move existing session storage roots as
+part of this work; keep the current `~/.cache/djinn`-based location until there is
+a separate, explicit migration reason and command.
+
+Terminology constraints:
+
+- `agent` remains reserved for Djinn's configured personas/profiles from global
+  config. Buddy/OpenCode/Djinn are runtimes or UIs, not agents.
+- The root `request.md` is the draft input buffer, equivalent to the interactive
+  chat box. Submitting a turn snapshots it into history and then clears the root
+  `request.md`.
+- The root `summary.md` is the latest output/result for the session. Previous
+  request/summary pairs continue to live under `turns/<id>/` for now.
+- Runtime-specific state, such as a Buddy native session id, should live under a
+  conventional runtime-specific file (for example `runtime/buddy.json`) instead
+  of being listed from `session.yaml`.
+
+Incremental target shape:
+
+```text
+<session>/
+  session.yaml
+  request.md          # current draft, cleared after submit
+  summary.md          # latest output/result
+  turns/<id>/         # current durable turn history projection
+  runtime/buddy.json  # optional bridge metadata while Buddy exists
+```
+
+Future direction: convert `turns/<id>/` from the canonical history store into a
+projection over an append-only `events.jsonl` ledger. The migration should be
+opt-in and reversible while being proven: first append events alongside the
+existing turn folders, then regenerate/validate turns from events, and only later
+make `events.jsonl` authoritative.
+
+Ready implementation slices:
+
+- Define the minimal `runtime/buddy.json` bridge contract: Buddy native session
+  id, last-seen timestamp, lifecycle status, and resume command hints.
+- Add a Buddy/Djinn bridge that records each interactive user submission as the
+  next Djinn turn: copy submitted text to `turns/<id>/request.md`, clear root
+  `request.md`, stream/update root `summary.md`, then finalize
+  `turns/<id>/summary.md`.
+- Add optional event shadowing: append `session.*`, `message.*`, `tool.*`, and
+  `lifecycle.*` records to `events.jsonl` while preserving current turn-folder
+  behavior.
+- Add validation that `turns/<id>/request.md`/`summary.md`, root `summary.md`, and
+  `events.jsonl` agree before treating events as resumable state.
+
 #### Stale background run detection
 
 `djinn session watch <session>` can currently block forever when a background

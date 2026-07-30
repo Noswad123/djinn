@@ -288,7 +288,9 @@ MindWeaver inbox (`MW_TODO_INBOX`, `MW_INBOX_PATH`, or `INBOX_PATH`). Add
 accept a MindWeaver todo without that flag, Djinn records a pending follow-up with
 the exact sync command instead of silently running it; the focused Sessions TUI
 also offers `m` for accept-and-sync. `pattern` candidates are accepted as Markdown
-summaries under the promotion session.
+summaries under the promotion session, and `djinn session export-pattern
+<promotion-session> [candidate] --to <notes.md>` exports clean insight/rationale
+Markdown to your notes.
 Candidate generation writes `outputs/candidate-index.toml`, accept/deny appends
 `outputs/candidate-status.toml`, and writeback rejects exact or near duplicates
 before mutating durable stores, including existing open MindWeaver inbox todos. Todo
