@@ -172,8 +172,8 @@ runs. Remaining reliability slices should focus on richer provenance and recover
 
 - Add heartbeat/progress markers so stale detection can also identify a live but
   wedged worker after a conservative inactivity threshold.
-- Persist richer run metadata: run id, full command, native session id, and last
-  observed transcript event.
+- Persist the last observed transcript event alongside the existing run id,
+  command, pid, log path, and native session id metadata.
 - Prefer append-only recovery events when a stale detector promotes derived state
   to failed, recording the detector and run metadata for provenance.
 - Add explicit user commands to mark a stale run failed/cancelled or resume when a

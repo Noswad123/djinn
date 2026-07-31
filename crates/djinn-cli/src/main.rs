@@ -8486,11 +8486,17 @@ fn stale_background_run_lifecycle(
 
 fn format_stale_background_run_note(run: &BackgroundRunStatus) -> String {
     let mut note = format!(
-        "Background worker appears stale; no live process found for pid {}.",
-        run.pid
+        "Background worker appears stale; no live process found for pid {} (run {}).",
+        run.pid, run.run_id
     );
+    if let Some(native_session_id) = &run.native_session_id {
+        note.push_str(&format!(" Native session: {native_session_id}."));
+    }
     if let Some(log_path) = &run.log_path {
         note.push_str(&format!(" Inspect log: {log_path}."));
+    }
+    if let Some(command) = &run.command {
+        note.push_str(&format!(" Command: {command}."));
     }
     if let Some(log_tail) = &run.log_tail {
         note.push_str(&format!(" Last log line: {log_tail}"));
@@ -8556,13 +8562,17 @@ fn promotion_session_status_lifecycle(
 
 fn format_background_promotion_run_note(run: &BackgroundRunStatus) -> String {
     let mut note = format!(
-        "Promotion candidate generation is running in the background (pid {}, log {}, {}).",
+        "Promotion candidate generation is running in the background (run {}, pid {}, log {}, {}).",
+        run.run_id,
         run.pid,
         run.log_path.as_deref().unwrap_or("unknown"),
         run.log_bytes
             .map(format_byte_count)
             .unwrap_or_else(|| "log size unknown".to_string())
     );
+    if let Some(command) = &run.command {
+        note.push_str(&format!(" Command: {command}."));
+    }
     if let Some(updated) = &run.log_modified_at {
         note.push_str(&format!(" Log updated {updated}."));
     }
@@ -12350,8 +12360,11 @@ struct SessionRunBackgroundReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BackgroundRunStatus {
+    run_id: String,
     pid: u32,
     log_path: Option<String>,
+    command: Option<String>,
+    native_session_id: Option<String>,
     log_bytes: Option<u64>,
     log_modified_at: Option<String>,
     log_tail: Option<String>,
@@ -12616,6 +12629,9 @@ fn spawn_background_session_run(
         .try_clone()
         .with_context(|| format!("cloning background run log {}", log_path.display()))?;
     let exe = env::current_exe().context("resolving current djinn executable")?;
+    let command_hint = background_session_run_command_hint(&exe, session_dir, args);
+    let native_session_id = read_folder_session_manifest(session_dir)?
+        .and_then(|manifest| manifest.session_id.map(|id| id.to_string()));
     let mut command = ProcessCommand::new(exe);
     command
         .arg("session")
@@ -12650,7 +12666,13 @@ fn spawn_background_session_run(
         )
     })?;
     let pid = child.id();
-    write_background_session_run_marker(session_dir, &log_path, pid)?;
+    write_background_session_run_marker(
+        session_dir,
+        &log_path,
+        pid,
+        &command_hint,
+        native_session_id.as_deref(),
+    )?;
     Ok(SessionRunBackgroundReport {
         status: "started".to_string(),
         session_dir: session_dir.display().to_string(),
@@ -12664,10 +12686,17 @@ fn write_background_session_run_marker(
     session_dir: &Path,
     log_path: &Path,
     pid: u32,
+    command: &str,
+    native_session_id: Option<&str>,
 ) -> Result<()> {
     let marker_path = log_path.with_extension("toml");
+    let run_id = log_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("session-run");
     let mut content = String::new();
     content.push_str("version = 1\n");
+    content.push_str(&format!("run_id = {}\n", toml_string(run_id)?));
     content.push_str(&format!(
         "started_at = {}\n",
         toml_string(&chrono::Local::now().to_rfc3339())?
@@ -12681,8 +12710,53 @@ fn write_background_session_run_marker(
         "log_path = {}\n",
         toml_string(&log_path.display().to_string())?
     ));
+    content.push_str(&format!("command = {}\n", toml_string(command)?));
+    if let Some(native_session_id) = native_session_id {
+        content.push_str(&format!(
+            "native_session_id = {}\n",
+            toml_string(native_session_id)?
+        ));
+    }
     fs::write(&marker_path, content)
         .with_context(|| format!("writing background run marker {}", marker_path.display()))
+}
+
+fn background_session_run_command_hint(
+    exe: &Path,
+    session_dir: &Path,
+    args: &SessionRunArgs,
+) -> String {
+    let mut parts = vec![
+        shell_quote(&exe.display().to_string()),
+        "session".to_string(),
+        "run".to_string(),
+        shell_quote(&session_dir.display().to_string()),
+        "--background-worker".to_string(),
+    ];
+    if let Some(profile) = &args.profile {
+        parts.push("--profile".to_string());
+        parts.push(shell_quote(profile));
+    }
+    if let Some(agent) = &args.agent {
+        parts.push("--agent".to_string());
+        parts.push(shell_quote(agent));
+    }
+    if let Some(model) = &args.model {
+        parts.push("--model".to_string());
+        parts.push(shell_quote(model));
+    }
+    if let Some(base_url) = &args.base_url {
+        parts.push("--base-url".to_string());
+        parts.push(shell_quote(base_url));
+    }
+    parts.push("--max-tool-rounds".to_string());
+    parts.push(args.max_tool_rounds.to_string());
+    let command = parts.join(" ");
+    if args.api_key.is_some() {
+        format!("DJINN_SESSION_RUN_API_KEY=<redacted> {command}")
+    } else {
+        command
+    }
 }
 
 fn latest_background_session_run_status(session_dir: &Path) -> Option<BackgroundRunStatus> {
@@ -12708,8 +12782,18 @@ fn latest_background_session_run_status(session_dir: &Path) -> Option<Background
         .as_deref()
         .and_then(|path| fs::metadata(path).ok());
     Some(BackgroundRunStatus {
+        run_id: manifest_root_string_value(&content, "run_id").unwrap_or_else(|| {
+            log_path_buf
+                .as_deref()
+                .and_then(|path| path.file_stem())
+                .and_then(|name| name.to_str())
+                .unwrap_or("session-run")
+                .to_string()
+        }),
         pid,
         log_path,
+        command: manifest_root_string_value(&content, "command"),
+        native_session_id: manifest_root_string_value(&content, "native_session_id"),
         log_bytes: log_metadata.as_ref().map(|metadata| metadata.len()),
         log_modified_at: log_metadata
             .as_ref()
@@ -12776,7 +12860,9 @@ fn background_session_run_log_path(session_dir: &Path) -> Result<PathBuf> {
     })?;
     Ok(log_dir.join(format!(
         "session-run-{}.log",
-        chrono::Local::now().format("%Y%m%d-%H%M%S")
+        chrono::Local::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
     )))
 }
 
@@ -20187,11 +20273,25 @@ link = "context/repo"
         let log_path = session_dir.join(".djinn/runs/session-run-stale.log");
         fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         fs::write(&log_path, "worker started\n").unwrap();
-        write_background_session_run_marker(&session_dir, &log_path, 4_294_967_295).unwrap();
+        write_background_session_run_marker(
+            &session_dir,
+            &log_path,
+            4_294_967_295,
+            "djinn session run /tmp/session --background-worker",
+            Some(id.as_str()),
+        )
+        .unwrap();
 
         let report = folder_session_status(&session_dir).unwrap();
         let rendered = format_session_watch_snapshot(&report);
+        let run = latest_background_session_run_status(&session_dir).unwrap();
 
+        assert_eq!(run.run_id, "session-run-stale");
+        assert_eq!(run.native_session_id.as_deref(), Some(id.as_str()));
+        assert_eq!(
+            run.command.as_deref(),
+            Some("djinn session run /tmp/session --background-worker")
+        );
         assert_eq!(report.lifecycle.state, "failed");
         assert_eq!(report.lifecycle.mode.as_deref(), Some("background"));
         assert_eq!(
@@ -20210,6 +20310,18 @@ link = "context/repo"
             .as_deref()
             .unwrap()
             .contains("worker started"));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("session-run-stale"));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains(id.as_str()));
         assert!(report
             .next_action
             .as_deref()

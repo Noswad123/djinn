@@ -1069,10 +1069,11 @@ The first non-interactive agent slice is implemented as:
     should consume the same status projection as `djinn session status`,
     `djinn session ls`, and `djinn session watch <session>` rather than
     maintaining a separate status model. Folder-backed background runs write
-    `.djinn/runs/` metadata with the worker pid and log path; when a native session
-    still reports `running/background` but that pid is no longer alive, status/watch
-    project the session as `failed` with reason `background_worker_stale` and a
-    next action to inspect logs/transcripts and rerun foreground.
+    `.djinn/runs/` metadata with run id, worker pid, command, log path, and native
+    session id when known; when a native session still reports `running/background`
+    but that pid is no longer alive, status/watch project the session as `failed`
+    with reason `background_worker_stale` and a next action to inspect
+    logs/transcripts and rerun foreground.
 85. Folder-backed promotion should not recreate the removed legacy saved-session
     picker. `djinn session promote ...` creates a special folder-backed promotion
     session whose context is one or more source sessions. It writes the current
