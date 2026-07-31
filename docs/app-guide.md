@@ -106,7 +106,9 @@ live worker heartbeat is stale. Such sessions are projected as failed with reaso
 diagnostic note, and a next action that points to inspecting the log/transcript
 and rerunning foreground. The diagnostic note also includes the last observed
 native transcript event so it is clear whether the worker stopped after a
-lifecycle transition, model call, tool call, tool result, or error.
+lifecycle transition, model call, tool call, tool result, or error; the detector
+also persists `recovery_observed_at`, `recovery_reason`, and
+`last_observed_event` back into the run marker for later recovery tooling.
 
 `djinn session promote ...` creates a promotion session folder from one or more
 source sessions. It records source refs in `context/sources.toml`, writes the

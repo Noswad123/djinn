@@ -1076,8 +1076,8 @@ The first non-interactive agent slice is implemented as:
     worker heartbeat is stale, status/watch project the session as `failed` with reason
     `background_worker_stale` or `background_worker_unresponsive` and a next action
     to inspect logs/transcripts and rerun foreground. Stale diagnostics include a
-    concise summary of the last observed native transcript event for recovery
-    context.
+    concise summary of the last observed native transcript event and persist the
+    recovery observation back into the run marker for later recovery tooling.
 85. Folder-backed promotion should not recreate the removed legacy saved-session
     picker. `djinn session promote ...` creates a special folder-backed promotion
     session whose context is one or more source sessions. It writes the current

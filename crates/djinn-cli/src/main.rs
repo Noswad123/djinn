@@ -8475,6 +8475,7 @@ fn stale_background_run_lifecycle(
     }
     run.last_observed_event = last_observed_agent_session_event(native_session);
     if run.alive {
+        persist_background_run_recovery_observation(&run, "background_worker_unresponsive");
         return Some(SessionStatusLifecycleReport {
             state: "failed".to_string(),
             mode: Some("background".to_string()),
@@ -8488,6 +8489,7 @@ fn stale_background_run_lifecycle(
             note: Some(format_unresponsive_background_run_note(&run)),
         });
     }
+    persist_background_run_recovery_observation(&run, "background_worker_stale");
     Some(SessionStatusLifecycleReport {
         state: "failed".to_string(),
         mode: Some("background".to_string()),
@@ -8499,6 +8501,35 @@ fn stale_background_run_lifecycle(
         reason: Some("background_worker_stale".to_string()),
         note: Some(format_stale_background_run_note(&run)),
     })
+}
+
+fn persist_background_run_recovery_observation(run: &BackgroundRunStatus, reason: &str) {
+    let Some(marker_path) = run.marker_path.as_deref().map(Path::new) else {
+        return;
+    };
+    let _ = persist_background_run_recovery_observation_to_path(marker_path, run, reason);
+}
+
+fn persist_background_run_recovery_observation_to_path(
+    marker_path: &Path,
+    run: &BackgroundRunStatus,
+    reason: &str,
+) -> Result<()> {
+    let content = fs::read_to_string(marker_path)
+        .with_context(|| format!("reading background run marker {}", marker_path.display()))?;
+    let content = upsert_toml_root_string(
+        &content,
+        "recovery_observed_at",
+        &chrono::Local::now().to_rfc3339(),
+    )?;
+    let content = upsert_toml_root_string(&content, "recovery_reason", reason)?;
+    let content = if let Some(event) = &run.last_observed_event {
+        upsert_toml_root_string(&content, "last_observed_event", event)?
+    } else {
+        content
+    };
+    fs::write(marker_path, content)
+        .with_context(|| format!("writing background run marker {}", marker_path.display()))
 }
 
 fn background_run_unresponsive(run: &BackgroundRunStatus) -> bool {
@@ -12529,6 +12560,7 @@ struct SessionRunBackgroundReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BackgroundRunStatus {
     run_id: String,
+    marker_path: Option<String>,
     pid: u32,
     log_path: Option<String>,
     command: Option<String>,
@@ -12993,7 +13025,7 @@ fn latest_background_session_run_status(session_dir: &Path) -> Option<Background
         })
         .max_by_key(|(modified, _)| *modified)?
         .1;
-    let content = fs::read_to_string(marker).ok()?;
+    let content = fs::read_to_string(&marker).ok()?;
     let pid = manifest_root_string_value(&content, "pid")?
         .parse::<u32>()
         .ok()?;
@@ -13015,6 +13047,7 @@ fn latest_background_session_run_status(session_dir: &Path) -> Option<Background
                 .unwrap_or("session-run")
                 .to_string()
         }),
+        marker_path: Some(marker.display().to_string()),
         pid,
         log_path,
         command: manifest_root_string_value(&content, "command"),
@@ -20573,6 +20606,11 @@ link = "context/repo"
             .as_deref()
             .unwrap()
             .contains("lifecycle state=running"));
+        let marker = fs::read_to_string(log_path.with_extension("toml")).unwrap();
+        assert!(marker.contains("recovery_reason = \"background_worker_stale\""));
+        assert!(marker.contains("recovery_observed_at ="));
+        assert!(marker.contains("last_observed_event ="));
+        assert!(marker.contains("lifecycle state=running"));
         assert!(report
             .next_action
             .as_deref()
@@ -20665,6 +20703,10 @@ link = "context/repo"
             .unwrap()
             .contains("Phase: model_call"));
         assert!(report.next_action.as_deref().unwrap().contains("--fg"));
+        let marker = fs::read_to_string(marker_path).unwrap();
+        assert!(marker.contains("recovery_reason = \"background_worker_unresponsive\""));
+        assert!(marker.contains("recovery_observed_at ="));
+        assert!(marker.contains("last_observed_event ="));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -171,8 +171,6 @@ Status/watch now detect stale-pid and stale-heartbeat cases for folder-backed
 background runs. Remaining reliability slices should focus on richer provenance
 and recovery:
 
-- Persist the last observed transcript event into the run/recovery marker; stale
-  diagnostics currently compute and display it from the native transcript.
 - Expand heartbeat/progress coverage if future long-running phases emerge outside
   model calls and tool execution.
 - Prefer append-only recovery events when a stale detector promotes derived state
