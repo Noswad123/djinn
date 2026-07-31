@@ -98,11 +98,39 @@ turn ids, request/response paths, create/update/match state, concise content
 previews, and the projected `summary.md` source without writing files. The longer
 `project-events` spelling remains an alias.
 
+After reviewing the projection, `djinn session events <session> --write` rebuilds
+`turns/` and root `summary.md` from complete user/assistant event pairs. It first
+backs up the replaced `turns/` tree and existing `summary.md` under
+`.djinn/backups/events-rebuild-*/`, then writes the regenerated files. The command
+refuses to write when `events.jsonl` has parse or message-pairing issues.
+To roll back a rebuild, preview and then restore one of those backups:
+
+```bash
+djinn session events ./debugging-session --restore events-rebuild-20260731T120000-123
+djinn session events ./debugging-session --restore events-rebuild-20260731T120000-123 --write
+```
+
+Restore writes also preserve the current state in a new safety backup before
+copying backed-up `turns/` and `summary.md` into place.
+
+For migration audits across cache-backed sessions, run:
+
+```bash
+djinn session events --all
+djinn session events --all --json
+```
+
+The readiness report lists each cache-backed session, event count, event turn-pair
+count, existing turn count, summary agreement, issue codes, and latest rebuild
+backup when present.
+
 ```bash
 djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
 djinn session validate-events ./debugging-session
 djinn session events ./debugging-session
+djinn session events ./debugging-session --write
+djinn session events --all --json
 djinn session compact ./debugging-session
 djinn session promote ./debugging-session --type memory
 djinn session run ./promotion-memory --fg
@@ -385,6 +413,11 @@ Keybindings:
 - Sessions: `Enter` opens the focused folder-backed session view; `Space` checks
   sessions for promotion, and `Ctrl+P` offers memory/todo/skill/pattern promotion
   actions for checked sessions.
+- Focused Sessions: `Ctrl+P` includes event-ledger handoff commands for validating
+  `events.jsonl`, previewing projected turns, showing the explicit rebuild command,
+  and showing a restore command for the latest event rebuild backup when one
+  exists. Rebuild/restore remain explicit CLI commands; the palette only shows the
+  exact command text.
 - Memories: `a` reviews the selected memory, `r` rejects/removes it.
 - Suggestions: `r` removes selected suggestions.
 - Skills: `Enter` opens the selected skill.

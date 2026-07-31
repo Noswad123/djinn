@@ -138,6 +138,8 @@ pub struct FolderSessionStatusView {
     pub message: Option<String>,
     pub latest_generation_response_path: Option<String>,
     pub latest_run_log_path: Option<String>,
+    pub events_path: Option<String>,
+    pub latest_event_rebuild_backup_path: Option<String>,
     pub candidates_dir: Option<String>,
     pub source_packet_path: Option<String>,
     pub sources_manifest_path: Option<String>,
@@ -184,6 +186,10 @@ pub enum FolderSessionAction {
     ValidateCandidates,
     ValidateCandidate(String),
     ShowPatternExportCommand(Option<String>),
+    ShowValidateEventsCommand,
+    ShowEventsCommand,
+    ShowEventsWriteCommand,
+    ShowEventsRestoreCommand(String),
     AcceptCandidate(String),
     AcceptCandidateAndSyncMindweaver(String),
     DenyCandidate(String),
@@ -633,7 +639,35 @@ fn folder_session_command_palette(
             "Show focused session keybindings",
             FolderSessionCommand::OpenHelp,
         ),
+        folder_session_command_entry(
+            "Event ledger",
+            "Show validate-events command",
+            "Show the read-only command that checks events.jsonl against turns/",
+            FolderSessionCommand::Action(FolderSessionAction::ShowValidateEventsCommand),
+        ),
+        folder_session_command_entry(
+            "Event ledger",
+            "Show events preview command",
+            "Show the read-only command that previews turns projected from events.jsonl",
+            FolderSessionCommand::Action(FolderSessionAction::ShowEventsCommand),
+        ),
+        folder_session_command_entry(
+            "Event ledger",
+            "Show events rebuild command",
+            "Show the explicit --write command for rebuilding turns/ from events.jsonl",
+            FolderSessionCommand::Action(FolderSessionAction::ShowEventsWriteCommand),
+        ),
     ];
+    if let Some(path) = &view.latest_event_rebuild_backup_path {
+        entries.push(folder_session_command_entry(
+            "Event ledger",
+            "Show latest events restore command",
+            "Show the explicit command for restoring the latest event rebuild backup",
+            FolderSessionCommand::Action(FolderSessionAction::ShowEventsRestoreCommand(
+                path.clone(),
+            )),
+        ));
+    }
     if view.mode.as_deref() == Some("promotion") {
         entries.push(folder_session_command_entry(
             "Promotion",
@@ -663,6 +697,14 @@ fn folder_session_command_palette(
             "Artifacts",
             "Open latest run log",
             "Inspect the latest background run log",
+            FolderSessionCommand::Action(FolderSessionAction::OpenPath(path.clone())),
+        ));
+    }
+    if let Some(path) = &view.events_path {
+        entries.push(folder_session_command_entry(
+            "Artifacts",
+            "Open events ledger",
+            "Inspect events.jsonl",
             FolderSessionCommand::Action(FolderSessionAction::OpenPath(path.clone())),
         ));
     }
@@ -3781,6 +3823,10 @@ mod tests {
                 "/tmp/promotion/outputs/generation/latest-response.md".to_string(),
             ),
             latest_run_log_path: Some("/tmp/promotion/.djinn/runs/latest.log".to_string()),
+            events_path: Some("/tmp/promotion/events.jsonl".to_string()),
+            latest_event_rebuild_backup_path: Some(
+                "/tmp/promotion/.djinn/backups/events-rebuild-latest".to_string(),
+            ),
             candidates_dir: Some("/tmp/promotion/outputs/candidates".to_string()),
             source_packet_path: Some("/tmp/promotion/context/source-packet.md".to_string()),
             sources_manifest_path: Some("/tmp/promotion/context/sources.toml".to_string()),
@@ -3832,6 +3878,21 @@ mod tests {
         assert!(palette
             .iter()
             .any(|entry| entry.label == "Open latest run log"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Show validate-events command"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Show events preview command"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Show events rebuild command"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Show latest events restore command"));
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Open events ledger"));
         assert!(palette
             .iter()
             .any(|entry| entry.label == "Open source packet"));

@@ -91,8 +91,11 @@ evidence and maintain a folder-local `events.jsonl` shadow ledger for diagnostic
 and future event-based projections. `djinn session validate-events <session>`
 checks that the shadow ledger, turn files, and latest summary agree without
 rewriting anything; `djinn session events <session>` previews the `turns/`
-tree that would be regenerated from the ledger. The old transcript subcommand has
-been removed.
+tree that would be regenerated from the ledger, and `--write` performs that
+rebuild after preserving a backup. Use `djinn session events <session> --restore
+<backup> --write` to roll back from an event rebuild backup. The old transcript
+subcommand has been removed. Use `djinn session events --all --json` to audit
+event-ledger readiness across cache-backed sessions.
 
 `djinn agent config list` and the TUI command palette include Copilot model
 options from `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`, comma/semicolon-list

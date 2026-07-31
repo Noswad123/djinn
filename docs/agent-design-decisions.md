@@ -946,8 +946,17 @@ The first non-interactive agent slice is implemented as:
     events <session>` is the companion read-only projection preview: it
     renders the turn ids, request/response paths, create/update/match state,
     concise previews, and projected `summary.md` source that an event-to-turn
-    regeneration would produce. It is intentionally non-mutating until a later
-    explicit write/rebuild command is designed.
+    regeneration would produce. `djinn session events <session> --write` performs
+    that regeneration only when the ledger has no parse/pairing issues, first
+    preserving the replaced `turns/` tree and existing `summary.md` under
+    `.djinn/backups/events-rebuild-*/`. `djinn session events <session> --restore
+    <backup> [--write]` previews or restores one of those backups, and write-mode
+    restore creates a new safety backup of the current state before copying backed
+    up artifacts into place. This is a reversible rebuild aid, not the point at
+    which events become authoritative. `djinn session events --all [--json]`
+    reports migration readiness across cache-backed folder sessions by reusing the
+    same validation logic and surfacing event counts, projected turn-pair counts,
+    turn counts, summary agreement, issue codes, and latest rebuild backup paths.
 71. Bare folder-session names resolve under Djinn's cache directory, not the
     current working directory. For example `djinn session init small-question` and
     `djinn ask --session-dir small-question` target

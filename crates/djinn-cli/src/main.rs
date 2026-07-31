@@ -358,7 +358,20 @@ struct SessionValidateEventsArgs {
 #[derive(Debug, Args)]
 struct SessionEventsArgs {
     /// Folder-backed session name or directory to project from.
-    dir: PathBuf,
+    #[arg(required_unless_present = "all")]
+    dir: Option<PathBuf>,
+    /// Report event-ledger readiness for all cache-backed sessions.
+    #[arg(long, conflicts_with_all = ["dir", "write", "restore"])]
+    all: bool,
+    /// Maximum cache-backed sessions to include with --all.
+    #[arg(long, requires = "all")]
+    limit: Option<usize>,
+    /// Rebuild turns/ and summary.md from events.jsonl after creating a backup.
+    #[arg(long)]
+    write: bool,
+    /// Restore turns/ and summary.md from a .djinn/backups/events-rebuild-* backup. Without --write, preview only.
+    #[arg(long, value_name = "BACKUP")]
+    restore: Option<PathBuf>,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -4850,6 +4863,22 @@ fn folder_session_action_message(
             "Pattern export command: {}",
             pattern_export_command_hint(session_dir, candidate.as_deref())
         ),
+        djinn_tui::FolderSessionAction::ShowValidateEventsCommand => format!(
+            "Event validation command: {}",
+            session_events_command_hint(session_dir, "validate-events", false, None)
+        ),
+        djinn_tui::FolderSessionAction::ShowEventsCommand => format!(
+            "Event projection command: {}",
+            session_events_command_hint(session_dir, "events", false, None)
+        ),
+        djinn_tui::FolderSessionAction::ShowEventsWriteCommand => format!(
+            "Event rebuild command: {}",
+            session_events_command_hint(session_dir, "events", true, None)
+        ),
+        djinn_tui::FolderSessionAction::ShowEventsRestoreCommand(backup) => format!(
+            "Event restore command: {}",
+            session_events_command_hint(session_dir, "events", true, Some(backup))
+        ),
         djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => {
             format!("Accepted candidate {candidate}")
         }
@@ -4927,6 +4956,10 @@ fn handle_folder_session_tui_action(
             })
         }
         djinn_tui::FolderSessionAction::ShowPatternExportCommand(_) => Ok(()),
+        djinn_tui::FolderSessionAction::ShowValidateEventsCommand
+        | djinn_tui::FolderSessionAction::ShowEventsCommand
+        | djinn_tui::FolderSessionAction::ShowEventsWriteCommand
+        | djinn_tui::FolderSessionAction::ShowEventsRestoreCommand(_) => Ok(()),
         djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => session_decide(
             SessionDecisionArgs {
                 dir: session_dir,
@@ -4976,6 +5009,26 @@ fn pattern_export_command_hint(session_dir: &Path, candidate: Option<&str>) -> S
         command.push_str(&shell_quote(candidate));
     }
     command.push_str(" --to <notes.md>");
+    command
+}
+
+fn session_events_command_hint(
+    session_dir: &Path,
+    subcommand: &str,
+    write: bool,
+    restore: Option<&str>,
+) -> String {
+    let mut command = format!(
+        "djinn session {subcommand} {}",
+        shell_quote(&session_dir.display().to_string())
+    );
+    if let Some(restore) = restore.map(str::trim).filter(|value| !value.is_empty()) {
+        command.push_str(" --restore ");
+        command.push_str(&shell_quote(restore));
+    }
+    if write {
+        command.push_str(" --write");
+    }
     command
 }
 
@@ -5048,6 +5101,12 @@ fn folder_session_status_tui_view(
             .map(|path| path.display().to_string()),
         latest_run_log_path: latest_background_session_run_status(&session_path)
             .and_then(|run| run.log_path),
+        events_path: session_path
+            .join("events.jsonl")
+            .exists()
+            .then(|| session_path.join("events.jsonl").display().to_string()),
+        latest_event_rebuild_backup_path: latest_event_rebuild_backup_path(&session_path)
+            .map(|path| path.display().to_string()),
         candidates_dir: session_path
             .join("outputs")
             .join("candidates")
@@ -5075,6 +5134,25 @@ fn folder_session_status_tui_view(
                 .to_string()
         }),
     })
+}
+
+fn latest_event_rebuild_backup_path(session_dir: &Path) -> Option<PathBuf> {
+    let backup_root = session_dir.join(".djinn/backups");
+    let mut entries = fs::read_dir(&backup_root)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.starts_with("events-rebuild-"))
+                    .unwrap_or(false)
+                && path.join("backup.toml").is_file()
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.pop()
 }
 
 fn run_session_command(command: SessionCommand) -> Result<()> {
@@ -5867,6 +5945,7 @@ struct SessionProjectEventsReport {
     projected_turn_count: usize,
     existing_turn_count: usize,
     writes: bool,
+    backup_dir: Option<String>,
     turns: Vec<SessionProjectedEventTurn>,
     summary: Option<SessionProjectedSummary>,
     issues: Vec<SessionValidateEventsIssue>,
@@ -5898,7 +5977,35 @@ struct SessionProjectedSummary {
 }
 
 fn session_events(args: SessionEventsArgs) -> Result<()> {
-    let report = project_folder_session_events(&args.dir)?;
+    if args.all {
+        let report = event_readiness_report_for_cache_sessions(args.limit)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", format_event_readiness_report(&report));
+        }
+        return Ok(());
+    }
+
+    let dir = args
+        .dir
+        .as_ref()
+        .ok_or_else(|| anyhow!("session name or directory is required unless --all is used"))?;
+    if let Some(backup) = &args.restore {
+        let report = restore_folder_session_event_backup(dir, backup, args.write)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", format_session_restore_events_report(&report));
+        }
+        return Ok(());
+    }
+
+    let report = if args.write {
+        rebuild_folder_session_from_events(dir)?
+    } else {
+        project_folder_session_events(dir)?
+    };
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -6012,11 +6119,474 @@ fn project_folder_session_events(dir: &Path) -> Result<SessionProjectEventsRepor
         projected_turn_count: projected_turns.len(),
         existing_turn_count: turns.len(),
         writes: false,
+        backup_dir: None,
         turns: projected_turns,
         summary,
         issues,
         note,
     })
+}
+
+fn rebuild_folder_session_from_events(dir: &Path) -> Result<SessionProjectEventsReport> {
+    let session_dir = resolve_session_dir(dir)?;
+    let events_path = session_dir.join("events.jsonl");
+    let raw = fs::read_to_string(&events_path)
+        .with_context(|| format!("reading {}", events_path.display()))?;
+    let mut issues = Vec::new();
+    let event_turns = read_event_turn_pairs(&events_path, &raw, &mut issues);
+    if !issues.is_empty() {
+        bail!(
+            "cannot rebuild turns from events with {} event issue(s); run `djinn session events {}` to inspect them",
+            issues.len(),
+            shell_quote(&session_dir.display().to_string())
+        );
+    }
+    if event_turns.is_empty() {
+        bail!(
+            "cannot rebuild turns from events because {} contains no complete user/assistant turn pairs",
+            events_path.display()
+        );
+    }
+
+    let existing_turns = read_folder_session_turns(&session_dir.join("turns"))?;
+    let turn_ids = event_turns
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            existing_turns
+                .get(index)
+                .map(|turn| turn.id.clone())
+                .unwrap_or_else(|| projected_event_turn_id(index))
+        })
+        .collect::<Vec<_>>();
+    let backup_dir =
+        backup_folder_session_event_rebuild_targets(&session_dir, "djinn session events --write")?;
+
+    let turns_dir = session_dir.join("turns");
+    if turns_dir.exists() {
+        fs::rename(&turns_dir, backup_dir.join("turns"))
+            .with_context(|| format!("backing up {}", turns_dir.display()))?;
+    }
+    fs::create_dir_all(&turns_dir)
+        .with_context(|| format!("creating turns directory {}", turns_dir.display()))?;
+    for (index, event_turn) in event_turns.iter().enumerate() {
+        let turn_dir = turns_dir.join(&turn_ids[index]);
+        fs::create_dir_all(&turn_dir)
+            .with_context(|| format!("creating projected turn directory {}", turn_dir.display()))?;
+        fs::write(
+            turn_dir.join("request.md"),
+            ensure_trailing_newline(&event_turn.request),
+        )
+        .with_context(|| format!("writing projected request in {}", turn_dir.display()))?;
+        fs::write(
+            turn_dir.join("response.md"),
+            ensure_trailing_newline(&event_turn.response),
+        )
+        .with_context(|| format!("writing projected response in {}", turn_dir.display()))?;
+    }
+    if let Some(latest) = event_turns.last() {
+        let summary_path = session_dir.join("summary.md");
+        fs::write(&summary_path, ensure_trailing_newline(&latest.response))
+            .with_context(|| format!("writing projected {}", summary_path.display()))?;
+    }
+
+    let mut report = project_folder_session_events(&session_dir)?;
+    report.writes = true;
+    report.backup_dir = Some(backup_dir.display().to_string());
+    report.note = "Rebuilt turns/ and summary.md from events.jsonl after preserving a backup. events.jsonl is still a shadow ledger until the authoritative migration is explicitly completed."
+        .to_string();
+    Ok(report)
+}
+
+fn backup_folder_session_event_rebuild_targets(
+    session_dir: &Path,
+    source: &str,
+) -> Result<PathBuf> {
+    let backup_root = session_dir.join(".djinn/backups");
+    fs::create_dir_all(&backup_root)
+        .with_context(|| format!("creating backup root {}", backup_root.display()))?;
+    let backup_dir = backup_root.join(format!(
+        "events-rebuild-{}-{}",
+        chrono::Local::now().format("%Y%m%dT%H%M%S"),
+        chrono::Local::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
+    ));
+    fs::create_dir_all(&backup_dir)
+        .with_context(|| format!("creating backup directory {}", backup_dir.display()))?;
+
+    let summary_path = session_dir.join("summary.md");
+    if summary_path.exists() {
+        fs::copy(&summary_path, backup_dir.join("summary.md")).with_context(|| {
+            format!(
+                "backing up {} to {}",
+                summary_path.display(),
+                backup_dir.display()
+            )
+        })?;
+    }
+    let manifest = format!(
+        "created_at = {}\nsource = {}\nincludes_turns = {}\nincludes_summary = {}\n",
+        toml_string(&chrono::Local::now().to_rfc3339())?,
+        toml_string(source)?,
+        session_dir.join("turns").exists(),
+        summary_path.exists()
+    );
+    fs::write(backup_dir.join("backup.toml"), manifest)
+        .with_context(|| format!("writing backup manifest in {}", backup_dir.display()))?;
+    Ok(backup_dir)
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionRestoreEventsReport {
+    session_dir: String,
+    backup_dir: String,
+    writes: bool,
+    safety_backup_dir: Option<String>,
+    backup_has_turns: bool,
+    backup_has_summary: bool,
+    current_turn_count: usize,
+    restored_turn_count: usize,
+    restored_summary: bool,
+    note: String,
+}
+
+fn restore_folder_session_event_backup(
+    dir: &Path,
+    backup: &Path,
+    write: bool,
+) -> Result<SessionRestoreEventsReport> {
+    let session_dir = resolve_session_dir(dir)?;
+    let backup_dir = resolve_folder_session_event_backup(&session_dir, backup)?;
+    let backup_turns_dir = backup_dir.join("turns");
+    let backup_summary_path = backup_dir.join("summary.md");
+    let backup_has_turns = backup_turns_dir.is_dir();
+    let backup_has_summary = backup_summary_path.is_file();
+    if !backup_has_turns && !backup_has_summary {
+        bail!(
+            "event rebuild backup contains neither turns/ nor summary.md: {}",
+            backup_dir.display()
+        );
+    }
+
+    let current_turn_count = read_folder_session_turns(&session_dir.join("turns"))?.len();
+    let restored_turn_count = if backup_has_turns {
+        read_folder_session_turns(&backup_turns_dir)?.len()
+    } else {
+        0
+    };
+    let mut safety_backup_dir = None;
+
+    if write {
+        let safety_backup = backup_folder_session_event_rebuild_targets(
+            &session_dir,
+            "djinn session events --restore --write",
+        )?;
+        let current_turns_dir = session_dir.join("turns");
+        if current_turns_dir.exists() {
+            fs::rename(&current_turns_dir, safety_backup.join("turns"))
+                .with_context(|| format!("backing up {}", current_turns_dir.display()))?;
+        }
+
+        if backup_has_turns {
+            copy_dir_recursive(&backup_turns_dir, &current_turns_dir)?;
+        }
+
+        let summary_path = session_dir.join("summary.md");
+        if backup_has_summary {
+            fs::copy(&backup_summary_path, &summary_path).with_context(|| {
+                format!(
+                    "restoring {} from {}",
+                    summary_path.display(),
+                    backup_summary_path.display()
+                )
+            })?;
+        } else if summary_path.exists() {
+            fs::remove_file(&summary_path)
+                .with_context(|| format!("removing {}", summary_path.display()))?;
+        }
+        safety_backup_dir = Some(safety_backup.display().to_string());
+    }
+
+    let note = if write {
+        "Restored turns/ and summary.md from an event rebuild backup after preserving the previous current state."
+    } else {
+        "Preview only: no files were written. Add --write to restore this backup."
+    }
+    .to_string();
+
+    Ok(SessionRestoreEventsReport {
+        session_dir: session_dir.display().to_string(),
+        backup_dir: backup_dir.display().to_string(),
+        writes: write,
+        safety_backup_dir,
+        backup_has_turns,
+        backup_has_summary,
+        current_turn_count,
+        restored_turn_count,
+        restored_summary: backup_has_summary,
+        note,
+    })
+}
+
+fn resolve_folder_session_event_backup(session_dir: &Path, backup: &Path) -> Result<PathBuf> {
+    let backup_root = session_dir.join(".djinn/backups");
+    let candidate = if is_single_component_path(backup) {
+        backup_root.join(backup)
+    } else if backup.is_absolute() {
+        backup.to_path_buf()
+    } else {
+        env::current_dir()
+            .context("resolving current directory")?
+            .join(backup)
+    };
+    let backup_root = backup_root.canonicalize().with_context(|| {
+        format!(
+            "resolving event rebuild backup root {}",
+            backup_root.display()
+        )
+    })?;
+    let candidate = candidate
+        .canonicalize()
+        .with_context(|| format!("resolving event rebuild backup {}", candidate.display()))?;
+    if !candidate.starts_with(&backup_root) {
+        bail!(
+            "event rebuild backup must be under {}: {}",
+            backup_root.display(),
+            candidate.display()
+        );
+    }
+    if !candidate.is_dir() {
+        bail!(
+            "event rebuild backup is not a directory: {}",
+            candidate.display()
+        );
+    }
+    if !candidate.join("backup.toml").is_file() {
+        bail!(
+            "event rebuild backup is missing backup.toml: {}",
+            candidate.display()
+        );
+    }
+    Ok(candidate)
+}
+
+fn is_single_component_path(path: &Path) -> bool {
+    !path.is_absolute()
+        && matches!(path.components().next(), Some(Component::Normal(_)))
+        && path.components().nth(1).is_none()
+}
+
+fn copy_dir_recursive(source: &Path, target: &Path) -> Result<()> {
+    fs::create_dir_all(target).with_context(|| format!("creating {}", target.display()))?;
+    for entry in fs::read_dir(source).with_context(|| format!("reading {}", source.display()))? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_dir_recursive(&source_path, &target_path)?;
+        } else if source_path.is_file() {
+            fs::copy(&source_path, &target_path).with_context(|| {
+                format!(
+                    "copying {} to {}",
+                    source_path.display(),
+                    target_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn format_session_restore_events_report(report: &SessionRestoreEventsReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "{} event rebuild backup: {}",
+        if report.writes {
+            "Restored"
+        } else {
+            "Previewed"
+        },
+        report.session_dir
+    ));
+    lines.push(format!("  writes: {}", yes_no(report.writes)));
+    lines.push(format!("  backup: {}", report.backup_dir));
+    if let Some(safety_backup) = &report.safety_backup_dir {
+        lines.push(format!("  safety backup: {safety_backup}"));
+    }
+    lines.push(format!(
+        "  backup turns/: {}",
+        yes_no(report.backup_has_turns)
+    ));
+    lines.push(format!(
+        "  backup summary.md: {}",
+        yes_no(report.backup_has_summary)
+    ));
+    lines.push(format!(
+        "  current turn folders: {}",
+        report.current_turn_count
+    ));
+    lines.push(format!(
+        "  restored turn folders: {}",
+        report.restored_turn_count
+    ));
+    lines.push(format!(
+        "  restored summary.md: {}",
+        yes_no(report.restored_summary)
+    ));
+    lines.push(format!("  note: {}", report.note));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionEventsReadinessReport {
+    root: String,
+    total: usize,
+    ready: usize,
+    not_ready: usize,
+    sessions: Vec<SessionEventsReadinessEntry>,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionEventsReadinessEntry {
+    name: String,
+    path: String,
+    ready: bool,
+    events_exists: bool,
+    event_count: usize,
+    event_turn_count: usize,
+    turn_count: usize,
+    summary_matches_latest_turn: Option<bool>,
+    issue_count: usize,
+    issue_codes: Vec<String>,
+    latest_event_rebuild_backup: Option<String>,
+}
+
+fn event_readiness_report_for_cache_sessions(
+    limit: Option<usize>,
+) -> Result<SessionEventsReadinessReport> {
+    let root = default_folder_session_root();
+    event_readiness_report_for_folder_session_root(&root, limit)
+}
+
+fn event_readiness_report_for_folder_session_root(
+    root: &Path,
+    limit: Option<usize>,
+) -> Result<SessionEventsReadinessReport> {
+    let mut sessions = Vec::new();
+    if root.is_dir() {
+        let mut entries = fs::read_dir(&root)
+            .with_context(|| format!("reading folder session root {}", root.display()))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let report = validate_folder_session_events(&path)?;
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(folder_session_display_name)
+                .unwrap_or_else(|| path.display().to_string());
+            let issue_codes = report
+                .issues
+                .iter()
+                .map(|issue| issue.code.clone())
+                .collect::<Vec<_>>();
+            sessions.push(SessionEventsReadinessEntry {
+                name,
+                path: path.display().to_string(),
+                ready: report.all_valid,
+                events_exists: report.events_exists,
+                event_count: report.event_count,
+                event_turn_count: report.event_turn_count,
+                turn_count: report.turn_count,
+                summary_matches_latest_turn: report.root_summary_matches_latest_turn,
+                issue_count: report.issues.len(),
+                issue_codes,
+                latest_event_rebuild_backup: latest_event_rebuild_backup_path(&path)
+                    .map(|path| path.display().to_string()),
+            });
+        }
+        sessions.sort_by(|left, right| {
+            left.ready
+                .cmp(&right.ready)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        if let Some(limit) = limit {
+            sessions.truncate(limit);
+        }
+    }
+    let ready = sessions.iter().filter(|entry| entry.ready).count();
+    let total = sessions.len();
+    let not_ready = total.saturating_sub(ready);
+    let note = if total == 0 {
+        "No cache-backed folder sessions found.".to_string()
+    } else if not_ready == 0 {
+        "All reported cache-backed sessions have event ledgers that agree with turn files. This is readiness evidence only; events are not authoritative yet.".to_string()
+    } else {
+        "Some cache-backed sessions are not event-ledger ready. Inspect issue codes with `djinn session events <session>` and `djinn session validate-events <session>`.".to_string()
+    };
+    Ok(SessionEventsReadinessReport {
+        root: root.display().to_string(),
+        total,
+        ready,
+        not_ready,
+        sessions,
+        note,
+    })
+}
+
+fn format_event_readiness_report(report: &SessionEventsReadinessReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Event ledger readiness: {}", report.root));
+    lines.push(format!("  total: {}", report.total));
+    lines.push(format!("  ready: {}", report.ready));
+    lines.push(format!("  not ready: {}", report.not_ready));
+    if report.sessions.is_empty() {
+        lines.push("  sessions: none".to_string());
+    } else {
+        lines.push("  sessions:".to_string());
+        for session in &report.sessions {
+            lines.push(format!(
+                "    - {} [{}]",
+                session.name,
+                if session.ready { "ready" } else { "not_ready" }
+            ));
+            lines.push(format!("      path: {}", session.path));
+            lines.push(format!(
+                "      events: {} rows, {} turn pairs, exists: {}",
+                session.event_count,
+                session.event_turn_count,
+                yes_no(session.events_exists)
+            ));
+            lines.push(format!("      turn folders: {}", session.turn_count));
+            let summary = session
+                .summary_matches_latest_turn
+                .map(yes_no)
+                .unwrap_or("n/a");
+            lines.push(format!("      summary matches latest turn: {summary}"));
+            if session.issue_codes.is_empty() {
+                lines.push("      issues: none".to_string());
+            } else {
+                lines.push(format!(
+                    "      issues: {} ({})",
+                    session.issue_count,
+                    session.issue_codes.join(", ")
+                ));
+            }
+            if let Some(backup) = &session.latest_event_rebuild_backup {
+                lines.push(format!("      latest rebuild backup: {backup}"));
+            }
+        }
+    }
+    lines.push(format!("  note: {}", report.note));
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 fn projected_event_turn_id(index: usize) -> String {
@@ -6034,10 +6604,18 @@ fn projected_content_state(existing: Option<&str>, projected: &str) -> String {
 fn format_session_project_events_report(report: &SessionProjectEventsReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
-        "Projected session event ledger: {}",
+        "{} session event ledger: {}",
+        if report.writes {
+            "Rebuilt"
+        } else {
+            "Projected"
+        },
         report.session_dir
     ));
-    lines.push("  writes: no".to_string());
+    lines.push(format!("  writes: {}", yes_no(report.writes)));
+    if let Some(backup_dir) = &report.backup_dir {
+        lines.push(format!("  backup: {backup_dir}"));
+    }
     lines.push(format!(
         "  events.jsonl: {} ({})",
         yes_no(report.events_exists),
@@ -20898,6 +21476,7 @@ mod tests {
             "session",
             "events",
             "./debugging-session",
+            "--write",
             "--json",
         ])
         .unwrap();
@@ -20907,7 +21486,50 @@ mod tests {
         let Some(SessionCommand::Events(args)) = args.command else {
             panic!("expected session events command");
         };
-        assert_eq!(args.dir, PathBuf::from("./debugging-session"));
+        assert_eq!(args.dir, Some(PathBuf::from("./debugging-session")));
+        assert!(!args.all);
+        assert!(args.write);
+        assert!(args.restore.is_none());
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "events",
+            "./debugging-session",
+            "--restore",
+            "events-rebuild-test",
+            "--write",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Events(args)) = args.command else {
+            panic!("expected session events restore command");
+        };
+        assert_eq!(args.dir, Some(PathBuf::from("./debugging-session")));
+        assert_eq!(args.restore, Some(PathBuf::from("events-rebuild-test")));
+        assert!(!args.all);
+        assert!(args.write);
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn", "session", "events", "--all", "--limit", "5", "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Events(args)) = args.command else {
+            panic!("expected session events all command");
+        };
+        assert!(args.dir.is_none());
+        assert!(args.all);
+        assert_eq!(args.limit, Some(5));
+        assert!(!args.write);
+        assert!(args.restore.is_none());
         assert!(args.json);
 
         let cli = Cli::try_parse_from([
@@ -20924,7 +21546,10 @@ mod tests {
         let Some(SessionCommand::Events(args)) = args.command else {
             panic!("expected session events alias command");
         };
-        assert_eq!(args.dir, PathBuf::from("./debugging-session"));
+        assert_eq!(args.dir, Some(PathBuf::from("./debugging-session")));
+        assert!(!args.all);
+        assert!(!args.write);
+        assert!(args.restore.is_none());
         assert!(args.json);
 
         let cli = Cli::try_parse_from(["djinn", "session", "bap-questions"]).unwrap();
@@ -21142,6 +21767,162 @@ mod tests {
         assert!(text.contains("summary.md:"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_events_write_rebuilds_turns_and_preserves_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-events-write-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let turn_dir = dir.join("turns/existing-turn");
+        fs::create_dir_all(&turn_dir).unwrap();
+        fs::write(turn_dir.join("request.md"), "old question\n").unwrap();
+        fs::write(turn_dir.join("response.md"), "old answer\n").unwrap();
+        fs::write(dir.join("summary.md"), "old answer\n").unwrap();
+        fs::write(
+            dir.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"new question\"}\n{\"type\":\"assistant_message\",\"content\":\"new answer\"}\n",
+        )
+        .unwrap();
+
+        let report = rebuild_folder_session_from_events(&dir).unwrap();
+        let backup_dir = PathBuf::from(report.backup_dir.as_ref().unwrap());
+
+        assert!(report.writes);
+        assert_eq!(report.projected_turn_count, 1);
+        assert_eq!(report.turns[0].request_state, "matches");
+        assert_eq!(report.turns[0].response_state, "matches");
+        assert_eq!(
+            fs::read_to_string(dir.join("turns/existing-turn/request.md")).unwrap(),
+            "new question\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("turns/existing-turn/response.md")).unwrap(),
+            "new answer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("summary.md")).unwrap(),
+            "new answer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(backup_dir.join("turns/existing-turn/response.md")).unwrap(),
+            "old answer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(backup_dir.join("summary.md")).unwrap(),
+            "old answer\n"
+        );
+        assert!(backup_dir.join("backup.toml").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_events_restore_rebuild_backup_round_trips_previous_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-events-restore-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let turn_dir = dir.join("turns/original-turn");
+        fs::create_dir_all(&turn_dir).unwrap();
+        fs::write(turn_dir.join("request.md"), "original question\n").unwrap();
+        fs::write(turn_dir.join("response.md"), "original answer\n").unwrap();
+        fs::write(dir.join("summary.md"), "original answer\n").unwrap();
+        fs::write(
+            dir.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"new question\"}\n{\"type\":\"assistant_message\",\"content\":\"new answer\"}\n",
+        )
+        .unwrap();
+
+        let rebuild = rebuild_folder_session_from_events(&dir).unwrap();
+        let backup_dir = PathBuf::from(rebuild.backup_dir.unwrap());
+        let backup_name = backup_dir.file_name().unwrap().to_os_string();
+
+        let preview = restore_folder_session_event_backup(&dir, Path::new(&backup_name), false)
+            .expect("preview restore backup");
+        assert!(!preview.writes);
+        assert_eq!(preview.restored_turn_count, 1);
+        assert!(preview.safety_backup_dir.is_none());
+        assert_eq!(
+            fs::read_to_string(dir.join("summary.md")).unwrap(),
+            "new answer\n"
+        );
+
+        let restored = restore_folder_session_event_backup(&dir, Path::new(&backup_name), true)
+            .expect("restore backup");
+        assert!(restored.writes);
+        assert!(restored.safety_backup_dir.is_some());
+        assert_eq!(
+            fs::read_to_string(dir.join("turns/original-turn/request.md")).unwrap(),
+            "original question\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("turns/original-turn/response.md")).unwrap(),
+            "original answer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("summary.md")).unwrap(),
+            "original answer\n"
+        );
+        let safety_backup = PathBuf::from(restored.safety_backup_dir.unwrap());
+        assert_eq!(
+            fs::read_to_string(safety_backup.join("turns/original-turn/response.md")).unwrap(),
+            "new answer\n"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_events_all_reports_cache_readiness() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-events-readiness-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let ready = root.join("ready-session");
+        let ready_turn = ready.join("turns/turn-1");
+        fs::create_dir_all(&ready_turn).unwrap();
+        fs::write(ready_turn.join("request.md"), "question\n").unwrap();
+        fs::write(ready_turn.join("response.md"), "answer\n").unwrap();
+        fs::write(ready.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            ready.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"question\"}\n{\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+        )
+        .unwrap();
+
+        let not_ready = root.join("not-ready-session");
+        fs::create_dir_all(&not_ready).unwrap();
+        fs::write(not_ready.join("summary.md"), "orphan summary\n").unwrap();
+
+        let report = event_readiness_report_for_folder_session_root(&root, None).unwrap();
+        let text = format_event_readiness_report(&report);
+
+        assert_eq!(report.total, 2);
+        assert_eq!(report.ready, 1);
+        assert_eq!(report.not_ready, 1);
+        assert!(report.sessions.iter().any(|session| {
+            session.name == "ready-session" && session.ready && session.event_turn_count == 1
+        }));
+        assert!(report.sessions.iter().any(|session| {
+            session.name == "not-ready-session"
+                && !session.ready
+                && session
+                    .issue_codes
+                    .contains(&"missing_events_jsonl".to_string())
+        }));
+        assert!(text.contains("Event ledger readiness"));
+        assert!(text.contains("ready: 1"));
+        assert!(text.contains("not ready: 1"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -21746,6 +22527,9 @@ link = "context/repo"
             "type = \"todo\"\n",
         )
         .unwrap();
+        let event_backup = session_dir.join(".djinn/backups/events-rebuild-test");
+        fs::create_dir_all(&event_backup).unwrap();
+        fs::write(event_backup.join("backup.toml"), "source = \"test\"\n").unwrap();
 
         let view = folder_session_status_tui_view(&session_dir).unwrap();
 
@@ -21772,6 +22556,16 @@ link = "context/repo"
             .as_deref()
             .unwrap()
             .ends_with("session-run-test.log"));
+        assert!(view
+            .events_path
+            .as_deref()
+            .unwrap()
+            .ends_with("events.jsonl"));
+        assert!(view
+            .latest_event_rebuild_backup_path
+            .as_deref()
+            .unwrap()
+            .ends_with("events-rebuild-test"));
         assert!(view
             .candidates_dir
             .as_deref()
@@ -21818,6 +22612,38 @@ link = "context/repo"
             ),
             format!(
                 "Pattern export command: djinn session export-pattern '{}' 'pattern-001' --to <notes.md>",
+                session_dir.display()
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::ShowValidateEventsCommand,
+                &session_dir,
+            ),
+            format!(
+                "Event validation command: djinn session validate-events '{}'",
+                session_dir.display()
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::ShowEventsWriteCommand,
+                &session_dir,
+            ),
+            format!(
+                "Event rebuild command: djinn session events '{}' --write",
+                session_dir.display()
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::ShowEventsRestoreCommand(
+                    "events-rebuild-test".to_string(),
+                ),
+                &session_dir,
+            ),
+            format!(
+                "Event restore command: djinn session events '{}' --restore 'events-rebuild-test' --write",
                 session_dir.display()
             )
         );
