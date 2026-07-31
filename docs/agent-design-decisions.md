@@ -959,7 +959,10 @@ The first non-interactive agent slice is implemented as:
     turn counts, summary agreement, issue codes, and latest rebuild backup paths.
     `--strict` keeps the report read-only but exits with an error when any
     reported session is not ready, making the check script/CI-friendly without
-    mutating session artifacts.
+    mutating session artifacts. `djinn session ls` and the Sessions dashboard show
+    compact event health labels derived from the same validation state, so normal
+    triage can spot missing, invalid, or ready event ledgers without opening each
+    session.
 71. Bare folder-session names resolve under Djinn's cache directory, not the
     current working directory. For example `djinn session init small-question` and
     `djinn ask --session-dir small-question` target

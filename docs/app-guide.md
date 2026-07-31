@@ -125,6 +125,9 @@ The readiness report lists each cache-backed session, event count, event turn-pa
 count, existing turn count, summary agreement, issue codes, and latest rebuild
 backup when present. `--strict` is intended for scripts/CI: it still writes no
 artifacts, but exits with an error if any reported session is not ready.
+Routine `djinn session ls` and the Sessions dashboard also show compact event
+health labels such as `ready:2/5`, `missing`, or the first validation issue code
+so ledger readiness is visible during normal triage.
 
 ```bash
 djinn ask "Summarize the debugging path" --session ./debugging-session

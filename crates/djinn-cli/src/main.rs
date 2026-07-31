@@ -9238,11 +9238,22 @@ struct FolderSessionSummary {
     summary_md: bool,
     summary_preview: Option<String>,
     turn_count: usize,
+    event_health: FolderSessionEventHealth,
     latest_turn: Option<SessionStatusTurnReport>,
     candidates: Option<SessionStatusCandidateReport>,
     next_action: Option<String>,
     modified_at: Option<String>,
     modified_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct FolderSessionEventHealth {
+    ready: bool,
+    events_exists: bool,
+    event_count: usize,
+    event_turn_count: usize,
+    issue_count: usize,
+    issue_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -10460,6 +10471,7 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         .to_string();
     let turns = read_folder_session_turns(&path.join("turns"))?;
     let turn_count = turns.len();
+    let event_health = folder_session_event_health(path)?;
     let latest_turn = turns.last().map(session_status_turn_report);
     let request_md = path.join("request.md").exists();
     let candidates = session_status_candidates(path)?;
@@ -10498,12 +10510,41 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         summary_md: path.join("summary.md").exists(),
         summary_preview: folder_session_summary_preview(path),
         turn_count,
+        event_health,
         latest_turn,
         candidates,
         next_action,
         modified_at: folder_session_modified_at(path),
         modified_at_ms: folder_session_modified_at_ms(path),
     })
+}
+
+fn folder_session_event_health(path: &Path) -> Result<FolderSessionEventHealth> {
+    let report = validate_folder_session_events(path)?;
+    Ok(FolderSessionEventHealth {
+        ready: report.all_valid,
+        events_exists: report.events_exists,
+        event_count: report.event_count,
+        event_turn_count: report.event_turn_count,
+        issue_count: report.issues.len(),
+        issue_codes: report.issues.into_iter().map(|issue| issue.code).collect(),
+    })
+}
+
+fn folder_session_event_health_label(health: &FolderSessionEventHealth) -> String {
+    if health.ready {
+        format!("ready:{}/{}", health.event_turn_count, health.event_count)
+    } else if !health.events_exists {
+        "missing".to_string()
+    } else if let Some(code) = health.issue_codes.first() {
+        if health.issue_count > 1 {
+            format!("{code}+{}", health.issue_count - 1)
+        } else {
+            code.clone()
+        }
+    } else {
+        "not_ready".to_string()
+    }
 }
 
 fn folder_session_summary_order(
@@ -10750,10 +10791,10 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
         }
         lines.push(format!("Repo: {}", group.repo));
         lines.push(format!(
-            "  {:<20} {:<12} {:>5}  {:<32} {}",
-            "UPDATED", "STATE", "TURNS", "NAME", "SUMMARY"
+            "  {:<20} {:<12} {:>5}  {:<18} {:<32} {}",
+            "UPDATED", "STATE", "TURNS", "EVENTS", "NAME", "SUMMARY"
         ));
-        lines.push(format!("  {}", "-".repeat(92)));
+        lines.push(format!("  {}", "-".repeat(112)));
         for session in &group.sessions {
             let updated = session
                 .updated_at
@@ -10764,10 +10805,14 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
             let summary = session.summary_preview.as_deref().unwrap_or("");
             let state = folder_session_summary_state_label(session);
             lines.push(format!(
-                "  {:<20} {:<12} {:>5}  {:<32} {}",
+                "  {:<20} {:<12} {:>5}  {:<18} {:<32} {}",
                 truncate_table_cell(&updated, 20),
                 truncate_table_cell(&state, 12),
                 session.turn_count,
+                truncate_table_cell(
+                    &folder_session_event_health_label(&session.event_health),
+                    18
+                ),
                 truncate_table_cell(
                     &format!(
                         "{}{}",
@@ -17833,6 +17878,7 @@ fn session_records_for_dashboard() -> Result<Vec<djinn_tui::SessionRecord>> {
             repo_path: session.repo_path.or(session.workspace),
             summary_preview: session.summary_preview,
             turn_count: session.turn_count,
+            event_health: folder_session_event_health_label(&session.event_health),
             candidate_status: session
                 .candidates
                 .as_ref()
@@ -22836,6 +22882,17 @@ link = "context/repo"
         )
         .unwrap();
         fs::write(gamma.join("summary.md"), "newer repo-a summary\n").unwrap();
+        fs::write(gamma.join("turns/turn-g/request.md"), "gamma request\n").unwrap();
+        fs::write(
+            gamma.join("turns/turn-g/response.md"),
+            "newer repo-a summary\n",
+        )
+        .unwrap();
+        fs::write(
+            gamma.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"gamma request\"}\n{\"type\":\"assistant_message\",\"content\":\"newer repo-a summary\"}\n",
+        )
+        .unwrap();
         fs::write(
             delta.join("djinn.toml"),
             "created_at = \"2026-07-27T12:34:56.123-04:00\"\n\n[context.repo]\npath = \"/tmp/repo-a\"\n",
@@ -22892,6 +22949,9 @@ link = "context/repo"
                 .as_deref()
         );
         assert_eq!(report.sessions[3].turn_count, 1);
+        assert!(report.sessions[0].event_health.ready);
+        assert_eq!(report.sessions[0].event_health.event_turn_count, 1);
+        assert!(!report.sessions[3].event_health.ready);
         assert!(report.sessions[3].request_md);
         assert!(report.sessions[3].summary_md);
         assert_eq!(
@@ -22917,6 +22977,9 @@ link = "context/repo"
         assert!(text.contains("Repo: -"));
         assert!(text.contains("UPDATED"));
         assert!(text.contains("STATE"));
+        assert!(text.contains("EVENTS"));
+        assert!(text.contains("ready:1/2"));
+        assert!(text.contains("missing"));
         assert!(text.contains("running/bac…"));
         assert!(text.contains("alpha"));
         assert!(text.contains("2026-07-27T11:34:56…"));

@@ -149,9 +149,9 @@ Future direction: convert `turns/<id>/` from the canonical history store into a
 projection over the folder-local append-only `events.jsonl` shadow ledger. The
 migration should remain opt-in and reversible while being proven: Djinn already
 appends events alongside the existing turn folders, can validate agreement, and
-can preview, perform, restore, discover, and audit backed-up event-to-turn
-rebuilds from the CLI/TUI, including strict read-only script checks, so next
-slices should focus on operational confidence and only later make `events.jsonl`
+can preview, perform, restore, discover, audit, and triage backed-up event-to-turn
+rebuilds from the CLI/TUI, including strict read-only script checks, so next slices
+should focus on operational confidence and only later make `events.jsonl`
 authoritative.
 
 Ready implementation slices:
@@ -162,8 +162,8 @@ Ready implementation slices:
   next Djinn turn: copy submitted text to `turns/<id>/request.md`, clear root
   `request.md`, stream/update root `summary.md`, then finalize
   `turns/<id>/summary.md`.
-- Add event-ledger health summaries to `djinn session ls`/dashboard previews so
-  readiness is visible during normal triage.
+- Add optional event-ledger health filters to `djinn session events --all` and the
+  Sessions dashboard once enough real sessions exist to justify filtering.
 
 #### Background run recovery follow-ups
 

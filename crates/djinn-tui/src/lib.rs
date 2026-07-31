@@ -169,6 +169,7 @@ pub struct SessionRecord {
     pub repo_path: Option<String>,
     pub summary_preview: Option<String>,
     pub turn_count: usize,
+    pub event_health: String,
     pub candidate_status: Option<String>,
     pub candidate_details: Vec<String>,
     pub candidate_entries: Vec<PromotionCandidateRow>,
@@ -2404,8 +2405,8 @@ fn session_list_metadata(session: &SessionRecord) -> String {
         .map(|status| format!(" · candidates {status}"))
         .unwrap_or_default();
     format!(
-        "{} · {} turns{} · updated {}",
-        mode, session.turn_count, candidates, updated
+        "{} · {} turns · events {}{} · updated {}",
+        mode, session.turn_count, session.event_health, candidates, updated
     )
 }
 
@@ -2565,6 +2566,7 @@ fn session_preview(session: &SessionRecord) -> String {
         format!("State: {}", session.state),
         format!("Mode: {}", session.mode.as_deref().unwrap_or("-")),
         format!("Turns: {}", session.turn_count),
+        format!("Events: {}", session.event_health),
         format!(
             "Updated: {}",
             session.updated_at.as_deref().unwrap_or("unknown")
@@ -3935,6 +3937,7 @@ mod tests {
             repo_path: Some("/tmp/repo".to_string()),
             summary_preview: Some("Latest answer preview".to_string()),
             turn_count: 2,
+            event_health: "ready:2/5".to_string(),
             candidate_status: Some("3 total, 1 accepted, 1 denied, 1 pending".to_string()),
             candidate_details: vec![
                 "memory-001 [memory] accepted -> memory".to_string(),
@@ -3989,6 +3992,7 @@ mod tests {
         let preview = session_preview(app.selected_session().unwrap());
         assert!(preview.contains("Name: repo-review"));
         assert!(preview.contains("Status: Ⅱ paused"));
+        assert!(preview.contains("Events: ready:2/5"));
         assert!(preview.contains("Group: Repo: repo"));
         assert!(preview.contains("Next action: edit request.md or run again"));
         assert!(preview.contains("Focused shortcuts"));
@@ -3999,6 +4003,7 @@ mod tests {
         assert!(
             session_list_metadata(app.selected_session().unwrap()).contains("candidates 3 total")
         );
+        assert!(session_list_metadata(app.selected_session().unwrap()).contains("events ready:2/5"));
         assert!(app.selected_sessions().is_empty());
         app.toggle_selected();
         assert_eq!(app.selected_sessions().len(), 1);
