@@ -372,6 +372,15 @@ struct SessionEventsArgs {
     /// With --all, exit with an error when any reported session is not ready.
     #[arg(long, requires = "all")]
     strict: bool,
+    /// With --all, evaluate the read-only promotion gate for making events authoritative.
+    #[arg(long, requires = "all", conflicts_with_all = ["limit", "health_filter"])]
+    gate: bool,
+    /// For one scratch session, report whether an event-authoritative trial would be allowed. No writes.
+    #[arg(long = "authority-trial", conflicts_with_all = ["all", "write", "restore"])]
+    authority_trial: bool,
+    /// Feature-flagged scratch-only read from events.jsonl as the authoritative turn source. No writes.
+    #[arg(long = "authority-read", conflicts_with_all = ["all", "write", "restore"])]
+    authority_read: bool,
     /// Rebuild turns/ and summary.md from events.jsonl after creating a backup.
     #[arg(long)]
     write: bool,
@@ -5984,8 +5993,11 @@ struct SessionProjectedSummary {
 
 fn session_events(args: SessionEventsArgs) -> Result<()> {
     if args.all {
-        let report =
-            event_readiness_report_for_cache_sessions(args.limit, args.health_filter.as_deref())?;
+        let report = event_readiness_report_for_cache_sessions(
+            args.limit,
+            args.health_filter.as_deref(),
+            args.gate,
+        )?;
         if args.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
@@ -5994,6 +6006,9 @@ fn session_events(args: SessionEventsArgs) -> Result<()> {
         if args.strict {
             ensure_event_readiness_strict(&report)?;
         }
+        if args.gate {
+            ensure_event_readiness_gate(&report)?;
+        }
         return Ok(());
     }
 
@@ -6001,6 +6016,25 @@ fn session_events(args: SessionEventsArgs) -> Result<()> {
         .dir
         .as_ref()
         .ok_or_else(|| anyhow!("session name or directory is required unless --all is used"))?;
+    if args.authority_trial {
+        let report = event_authority_trial_report(dir)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", format_event_authority_trial_report(&report));
+        }
+        return Ok(());
+    }
+    if args.authority_read {
+        let report = event_authority_read_report(dir, event_authority_read_feature_enabled())?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", format_event_authority_read_report(&report));
+        }
+        ensure_event_authority_read_allowed(&report)?;
+        return Ok(());
+    }
     if let Some(backup) = &args.restore {
         let report = restore_folder_session_event_backup(dir, backup, args.write)?;
         if args.json {
@@ -6453,11 +6487,26 @@ fn format_session_restore_events_report(report: &SessionRestoreEventsReport) -> 
 struct SessionEventsReadinessReport {
     root: String,
     filter: Option<String>,
+    gate: Option<SessionEventsGateReport>,
     total: usize,
     ready: usize,
     not_ready: usize,
     sessions: Vec<SessionEventsReadinessEntry>,
     note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionEventsGateReport {
+    passed: bool,
+    criteria: Vec<SessionEventsGateCriterion>,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionEventsGateCriterion {
+    name: String,
+    passed: bool,
+    detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -6478,15 +6527,17 @@ struct SessionEventsReadinessEntry {
 fn event_readiness_report_for_cache_sessions(
     limit: Option<usize>,
     health_filter: Option<&str>,
+    include_gate: bool,
 ) -> Result<SessionEventsReadinessReport> {
     let root = default_folder_session_root();
-    event_readiness_report_for_folder_session_root(&root, limit, health_filter)
+    event_readiness_report_for_folder_session_root(&root, limit, health_filter, include_gate)
 }
 
 fn event_readiness_report_for_folder_session_root(
     root: &Path,
     limit: Option<usize>,
     health_filter: Option<&str>,
+    include_gate: bool,
 ) -> Result<SessionEventsReadinessReport> {
     let health_filter = health_filter
         .map(str::trim)
@@ -6551,15 +6602,20 @@ fn event_readiness_report_for_folder_session_root(
     } else {
         "Some cache-backed sessions are not event-ledger ready. Inspect issue codes with `djinn session events <session>` and `djinn session validate-events <session>`.".to_string()
     };
-    Ok(SessionEventsReadinessReport {
+    let mut report = SessionEventsReadinessReport {
         root: root.display().to_string(),
         filter: health_filter,
+        gate: None,
         total,
         ready,
         not_ready,
         sessions,
         note,
-    })
+    };
+    if include_gate {
+        report.gate = Some(event_authority_gate_report(&report));
+    }
+    Ok(report)
 }
 
 fn readiness_entry_matches_health_filter(
@@ -6590,6 +6646,42 @@ fn normalize_event_health_filter(value: &str) -> String {
         .collect()
 }
 
+fn event_authority_gate_report(report: &SessionEventsReadinessReport) -> SessionEventsGateReport {
+    let criteria = vec![
+        SessionEventsGateCriterion {
+            name: "unfiltered_cache_scan".to_string(),
+            passed: report.filter.is_none(),
+            detail: if let Some(filter) = &report.filter {
+                format!("readiness report is filtered by {filter}")
+            } else {
+                "readiness report covers the unfiltered cache session set".to_string()
+            },
+        },
+        SessionEventsGateCriterion {
+            name: "sessions_exist".to_string(),
+            passed: report.total > 0,
+            detail: format!("{} cache-backed session(s) reported", report.total),
+        },
+        SessionEventsGateCriterion {
+            name: "all_sessions_ready".to_string(),
+            passed: report.total > 0 && report.not_ready == 0,
+            detail: format!("{} ready, {} not ready", report.ready, report.not_ready),
+        },
+    ];
+    let passed = criteria.iter().all(|criterion| criterion.passed);
+    let note = if passed {
+        "Gate passed: reported cache-backed sessions are ready. This is still a decision checkpoint; events are not made authoritative by this command."
+    } else {
+        "Gate failed: do not make events authoritative until every criterion passes."
+    }
+    .to_string();
+    SessionEventsGateReport {
+        passed,
+        criteria,
+        note,
+    }
+}
+
 fn format_event_readiness_report(report: &SessionEventsReadinessReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!("Event ledger readiness: {}", report.root));
@@ -6599,6 +6691,20 @@ fn format_event_readiness_report(report: &SessionEventsReadinessReport) -> Strin
     lines.push(format!("  total: {}", report.total));
     lines.push(format!("  ready: {}", report.ready));
     lines.push(format!("  not ready: {}", report.not_ready));
+    if let Some(gate) = &report.gate {
+        lines.push(format!(
+            "  authority gate: {}",
+            if gate.passed { "passed" } else { "failed" }
+        ));
+        for criterion in &gate.criteria {
+            lines.push(format!(
+                "    - {}: {} ({})",
+                criterion.name,
+                if criterion.passed { "passed" } else { "failed" },
+                criterion.detail
+            ));
+        }
+    }
     if report.sessions.is_empty() {
         lines.push("  sessions: none".to_string());
     } else {
@@ -6650,6 +6756,267 @@ fn ensure_event_readiness_strict(report: &SessionEventsReadinessReport) -> Resul
         );
     }
     Ok(())
+}
+
+fn ensure_event_readiness_gate(report: &SessionEventsReadinessReport) -> Result<()> {
+    let gate = report
+        .gate
+        .as_ref()
+        .ok_or_else(|| anyhow!("event authority gate was not included in readiness report"))?;
+    if !gate.passed {
+        bail!("event authority promotion gate failed; events remain non-authoritative");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionEventAuthorityTrialReport {
+    session_dir: String,
+    scratch_session: bool,
+    allowed: bool,
+    writes: bool,
+    events_exists: bool,
+    event_count: usize,
+    event_turn_count: usize,
+    turn_count: usize,
+    summary_matches_latest_turn: Option<bool>,
+    projected_turn_count: usize,
+    checks: Vec<SessionEventsGateCriterion>,
+    note: String,
+}
+
+fn event_authority_trial_report(dir: &Path) -> Result<SessionEventAuthorityTrialReport> {
+    let session_dir = resolve_session_dir(dir)?;
+    let validation = validate_folder_session_events(&session_dir)?;
+    let projection = project_folder_session_events(&session_dir)?;
+    let scratch_session = is_scratch_event_authority_session(&session_dir);
+    let checks = vec![
+        SessionEventsGateCriterion {
+            name: "scratch_session".to_string(),
+            passed: scratch_session,
+            detail: if scratch_session {
+                "session name/path is explicitly scratch/experimental".to_string()
+            } else {
+                "session name/path must contain scratch, sandbox, or experimental".to_string()
+            },
+        },
+        SessionEventsGateCriterion {
+            name: "events_jsonl_exists".to_string(),
+            passed: validation.events_exists,
+            detail: format!("events.jsonl exists: {}", yes_no(validation.events_exists)),
+        },
+        SessionEventsGateCriterion {
+            name: "has_event_turn_pairs".to_string(),
+            passed: validation.event_turn_count > 0,
+            detail: format!("{} event turn pair(s)", validation.event_turn_count),
+        },
+        SessionEventsGateCriterion {
+            name: "ledger_agrees_with_turns".to_string(),
+            passed: validation.all_valid,
+            detail: if validation.all_valid {
+                "events.jsonl, turns/, and summary.md agree".to_string()
+            } else {
+                format!("{} validation issue(s)", validation.issues.len())
+            },
+        },
+    ];
+    let allowed = checks.iter().all(|check| check.passed);
+    let note = if allowed {
+        "No-op authority trial passed. A future feature-flagged runtime could read this scratch session from events.jsonl, but this command changed nothing."
+    } else {
+        "No-op authority trial failed. Keep turns/ canonical and fix the failed checks before experimenting with event-authoritative mode."
+    }
+    .to_string();
+
+    Ok(SessionEventAuthorityTrialReport {
+        session_dir: session_dir.display().to_string(),
+        scratch_session,
+        allowed,
+        writes: false,
+        events_exists: validation.events_exists,
+        event_count: validation.event_count,
+        event_turn_count: validation.event_turn_count,
+        turn_count: validation.turn_count,
+        summary_matches_latest_turn: validation.root_summary_matches_latest_turn,
+        projected_turn_count: projection.projected_turn_count,
+        checks,
+        note,
+    })
+}
+
+fn is_scratch_event_authority_session(session_dir: &Path) -> bool {
+    let haystack = session_dir.display().to_string().to_lowercase();
+    haystack.contains("scratch")
+        || haystack.contains("sandbox")
+        || haystack.contains("experimental")
+        || haystack.contains("experiment")
+}
+
+fn format_event_authority_trial_report(report: &SessionEventAuthorityTrialReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Event authority trial: {}", report.session_dir));
+    lines.push("  writes: no".to_string());
+    lines.push(format!("  allowed: {}", yes_no(report.allowed)));
+    lines.push(format!(
+        "  scratch session: {}",
+        yes_no(report.scratch_session)
+    ));
+    lines.push(format!("  events: {}", report.event_count));
+    lines.push(format!("  event turn pairs: {}", report.event_turn_count));
+    lines.push(format!("  turn folders: {}", report.turn_count));
+    lines.push(format!(
+        "  projected turns: {}",
+        report.projected_turn_count
+    ));
+    let summary = report
+        .summary_matches_latest_turn
+        .map(yes_no)
+        .unwrap_or("n/a");
+    lines.push(format!("  summary matches latest turn: {summary}"));
+    lines.push("  checks:".to_string());
+    for check in &report.checks {
+        lines.push(format!(
+            "    - {}: {} ({})",
+            check.name,
+            if check.passed { "passed" } else { "failed" },
+            check.detail
+        ));
+    }
+    lines.push(format!("  note: {}", report.note));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionEventAuthorityReadReport {
+    session_dir: String,
+    feature_enabled: bool,
+    allowed: bool,
+    writes: bool,
+    authority_source: String,
+    turn_count: usize,
+    turns: Vec<SessionEventAuthorityReadTurn>,
+    checks: Vec<SessionEventsGateCriterion>,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionEventAuthorityReadTurn {
+    index: usize,
+    request_chars: usize,
+    response_chars: usize,
+    request_preview: String,
+    response_preview: String,
+}
+
+fn event_authority_read_report(
+    dir: &Path,
+    feature_enabled: bool,
+) -> Result<SessionEventAuthorityReadReport> {
+    let session_dir = resolve_session_dir(dir)?;
+    let trial = event_authority_trial_report(&session_dir)?;
+    let events_path = session_dir.join("events.jsonl");
+    let raw = fs::read_to_string(&events_path)
+        .with_context(|| format!("reading {}", events_path.display()))?;
+    let mut issues = Vec::new();
+    let event_turns = read_event_turn_pairs(&events_path, &raw, &mut issues);
+    let mut checks = trial.checks.clone();
+    checks.push(SessionEventsGateCriterion {
+        name: "feature_flag_enabled".to_string(),
+        passed: feature_enabled,
+        detail: if feature_enabled {
+            "DJINN_EVENT_AUTHORITY_EXPERIMENT is enabled".to_string()
+        } else {
+            "set DJINN_EVENT_AUTHORITY_EXPERIMENT=1 to enable the scratch read path".to_string()
+        },
+    });
+    let allowed = trial.allowed && feature_enabled;
+    let turns = event_turns
+        .into_iter()
+        .enumerate()
+        .map(|(index, turn)| SessionEventAuthorityReadTurn {
+            index: index + 1,
+            request_chars: turn.request.chars().count(),
+            response_chars: turn.response.chars().count(),
+            request_preview: compact_text_snippet(&turn.request, 160),
+            response_preview: compact_text_snippet(&turn.response, 160),
+        })
+        .collect::<Vec<_>>();
+    let note = if allowed {
+        "Feature-flagged authority read succeeded for this scratch session. Turns were read from events.jsonl for inspection only; no files were written."
+    } else {
+        "Feature-flagged authority read is blocked. Satisfy the failed checks before using events.jsonl as the scratch-session read source."
+    }
+    .to_string();
+
+    Ok(SessionEventAuthorityReadReport {
+        session_dir: session_dir.display().to_string(),
+        feature_enabled,
+        allowed,
+        writes: false,
+        authority_source: "events.jsonl".to_string(),
+        turn_count: turns.len(),
+        turns,
+        checks,
+        note,
+    })
+}
+
+fn event_authority_read_feature_enabled() -> bool {
+    env::var("DJINN_EVENT_AUTHORITY_EXPERIMENT")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn ensure_event_authority_read_allowed(report: &SessionEventAuthorityReadReport) -> Result<()> {
+    if !report.allowed {
+        bail!("event-authoritative scratch read blocked; events remain non-authoritative");
+    }
+    Ok(())
+}
+
+fn format_event_authority_read_report(report: &SessionEventAuthorityReadReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Event-authoritative read: {}", report.session_dir));
+    lines.push("  writes: no".to_string());
+    lines.push(format!("  allowed: {}", yes_no(report.allowed)));
+    lines.push(format!(
+        "  feature enabled: {}",
+        yes_no(report.feature_enabled)
+    ));
+    lines.push(format!("  authority source: {}", report.authority_source));
+    lines.push(format!("  turns read: {}", report.turn_count));
+    lines.push("  checks:".to_string());
+    for check in &report.checks {
+        lines.push(format!(
+            "    - {}: {} ({})",
+            check.name,
+            if check.passed { "passed" } else { "failed" },
+            check.detail
+        ));
+    }
+    if report.turns.is_empty() {
+        lines.push("  event turns: none".to_string());
+    } else {
+        lines.push("  event turns:".to_string());
+        for turn in &report.turns {
+            lines.push(format!(
+                "    - {}: request {} chars, response {} chars",
+                turn.index, turn.request_chars, turn.response_chars
+            ));
+            lines.push(format!("      request: {}", turn.request_preview));
+            lines.push(format!("      response: {}", turn.response_preview));
+        }
+    }
+    lines.push(format!("  note: {}", report.note));
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 fn projected_event_turn_id(index: usize) -> String {
@@ -21599,6 +21966,8 @@ mod tests {
         assert!(!args.all);
         assert!(args.write);
         assert!(!args.strict);
+        assert!(!args.gate);
+        assert!(!args.authority_trial);
         assert!(args.restore.is_none());
         assert!(args.json);
 
@@ -21624,6 +21993,52 @@ mod tests {
         assert!(!args.all);
         assert!(args.write);
         assert!(!args.strict);
+        assert!(!args.gate);
+        assert!(!args.authority_trial);
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "events",
+            "./scratch-debugging-session",
+            "--authority-trial",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Events(args)) = args.command else {
+            panic!("expected session events authority-trial command");
+        };
+        assert_eq!(args.dir, Some(PathBuf::from("./scratch-debugging-session")));
+        assert!(args.authority_trial);
+        assert!(!args.authority_read);
+        assert!(!args.all);
+        assert!(!args.write);
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "events",
+            "./scratch-debugging-session",
+            "--authority-read",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Events(args)) = args.command else {
+            panic!("expected session events authority-read command");
+        };
+        assert_eq!(args.dir, Some(PathBuf::from("./scratch-debugging-session")));
+        assert!(args.authority_read);
+        assert!(!args.authority_trial);
+        assert!(!args.all);
+        assert!(!args.write);
         assert!(args.json);
 
         let cli = Cli::try_parse_from([
@@ -21650,9 +22065,29 @@ mod tests {
         assert_eq!(args.limit, Some(5));
         assert_eq!(args.health_filter.as_deref(), Some("not-ready"));
         assert!(args.strict);
+        assert!(!args.gate);
         assert!(!args.write);
         assert!(args.restore.is_none());
         assert!(args.json);
+
+        let cli = Cli::try_parse_from(["djinn", "session", "events", "--all", "--gate", "--json"])
+            .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Events(args)) = args.command else {
+            panic!("expected session events gate command");
+        };
+        assert!(args.all);
+        assert!(args.gate);
+        assert!(!args.strict);
+        assert!(args.limit.is_none());
+        assert!(args.health_filter.is_none());
+        assert!(args.json);
+        assert!(Cli::try_parse_from([
+            "djinn", "session", "events", "--all", "--gate", "--health", "ready",
+        ])
+        .is_err());
 
         let cli = Cli::try_parse_from([
             "djinn",
@@ -21816,6 +22251,98 @@ mod tests {
         assert!(text.contains("issues: none"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_events_authority_trial_is_noop_and_scratch_only() {
+        let scratch = std::env::temp_dir().join(format!(
+            "djinn-scratch-authority-trial-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(scratch.join("turns/turn-1")).unwrap();
+        fs::write(scratch.join("turns/turn-1/request.md"), "question\n").unwrap();
+        fs::write(scratch.join("turns/turn-1/response.md"), "answer\n").unwrap();
+        fs::write(scratch.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            scratch.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"question\"}\n{\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+        )
+        .unwrap();
+
+        let report = event_authority_trial_report(&scratch).unwrap();
+        let text = format_event_authority_trial_report(&report);
+
+        assert!(report.allowed);
+        assert!(report.scratch_session);
+        assert!(!report.writes);
+        assert_eq!(report.event_turn_count, 1);
+        assert_eq!(report.projected_turn_count, 1);
+        assert!(text.contains("allowed: yes"));
+        assert!(text.contains("writes: no"));
+
+        let non_scratch = std::env::temp_dir().join(format!(
+            "djinn-authority-trial-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(non_scratch.join("turns/turn-1")).unwrap();
+        fs::write(non_scratch.join("turns/turn-1/request.md"), "question\n").unwrap();
+        fs::write(non_scratch.join("turns/turn-1/response.md"), "answer\n").unwrap();
+        fs::write(non_scratch.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            non_scratch.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"question\"}\n{\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+        )
+        .unwrap();
+        let blocked = event_authority_trial_report(&non_scratch).unwrap();
+        assert!(!blocked.allowed);
+        assert!(!blocked.scratch_session);
+
+        let _ = fs::remove_dir_all(&scratch);
+        let _ = fs::remove_dir_all(&non_scratch);
+    }
+
+    #[test]
+    fn session_events_authority_read_requires_flag_and_reads_from_events() {
+        let scratch = std::env::temp_dir().join(format!(
+            "djinn-scratch-authority-read-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(scratch.join("turns/turn-1")).unwrap();
+        fs::write(scratch.join("turns/turn-1/request.md"), "question\n").unwrap();
+        fs::write(scratch.join("turns/turn-1/response.md"), "answer\n").unwrap();
+        fs::write(scratch.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            scratch.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"question\"}\n{\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+        )
+        .unwrap();
+
+        let blocked = event_authority_read_report(&scratch, false).unwrap();
+        assert!(!blocked.allowed);
+        assert!(!blocked.feature_enabled);
+        assert!(ensure_event_authority_read_allowed(&blocked).is_err());
+
+        let report = event_authority_read_report(&scratch, true).unwrap();
+        let text = format_event_authority_read_report(&report);
+
+        assert!(report.allowed);
+        assert!(report.feature_enabled);
+        assert!(!report.writes);
+        assert_eq!(report.authority_source, "events.jsonl");
+        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.turns[0].request_preview, "question");
+        assert_eq!(report.turns[0].response_preview, "answer");
+        assert!(text.contains("Event-authoritative read"));
+        assert!(text.contains("feature enabled: yes"));
+        ensure_event_authority_read_allowed(&report).unwrap();
+
+        let _ = fs::remove_dir_all(&scratch);
     }
 
     #[test]
@@ -22025,7 +22552,8 @@ mod tests {
         fs::create_dir_all(&not_ready).unwrap();
         fs::write(not_ready.join("summary.md"), "orphan summary\n").unwrap();
 
-        let report = event_readiness_report_for_folder_session_root(&root, None, None).unwrap();
+        let report =
+            event_readiness_report_for_folder_session_root(&root, None, None, true).unwrap();
         let text = format_event_readiness_report(&report);
 
         assert_eq!(report.total, 2);
@@ -22041,17 +22569,33 @@ mod tests {
                     .issue_codes
                     .contains(&"missing_events_jsonl".to_string())
         }));
+        let gate = report.gate.as_ref().unwrap();
+        assert!(!gate.passed);
+        assert!(gate
+            .criteria
+            .iter()
+            .any(|criterion| criterion.name == "all_sessions_ready" && !criterion.passed));
         assert!(text.contains("Event ledger readiness"));
+        assert!(text.contains("authority gate: failed"));
         assert!(text.contains("ready: 1"));
         assert!(text.contains("not ready: 1"));
         assert!(ensure_event_readiness_strict(&report)
             .unwrap_err()
             .to_string()
             .contains("strict check failed"));
+        assert!(ensure_event_readiness_gate(&report)
+            .unwrap_err()
+            .to_string()
+            .contains("promotion gate failed"));
 
         let strict_ok = SessionEventsReadinessReport {
             root: root.display().to_string(),
             filter: None,
+            gate: Some(SessionEventsGateReport {
+                passed: true,
+                criteria: Vec::new(),
+                note: "ok".to_string(),
+            }),
             total: 1,
             ready: 1,
             not_ready: 0,
@@ -22059,18 +22603,22 @@ mod tests {
             note: "ok".to_string(),
         };
         ensure_event_readiness_strict(&strict_ok).unwrap();
+        ensure_event_readiness_gate(&strict_ok).unwrap();
         let not_ready =
-            event_readiness_report_for_folder_session_root(&root, None, Some("not-ready")).unwrap();
+            event_readiness_report_for_folder_session_root(&root, None, Some("not-ready"), false)
+                .unwrap();
         assert_eq!(not_ready.filter.as_deref(), Some("not-ready"));
         assert_eq!(not_ready.total, 1);
         assert_eq!(not_ready.not_ready, 1);
         assert_eq!(not_ready.sessions[0].name, "not-ready-session");
         let missing =
-            event_readiness_report_for_folder_session_root(&root, None, Some("missing")).unwrap();
+            event_readiness_report_for_folder_session_root(&root, None, Some("missing"), false)
+                .unwrap();
         assert_eq!(missing.total, 1);
         assert_eq!(missing.sessions[0].name, "not-ready-session");
         let ready_only =
-            event_readiness_report_for_folder_session_root(&root, None, Some("ready")).unwrap();
+            event_readiness_report_for_folder_session_root(&root, None, Some("ready"), false)
+                .unwrap();
         assert_eq!(ready_only.total, 1);
         assert_eq!(ready_only.sessions[0].name, "ready-session");
 

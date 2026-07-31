@@ -121,6 +121,7 @@ djinn session events --all --health not-ready
 djinn session events --all --health missing
 djinn session events --all --json
 djinn session events --all --strict
+djinn session events --all --gate
 ```
 
 The readiness report lists each cache-backed session, event count, event turn-pair
@@ -129,6 +130,21 @@ backup when present. `--strict` is intended for scripts/CI: it still writes no
 artifacts, but exits with an error if any reported session is not ready.
 Use `--health ready`, `--health not-ready`, `--health missing`, or an issue code
 such as `--health root_summary_mismatch` to focus the audit.
+Use `--gate` for the explicit read-only authority promotion checkpoint: it refuses
+filtered/limited scans, requires at least one reported cache-backed session, and
+fails unless every reported session is ready. Passing the gate does not make
+events authoritative; it only records that the migration criteria are currently
+met.
+For a single scratch/sandbox/experimental session, `djinn session events <session>
+--authority-trial` runs a no-op trial report for future event-authoritative mode.
+It requires an explicit scratch-like session path, a valid `events.jsonl`, at
+least one event turn pair, and agreement with `turns/`/`summary.md`; it writes
+nothing and does not flip authority.
+After the trial passes, `DJINN_EVENT_AUTHORITY_EXPERIMENT=1 djinn session events
+<session> --authority-read` exercises the first scratch-only event-authoritative
+read path. It reads turns from `events.jsonl` for inspection, keeps the existing
+`turns/` projection intact, writes nothing, and remains restricted to scratch-like
+session paths.
 Routine `djinn session ls` and the Sessions dashboard also show compact event
 health labels such as `ready:2/5`, `missing`, or the first validation issue code
 so ledger readiness is visible during normal triage. The Sessions dashboard fuzzy
@@ -141,6 +157,8 @@ djinn session validate-events ./debugging-session
 djinn session events ./debugging-session
 djinn session events ./debugging-session --write
 djinn session events --all --strict --json
+djinn session events ./scratch-debugging-session --authority-trial
+DJINN_EVENT_AUTHORITY_EXPERIMENT=1 djinn session events ./scratch-debugging-session --authority-read
 djinn session compact ./debugging-session
 djinn session promote ./debugging-session --type memory
 djinn session run ./promotion-memory --fg

@@ -965,6 +965,20 @@ The first non-interactive agent slice is implemented as:
     session. Readiness audits accept `--health` filters for `ready`, `not-ready`,
     `missing`, or specific validation issue codes; the Sessions dashboard fuzzy
     filter also matches compact event health labels.
+    `djinn session events --all --gate` is the explicit read-only promotion gate:
+    it is intentionally incompatible with filtered/limited scans, requires at
+    least one cache-backed session, and fails unless all reported sessions are
+    ready. Passing this gate is evidence for a later human/design decision; it
+    does not itself make `events.jsonl` authoritative.
+    `djinn session events <session> --authority-trial` is the single-session
+    no-op experiment surface: it is restricted to scratch/sandbox/experimental
+    session paths, requires a valid agreeing event ledger with at least one turn
+    pair, reports the projected event-authoritative shape, and writes nothing.
+    `DJINN_EVENT_AUTHORITY_EXPERIMENT=1 djinn session events <session>
+    --authority-read` is the first feature-flagged read path: after the same
+    scratch/trial checks pass, it reads turn previews from `events.jsonl` as the
+    authority source for inspection while preserving the existing `turns/`
+    projection and writing nothing.
 71. Bare folder-session names resolve under Djinn's cache directory, not the
     current working directory. For example `djinn session init small-question` and
     `djinn ask --session-dir small-question` target

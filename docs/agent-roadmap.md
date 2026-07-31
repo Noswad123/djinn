@@ -151,8 +151,9 @@ migration should remain opt-in and reversible while being proven: Djinn already
 appends events alongside the existing turn folders, can validate agreement, and
 can preview, perform, restore, discover, audit, filter, and triage backed-up
 event-to-turn rebuilds from the CLI/TUI, including strict read-only script checks,
-so next slices should focus on operational confidence and only later make
-`events.jsonl` authoritative.
+an explicit read-only authority promotion gate, and a scratch-only no-op authority
+trial/read path, so next slices should focus on operational confidence and only
+later make `events.jsonl` authoritative.
 
 Ready implementation slices:
 
@@ -162,8 +163,8 @@ Ready implementation slices:
   next Djinn turn: copy submitted text to `turns/<id>/request.md`, clear root
   `request.md`, stream/update root `summary.md`, then finalize
   `turns/<id>/summary.md`.
-- Add a documented migration promotion gate that defines the exact criteria for
-  making `events.jsonl` authoritative after enough real-session readiness passes.
+- Expand the feature-flagged scratch read path into an isolated scratch run mode
+  that uses events as read source while continuing to write/validate projections.
 
 #### Background run recovery follow-ups
 
