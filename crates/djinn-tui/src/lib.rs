@@ -2244,6 +2244,7 @@ impl SessionsApp {
             || fuzzy_match(&self.filter.query, &session.reference_name)
             || fuzzy_match(&self.filter.query, &session.path)
             || fuzzy_match(&self.filter.query, &session.state)
+            || fuzzy_match(&self.filter.query, &session.event_health)
             || fuzzy_match(&self.filter.query, &session_state_badge(session))
             || fuzzy_match(&self.filter.query, &session_repo_group_label(session))
             || session
@@ -3969,7 +3970,7 @@ mod tests {
             ],
             next_action: Some("edit request.md or run again".to_string()),
         };
-        let mut app = SessionsApp::new(vec![session]);
+        let mut app = SessionsApp::new(vec![session.clone()]);
 
         assert_eq!(app.visible_indices(), vec![0]);
         assert_eq!(
@@ -4008,6 +4009,12 @@ mod tests {
         app.toggle_selected();
         assert_eq!(app.selected_sessions().len(), 1);
         assert_eq!(app.selected_sessions()[0].name, "repo-review");
+
+        let mut event_app = SessionsApp::new(vec![session]);
+        event_app.filter_push('2');
+        event_app.filter_push('/');
+        event_app.filter_push('5');
+        assert_eq!(event_app.visible_indices(), vec![0]);
     }
 
     #[test]

@@ -98,7 +98,8 @@ subcommand has been removed. Use `djinn session events --all --json` to audit
 event-ledger readiness across cache-backed sessions, or add `--strict` for a
 read-only script/CI guard that fails when any reported session is not ready.
 `djinn session ls` and the Sessions dashboard show compact event health labels for
-routine triage.
+routine triage, and readiness audits can be focused with `--health ready`,
+`--health not-ready`, `--health missing`, or an issue code.
 
 `djinn agent config list` and the TUI command palette include Copilot model
 options from `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`, comma/semicolon-list

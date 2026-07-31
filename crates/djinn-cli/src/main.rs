@@ -366,6 +366,9 @@ struct SessionEventsArgs {
     /// Maximum cache-backed sessions to include with --all.
     #[arg(long, requires = "all")]
     limit: Option<usize>,
+    /// With --all, include only ready, not-ready, missing, or matching issue-code sessions.
+    #[arg(long = "health", requires = "all", value_name = "FILTER")]
+    health_filter: Option<String>,
     /// With --all, exit with an error when any reported session is not ready.
     #[arg(long, requires = "all")]
     strict: bool,
@@ -5981,7 +5984,8 @@ struct SessionProjectedSummary {
 
 fn session_events(args: SessionEventsArgs) -> Result<()> {
     if args.all {
-        let report = event_readiness_report_for_cache_sessions(args.limit)?;
+        let report =
+            event_readiness_report_for_cache_sessions(args.limit, args.health_filter.as_deref())?;
         if args.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
@@ -6448,6 +6452,7 @@ fn format_session_restore_events_report(report: &SessionRestoreEventsReport) -> 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SessionEventsReadinessReport {
     root: String,
+    filter: Option<String>,
     total: usize,
     ready: usize,
     not_ready: usize,
@@ -6472,15 +6477,21 @@ struct SessionEventsReadinessEntry {
 
 fn event_readiness_report_for_cache_sessions(
     limit: Option<usize>,
+    health_filter: Option<&str>,
 ) -> Result<SessionEventsReadinessReport> {
     let root = default_folder_session_root();
-    event_readiness_report_for_folder_session_root(&root, limit)
+    event_readiness_report_for_folder_session_root(&root, limit, health_filter)
 }
 
 fn event_readiness_report_for_folder_session_root(
     root: &Path,
     limit: Option<usize>,
+    health_filter: Option<&str>,
 ) -> Result<SessionEventsReadinessReport> {
+    let health_filter = health_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let mut sessions = Vec::new();
     if root.is_dir() {
         let mut entries = fs::read_dir(&root)
@@ -6503,7 +6514,7 @@ fn event_readiness_report_for_folder_session_root(
                 .iter()
                 .map(|issue| issue.code.clone())
                 .collect::<Vec<_>>();
-            sessions.push(SessionEventsReadinessEntry {
+            let entry = SessionEventsReadinessEntry {
                 name,
                 path: path.display().to_string(),
                 ready: report.all_valid,
@@ -6516,7 +6527,10 @@ fn event_readiness_report_for_folder_session_root(
                 issue_codes,
                 latest_event_rebuild_backup: latest_event_rebuild_backup_path(&path)
                     .map(|path| path.display().to_string()),
-            });
+            };
+            if readiness_entry_matches_health_filter(&entry, health_filter.as_deref()) {
+                sessions.push(entry);
+            }
         }
         sessions.sort_by(|left, right| {
             left.ready
@@ -6539,6 +6553,7 @@ fn event_readiness_report_for_folder_session_root(
     };
     Ok(SessionEventsReadinessReport {
         root: root.display().to_string(),
+        filter: health_filter,
         total,
         ready,
         not_ready,
@@ -6547,9 +6562,40 @@ fn event_readiness_report_for_folder_session_root(
     })
 }
 
+fn readiness_entry_matches_health_filter(
+    entry: &SessionEventsReadinessEntry,
+    filter: Option<&str>,
+) -> bool {
+    let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let normalized = normalize_event_health_filter(filter);
+    match normalized.as_str() {
+        "ready" => entry.ready,
+        "not-ready" | "not_ready" | "notready" => !entry.ready,
+        "missing" | "missing-events" | "missing_events_jsonl" => !entry.events_exists,
+        value => entry
+            .issue_codes
+            .iter()
+            .any(|code| normalize_event_health_filter(code) == value),
+    }
+}
+
+fn normalize_event_health_filter(value: &str) -> String {
+    value
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch == '_' || ch == ' ' { '-' } else { ch })
+        .collect()
+}
+
 fn format_event_readiness_report(report: &SessionEventsReadinessReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!("Event ledger readiness: {}", report.root));
+    if let Some(filter) = &report.filter {
+        lines.push(format!("  filter: {filter}"));
+    }
     lines.push(format!("  total: {}", report.total));
     lines.push(format!("  ready: {}", report.ready));
     lines.push(format!("  not ready: {}", report.not_ready));
@@ -21581,7 +21627,16 @@ mod tests {
         assert!(args.json);
 
         let cli = Cli::try_parse_from([
-            "djinn", "session", "events", "--all", "--limit", "5", "--strict", "--json",
+            "djinn",
+            "session",
+            "events",
+            "--all",
+            "--limit",
+            "5",
+            "--health",
+            "not-ready",
+            "--strict",
+            "--json",
         ])
         .unwrap();
         let Some(Command::Session(args)) = cli.command else {
@@ -21593,6 +21648,7 @@ mod tests {
         assert!(args.dir.is_none());
         assert!(args.all);
         assert_eq!(args.limit, Some(5));
+        assert_eq!(args.health_filter.as_deref(), Some("not-ready"));
         assert!(args.strict);
         assert!(!args.write);
         assert!(args.restore.is_none());
@@ -21969,7 +22025,7 @@ mod tests {
         fs::create_dir_all(&not_ready).unwrap();
         fs::write(not_ready.join("summary.md"), "orphan summary\n").unwrap();
 
-        let report = event_readiness_report_for_folder_session_root(&root, None).unwrap();
+        let report = event_readiness_report_for_folder_session_root(&root, None, None).unwrap();
         let text = format_event_readiness_report(&report);
 
         assert_eq!(report.total, 2);
@@ -21995,6 +22051,7 @@ mod tests {
 
         let strict_ok = SessionEventsReadinessReport {
             root: root.display().to_string(),
+            filter: None,
             total: 1,
             ready: 1,
             not_ready: 0,
@@ -22002,6 +22059,20 @@ mod tests {
             note: "ok".to_string(),
         };
         ensure_event_readiness_strict(&strict_ok).unwrap();
+        let not_ready =
+            event_readiness_report_for_folder_session_root(&root, None, Some("not-ready")).unwrap();
+        assert_eq!(not_ready.filter.as_deref(), Some("not-ready"));
+        assert_eq!(not_ready.total, 1);
+        assert_eq!(not_ready.not_ready, 1);
+        assert_eq!(not_ready.sessions[0].name, "not-ready-session");
+        let missing =
+            event_readiness_report_for_folder_session_root(&root, None, Some("missing")).unwrap();
+        assert_eq!(missing.total, 1);
+        assert_eq!(missing.sessions[0].name, "not-ready-session");
+        let ready_only =
+            event_readiness_report_for_folder_session_root(&root, None, Some("ready")).unwrap();
+        assert_eq!(ready_only.total, 1);
+        assert_eq!(ready_only.sessions[0].name, "ready-session");
 
         let _ = fs::remove_dir_all(&root);
     }

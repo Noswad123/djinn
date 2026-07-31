@@ -117,6 +117,8 @@ For migration audits across cache-backed sessions, run:
 
 ```bash
 djinn session events --all
+djinn session events --all --health not-ready
+djinn session events --all --health missing
 djinn session events --all --json
 djinn session events --all --strict
 ```
@@ -125,9 +127,12 @@ The readiness report lists each cache-backed session, event count, event turn-pa
 count, existing turn count, summary agreement, issue codes, and latest rebuild
 backup when present. `--strict` is intended for scripts/CI: it still writes no
 artifacts, but exits with an error if any reported session is not ready.
+Use `--health ready`, `--health not-ready`, `--health missing`, or an issue code
+such as `--health root_summary_mismatch` to focus the audit.
 Routine `djinn session ls` and the Sessions dashboard also show compact event
 health labels such as `ready:2/5`, `missing`, or the first validation issue code
-so ledger readiness is visible during normal triage.
+so ledger readiness is visible during normal triage. The Sessions dashboard fuzzy
+filter also matches those event health labels.
 
 ```bash
 djinn ask "Summarize the debugging path" --session ./debugging-session
