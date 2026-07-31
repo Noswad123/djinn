@@ -1070,9 +1070,10 @@ The first non-interactive agent slice is implemented as:
     `djinn session ls`, and `djinn session watch <session>` rather than
     maintaining a separate status model. Folder-backed background runs write
     `.djinn/runs/` metadata with run id, worker pid, command, log path,
-    heartbeat, and native session id when known; when a native session still
-    reports `running/background` but the pid is gone or the live worker heartbeat
-    is stale, status/watch project the session as `failed` with reason
+    heartbeat/progress phase, and native session id when known; background workers
+    refresh the heartbeat around model calls and tool execution. When a native
+    session still reports `running/background` but the pid is gone or the live
+    worker heartbeat is stale, status/watch project the session as `failed` with reason
     `background_worker_stale` or `background_worker_unresponsive` and a next action
     to inspect logs/transcripts and rerun foreground. Stale diagnostics include a
     concise summary of the last observed native transcript event for recovery

@@ -97,10 +97,11 @@ action directly in the list preview so routine triage does not require opening
 the focused view first.
 
 For background runs, Djinn records `.djinn/runs/` metadata with a run id, worker
-pid, command, log path, heartbeat, and native session id when known. `djinn
-session status` and `djinn session watch` use that metadata to detect a
-`running/background` lifecycle whose process is no longer alive or whose live
-worker heartbeat is stale. Such sessions are projected as failed with reason
+pid, command, log path, heartbeat, progress phase, and native session id when
+known. Background workers refresh the heartbeat around model calls and tool
+execution. `djinn session status` and `djinn session watch` use that metadata to
+detect a `running/background` lifecycle whose process is no longer alive or whose
+live worker heartbeat is stale. Such sessions are projected as failed with reason
 `background_worker_stale` or `background_worker_unresponsive`, a log-aware
 diagnostic note, and a next action that points to inspecting the log/transcript
 and rerunning foreground. The diagnostic note also includes the last observed

@@ -12940,6 +12940,15 @@ fn touch_background_run_marker_from_env(phase: &str) {
     let _ = touch_background_run_marker(&path, phase);
 }
 
+fn background_progress_phase(event: &AgentProgressEvent) -> &'static str {
+    match event {
+        AgentProgressEvent::ModelRequestStarted { .. } => "model_request_started",
+        AgentProgressEvent::ModelResponseCompleted { .. } => "model_response_completed",
+        AgentProgressEvent::ToolCallStarted { .. } => "tool_call_started",
+        AgentProgressEvent::ToolCallCompleted { .. } => "tool_call_completed",
+    }
+}
+
 fn touch_background_run_marker(marker_path: &Path, phase: &str) -> Result<()> {
     let content = fs::read_to_string(marker_path)
         .with_context(|| format!("reading background run marker {}", marker_path.display()))?;
@@ -13411,7 +13420,14 @@ fn agent_ask(
         None,
     )?;
     let session_for_model = store.load_session(&id)?;
-    let response = match complete_openai_messages(
+    let background_worker = matches!(
+        output_mode,
+        AgentAskOutputMode::SessionRun {
+            background_worker: true,
+            ..
+        }
+    );
+    let response = match complete_openai_messages_with_progress(
         &store,
         &id,
         agent_model_messages(&session_for_model, &workspace, &system_instructions),
@@ -13422,6 +13438,12 @@ fn agent_ask(
         &profile,
         allowed_tools,
         !args.json,
+        |event| {
+            if background_worker {
+                touch_background_run_marker_from_env(background_progress_phase(&event));
+            }
+            Ok(())
+        },
     ) {
         Ok(response) => {
             append_agent_session_lifecycle_event(
@@ -14803,33 +14825,6 @@ fn looks_like_copilot_model_id(model: &str) -> bool {
         || lower.contains("/o3")
         || lower.contains("/o4")
         || lower.contains("/o5")
-}
-
-fn complete_openai_messages(
-    store: &JsonlAgentSessionStore,
-    id: &AgentSessionId,
-    messages: Vec<ModelMessage>,
-    model: String,
-    api_key: Option<String>,
-    base_url: Option<String>,
-    max_tool_rounds: usize,
-    profile: &str,
-    allowed_tools: Vec<String>,
-    interactive_permissions: bool,
-) -> Result<djinn_agent::ModelResponse> {
-    complete_openai_messages_with_progress(
-        store,
-        id,
-        messages,
-        model,
-        api_key,
-        base_url,
-        max_tool_rounds,
-        profile,
-        allowed_tools,
-        interactive_permissions,
-        |_| Ok(()),
-    )
 }
 
 fn complete_openai_messages_with_progress<F>(
@@ -20670,6 +20665,64 @@ link = "context/repo"
             .unwrap()
             .contains("Phase: model_call"));
         assert!(report.next_action.as_deref().unwrap().contains("--fg"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn background_progress_updates_heartbeat_marker_phase() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-background-progress-marker-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let marker_path = root.join("session-run-test.toml");
+        fs::write(
+            &marker_path,
+            "version = 1\nrun_id = \"session-run-test\"\nheartbeat_at = \"2000-01-01T00:00:00Z\"\nheartbeat_phase = \"spawned\"\n",
+        )
+        .unwrap();
+
+        let started = AgentProgressEvent::ModelRequestStarted { round: 2 };
+        assert_eq!(background_progress_phase(&started), "model_request_started");
+        touch_background_run_marker(&marker_path, background_progress_phase(&started)).unwrap();
+        let marker = fs::read_to_string(&marker_path).unwrap();
+        assert!(marker.contains("heartbeat_phase = \"model_request_started\""));
+        assert!(!marker.contains("2000-01-01T00:00:00Z"));
+
+        let tool_call = djinn_agent::ModelToolCall {
+            id: "call-1".to_string(),
+            name: "read".to_string(),
+            input: serde_json::json!({"path": "summary.md"}),
+        };
+        let tool_started = AgentProgressEvent::ToolCallStarted {
+            round: 2,
+            call: tool_call.clone(),
+        };
+        assert_eq!(
+            background_progress_phase(&tool_started),
+            "tool_call_started"
+        );
+        touch_background_run_marker(&marker_path, background_progress_phase(&tool_started))
+            .unwrap();
+        let marker = fs::read_to_string(&marker_path).unwrap();
+        assert!(marker.contains("heartbeat_phase = \"tool_call_started\""));
+
+        let tool_completed = AgentProgressEvent::ToolCallCompleted {
+            round: 2,
+            call: tool_call,
+            result: djinn_agent::ToolResult {
+                output: serde_json::json!({"ok": true}),
+                success: true,
+            },
+            elapsed_ms: 42,
+        };
+        assert_eq!(
+            background_progress_phase(&tool_completed),
+            "tool_call_completed"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

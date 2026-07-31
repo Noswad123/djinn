@@ -173,8 +173,8 @@ and recovery:
 
 - Persist the last observed transcript event into the run/recovery marker; stale
   diagnostics currently compute and display it from the native transcript.
-- Add more granular progress phases around long-running provider calls and tool
-  execution if heartbeat updates at worker start are not enough in practice.
+- Expand heartbeat/progress coverage if future long-running phases emerge outside
+  model calls and tool execution.
 - Prefer append-only recovery events when a stale detector promotes derived state
   to failed, recording the detector and run metadata for provenance.
 - Add explicit user commands to mark a stale run failed/cancelled or resume when a
