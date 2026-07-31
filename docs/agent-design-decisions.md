@@ -957,6 +957,9 @@ The first non-interactive agent slice is implemented as:
     reports migration readiness across cache-backed folder sessions by reusing the
     same validation logic and surfacing event counts, projected turn-pair counts,
     turn counts, summary agreement, issue codes, and latest rebuild backup paths.
+    `--strict` keeps the report read-only but exits with an error when any
+    reported session is not ready, making the check script/CI-friendly without
+    mutating session artifacts.
 71. Bare folder-session names resolve under Djinn's cache directory, not the
     current working directory. For example `djinn session init small-question` and
     `djinn ask --session-dir small-question` target

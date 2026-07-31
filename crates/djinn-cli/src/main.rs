@@ -366,6 +366,9 @@ struct SessionEventsArgs {
     /// Maximum cache-backed sessions to include with --all.
     #[arg(long, requires = "all")]
     limit: Option<usize>,
+    /// With --all, exit with an error when any reported session is not ready.
+    #[arg(long, requires = "all")]
+    strict: bool,
     /// Rebuild turns/ and summary.md from events.jsonl after creating a backup.
     #[arg(long)]
     write: bool,
@@ -5984,6 +5987,9 @@ fn session_events(args: SessionEventsArgs) -> Result<()> {
         } else {
             print!("{}", format_event_readiness_report(&report));
         }
+        if args.strict {
+            ensure_event_readiness_strict(&report)?;
+        }
         return Ok(());
     }
 
@@ -6587,6 +6593,17 @@ fn format_event_readiness_report(report: &SessionEventsReadinessReport) -> Strin
     lines.push(format!("  note: {}", report.note));
     lines.push(String::new());
     lines.join("\n")
+}
+
+fn ensure_event_readiness_strict(report: &SessionEventsReadinessReport) -> Result<()> {
+    if report.not_ready > 0 {
+        bail!(
+            "event ledger readiness strict check failed: {} of {} reported session(s) not ready",
+            report.not_ready,
+            report.total
+        );
+    }
+    Ok(())
 }
 
 fn projected_event_turn_id(index: usize) -> String {
@@ -21489,6 +21506,7 @@ mod tests {
         assert_eq!(args.dir, Some(PathBuf::from("./debugging-session")));
         assert!(!args.all);
         assert!(args.write);
+        assert!(!args.strict);
         assert!(args.restore.is_none());
         assert!(args.json);
 
@@ -21513,10 +21531,11 @@ mod tests {
         assert_eq!(args.restore, Some(PathBuf::from("events-rebuild-test")));
         assert!(!args.all);
         assert!(args.write);
+        assert!(!args.strict);
         assert!(args.json);
 
         let cli = Cli::try_parse_from([
-            "djinn", "session", "events", "--all", "--limit", "5", "--json",
+            "djinn", "session", "events", "--all", "--limit", "5", "--strict", "--json",
         ])
         .unwrap();
         let Some(Command::Session(args)) = cli.command else {
@@ -21528,6 +21547,7 @@ mod tests {
         assert!(args.dir.is_none());
         assert!(args.all);
         assert_eq!(args.limit, Some(5));
+        assert!(args.strict);
         assert!(!args.write);
         assert!(args.restore.is_none());
         assert!(args.json);
@@ -21549,6 +21569,7 @@ mod tests {
         assert_eq!(args.dir, Some(PathBuf::from("./debugging-session")));
         assert!(!args.all);
         assert!(!args.write);
+        assert!(!args.strict);
         assert!(args.restore.is_none());
         assert!(args.json);
 
@@ -21921,6 +21942,20 @@ mod tests {
         assert!(text.contains("Event ledger readiness"));
         assert!(text.contains("ready: 1"));
         assert!(text.contains("not ready: 1"));
+        assert!(ensure_event_readiness_strict(&report)
+            .unwrap_err()
+            .to_string()
+            .contains("strict check failed"));
+
+        let strict_ok = SessionEventsReadinessReport {
+            root: root.display().to_string(),
+            total: 1,
+            ready: 1,
+            not_ready: 0,
+            sessions: Vec::new(),
+            note: "ok".to_string(),
+        };
+        ensure_event_readiness_strict(&strict_ok).unwrap();
 
         let _ = fs::remove_dir_all(&root);
     }

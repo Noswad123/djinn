@@ -118,11 +118,13 @@ For migration audits across cache-backed sessions, run:
 ```bash
 djinn session events --all
 djinn session events --all --json
+djinn session events --all --strict
 ```
 
 The readiness report lists each cache-backed session, event count, event turn-pair
 count, existing turn count, summary agreement, issue codes, and latest rebuild
-backup when present.
+backup when present. `--strict` is intended for scripts/CI: it still writes no
+artifacts, but exits with an error if any reported session is not ready.
 
 ```bash
 djinn ask "Summarize the debugging path" --session ./debugging-session
@@ -130,7 +132,7 @@ djinn session status ./debugging-session
 djinn session validate-events ./debugging-session
 djinn session events ./debugging-session
 djinn session events ./debugging-session --write
-djinn session events --all --json
+djinn session events --all --strict --json
 djinn session compact ./debugging-session
 djinn session promote ./debugging-session --type memory
 djinn session run ./promotion-memory --fg
