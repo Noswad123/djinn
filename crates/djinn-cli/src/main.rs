@@ -5950,6 +5950,10 @@ fn render_promotion_generation_summary(
     promotion_type: &str,
     candidates: &[PromotionGeneratedCandidateReport],
 ) -> String {
+    if promotion_type.trim() == "pattern" {
+        return render_pattern_promotion_generation_summary(candidates);
+    }
+
     let mut output = String::new();
     output.push_str("# Promotion candidates\n\n");
     output.push_str(&format!("Promotion type: `{}`\n\n", promotion_type.trim()));
@@ -5989,6 +5993,79 @@ fn render_promotion_generation_summary(
         }
         output.push_str(&format!("Candidate file: `{}`\n\n", candidate.path));
     }
+    output
+}
+
+fn render_pattern_promotion_generation_summary(
+    candidates: &[PromotionGeneratedCandidateReport],
+) -> String {
+    let mut output = String::new();
+    output.push_str("# Pattern synthesis\n\n");
+    output.push_str("Promotion type: `pattern`\n\n");
+    output.push_str(&format!(
+        "Generated {} pattern candidate{} for review. This summary is intended to stand alone as a readable synthesis before any accept/export step.\n\n",
+        candidates.len(),
+        plural_suffix(candidates.len())
+    ));
+    output.push_str("Use `djinn session validate-candidates <promotion-session>` after editing candidates, then export durable insight with `djinn session export-pattern <promotion-session> [candidate] --to <notes.md>`.\n\n");
+
+    output.push_str("## Executive summary\n\n");
+    if candidates.is_empty() {
+        output.push_str("_No pattern candidates were generated._\n\n");
+    } else {
+        for candidate in candidates {
+            let text = candidate.text.trim();
+            if text.is_empty() {
+                output.push_str(&format!("- `{}`\n", candidate.id));
+            } else {
+                output.push_str(&format!("- **{}** — {}\n", candidate.id, text));
+            }
+        }
+        output.push('\n');
+    }
+
+    output.push_str("## Patterns to evaluate\n\n");
+    for candidate in candidates {
+        output.push_str(&format!("### `{}`\n\n", candidate.id));
+        output.push_str("**Insight:** ");
+        if candidate.text.trim().is_empty() {
+            output.push_str("_No insight text recorded._\n\n");
+        } else {
+            output.push_str(candidate.text.trim());
+            output.push_str("\n\n");
+        }
+
+        output.push_str("**Why it matters:** ");
+        if let Some(rationale) = candidate
+            .rationale
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            output.push_str(rationale);
+            output.push_str("\n\n");
+        } else {
+            output.push_str("_No rationale recorded._\n\n");
+        }
+
+        output.push_str("**Evidence:**\n\n");
+        if candidate.evidence.is_empty() {
+            output.push_str("- _No evidence links recorded._\n\n");
+        } else {
+            for evidence in &candidate.evidence {
+                output.push_str(&format!("- {evidence}\n"));
+            }
+            output.push('\n');
+        }
+        output.push_str(&format!("Candidate file: `{}`\n\n", candidate.path));
+    }
+
+    output.push_str("## Review checklist\n\n");
+    output.push_str("1. Open candidate TOML and fix any wording/evidence issues.\n");
+    output
+        .push_str("2. Run `djinn session validate-candidates <promotion-session> [candidate]`.\n");
+    output.push_str("3. Export useful insight to notes with `djinn session export-pattern <promotion-session> [candidate] --to <notes.md>`.\n");
+    output.push_str("4. Optionally accept/deny candidates to record review status, then clean up sources explicitly when finished.\n");
     output
 }
 
@@ -21562,6 +21639,53 @@ link = "context/repo"
         assert!(prompt.contains("Packet evidence"));
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pattern_promotion_summary_is_standalone_synthesis() {
+        let candidates = vec![
+            PromotionGeneratedCandidateReport {
+                id: "pattern-001".to_string(),
+                candidate_type: "pattern".to_string(),
+                path: "/tmp/promotion/outputs/candidates/pattern-001.toml".to_string(),
+                text: "Keep pattern insights in notes after review.".to_string(),
+                rationale: Some(
+                    "Patterns are synthesis across sessions, not durable Djinn records."
+                        .to_string(),
+                ),
+                evidence: vec![
+                    "/tmp/source-a/summary.md".to_string(),
+                    "/tmp/source-b/turns/turn-1/response.md".to_string(),
+                ],
+                evidence_count: 2,
+            },
+            PromotionGeneratedCandidateReport {
+                id: "pattern-002".to_string(),
+                candidate_type: "pattern".to_string(),
+                path: "/tmp/promotion/outputs/candidates/pattern-002.toml".to_string(),
+                text: "Prefer explicit cleanup after exporting insights.".to_string(),
+                rationale: Some(
+                    "The workflow keeps provenance until the user intentionally deletes sources."
+                        .to_string(),
+                ),
+                evidence: vec!["/tmp/source-c/context/source-packet.md".to_string()],
+                evidence_count: 1,
+            },
+        ];
+
+        let summary = render_promotion_generation_summary("pattern", &candidates);
+
+        assert!(summary.starts_with("# Pattern synthesis"));
+        assert!(summary.contains("## Executive summary"));
+        assert!(summary.contains("## Patterns to evaluate"));
+        assert!(summary.contains("## Review checklist"));
+        assert!(summary.contains("**pattern-001** — Keep pattern insights in notes"));
+        assert!(summary.contains("**Why it matters:** Patterns are synthesis"));
+        assert!(summary.contains("/tmp/source-b/turns/turn-1/response.md"));
+        assert!(summary.contains(
+            "djinn session export-pattern <promotion-session> [candidate] --to <notes.md>"
+        ));
+        assert!(!summary.contains("# Promotion candidates"));
     }
 
     #[test]

@@ -155,10 +155,11 @@ evidence = ["./debugging-session/summary.md"]
   selected candidate and runs the explicit MindWeaver sync handoff.
 - `skill` candidates require `name`, `description`, plus `body`, `body_path`, or
   `text`, then write a Djinn-managed `SKILL.md` with an evidence section.
-- `pattern` candidates require `rationale`. Generation writes a readable synthesis
-  to `summary.md`; accepting marks/reifies selected pattern candidates under
-  `outputs/accepted/`, but the more useful long-term path is exporting the insight
-  into your notes.
+- `pattern` candidates require `rationale`. Generation writes a standalone
+  synthesis to `summary.md` with an executive summary, per-pattern
+  insight/rationale, evidence, and a review checklist; accepting marks/reifies
+  selected pattern candidates under `outputs/accepted/`, but the more useful
+  long-term path is exporting the insight into your notes.
 
 `djinn session validate-candidates <promotion-session> [candidate]` is a read-only
 repair loop for edited or failed candidate TOML. It reports valid/invalid counts

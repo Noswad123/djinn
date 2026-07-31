@@ -270,7 +270,9 @@ session folder, writes the deterministic source packet to
 preserves provenance to `summary.md`, `context/compacted.md`, and `turns/<id>/`
 files. Running the promotion session asks the configured model to write candidate
 TOML files under `outputs/candidates/`; this generation step does not mutate
-durable memory/todo/skill stores.
+durable memory/todo/skill stores. Pattern promotion sessions write a standalone
+`summary.md` synthesis with an executive summary, per-pattern insight/rationale,
+evidence, and review checklist before any accept/export step.
 
 Promotion outcomes are reviewed through the session surface. `djinn session
 accept <promotion-session> [candidate]` and `djinn session deny <promotion-session>

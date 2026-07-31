@@ -38,11 +38,8 @@ Future promotion work should target recovery, notes handoff, and review ergonomi
 rather than more hidden artifact formats. Keep the source-packet and candidate
 schemas evolvable; durable behavior belongs in the app guide and design decisions.
 
-Ready implementation slices:
-
-- **Promotion summary quality:** tune generated `summary.md` for pattern sessions
-  from real examples. The goal is a readable synthesis that can stand alone before
-  any accept/export step.
+No promotion-session slice is currently queued here; add the next recovery,
+handoff, or review-ergonomics improvement when it is ready to implement.
 
 ### Session TUI polish
 

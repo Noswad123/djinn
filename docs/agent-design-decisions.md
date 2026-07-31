@@ -1096,10 +1096,11 @@ The first non-interactive agent slice is implemented as:
     driven by stable candidate TOML files under `outputs/candidates/`: accepted
     `memory` candidates write memories, `todo` candidates default to durable
     actions as Djinn's standalone fallback, `skill` candidates write
-    Djinn-managed `SKILL.md` files, and `pattern` candidates write accepted
-    Markdown summaries under `outputs/accepted/`; the focused Sessions TUI exposes
-    pattern export handoff commands for copying the exact `djinn session
-    export-pattern ... --to <notes.md>` invocation. Every writeback-capable
+    Djinn-managed `SKILL.md` files, and `pattern` candidates write a standalone
+    `summary.md` synthesis plus accepted Markdown summaries under
+    `outputs/accepted/`; the focused Sessions TUI exposes pattern export handoff
+    commands for copying the exact `djinn session export-pattern ... --to <notes.md>`
+    invocation. Every writeback-capable
     candidate must carry explicit evidence links and type-specific fields:
     memories require `scope`, `kind`, and
     `confidence`; todos require `kind` and `confidence`; skills require
@@ -1110,7 +1111,8 @@ The first non-interactive agent slice is implemented as:
     durable stores. `djinn session status` and the Sessions TUI summarize candidate
     counts and individual candidate id/type/status/destination previews, and guarded
     writeback refuses exact or near-duplicate active memories, open todos/actions,
-    existing skills, and already-accepted pattern summary files. Todo candidates can opt into
+    existing skills, and already-accepted pattern summary files. Todo candidates
+    can opt into
     `todo_adapter = "mindweaver"` with validated MindWeaver metadata (`area`,
     `priority`, `energy`, `due`, `start`, `estimate`); dry-run renders the inbox
     checkbox, and accept appends it to the configured MindWeaver inbox while
