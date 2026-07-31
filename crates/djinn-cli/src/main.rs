@@ -143,6 +143,8 @@ enum SessionCommand {
     ExportPattern(SessionExportPatternArgs),
     /// Validate generated promotion candidate TOML without accepting or rerunning the model.
     ValidateCandidates(SessionValidateCandidatesArgs),
+    /// Validate that events.jsonl, turns/, and root summary.md agree.
+    ValidateEvents(SessionValidateEventsArgs),
     /// Permanently clean up explicit promotion-session source material.
     Cleanup(SessionCleanupArgs),
     /// Manage session-local context files and links.
@@ -336,6 +338,15 @@ struct SessionValidateCandidatesArgs {
     dir: PathBuf,
     /// Optional candidate id/path within the promotion session. Defaults to all candidates.
     candidate: Option<String>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionValidateEventsArgs {
+    /// Folder-backed session name or directory to validate.
+    dir: PathBuf,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -5065,6 +5076,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Deny(args) => session_decide(args, SessionDecisionAction::Deny),
         SessionCommand::ExportPattern(args) => session_export_pattern(args),
         SessionCommand::ValidateCandidates(args) => session_validate_candidates(args),
+        SessionCommand::ValidateEvents(args) => session_validate_events(args),
         SessionCommand::Cleanup(args) => session_cleanup(args),
         SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
@@ -5468,6 +5480,369 @@ fn validate_promotion_session_candidates(
         candidates,
         note,
     })
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionValidateEventsReport {
+    session_dir: String,
+    events_path: String,
+    events_exists: bool,
+    event_count: usize,
+    event_turn_count: usize,
+    turn_count: usize,
+    root_summary_matches_latest_turn: Option<bool>,
+    all_valid: bool,
+    issues: Vec<SessionValidateEventsIssue>,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionValidateEventsIssue {
+    severity: String,
+    code: String,
+    message: String,
+    path: Option<String>,
+    line: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionEventTurnPair {
+    request: String,
+    response: String,
+    request_line: usize,
+    response_line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingSessionUserMessage {
+    content: String,
+    line: usize,
+}
+
+fn session_validate_events(args: SessionValidateEventsArgs) -> Result<()> {
+    let report = validate_folder_session_events(&args.dir)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_validate_events_report(&report));
+    }
+    Ok(())
+}
+
+fn validate_folder_session_events(dir: &Path) -> Result<SessionValidateEventsReport> {
+    let session_dir = resolve_session_dir(dir)?;
+    let events_path = session_dir.join("events.jsonl");
+    let turns = read_folder_session_turns(&session_dir.join("turns"))?;
+    let mut issues = Vec::new();
+    let mut event_turns = Vec::new();
+    let mut event_count = 0;
+    let mut events_exists = events_path.exists();
+
+    if events_exists && !events_path.is_file() {
+        push_session_event_validation_issue(
+            &mut issues,
+            "invalid_events_path",
+            format!(
+                "events.jsonl exists but is not a file: {}",
+                events_path.display()
+            ),
+            Some(&events_path),
+            None,
+        );
+        events_exists = false;
+    }
+
+    if events_exists {
+        let raw = fs::read_to_string(&events_path)
+            .with_context(|| format!("reading {}", events_path.display()))?;
+        event_count = raw.lines().filter(|line| !line.trim().is_empty()).count();
+        event_turns = read_event_turn_pairs(&events_path, &raw, &mut issues);
+    } else {
+        push_session_event_validation_issue(
+            &mut issues,
+            "missing_events_jsonl",
+            format!(
+                "missing folder-local event ledger: {}",
+                events_path.display()
+            ),
+            Some(&events_path),
+            None,
+        );
+    }
+
+    validate_event_turn_pairs_against_turns(&session_dir, &event_turns, &turns, &mut issues);
+    let root_summary_matches_latest_turn =
+        validate_root_summary_against_latest_turn(&session_dir, &turns, &mut issues)?;
+
+    let all_valid = issues.is_empty();
+    let note = if all_valid {
+        "events.jsonl, turns/, and summary.md agree. turns/ remains canonical until event projection is explicitly promoted."
+    } else {
+        "One or more event/turn agreement issues were found. Keep treating turns/ as canonical and repair or regenerate the shadow ledger before relying on events."
+    }
+    .to_string();
+
+    Ok(SessionValidateEventsReport {
+        session_dir: session_dir.display().to_string(),
+        events_path: events_path.display().to_string(),
+        events_exists,
+        event_count,
+        event_turn_count: event_turns.len(),
+        turn_count: turns.len(),
+        root_summary_matches_latest_turn,
+        all_valid,
+        issues,
+        note,
+    })
+}
+
+fn read_event_turn_pairs(
+    events_path: &Path,
+    raw: &str,
+    issues: &mut Vec<SessionValidateEventsIssue>,
+) -> Vec<SessionEventTurnPair> {
+    let mut pending_user: Option<PendingSessionUserMessage> = None;
+    let mut pairs = Vec::new();
+    for (index, line) in raw.lines().enumerate() {
+        let line_number = index + 1;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let event = match serde_json::from_str::<AgentSessionEvent>(trimmed) {
+            Ok(event) => event,
+            Err(err) => {
+                push_session_event_validation_issue(
+                    issues,
+                    "invalid_event_json",
+                    format!("line {line_number} is not a valid Djinn session event: {err}"),
+                    Some(events_path),
+                    Some(line_number),
+                );
+                continue;
+            }
+        };
+        match event.kind {
+            AgentSessionEventKind::UserMessage { content } => {
+                if let Some(previous) = pending_user.take() {
+                    push_session_event_validation_issue(
+                        issues,
+                        "user_message_without_assistant",
+                        format!(
+                            "user message on line {} was not followed by an assistant message before line {line_number}",
+                            previous.line
+                        ),
+                        Some(events_path),
+                        Some(previous.line),
+                    );
+                }
+                pending_user = Some(PendingSessionUserMessage {
+                    content,
+                    line: line_number,
+                });
+            }
+            AgentSessionEventKind::AssistantMessage { content } => {
+                if let Some(user) = pending_user.take() {
+                    pairs.push(SessionEventTurnPair {
+                        request: user.content,
+                        response: content,
+                        request_line: user.line,
+                        response_line: line_number,
+                    });
+                } else {
+                    push_session_event_validation_issue(
+                        issues,
+                        "assistant_message_without_user",
+                        format!(
+                            "assistant message on line {line_number} has no preceding user message"
+                        ),
+                        Some(events_path),
+                        Some(line_number),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(user) = pending_user {
+        push_session_event_validation_issue(
+            issues,
+            "user_message_without_assistant",
+            format!(
+                "user message on line {} was not followed by an assistant message",
+                user.line
+            ),
+            Some(events_path),
+            Some(user.line),
+        );
+    }
+    pairs
+}
+
+fn validate_event_turn_pairs_against_turns(
+    session_dir: &Path,
+    event_turns: &[SessionEventTurnPair],
+    turns: &[FolderSessionTurnDigest],
+    issues: &mut Vec<SessionValidateEventsIssue>,
+) {
+    if event_turns.len() != turns.len() {
+        push_session_event_validation_issue(
+            issues,
+            "turn_count_mismatch",
+            format!(
+                "events.jsonl has {} user/assistant turn pair(s), but turns/ has {} turn folder(s)",
+                event_turns.len(),
+                turns.len()
+            ),
+            Some(&session_dir.join("events.jsonl")),
+            None,
+        );
+    }
+
+    for (index, (event_turn, turn)) in event_turns.iter().zip(turns.iter()).enumerate() {
+        let turn_number = index + 1;
+        match &turn.request {
+            Some(request) if same_session_text(request, &event_turn.request) => {}
+            Some(_) => push_session_event_validation_issue(
+                issues,
+                "turn_request_mismatch",
+                format!(
+                    "turn {} ({}) request.md does not match user_message from events.jsonl line {}",
+                    turn_number, turn.id, event_turn.request_line
+                ),
+                turn.request_path.as_deref(),
+                None,
+            ),
+            None => push_session_event_validation_issue(
+                issues,
+                "missing_turn_request",
+                format!("turn {} ({}) is missing request.md", turn_number, turn.id),
+                Some(&session_dir.join("turns").join(&turn.id).join("request.md")),
+                None,
+            ),
+        }
+        match &turn.response {
+            Some(response) if same_session_text(response, &event_turn.response) => {}
+            Some(_) => push_session_event_validation_issue(
+                issues,
+                "turn_response_mismatch",
+                format!(
+                    "turn {} ({}) response.md does not match assistant_message from events.jsonl line {}",
+                    turn_number, turn.id, event_turn.response_line
+                ),
+                turn.response_path.as_deref(),
+                None,
+            ),
+            None => push_session_event_validation_issue(
+                issues,
+                "missing_turn_response",
+                format!("turn {} ({}) is missing response.md", turn_number, turn.id),
+                Some(&session_dir.join("turns").join(&turn.id).join("response.md")),
+                None,
+            ),
+        }
+    }
+}
+
+fn validate_root_summary_against_latest_turn(
+    session_dir: &Path,
+    turns: &[FolderSessionTurnDigest],
+    issues: &mut Vec<SessionValidateEventsIssue>,
+) -> Result<Option<bool>> {
+    let Some(latest_response) = turns.last().and_then(|turn| turn.response.as_deref()) else {
+        return Ok(None);
+    };
+    let summary_path = session_dir.join("summary.md");
+    let summary = read_optional_markdown_file(&summary_path)?;
+    let matches_latest = summary
+        .as_deref()
+        .map(|summary| same_session_text(summary, latest_response))
+        .unwrap_or(false);
+    if summary.is_none() {
+        push_session_event_validation_issue(
+            issues,
+            "missing_root_summary",
+            "summary.md is missing or empty while the latest turn has a response".to_string(),
+            Some(&summary_path),
+            None,
+        );
+    } else if !matches_latest {
+        push_session_event_validation_issue(
+            issues,
+            "root_summary_mismatch",
+            "summary.md does not match the latest turn response.md".to_string(),
+            Some(&summary_path),
+            None,
+        );
+    }
+    Ok(Some(matches_latest))
+}
+
+fn same_session_text(left: &str, right: &str) -> bool {
+    left.trim_end() == right.trim_end()
+}
+
+fn push_session_event_validation_issue(
+    issues: &mut Vec<SessionValidateEventsIssue>,
+    code: &str,
+    message: String,
+    path: Option<&Path>,
+    line: Option<usize>,
+) {
+    issues.push(SessionValidateEventsIssue {
+        severity: "error".to_string(),
+        code: code.to_string(),
+        message,
+        path: path.map(|path| path.display().to_string()),
+        line,
+    });
+}
+
+fn format_session_validate_events_report(report: &SessionValidateEventsReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "Validated session event ledger: {}",
+        report.session_dir
+    ));
+    lines.push(format!(
+        "  status: {}",
+        if report.all_valid { "valid" } else { "invalid" }
+    ));
+    lines.push(format!(
+        "  events.jsonl: {} ({})",
+        yes_no(report.events_exists),
+        report.events_path
+    ));
+    lines.push(format!("  events: {}", report.event_count));
+    lines.push(format!("  event turn pairs: {}", report.event_turn_count));
+    lines.push(format!("  turn folders: {}", report.turn_count));
+    let summary_status = report
+        .root_summary_matches_latest_turn
+        .map(yes_no)
+        .unwrap_or("n/a");
+    lines.push(format!("  summary matches latest turn: {summary_status}"));
+    if report.issues.is_empty() {
+        lines.push("  issues: none".to_string());
+    } else {
+        lines.push("  issues:".to_string());
+        for issue in &report.issues {
+            let mut suffix = String::new();
+            if let Some(path) = &issue.path {
+                suffix.push_str(&format!(" ({path}"));
+                if let Some(line) = issue.line {
+                    suffix.push_str(&format!(":{line}"));
+                }
+                suffix.push(')');
+            }
+            lines.push(format!(
+                "    - [{}] {}{}",
+                issue.code, issue.message, suffix
+            ));
+        }
+    }
+    lines.push(format!("  note: {}", report.note));
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 fn validate_promotion_candidate_path(
@@ -20241,6 +20616,23 @@ mod tests {
         assert_eq!(args.candidate.as_deref(), Some("memory-001"));
         assert!(args.json);
 
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "validate-events",
+            "./debugging-session",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::ValidateEvents(args)) = args.command else {
+            panic!("expected session validate-events command");
+        };
+        assert_eq!(args.dir, PathBuf::from("./debugging-session"));
+        assert!(args.json);
+
         let cli = Cli::try_parse_from(["djinn", "session", "bap-questions"]).unwrap();
         let Some(Command::Session(args)) = cli.command else {
             panic!("expected session command");
@@ -20337,6 +20729,85 @@ mod tests {
         assert!(!dir.join("logs/summary-history.md").exists());
         assert!(!dir.join("logs/events.jsonl").exists());
         assert!(!dir.join("logs/transcript.md").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_validate_events_reports_event_turn_summary_agreement() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-validate-events-ok-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_validate_events_ok"),
+            meta: AgentSessionMeta {
+                title: "Validate events".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "question".to_string(),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "answer".to_string(),
+                }),
+            ],
+        };
+        project_agent_session_dir(&dir, &session, "question", "answer").unwrap();
+
+        let report = validate_folder_session_events(&dir).unwrap();
+        let text = format_session_validate_events_report(&report);
+
+        assert!(report.all_valid);
+        assert_eq!(report.event_count, 2);
+        assert_eq!(report.event_turn_count, 1);
+        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.root_summary_matches_latest_turn, Some(true));
+        assert!(text.contains("status: valid"));
+        assert!(text.contains("issues: none"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_validate_events_reports_mismatched_turn_and_summary() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-validate-events-mismatch-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let turn_dir = dir.join("turns/turn-1");
+        fs::create_dir_all(&turn_dir).unwrap();
+        fs::write(turn_dir.join("request.md"), "question\n").unwrap();
+        fs::write(turn_dir.join("response.md"), "different answer\n").unwrap();
+        fs::write(dir.join("summary.md"), "stale summary\n").unwrap();
+        fs::write(
+            dir.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"question\"}\n{\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+        )
+        .unwrap();
+
+        let report = validate_folder_session_events(&dir).unwrap();
+        let codes = report
+            .issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!report.all_valid);
+        assert_eq!(report.event_turn_count, 1);
+        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.root_summary_matches_latest_turn, Some(false));
+        assert!(codes.contains(&"turn_response_mismatch"));
+        assert!(codes.contains(&"root_summary_mismatch"));
 
         let _ = fs::remove_dir_all(&dir);
     }

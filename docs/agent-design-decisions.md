@@ -937,7 +937,12 @@ The first non-interactive agent slice is implemented as:
     manifest defaults, repo symlink health, expected file presence, turn count,
     folder-local `events.jsonl` presence/count, and shallow context ingest/skip
     counts without running a model or mutating the session folder. The event count
-    is diagnostic only while turn folders remain canonical.
+    is diagnostic only while turn folders remain canonical. `djinn session
+    validate-events <session>` is the read-only migration guardrail: it parses the
+    shadow ledger, pairs user/assistant message events, compares them to
+    `turns/<id>/request.md` and `turns/<id>/response.md`, and checks root
+    `summary.md` against the latest turn response. It reports agreement issues but
+    must not rewrite artifacts or make events authoritative.
 71. Bare folder-session names resolve under Djinn's cache directory, not the
     current working directory. For example `djinn session init small-question` and
     `djinn ask --session-dir small-question` target

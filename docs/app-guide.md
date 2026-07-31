@@ -85,9 +85,17 @@ maintains a folder-local append-only `events.jsonl` shadow of native session
 events so future slices can validate and eventually project turns from events
 without changing today's file-first workflow.
 
+Use `djinn session validate-events <session>` when checking the event-ledger
+migration path. It is read-only: it parses `events.jsonl`, pairs user/assistant
+message events, compares them to `turns/<id>/request.md` and
+`turns/<id>/response.md` in turn order, and verifies root `summary.md` matches the
+latest turn response. The command reports issues but does not rewrite artifacts or
+make events authoritative.
+
 ```bash
 djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
+djinn session validate-events ./debugging-session
 djinn session compact ./debugging-session
 djinn session promote ./debugging-session --type memory
 djinn session run ./promotion-memory --fg
