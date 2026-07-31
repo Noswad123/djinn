@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
 use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
@@ -4993,6 +4993,7 @@ fn folder_session_status_tui_view(
             .as_ref()
             .and_then(|turn| turn.response_path.clone()),
         turn_count: report.turn_count,
+        event_count: report.event_count,
         candidate_status: report
             .candidates
             .as_ref()
@@ -7774,6 +7775,7 @@ struct SessionStatusReport {
     lifecycle: SessionStatusLifecycleReport,
     files: SessionStatusFileReport,
     turn_count: usize,
+    event_count: usize,
     latest_turn: Option<SessionStatusTurnReport>,
     candidates: Option<SessionStatusCandidateReport>,
     context_ingestible_count: usize,
@@ -7847,6 +7849,7 @@ struct SessionStatusFileReport {
     context_dir: bool,
     compacted_md: bool,
     turns_dir: bool,
+    events_jsonl: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -8378,6 +8381,8 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
     let request_exists = session_dir.join("request.md").exists();
     let turns = read_folder_session_turns(&turns_dir)?;
     let turn_count = turns.len();
+    let events_path = session_dir.join("events.jsonl");
+    let event_count = count_folder_session_events_jsonl(&events_path);
     let latest_turn = turns.last().map(session_status_turn_report);
     let candidates = session_status_candidates(&session_dir)?;
     let lifecycle = session_status_lifecycle(
@@ -8422,14 +8427,28 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
             context_dir: context_dir.is_dir(),
             compacted_md: context_dir.join("compacted.md").exists(),
             turns_dir: turns_dir.is_dir(),
+            events_jsonl: events_path.exists(),
         },
         turn_count,
+        event_count,
         latest_turn,
         candidates,
         context_ingestible_count,
         context_skipped,
         next_action,
     })
+}
+
+fn count_folder_session_events_jsonl(path: &Path) -> usize {
+    fs::read_to_string(path)
+        .ok()
+        .map(|content| {
+            content
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 fn session_status_lifecycle(
@@ -10655,7 +10674,12 @@ fn format_folder_session_status(report: &SessionStatusReport) -> String {
         yes_no(report.files.compacted_md)
     ));
     lines.push(format!("  turns/: {}", yes_no(report.files.turns_dir)));
+    lines.push(format!(
+        "  events.jsonl: {}",
+        yes_no(report.files.events_jsonl)
+    ));
     lines.push(format!("Turns: {}", report.turn_count));
+    lines.push(format!("Events: {}", report.event_count));
     if let Some(turn) = &report.latest_turn {
         lines.push("Latest turn:".to_string());
         lines.push(format!("  id: {}", turn.id));
@@ -12147,6 +12171,7 @@ fn project_agent_session_dir(
     .with_context(|| format!("writing turn response in {}", turn_dir.display()))?;
 
     write_agent_session_toml(session_dir, session)?;
+    write_folder_session_events_jsonl(session_dir, session)?;
 
     Ok(AgentSessionDirProjection {
         session_dir: session_dir.to_path_buf(),
@@ -12155,6 +12180,49 @@ fn project_agent_session_dir(
         summary_path,
         request_path,
     })
+}
+
+fn write_folder_session_events_jsonl(
+    session_dir: &Path,
+    session: &AgentSession,
+) -> Result<PathBuf> {
+    let path = session_dir.join("events.jsonl");
+    let existing = fs::read_to_string(&path).unwrap_or_default();
+    let mut existing_event_ids = HashSet::new();
+    let mut existing_lines = HashSet::new();
+    for line in existing
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        existing_lines.insert(line.to_string());
+        if let Ok(event) = serde_json::from_str::<AgentSessionEvent>(line) {
+            if !event.event_id.trim().is_empty() {
+                existing_event_ids.insert(event.event_id);
+            }
+        }
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    for event in &session.events {
+        let line = serde_json::to_string(event)?;
+        let event_id = event.event_id.trim();
+        if !event_id.is_empty() {
+            if existing_event_ids.contains(event_id) {
+                continue;
+            }
+            existing_event_ids.insert(event_id.to_string());
+        } else if existing_lines.contains(&line) {
+            continue;
+        }
+        writeln!(file, "{line}").with_context(|| format!("appending {}", path.display()))?;
+        existing_lines.insert(line);
+    }
+    Ok(path)
 }
 
 fn write_agent_session_toml(session_dir: &Path, session: &AgentSession) -> Result<()> {
@@ -13189,6 +13257,7 @@ fn session_watch_snapshot_key(report: &SessionStatusReport) -> Result<String> {
         "reason": report.lifecycle.reason,
         "note": report.lifecycle.note,
         "turn_count": report.turn_count,
+        "event_count": report.event_count,
         "latest_turn": report.latest_turn,
         "next_action": report.next_action,
     }))
@@ -20257,6 +20326,14 @@ mod tests {
         assert!(projection.turn_dir.join("request.md").exists());
         assert!(projection.turn_dir.join("response.md").exists());
         assert!(dir.join("djinn.toml").exists());
+        let events_jsonl = fs::read_to_string(dir.join("events.jsonl")).unwrap();
+        assert_eq!(events_jsonl.lines().count(), 2);
+        assert!(events_jsonl.contains("\"type\":\"user_message\""));
+        assert!(events_jsonl.contains("\"type\":\"assistant_message\""));
+        write_folder_session_events_jsonl(&dir, &session).unwrap();
+        let events_jsonl_after_second_shadow =
+            fs::read_to_string(dir.join("events.jsonl")).unwrap();
+        assert_eq!(events_jsonl_after_second_shadow.lines().count(), 2);
         assert!(!dir.join("logs/summary-history.md").exists());
         assert!(!dir.join("logs/events.jsonl").exists());
         assert!(!dir.join("logs/transcript.md").exists());
@@ -20399,7 +20476,9 @@ link = "context/repo"
         assert!(report.files.summary_md);
         assert!(report.files.context_dir);
         assert!(report.files.turns_dir);
+        assert!(!report.files.events_jsonl);
         assert_eq!(report.turn_count, 1);
+        assert_eq!(report.event_count, 0);
         assert_eq!(report.lifecycle.state, "not_started");
         assert_eq!(report.latest_turn.as_ref().unwrap().id, "turn-1");
         assert!(!report.latest_turn.as_ref().unwrap().has_response);
@@ -20422,6 +20501,8 @@ link = "context/repo"
         assert!(!repo_status.link_broken);
         assert!(text.contains("Skipped context:"));
         assert!(text.contains("State: not_started"));
+        assert!(text.contains("events.jsonl: no"));
+        assert!(text.contains("Events: 0"));
         assert!(text.contains("Latest turn:"));
         assert!(text.contains("Candidates:"));
         assert!(text.contains("2 total, 1 accepted, 0 denied, 1 pending"));
@@ -20483,6 +20564,8 @@ link = "context/repo"
         assert_eq!(report.lifecycle.mode.as_deref(), Some("foreground"));
         assert_eq!(report.lifecycle.reason.as_deref(), Some("test completed"));
         assert_eq!(report.lifecycle.note.as_deref(), Some("all done"));
+        assert!(report.files.events_jsonl);
+        assert_eq!(report.event_count, 2);
         let latest = report.latest_turn.as_ref().unwrap();
         assert!(latest.has_response);
         assert!(latest
@@ -20498,6 +20581,8 @@ link = "context/repo"
         assert!(text.contains("State: completed"));
         assert!(text.contains("Mode: foreground"));
         assert!(text.contains("State note: all done"));
+        assert!(text.contains("events.jsonl: yes"));
+        assert!(text.contains("Events: 2"));
         assert!(text.contains("response.md"));
 
         let _ = fs::remove_dir_all(&root);
@@ -20820,6 +20905,11 @@ link = "context/repo"
         fs::write(session_dir.join("summary.md"), "answer\n").unwrap();
         fs::write(turn.join("request.md"), "question\n").unwrap();
         fs::write(turn.join("response.md"), "answer\n").unwrap();
+        fs::write(
+            session_dir.join("events.jsonl"),
+            "{\"type\":\"user_message\"}\n{\"type\":\"assistant_message\"}\n",
+        )
+        .unwrap();
         fs::create_dir_all(session_dir.join("outputs/candidates")).unwrap();
         fs::create_dir_all(session_dir.join("outputs/generation")).unwrap();
         fs::create_dir_all(session_dir.join("context")).unwrap();
@@ -20859,6 +20949,7 @@ link = "context/repo"
         assert_eq!(view.title, "bap-questions");
         assert_eq!(view.state, "not_started");
         assert_eq!(view.turn_count, 1);
+        assert_eq!(view.event_count, 2);
         assert_eq!(
             view.candidate_status.as_deref(),
             Some("1 total, 0 accepted, 0 denied, 1 pending")
@@ -20956,8 +21047,10 @@ link = "context/repo"
                 context_dir: true,
                 compacted_md: false,
                 turns_dir: true,
+                events_jsonl: true,
             },
             turn_count: 1,
+            event_count: 3,
             latest_turn: Some(SessionStatusTurnReport {
                 id: "turn-1".to_string(),
                 request_path: Some("/tmp/session/turns/turn-1/request.md".to_string()),

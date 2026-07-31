@@ -30,9 +30,13 @@ Djinn uses Linux-style local paths on every platform:
 ~/.config/djinn/suggestions.jsonl          # open suggestions
 ~/.config/djinn/contexts.json              # context registry and active context
 ~/.config/djinn/skills/                    # Djinn-managed skills
-~/.config/djinn/watchers/opencode.json     # watcher state
-~/.cache/djinn/chats.jsonl                 # session metadata/index
-~/.cache/djinn/chats/<id>.json             # session bodies
+~/.cache/djinn/sessions/<name>/            # cache-backed folder sessions
+<session>/djinn.toml                       # folder session metadata
+<session>/request.md                       # current request / draft input
+<session>/summary.md                       # latest response
+<session>/turns/<id>/                      # canonical per-turn evidence
+<session>/events.jsonl                     # shadow event ledger, not authoritative yet
+<session>/.djinn/<native-id>.jsonl         # runtime-private native transcript
 ```
 
 Overrides:
@@ -75,7 +79,11 @@ Default roots come from, in order:
 ## Sessions and review
 
 Sessions are folder-backed capsules. Keep new work in `djinn ask` / `djinn session
-...` flows so source material remains file-native.
+...` flows so source material remains file-native. The current durable turn
+history is still `turns/<id>/request.md` and `turns/<id>/response.md`; Djinn also
+maintains a folder-local append-only `events.jsonl` shadow of native session
+events so future slices can validate and eventually project turns from events
+without changing today's file-first workflow.
 
 ```bash
 djinn ask "Summarize the debugging path" --session ./debugging-session
@@ -219,6 +227,9 @@ accepted, denied, and pending. Status output and TUI previews also list individu
 candidate ids with type, status, and accepted destination/writeback path when
 available. Candidate rows can be accepted with `a`, accepted with explicit
 MindWeaver sync handoff via `m`, denied with `x`, or opened with `p`/Enter.
+For every folder-backed session, status also reports whether `events.jsonl`
+exists and how many non-empty event rows it contains; this is diagnostic evidence
+only while `turns/` remains canonical.
 
 ```bash
 djinn review memory <id> --dry-run

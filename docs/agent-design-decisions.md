@@ -866,10 +866,13 @@ The first non-interactive agent slice is implemented as:
     latest answer, writes `djinn.toml`
     metadata, creates an unstructured `context/` folder for user-curated session
     context, and records per-turn `turns/<id>/request.md` and
-    `turns/<id>/response.md`. It intentionally does not mirror `events.jsonl`,
-    create `summary-history.md`, or create `transcript.md` in the session folder;
-    nvim/file workflows should use summary, context, turn files, and native Djinn
-    session JSONL pointers first.
+    `turns/<id>/response.md`. It also maintains a folder-local append-only
+    `events.jsonl` shadow ledger of native session events, but that ledger is not
+    authoritative yet; `turns/` remains the canonical user-facing turn evidence
+    until validation/regeneration slices prove event projection safe. The
+    projection intentionally does not create `summary-history.md` or
+    `transcript.md` in the session folder; nvim/file workflows should use summary,
+    context, turn files, and native Djinn session JSONL pointers first.
 64. Folder-backed sessions separate raw evidence from durable context. `turns/`
     stores exact per-turn request/response evidence. `context/` is unstructured,
     user-curated working memory for facts, decisions, repo notes, open questions,
@@ -932,8 +935,9 @@ The first non-interactive agent slice is implemented as:
 70. `djinn session status <dir>` is the read-only diagnostic surface for
     folder-backed sessions. It reports manifest presence, native session linkage,
     manifest defaults, repo symlink health, expected file presence, turn count,
-    and shallow context ingest/skip counts without running a model or mutating the
-    session folder.
+    folder-local `events.jsonl` presence/count, and shallow context ingest/skip
+    counts without running a model or mutating the session folder. The event count
+    is diagnostic only while turn folders remain canonical.
 71. Bare folder-session names resolve under Djinn's cache directory, not the
     current working directory. For example `djinn session init small-question` and
     `djinn ask --session-dir small-question` target

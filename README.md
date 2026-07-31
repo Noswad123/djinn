@@ -86,7 +86,10 @@ calls these file-backed capsules **Sessions**: `djinn` opens that tab by
 default, and `djinn tui sessions` opens it explicitly. Use
 `djinn session <name-or-path>` for the focused session view,
 `djinn session run` to execute turns, and `djinn session watch` to follow
-lifecycle status. The old transcript subcommand has been removed.
+lifecycle status. Session folders keep `turns/<id>/` as the canonical turn
+evidence and maintain a folder-local `events.jsonl` shadow ledger for diagnostics
+and future event-based projections. The old transcript subcommand has been
+removed.
 
 `djinn agent config list` and the TUI command palette include Copilot model
 options from `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`, comma/semicolon-list

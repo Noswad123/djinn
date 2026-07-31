@@ -129,6 +129,7 @@ pub struct FolderSessionStatusView {
     pub request_path: Option<String>,
     pub response_path: Option<String>,
     pub turn_count: usize,
+    pub event_count: usize,
     pub candidate_status: Option<String>,
     pub candidate_details: Vec<String>,
     pub candidate_entries: Vec<PromotionCandidateRow>,
@@ -838,6 +839,10 @@ fn draw_folder_session_status(
         Line::from(vec![
             Span::styled("Turns:  ", dim_style()),
             Span::raw(view.turn_count.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Events: ", dim_style()),
+            Span::raw(view.event_count.to_string()),
         ]),
     ];
     if let Some(path) = &view.request_path {
@@ -3755,6 +3760,7 @@ mod tests {
             request_path: None,
             response_path: None,
             turn_count: 0,
+            event_count: 0,
             candidate_status: Some("1 total, 0 accepted, 0 denied, 1 pending".to_string()),
             candidate_details: Vec::new(),
             candidate_entries: vec![PromotionCandidateRow {
