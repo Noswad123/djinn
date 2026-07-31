@@ -922,14 +922,16 @@ The first non-interactive agent slice is implemented as:
     other configured harnesses look, but that harness-context discovery is a later
     slice.
 69. `djinn session compact --session-dir <dir>` is initially deterministic and
-    model-free. It reads per-turn `request.md`/`response.md` files under `turns/`
-    and rewrites `context/compacted.md` as a bounded digest with evidence links
-    back to `../turns/<id>/...`. Compaction preserves user-owned edits outside the
-    generated marker block delimited by `<!-- djinn:generated:start -->` and
-    `<!-- djinn:generated:end -->`, replacing only the generated block on rerun.
-    It must not create transcript/history logs; later model-assisted compaction
-    can turn this digest into cleaner durable facts, decisions, and open
-    questions.
+    model-free. It reads event turn pairs from `events.jsonl` when no projected
+    `turns/` tree exists, otherwise it can still consume per-turn
+    `request.md`/`response.md` files under `turns/` for compatibility. It rewrites
+    `context/compacted.md` as a bounded digest with evidence links back to
+    `../events.jsonl` or `../turns/<id>/...`. Compaction preserves user-owned edits
+    outside the generated marker block delimited by
+    `<!-- djinn:generated:start -->` and `<!-- djinn:generated:end -->`, replacing
+    only the generated block on rerun. It must not create transcript/history logs;
+    later model-assisted compaction can turn this digest into cleaner durable
+    facts, decisions, and open questions.
 70. `djinn session status <dir>` is the read-only diagnostic surface for
     folder-backed sessions. It reports manifest presence, native session linkage,
     manifest defaults, repo symlink health, expected file presence, turn count,
@@ -963,20 +965,6 @@ The first non-interactive agent slice is implemented as:
     session. Readiness audits accept `--health` filters for `ready`, `not-ready`,
     `missing`, or specific validation issue codes; the Sessions dashboard fuzzy
     filter also matches compact event health labels.
-    `djinn session events --all --gate` is the explicit read-only promotion gate:
-    it is intentionally incompatible with filtered/limited scans, requires at
-    least one cache-backed session, and fails unless all reported sessions are
-    ready. Passing this gate is evidence for a later human/design decision; it
-    does not itself make `events.jsonl` authoritative.
-    `djinn session events <session> --authority-trial` is the single-session
-    no-op experiment surface: it is restricted to scratch/sandbox/experimental
-    session paths, requires a valid agreeing event ledger with at least one turn
-    pair, reports the projected event-authoritative shape, and writes nothing.
-    `DJINN_EVENT_AUTHORITY_EXPERIMENT=1 djinn session events <session>
-    --authority-read` is the first feature-flagged read path: after the same
-    scratch/trial checks pass, it reads turn previews from `events.jsonl` as the
-    authority source for inspection while preserving the existing `turns/`
-    projection and writing nothing.
 71. Bare folder-session names resolve under Djinn's cache directory, not the
     current working directory. For example `djinn session init small-question` and
     `djinn ask --session-dir small-question` target

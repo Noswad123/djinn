@@ -99,12 +99,7 @@ event-ledger readiness across cache-backed sessions, or add `--strict` for a
 read-only script/CI guard that fails when any reported session is not ready.
 `djinn session ls` and the Sessions dashboard show compact event health labels for
 routine triage, and readiness audits can be focused with `--health ready`,
-`--health not-ready`, `--health missing`, or an issue code. Use `--gate` for the
-read-only authority promotion checkpoint; it reports pass/fail criteria but does
-not make events authoritative. `--authority-trial` provides a no-op single-session
-trial for scratch/sandbox/experimental sessions only; with
-`DJINN_EVENT_AUTHORITY_EXPERIMENT=1`, `--authority-read` reads scratch-session
-turns from `events.jsonl` for inspection without changing files.
+`--health not-ready`, `--health missing`, or an issue code.
 
 `djinn agent config list` and the TUI command palette include Copilot model
 options from `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`, comma/semicolon-list
