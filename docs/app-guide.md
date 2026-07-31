@@ -34,8 +34,8 @@ Djinn uses Linux-style local paths on every platform:
 <session>/djinn.toml                       # folder session metadata
 <session>/request.md                       # current request / draft input
 <session>/summary.md                       # latest response
-<session>/turns/<id>/                      # canonical per-turn evidence
-<session>/events.jsonl                     # shadow event ledger, not authoritative yet
+<session>/events.jsonl                     # folder-session conversation history
+<session>/turns/<id>/                      # optional compatibility projection
 <session>/.djinn/<native-id>.jsonl         # runtime-private native transcript
 ```
 
@@ -79,18 +79,17 @@ Default roots come from, in order:
 ## Sessions and review
 
 Sessions are folder-backed capsules. Keep new work in `djinn ask` / `djinn session
-...` flows so source material remains file-native. The current durable turn
-history is still `turns/<id>/request.md` and `turns/<id>/response.md`; Djinn also
-maintains a folder-local append-only `events.jsonl` shadow of native session
-events so future slices can validate and eventually project turns from events
-without changing today's file-first workflow.
+...` flows so source material remains file-native. Folder sessions now use the
+folder-local append-only `events.jsonl` as the continuation history. Djinn still
+keeps `.djinn/<native-id>.jsonl` as runtime-private compatibility state while the
+runtime is being simplified, and `turns/<id>/` is an optional projection for older
+tools rather than the central history path.
 
-Use `djinn session validate-events <session>` when checking the event-ledger
-migration path. It is read-only: it parses `events.jsonl`, pairs user/assistant
-message events, compares them to `turns/<id>/request.md` and
+Use `djinn session validate-events <session>` to check compatibility projections.
+It is read-only: it parses `events.jsonl`, pairs user/assistant message events,
+compares them to any projected `turns/<id>/request.md` and
 `turns/<id>/response.md` in turn order, and verifies root `summary.md` matches the
-latest turn response. The command reports issues but does not rewrite artifacts or
-make events authoritative.
+latest response. The command reports issues but does not rewrite artifacts.
 
 Use `djinn session events <session>` to preview the `turns/` tree that would be
 regenerated from `events.jsonl`. This is also read-only: it reports the projected
@@ -299,8 +298,8 @@ candidate ids with type, status, and accepted destination/writeback path when
 available. Candidate rows can be accepted with `a`, accepted with explicit
 MindWeaver sync handoff via `m`, denied with `x`, or opened with `p`/Enter.
 For every folder-backed session, status also reports whether `events.jsonl`
-exists and how many non-empty event rows it contains; this is diagnostic evidence
-only while `turns/` remains canonical.
+exists and how many non-empty event rows it contains; this is now the primary
+history signal for folder-session continuation.
 
 ```bash
 djinn review memory <id> --dry-run

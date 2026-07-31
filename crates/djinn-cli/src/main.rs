@@ -143,7 +143,7 @@ enum SessionCommand {
     ExportPattern(SessionExportPatternArgs),
     /// Validate generated promotion candidate TOML without accepting or rerunning the model.
     ValidateCandidates(SessionValidateCandidatesArgs),
-    /// Validate that events.jsonl, turns/, and root summary.md agree.
+    /// Validate that events.jsonl, optional turns/, and root summary.md agree.
     ValidateEvents(SessionValidateEventsArgs),
     /// Preview the turns/ tree that would be projected from events.jsonl.
     #[command(alias = "project-events")]
@@ -250,7 +250,7 @@ struct SessionInitArgs {
 
 #[derive(Debug, Args)]
 struct SessionCompactArgs {
-    /// Folder-backed session name or directory containing turns/ and context/.
+    /// Folder-backed session name or directory containing events/context artifacts.
     #[arg(long = "session-dir")]
     session_dir: PathBuf,
     /// Output path. Defaults to <session-dir>/context/compacted.md.
@@ -5678,13 +5678,13 @@ fn validate_folder_session_events(dir: &Path) -> Result<SessionValidateEventsRep
 
     validate_event_turn_pairs_against_turns(&session_dir, &event_turns, &turns, &mut issues);
     let root_summary_matches_latest_turn =
-        validate_root_summary_against_latest_turn(&session_dir, &turns, &mut issues)?;
+        validate_root_summary_against_latest_turn(&session_dir, &event_turns, &turns, &mut issues)?;
 
     let all_valid = issues.is_empty();
     let note = if all_valid {
-        "events.jsonl, turns/, and summary.md agree. turns/ remains canonical until event projection is explicitly promoted."
+        "events.jsonl, optional turns/, and summary.md agree. events.jsonl is the folder-session history source."
     } else {
-        "One or more event/turn agreement issues were found. Keep treating turns/ as canonical and repair or regenerate the shadow ledger before relying on events."
+        "One or more event/turn agreement issues were found. Treat turns/ as a stale compatibility projection until it is regenerated from events."
     }
     .to_string();
 
@@ -5791,6 +5791,9 @@ fn validate_event_turn_pairs_against_turns(
     turns: &[FolderSessionTurnDigest],
     issues: &mut Vec<SessionValidateEventsIssue>,
 ) {
+    if turns.is_empty() {
+        return;
+    }
     if event_turns.len() != turns.len() {
         push_session_event_validation_issue(
             issues,
@@ -5852,10 +5855,15 @@ fn validate_event_turn_pairs_against_turns(
 
 fn validate_root_summary_against_latest_turn(
     session_dir: &Path,
+    event_turns: &[SessionEventTurnPair],
     turns: &[FolderSessionTurnDigest],
     issues: &mut Vec<SessionValidateEventsIssue>,
 ) -> Result<Option<bool>> {
-    let Some(latest_response) = turns.last().and_then(|turn| turn.response.as_deref()) else {
+    let latest_response = turns
+        .last()
+        .and_then(|turn| turn.response.as_deref())
+        .or_else(|| event_turns.last().map(|turn| turn.response.as_str()));
+    let Some(latest_response) = latest_response else {
         return Ok(None);
     };
     let summary_path = session_dir.join("summary.md");
@@ -5868,7 +5876,7 @@ fn validate_root_summary_against_latest_turn(
         push_session_event_validation_issue(
             issues,
             "missing_root_summary",
-            "summary.md is missing or empty while the latest turn has a response".to_string(),
+            "summary.md is missing or empty while the latest response exists".to_string(),
             Some(&summary_path),
             None,
         );
@@ -6237,7 +6245,7 @@ fn rebuild_folder_session_from_events(dir: &Path) -> Result<SessionProjectEvents
     let mut report = project_folder_session_events(&session_dir)?;
     report.writes = true;
     report.backup_dir = Some(backup_dir.display().to_string());
-    report.note = "Rebuilt turns/ and summary.md from events.jsonl after preserving a backup. events.jsonl is still a shadow ledger until the authoritative migration is explicitly completed."
+    report.note = "Rebuilt optional turns/ projection and summary.md from events.jsonl after preserving a backup."
         .to_string();
     Ok(report)
 }
@@ -6814,7 +6822,7 @@ fn event_authority_trial_report(dir: &Path) -> Result<SessionEventAuthorityTrial
             name: "ledger_agrees_with_turns".to_string(),
             passed: validation.all_valid,
             detail: if validation.all_valid {
-                "events.jsonl, turns/, and summary.md agree".to_string()
+                "events.jsonl, optional turns/, and summary.md agree".to_string()
             } else {
                 format!("{} validation issue(s)", validation.issues.len())
             },
@@ -6824,7 +6832,7 @@ fn event_authority_trial_report(dir: &Path) -> Result<SessionEventAuthorityTrial
     let note = if allowed {
         "No-op authority trial passed. A future feature-flagged runtime could read this scratch session from events.jsonl, but this command changed nothing."
     } else {
-        "No-op authority trial failed. Keep turns/ canonical and fix the failed checks before experimenting with event-authoritative mode."
+        "No-op authority trial failed. Fix the failed event/projection checks before experimenting with event-authoritative mode."
     }
     .to_string();
 
@@ -9269,8 +9277,15 @@ fn collect_session_promote_artifacts(dir: &Path) -> Result<SessionPromoteSession
         "compacted_context",
         &session_dir.join("context").join("compacted.md"),
     )?;
+    push_session_promote_artifact(
+        &mut artifacts,
+        &session_dir,
+        "events",
+        &session_dir.join("events.jsonl"),
+    )?;
 
     let turns = read_folder_session_turns(&session_dir.join("turns"))?;
+    let event_turn_count = read_folder_session_event_turn_count(&session_dir)?;
     for turn in &turns {
         if let Some(path) = &turn.request_path {
             push_session_promote_artifact(
@@ -9302,8 +9317,49 @@ fn collect_session_promote_artifacts(dir: &Path) -> Result<SessionPromoteSession
         session_dir,
         title,
         artifacts,
-        turn_count: turns.len(),
+        turn_count: event_turn_count.unwrap_or(turns.len()),
     })
+}
+
+fn read_folder_session_event_turn_count(session_dir: &Path) -> Result<Option<usize>> {
+    let events_path = session_dir.join("events.jsonl");
+    if !events_path.exists() || !events_path.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&events_path)
+        .with_context(|| format!("reading {}", events_path.display()))?;
+    let mut issues = Vec::new();
+    let pairs = read_event_turn_pairs(&events_path, &raw, &mut issues);
+    if issues.is_empty() {
+        Ok(Some(pairs.len()))
+    } else {
+        Ok(None)
+    }
+}
+
+fn latest_session_status_turn_from_events(
+    session_dir: &Path,
+) -> Result<Option<SessionStatusTurnReport>> {
+    let events_path = session_dir.join("events.jsonl");
+    if !events_path.exists() || !events_path.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&events_path)
+        .with_context(|| format!("reading {}", events_path.display()))?;
+    let mut issues = Vec::new();
+    let pairs = read_event_turn_pairs(&events_path, &raw, &mut issues);
+    if !issues.is_empty() {
+        return Ok(None);
+    }
+    let Some((index, _turn)) = pairs.iter().enumerate().last() else {
+        return Ok(None);
+    };
+    Ok(Some(SessionStatusTurnReport {
+        id: projected_event_turn_id(index),
+        request_path: Some(events_path.display().to_string()),
+        response_path: Some(session_dir.join("summary.md").display().to_string()),
+        has_response: true,
+    }))
 }
 
 fn push_session_promote_artifact(
@@ -9794,9 +9850,7 @@ fn session_init(args: SessionInitArgs) -> Result<()> {
         println!("  request: {}", report.request_path);
         println!("  summary: {}", report.summary_path);
         println!("  run: djinn ask --session {}", args.dir.display());
-        println!(
-            "  done: command exits; answer is written to summary.md and turns/<turn>/response.md"
-        );
+        println!("  done: command exits; answer is written to summary.md and events.jsonl");
     }
     Ok(())
 }
@@ -9809,8 +9863,6 @@ fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport
     let turns_dir = session_dir.join("turns");
     fs::create_dir_all(&context_dir)
         .with_context(|| format!("creating context directory {}", context_dir.display()))?;
-    fs::create_dir_all(&turns_dir)
-        .with_context(|| format!("creating turns directory {}", turns_dir.display()))?;
 
     let workspace = match &args.link_repo {
         Some(path) => canonical_existing_dir(path, "linked repository")?,
@@ -10034,10 +10086,19 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
         inspect_folder_session_context_dir(&context_dir)?;
     let request_exists = session_dir.join("request.md").exists();
     let turns = read_folder_session_turns(&turns_dir)?;
-    let turn_count = turns.len();
     let events_path = session_dir.join("events.jsonl");
     let event_count = count_folder_session_events_jsonl(&events_path);
-    let latest_turn = turns.last().map(session_status_turn_report);
+    let event_turn_count = read_folder_session_event_turn_count(&session_dir)?.unwrap_or(0);
+    let turn_count = if turns.is_empty() {
+        event_turn_count
+    } else {
+        turns.len()
+    };
+    let latest_turn = turns.last().map(session_status_turn_report).or_else(|| {
+        latest_session_status_turn_from_events(&session_dir)
+            .ok()
+            .flatten()
+    });
     let candidates = session_status_candidates(&session_dir)?;
     let lifecycle = session_status_lifecycle(
         &session_dir,
@@ -13818,7 +13879,7 @@ fn is_named_folder_session_reference(path: &Path) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AgentSessionDirProjection {
     session_dir: PathBuf,
-    turn_dir: PathBuf,
+    turn_dir: Option<PathBuf>,
     context_dir: PathBuf,
     summary_path: PathBuf,
     request_path: PathBuf,
@@ -13827,43 +13888,28 @@ struct AgentSessionDirProjection {
 fn project_agent_session_dir(
     session_dir: &Path,
     session: &AgentSession,
-    prompt: &str,
+    _prompt: &str,
     summary: &str,
 ) -> Result<AgentSessionDirProjection> {
     fs::create_dir_all(session_dir)
         .with_context(|| format!("creating session directory {}", session_dir.display()))?;
     let context_dir = session_dir.join("context");
-    let turns_dir = session_dir.join("turns");
     fs::create_dir_all(&context_dir)
         .with_context(|| format!("creating context directory {}", context_dir.display()))?;
-    fs::create_dir_all(&turns_dir)
-        .with_context(|| format!("creating turns directory {}", turns_dir.display()))?;
 
     let summary_path = session_dir.join("summary.md");
 
-    let turn_dir = turns_dir.join(agent_session_turn_dir_name());
-    fs::create_dir_all(&turn_dir)
-        .with_context(|| format!("creating turn directory {}", turn_dir.display()))?;
-
     let request_path = session_dir.join("request.md");
-    fs::write(&request_path, ensure_trailing_newline(prompt))
-        .with_context(|| format!("writing {}", request_path.display()))?;
-    fs::write(turn_dir.join("request.md"), ensure_trailing_newline(prompt))
-        .with_context(|| format!("writing turn request in {}", turn_dir.display()))?;
+    fs::write(&request_path, "").with_context(|| format!("writing {}", request_path.display()))?;
     fs::write(&summary_path, ensure_trailing_newline(summary))
         .with_context(|| format!("writing {}", summary_path.display()))?;
-    fs::write(
-        turn_dir.join("response.md"),
-        ensure_trailing_newline(summary),
-    )
-    .with_context(|| format!("writing turn response in {}", turn_dir.display()))?;
 
     write_agent_session_toml(session_dir, session)?;
     write_folder_session_events_jsonl(session_dir, session)?;
 
     Ok(AgentSessionDirProjection {
         session_dir: session_dir.to_path_buf(),
-        turn_dir,
+        turn_dir: None,
         context_dir,
         summary_path,
         request_path,
@@ -13910,6 +13956,148 @@ fn write_folder_session_events_jsonl(
         writeln!(file, "{line}").with_context(|| format!("appending {}", path.display()))?;
         existing_lines.insert(line);
     }
+    Ok(path)
+}
+
+fn hydrate_folder_agent_session_from_events_jsonl(
+    session_dir: &Path,
+    id: &AgentSessionId,
+    manifest: Option<&FolderSessionManifest>,
+) -> Result<bool> {
+    let Some(session) = read_folder_session_from_events_jsonl(session_dir, id, manifest)? else {
+        return Ok(false);
+    };
+    write_agent_session_native_jsonl(session_dir, &session)?;
+    Ok(true)
+}
+
+fn sync_folder_session_events_jsonl_from_store(
+    session_dir: Option<&Path>,
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+) -> Result<()> {
+    let Some(session_dir) = session_dir else {
+        return Ok(());
+    };
+    let session = store.load_session(id)?;
+    write_folder_session_events_jsonl(session_dir, &session)?;
+    Ok(())
+}
+
+fn read_folder_session_from_events_jsonl(
+    session_dir: &Path,
+    id: &AgentSessionId,
+    manifest: Option<&FolderSessionManifest>,
+) -> Result<Option<AgentSession>> {
+    let path = session_dir.join("events.jsonl");
+    if !path.exists() {
+        return Ok(None);
+    }
+    if !path.is_file() {
+        bail!("events.jsonl exists but is not a file: {}", path.display());
+    }
+    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut meta = folder_session_manifest_meta(session_dir, manifest);
+    let mut events = Vec::new();
+    for (idx, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut event = serde_json::from_str::<AgentSessionEvent>(trimmed)
+            .with_context(|| format!("parsing {} line {}", path.display(), idx + 1))?;
+        if event.event_id.trim().is_empty() {
+            event.event_id = format!("events-jsonl-{}-{}", id.as_str(), idx + 1);
+        }
+        if event.session_id.as_str().trim().is_empty() {
+            event.session_id = id.clone();
+        }
+        if event.session_id != *id {
+            bail!(
+                "events.jsonl session id mismatch at line {}: manifest/session is {}, event is {}",
+                idx + 1,
+                id,
+                event.session_id
+            );
+        }
+        match event.kind.clone() {
+            AgentSessionEventKind::SessionCreated {
+                id: created_id,
+                meta: created_meta,
+            } => {
+                if created_id != *id {
+                    bail!(
+                        "events.jsonl session_created id mismatch at line {}: manifest/session is {}, event is {}",
+                        idx + 1,
+                        id,
+                        created_id
+                    );
+                }
+                meta = created_meta;
+            }
+            _ => events.push(event),
+        }
+    }
+    Ok(Some(AgentSession {
+        id: id.clone(),
+        meta,
+        events,
+    }))
+}
+
+fn folder_session_manifest_meta(
+    session_dir: &Path,
+    manifest: Option<&FolderSessionManifest>,
+) -> AgentSessionMeta {
+    let title = session_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(folder_session_display_name)
+        .unwrap_or_else(|| session_dir.display().to_string());
+    let runtime_config = manifest.and_then(|manifest| {
+        manifest
+            .model
+            .as_ref()
+            .map(|model| AgentSessionRuntimeConfig {
+                model: model.clone(),
+                ..AgentSessionRuntimeConfig::default()
+            })
+    });
+    AgentSessionMeta {
+        title,
+        workspace: manifest
+            .and_then(|manifest| manifest.workspace.clone())
+            .unwrap_or_default(),
+        profile: manifest
+            .and_then(|manifest| manifest.profile.clone())
+            .unwrap_or_else(|| "default".to_string()),
+        agent_name: manifest.and_then(|manifest| manifest.agent.clone()),
+        source: "djinn".to_string(),
+        runtime_config,
+        created_at: manifest
+            .and_then(|manifest| manifest.created_at.clone())
+            .unwrap_or_else(|| chrono::Local::now().to_rfc3339()),
+        ..AgentSessionMeta::default()
+    }
+}
+
+fn write_agent_session_native_jsonl(session_dir: &Path, session: &AgentSession) -> Result<PathBuf> {
+    let path = folder_agent_session_store(session_dir).session_file_path(&session.id);
+    djinn_core::ensure_parent(&path)?;
+    let mut output = String::new();
+    output.push_str(&serde_json::to_string(&AgentSessionEvent::with_session(
+        session.id.clone(),
+        AgentSessionEventKind::SessionCreated {
+            id: session.id.clone(),
+            meta: session.meta.clone(),
+        },
+    ))?);
+    output.push('\n');
+    for event in &session.events {
+        output.push_str(&serde_json::to_string(event)?);
+        output.push('\n');
+    }
+    fs::write(&path, output).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
 
@@ -13989,16 +14177,6 @@ fn ensure_trailing_newline(value: &str) -> String {
     } else {
         format!("{value}\n")
     }
-}
-
-fn agent_session_turn_dir_name() -> String {
-    format!(
-        "{}-{}",
-        chrono::Local::now().format("%Y%m%dT%H%M%S"),
-        chrono::Local::now()
-            .timestamp_nanos_opt()
-            .unwrap_or_default()
-    )
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -15029,6 +15207,7 @@ fn agent_ask(
 
     if let (Some(session_dir), Some(id)) = (session_dir.as_deref(), requested_session_id.as_ref()) {
         store = agent_session_store_for_folder_session(session_dir, id);
+        hydrate_folder_agent_session_from_events_jsonl(session_dir, id, folder_manifest.as_ref())?;
     }
 
     let (id, workspace, profile, model, system_instructions, allowed_tools) =
@@ -15209,6 +15388,7 @@ fn agent_ask(
         format!("{lifecycle_reason_prefix} started"),
         None,
     )?;
+    sync_folder_session_events_jsonl_from_store(projected_session_dir.as_deref(), &store, &id)?;
     let session_for_model = store.load_session(&id)?;
     let background_worker = matches!(
         output_mode,
@@ -15244,6 +15424,11 @@ fn agent_ask(
                 format!("{lifecycle_reason_prefix} completed"),
                 None,
             )?;
+            sync_folder_session_events_jsonl_from_store(
+                projected_session_dir.as_deref(),
+                &store,
+                &id,
+            )?;
             response
         }
         Err(error) => {
@@ -15254,6 +15439,11 @@ fn agent_ask(
                 lifecycle_mode,
                 format!("{lifecycle_reason_prefix} failed"),
                 Some(error.to_string()),
+            );
+            let _ = sync_folder_session_events_jsonl_from_store(
+                projected_session_dir.as_deref(),
+                &store,
+                &id,
             );
             return Err(error);
         }
@@ -15283,8 +15473,11 @@ fn agent_ask(
                     "model": model,
                     "summary_path": projection.as_ref().map(|projection| &projection.summary_path),
                     "request_path": projection.as_ref().map(|projection| &projection.request_path),
-                    "turn_dir": projection.as_ref().map(|projection| &projection.turn_dir),
-                    "response_path": projection.as_ref().map(|projection| projection.turn_dir.join("response.md")),
+                    "turn_dir": projection.as_ref().and_then(|projection| projection.turn_dir.as_ref()),
+                    "response_path": projection
+                        .as_ref()
+                        .and_then(|projection| projection.turn_dir.as_ref())
+                        .map(|turn_dir| turn_dir.join("response.md")),
                 }))?
             );
         } else {
@@ -15356,10 +15549,14 @@ fn format_session_run_completion(
     if let Some(projection) = projection {
         lines.push(format!("  session: {}", projection.session_dir.display()));
         lines.push(format!("  summary: {}", projection.summary_path.display()));
-        lines.push(format!(
-            "  response: {}",
-            projection.turn_dir.join("response.md").display()
-        ));
+        if let Some(turn_dir) = &projection.turn_dir {
+            lines.push(format!(
+                "  response: {}",
+                turn_dir.join("response.md").display()
+            ));
+        } else {
+            lines.push("  response: summary.md (turns/ projection not written)".to_string());
+        }
         lines.push(format!("  request: {}", projection.request_path.display()));
     } else if let Some(session_dir) = session_dir {
         lines.push(format!("  session: {}", session_dir.display()));
@@ -22152,7 +22349,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_backed_session_projection_writes_turns_and_context_without_duplicate_logs() {
+    fn folder_backed_session_projection_writes_events_and_context_without_duplicate_logs() {
         let dir = std::env::temp_dir().join(format!(
             "djinn-folder-session-test-{}",
             chrono::Local::now()
@@ -22183,17 +22380,14 @@ mod tests {
         let projection =
             project_agent_session_dir(&dir, &session, "new request", "new summary").unwrap();
 
-        assert_eq!(
-            fs::read_to_string(dir.join("request.md")).unwrap(),
-            "new request\n"
-        );
+        assert_eq!(fs::read_to_string(dir.join("request.md")).unwrap(), "");
         assert_eq!(
             fs::read_to_string(dir.join("summary.md")).unwrap(),
             "new summary\n"
         );
         assert!(projection.context_dir.exists());
-        assert!(projection.turn_dir.join("request.md").exists());
-        assert!(projection.turn_dir.join("response.md").exists());
+        assert!(projection.turn_dir.is_none());
+        assert!(!dir.join("turns").exists());
         assert!(dir.join("djinn.toml").exists());
         let events_jsonl = fs::read_to_string(dir.join("events.jsonl")).unwrap();
         assert_eq!(events_jsonl.lines().count(), 2);
@@ -22206,6 +22400,82 @@ mod tests {
         assert!(!dir.join("logs/summary-history.md").exists());
         assert!(!dir.join("logs/events.jsonl").exists());
         assert!(!dir.join("logs/transcript.md").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_session_events_jsonl_hydrates_native_history_for_continuation() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-events-first-session-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let id = AgentSessionId::new("agt_events_first");
+        fs::write(
+            dir.join("djinn.toml"),
+            "session_id = \"agt_events_first\"\ntitle = \"Events First\"\nworkspace = \"/tmp/workspace\"\nprofile = \"default\"\n",
+        )
+        .unwrap();
+        let events = vec![
+            AgentSessionEvent::with_session(
+                id.clone(),
+                AgentSessionEventKind::UserMessage {
+                    content: "event request".to_string(),
+                },
+            ),
+            AgentSessionEvent::with_session(
+                id.clone(),
+                AgentSessionEventKind::AssistantMessage {
+                    content: "event response".to_string(),
+                },
+            ),
+        ];
+        let events_jsonl = events
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n")
+            + "\n";
+        fs::write(dir.join("events.jsonl"), events_jsonl).unwrap();
+
+        let stale = AgentSession {
+            id: id.clone(),
+            meta: AgentSessionMeta {
+                title: "stale".to_string(),
+                source: "djinn".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![AgentSessionEvent::with_session(
+                id.clone(),
+                AgentSessionEventKind::UserMessage {
+                    content: "stale native request".to_string(),
+                },
+            )],
+        };
+        write_agent_session_native_jsonl(&dir, &stale).unwrap();
+
+        let manifest = read_folder_session_manifest(&dir).unwrap();
+        assert!(
+            hydrate_folder_agent_session_from_events_jsonl(&dir, &id, manifest.as_ref()).unwrap()
+        );
+        let loaded = folder_agent_session_store(&dir).load_session(&id).unwrap();
+        let messages = agent_model_messages(&loaded, "/tmp/workspace", &[]);
+
+        assert_eq!(loaded.events.len(), 2);
+        assert_eq!(loaded.meta.workspace, "/tmp/workspace");
+        assert!(messages
+            .iter()
+            .any(|message| message.content == "event request"));
+        assert!(messages
+            .iter()
+            .any(|message| message.content == "event response"));
+        assert!(!messages
+            .iter()
+            .any(|message| message.content.contains("stale native")));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -22245,7 +22515,7 @@ mod tests {
         assert!(report.all_valid);
         assert_eq!(report.event_count, 2);
         assert_eq!(report.event_turn_count, 1);
-        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.turn_count, 0);
         assert_eq!(report.root_summary_matches_latest_turn, Some(true));
         assert!(text.contains("status: valid"));
         assert!(text.contains("issues: none"));
@@ -22822,6 +23092,22 @@ link = "context/repo"
         store
             .append_event(
                 &id,
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "request".to_string(),
+                }),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "response".to_string(),
+                }),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &id,
                 AgentSessionEvent::new(AgentSessionEventKind::ToolCall {
                     id: "tool-1".to_string(),
                     name: "read".to_string(),
@@ -22849,14 +23135,14 @@ link = "context/repo"
         assert_eq!(report.lifecycle.reason.as_deref(), Some("test completed"));
         assert_eq!(report.lifecycle.note.as_deref(), Some("all done"));
         assert!(report.files.events_jsonl);
-        assert_eq!(report.event_count, 2);
+        assert_eq!(report.event_count, 4);
         let latest = report.latest_turn.as_ref().unwrap();
         assert!(latest.has_response);
         assert!(latest
             .response_path
             .as_deref()
             .unwrap()
-            .ends_with("response.md"));
+            .ends_with("summary.md"));
         assert!(report
             .next_action
             .as_deref()
@@ -22866,8 +23152,8 @@ link = "context/repo"
         assert!(text.contains("Mode: foreground"));
         assert!(text.contains("State note: all done"));
         assert!(text.contains("events.jsonl: yes"));
-        assert!(text.contains("Events: 2"));
-        assert!(text.contains("response.md"));
+        assert!(text.contains("Events: 4"));
+        assert!(text.contains("summary.md"));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -25207,7 +25493,7 @@ link = "context/repo"
         let session_dir = PathBuf::from("/tmp/djinn/session");
         let projection = AgentSessionDirProjection {
             session_dir: session_dir.clone(),
-            turn_dir: session_dir.join("turns/20260728T120000-1"),
+            turn_dir: Some(session_dir.join("turns/20260728T120000-1")),
             context_dir: session_dir.join("context"),
             summary_path: session_dir.join("summary.md"),
             request_path: session_dir.join("request.md"),
@@ -25272,7 +25558,7 @@ link = "context/repo"
         assert!(dir.join("summary.md").exists());
         assert!(dir.join("context/djinn-context.md").exists());
         assert!(dir.join("context/repo-index.md").exists());
-        assert!(dir.join("turns").exists());
+        assert!(!dir.join("turns").exists());
         assert!(!dir.join("logs/summary-history.md").exists());
         assert!(!dir.join("logs/events.jsonl").exists());
         assert!(!dir.join("logs/transcript.md").exists());

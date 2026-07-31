@@ -138,33 +138,26 @@ Incremental target shape:
 
 ```text
 <session>/
-  session.yaml
+  djinn.toml
   request.md          # current draft, cleared after submit
   summary.md          # latest output/result
-  turns/<id>/         # current durable turn history projection
+  events.jsonl        # folder-local event history
+  .djinn/<id>.jsonl   # Djinn native runtime log while the core still uses it
+  turns/<id>/         # optional compatibility projection only
   runtime/buddy.json  # optional bridge metadata while Buddy exists
 ```
 
-Future direction: convert `turns/<id>/` from the canonical history store into a
-projection over the folder-local append-only `events.jsonl` shadow ledger. The
-migration should remain opt-in and reversible while being proven: Djinn already
-appends events alongside the existing turn folders, can validate agreement, and
-can preview, perform, restore, discover, audit, filter, and triage backed-up
-event-to-turn rebuilds from the CLI/TUI, including strict read-only script checks,
-an explicit read-only authority promotion gate, and a scratch-only no-op authority
-trial/read path, so next slices should focus on operational confidence and only
-later make `events.jsonl` authoritative.
+Current direction: folder-backed continuations should read/write `events.jsonl`
+first, while `.djinn/<id>.jsonl` remains a runtime-private compatibility log and
+`turns/<id>/` remains an optional projection for older workflows. Rebuild/restore
+commands remain useful for compatibility, not as the main product path.
 
 Ready implementation slices:
 
-- Define the minimal `runtime/buddy.json` bridge contract: Buddy native session
-  id, last-seen timestamp, lifecycle status, and resume command hints.
-- Add a Buddy/Djinn bridge that records each interactive user submission as the
-  next Djinn turn: copy submitted text to `turns/<id>/request.md`, clear root
-  `request.md`, stream/update root `summary.md`, then finalize
-  `turns/<id>/summary.md`.
-- Expand the feature-flagged scratch read path into an isolated scratch run mode
-  that uses events as read source while continuing to write/validate projections.
+- Extend status, compaction, and promotion packet generation to consume structured
+  event summaries directly instead of depending on projected `turns/` evidence.
+- Add a Buddy-compatible runtime bridge once Djinn and Buddy agree on the shared
+  event schema and live submission/resume contract.
 
 #### Background run recovery follow-ups
 

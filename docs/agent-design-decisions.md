@@ -865,14 +865,12 @@ The first non-interactive agent slice is implemented as:
     folder-native way to process turns. The projection writes `summary.md` as the
     latest answer, writes `djinn.toml`
     metadata, creates an unstructured `context/` folder for user-curated session
-    context, and records per-turn `turns/<id>/request.md` and
-    `turns/<id>/response.md`. It also maintains a folder-local append-only
-    `events.jsonl` shadow ledger of native session events, but that ledger is not
-    authoritative yet; `turns/` remains the canonical user-facing turn evidence
-    until validation/regeneration slices prove event projection safe. The
-    projection intentionally does not create `summary-history.md` or
-    `transcript.md` in the session folder; nvim/file workflows should use summary,
-    context, turn files, and native Djinn session JSONL pointers first.
+    context, and records conversation history in folder-local append-only
+    `events.jsonl`. `turns/<id>/` is no longer the central continuation path; it is
+    an optional compatibility projection for older tools. The projection
+    intentionally does not create `summary-history.md` or `transcript.md` in the
+    session folder; nvim/file workflows should use summary, context, events, and
+    native Djinn session JSONL pointers first.
 64. Folder-backed sessions separate raw evidence from durable context. `turns/`
     stores exact per-turn request/response evidence. `context/` is unstructured,
     user-curated working memory for facts, decisions, repo notes, open questions,
@@ -885,7 +883,7 @@ The first non-interactive agent slice is implemented as:
     a reason to blindly ingest every linked file.
 65. Folder-backed session creation is top-level UX, not hidden under `agent`:
     `djinn session init <dir> --link-repo <path>` scaffolds `djinn.toml`,
-    `request.md`, `summary.md`, `context/`, and `turns/`. The session-local
+    `request.md`, `summary.md`, and `context/`. The session-local
     context guide is `context/djinn-context.md` so a linked repo's `README.md` can
     be discovered without a naming conflict. When a repo is linked, Djinn resolves
     global config first and repo-local `.djinn.json` second so repo profile/model
@@ -909,8 +907,8 @@ The first non-interactive agent slice is implemented as:
     the current `request.md`; it starts a background worker by default and reports
     the pid/log path plus a `djinn session watch <session>` hint. `--fg` uses the
     same folder-backed ask engine in blocking foreground mode and reports
-    completion in session artifact terms (`summary.md` and latest
-    `turns/<id>/response.md`) instead of only echoing the session directory.
+    completion in session artifact terms (`summary.md`, with `events.jsonl` as the
+    durable history) instead of only echoing the session directory.
 67. Superseded by decisions 79-80: native session inspection briefly had
     top-level spellings: `djinn session list`, `djinn session show
     <id-or-folder>`, and `djinn session delete <id-or-folder>`. Folder references
@@ -937,12 +935,12 @@ The first non-interactive agent slice is implemented as:
     manifest defaults, repo symlink health, expected file presence, turn count,
     folder-local `events.jsonl` presence/count, and shallow context ingest/skip
     counts without running a model or mutating the session folder. The event count
-    is diagnostic only while turn folders remain canonical. `djinn session
-    validate-events <session>` is the read-only migration guardrail: it parses the
-    shadow ledger, pairs user/assistant message events, compares them to
-    `turns/<id>/request.md` and `turns/<id>/response.md`, and checks root
-    `summary.md` against the latest turn response. It reports agreement issues but
-    must not rewrite artifacts or make events authoritative. `djinn session
+    is now the primary history signal for folder-session continuation. `djinn
+    session validate-events <session>` is the read-only compatibility guardrail:
+    it parses the event log, pairs user/assistant message events, compares them to
+    any projected `turns/<id>/request.md` and `turns/<id>/response.md`, and checks
+    root `summary.md` against the latest response. It reports agreement issues but
+    must not rewrite artifacts. `djinn session
     events <session>` is the companion read-only projection preview: it
     renders the turn ids, request/response paths, create/update/match state,
     concise previews, and projected `summary.md` source that an event-to-turn
@@ -952,8 +950,8 @@ The first non-interactive agent slice is implemented as:
     `.djinn/backups/events-rebuild-*/`. `djinn session events <session> --restore
     <backup> [--write]` previews or restores one of those backups, and write-mode
     restore creates a new safety backup of the current state before copying backed
-    up artifacts into place. This is a reversible rebuild aid, not the point at
-    which events become authoritative. `djinn session events --all [--json]`
+    up artifacts into place. This is a reversible compatibility projection aid.
+    `djinn session events --all [--json]`
     reports migration readiness across cache-backed folder sessions by reusing the
     same validation logic and surfacing event counts, projected turn-pair counts,
     turn counts, summary agreement, issue codes, and latest rebuild backup paths.

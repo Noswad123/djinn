@@ -86,13 +86,13 @@ calls these file-backed capsules **Sessions**: `djinn` opens that tab by
 default, and `djinn tui sessions` opens it explicitly. Use
 `djinn session <name-or-path>` for the focused session view,
 `djinn session run` to execute turns, and `djinn session watch` to follow
-lifecycle status. Session folders keep `turns/<id>/` as the canonical turn
-evidence and maintain a folder-local `events.jsonl` shadow ledger for diagnostics
-and future event-based projections. `djinn session validate-events <session>`
-checks that the shadow ledger, turn files, and latest summary agree without
-rewriting anything; `djinn session events <session>` previews the `turns/`
-tree that would be regenerated from the ledger, and `--write` performs that
-rebuild after preserving a backup. Use `djinn session events <session> --restore
+lifecycle status. Session folders use folder-local `events.jsonl` as the
+conversation history for folder-session continuation. `turns/<id>/` is now an
+optional compatibility projection for older tools. `djinn session validate-events
+<session>` checks that any projected turn files and latest summary agree with the
+event log without rewriting anything; `djinn session events <session>` previews
+the `turns/` tree that would be regenerated from the ledger, and `--write`
+performs that rebuild after preserving a backup. Use `djinn session events <session> --restore
 <backup> --write` to roll back from an event rebuild backup. The old transcript
 subcommand has been removed. Use `djinn session events --all --json` to audit
 event-ledger readiness across cache-backed sessions, or add `--strict` for a
