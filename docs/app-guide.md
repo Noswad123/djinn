@@ -90,6 +90,12 @@ The old saved-row session store, OpenCode watcher/plugin integration, and legacy
 `djinn add/list/show/search/rm/clear/promote session(s)` commands have been
 removed.
 
+The Sessions dashboard groups cache-backed sessions by linked repo (or a
+`No linked repo` bucket), shows scannable lifecycle badges such as running,
+failed, completed, and draft states, and surfaces each session's next suggested
+action directly in the list preview so routine triage does not require opening
+the focused view first.
+
 `djinn session promote ...` creates a promotion session folder from one or more
 source sessions. It records source refs in `context/sources.toml`, writes the
 current deterministic evidence packet to `context/source-packet.md`, and preserves

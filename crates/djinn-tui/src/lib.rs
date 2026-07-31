@@ -7,6 +7,7 @@ mod terminal;
 
 use std::collections::HashSet;
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -2108,8 +2109,15 @@ struct SessionsApp {
     filter: FilterState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionListRow {
+    Header(String),
+    Session(usize),
+}
+
 impl SessionsApp {
-    fn new(sessions: Vec<SessionRecord>) -> Self {
+    fn new(mut sessions: Vec<SessionRecord>) -> Self {
+        sessions.sort_by(session_dashboard_order);
         Self {
             sessions,
             selected: 0,
@@ -2169,15 +2177,35 @@ impl SessionsApp {
             .collect()
     }
 
+    fn visible_rows(&self) -> Vec<SessionListRow> {
+        let mut rows = Vec::new();
+        let mut last_group = None::<String>;
+        for idx in self.visible_indices() {
+            let group = session_repo_group_label(&self.sessions[idx]);
+            if last_group.as_deref() != Some(group.as_str()) {
+                rows.push(SessionListRow::Header(group.clone()));
+                last_group = Some(group);
+            }
+            rows.push(SessionListRow::Session(idx));
+        }
+        rows
+    }
+
     fn session_matches(&self, session: &SessionRecord) -> bool {
         fuzzy_match(&self.filter.query, &session.name)
             || fuzzy_match(&self.filter.query, &session.reference_name)
             || fuzzy_match(&self.filter.query, &session.path)
             || fuzzy_match(&self.filter.query, &session.state)
+            || fuzzy_match(&self.filter.query, &session_state_badge(session))
+            || fuzzy_match(&self.filter.query, &session_repo_group_label(session))
             || session
                 .repo_path
                 .as_ref()
                 .is_some_and(|repo| fuzzy_match(&self.filter.query, repo))
+            || session
+                .next_action
+                .as_ref()
+                .is_some_and(|action| fuzzy_match(&self.filter.query, action))
             || session
                 .summary_preview
                 .as_ref()
@@ -2243,34 +2271,49 @@ impl SessionsApp {
             .split(area);
 
         let visible = self.visible_indices();
+        let rows = self.visible_rows();
         let items = if self.sessions.is_empty() {
             vec![ListItem::new("No sessions found").style(dim_style())]
         } else if visible.is_empty() {
             vec![ListItem::new("No sessions match filter").style(dim_style())]
         } else {
-            visible
-                .iter()
-                .map(|idx| {
-                    let session = &self.sessions[*idx];
-                    let checkbox = if self.checked.contains(&session.path) {
-                        "[x] "
-                    } else {
-                        "[ ] "
-                    };
-                    ListItem::new(vec![
-                        Line::from(vec![
-                            Span::styled(checkbox, dim_style()),
-                            Span::styled(session.name.clone(), title_style()),
-                        ]),
-                        Line::from(Span::styled(session_list_metadata(session), dim_style())),
-                    ])
+            rows.iter()
+                .map(|row| match row {
+                    SessionListRow::Header(group) => ListItem::new(Line::from(Span::styled(
+                        format!("▾ {group}"),
+                        title_style(),
+                    ))),
+                    SessionListRow::Session(idx) => {
+                        let session = &self.sessions[*idx];
+                        let checkbox = if self.checked.contains(&session.path) {
+                            "[x] "
+                        } else {
+                            "[ ] "
+                        };
+                        let mut lines = vec![
+                            Line::from(vec![
+                                Span::styled(checkbox, dim_style()),
+                                Span::styled(session_state_badge(session), dim_style()),
+                                Span::raw(" "),
+                                Span::styled(session.name.clone(), title_style()),
+                            ]),
+                            Line::from(Span::styled(session_list_metadata(session), dim_style())),
+                        ];
+                        if let Some(next) = session.next_action.as_deref() {
+                            lines.push(Line::from(vec![
+                                Span::styled("Action: ", title_style()),
+                                Span::raw(next.to_string()),
+                            ]));
+                        }
+                        ListItem::new(lines)
+                    }
                 })
                 .collect::<Vec<_>>()
         };
 
         let mut state = ListState::default();
         if !visible.is_empty() {
-            state.select(selected_visible_position(self.selected, &visible));
+            state.select(selected_session_row_position(self.selected, &rows));
         }
         let title = format!(
             "Sessions ({} / {} visible, {} selected, {})",
@@ -2308,16 +2351,68 @@ impl SessionsApp {
 fn session_list_metadata(session: &SessionRecord) -> String {
     let mode = session.mode.as_deref().unwrap_or("-");
     let updated = session.updated_at.as_deref().unwrap_or("unknown");
-    let next = session.next_action.as_deref().unwrap_or("-");
     let candidates = session
         .candidate_status
         .as_deref()
         .map(|status| format!(" · candidates {status}"))
         .unwrap_or_default();
     format!(
-        "{} / {} · {} turns{} · updated {} · next {}",
-        session.state, mode, session.turn_count, candidates, updated, next
+        "{} · {} turns{} · updated {}",
+        mode, session.turn_count, candidates, updated
     )
+}
+
+fn selected_session_row_position(selected: usize, rows: &[SessionListRow]) -> Option<usize> {
+    rows.iter()
+        .position(|row| matches!(row, SessionListRow::Session(idx) if *idx == selected))
+}
+
+fn session_dashboard_order(left: &SessionRecord, right: &SessionRecord) -> std::cmp::Ordering {
+    session_repo_group_sort_key(left)
+        .cmp(&session_repo_group_sort_key(right))
+        .then_with(|| right.updated_at.cmp(&left.updated_at))
+        .then_with(|| right.state.cmp(&left.state))
+        .then_with(|| left.name.cmp(&right.name))
+}
+
+fn session_repo_group_sort_key(session: &SessionRecord) -> String {
+    session
+        .repo_path
+        .as_deref()
+        .map(|repo| format!("0:{}", repo.to_lowercase()))
+        .unwrap_or_else(|| "1:~no-repo".to_string())
+}
+
+fn session_repo_group_label(session: &SessionRecord) -> String {
+    let Some(repo) = session
+        .repo_path
+        .as_deref()
+        .filter(|repo| !repo.trim().is_empty())
+    else {
+        return "No linked repo".to_string();
+    };
+    let name = Path::new(repo)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(repo);
+    format!("Repo: {name}")
+}
+
+fn session_state_badge(session: &SessionRecord) -> String {
+    match (session.state.as_str(), session.mode.as_deref()) {
+        ("running", Some("promotion")) => "▶ generating".to_string(),
+        ("running", _) => "▶ running".to_string(),
+        ("failed", Some("promotion")) => "⚠ promotion failed".to_string(),
+        ("failed", _) => "⚠ failed".to_string(),
+        ("completed", Some("promotion")) => "✓ candidates ready".to_string(),
+        ("completed", _) => "✓ completed".to_string(),
+        ("paused", _) => "Ⅱ paused".to_string(),
+        ("not_started", Some("promotion")) => "○ promotion draft".to_string(),
+        ("not_started", _) => "○ draft".to_string(),
+        (state, Some(mode)) => format!("{state}/{mode}"),
+        (state, None) => state.to_string(),
+    }
 }
 
 fn format_promotion_candidate_row(candidate: &PromotionCandidateRow) -> String {
@@ -2419,6 +2514,7 @@ fn session_preview(session: &SessionRecord) -> String {
         format!("Name: {}", session.name),
         format!("Reference: {}", session.reference_name),
         format!("Path: {}", session.path),
+        format!("Status: {}", session_state_badge(session)),
         format!("State: {}", session.state),
         format!("Mode: {}", session.mode.as_deref().unwrap_or("-")),
         format!("Turns: {}", session.turn_count),
@@ -2426,12 +2522,14 @@ fn session_preview(session: &SessionRecord) -> String {
             "Updated: {}",
             session.updated_at.as_deref().unwrap_or("unknown")
         ),
+        format!("Group: {}", session_repo_group_label(session)),
     ];
     if let Some(repo) = &session.repo_path {
         lines.push(format!("Repo: {repo}"));
     }
     if let Some(next) = &session.next_action {
-        lines.push(format!("Next: {next}"));
+        lines.push(String::new());
+        lines.push(format!("Next action: {next}"));
     }
     if let Some(candidates) = &session.candidate_status {
         lines.push(format!("Candidates: {candidates}"));
@@ -3804,6 +3902,17 @@ mod tests {
         let mut app = SessionsApp::new(vec![session]);
 
         assert_eq!(app.visible_indices(), vec![0]);
+        assert_eq!(
+            app.visible_rows(),
+            vec![
+                SessionListRow::Header("Repo: repo".to_string()),
+                SessionListRow::Session(0),
+            ]
+        );
+        assert_eq!(
+            session_state_badge(app.selected_session().unwrap()),
+            "Ⅱ paused"
+        );
         app.filter_push('r');
         app.filter_push('e');
         app.filter_push('p');
@@ -3812,6 +3921,9 @@ mod tests {
 
         let preview = session_preview(app.selected_session().unwrap());
         assert!(preview.contains("Name: repo-review"));
+        assert!(preview.contains("Status: Ⅱ paused"));
+        assert!(preview.contains("Group: Repo: repo"));
+        assert!(preview.contains("Next action: edit request.md or run again"));
         assert!(preview.contains("Focused shortcuts"));
         assert!(preview.contains("Candidates: 3 total"));
         assert!(preview.contains("memory-001 [memory] accepted"));

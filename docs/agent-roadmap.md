@@ -102,9 +102,6 @@ Do not copy these OpenCode details directly:
 
 Remaining ready UI slices:
 
-- **Session preview polish:** group cache-backed sessions by linked repo, improve
-  stale/running/failed state badges, and make next actions obvious without opening
-  the folder.
 - **Artifact opening polish:** ensure every focused-session action reports the
   exact delegated command/path and leaves the terminal in a clean state.
 
