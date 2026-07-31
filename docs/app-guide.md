@@ -116,7 +116,7 @@ when no `turns/` projection exists, so compaction can summarize current sessions
 without first regenerating compatibility files. If `turns/` exists, compaction
 continues to use those projected files for backwards-compatible evidence links.
 
-For migration audits across cache-backed sessions, run:
+For event-ledger health audits across cache-backed sessions, run:
 
 ```bash
 djinn session events --all
@@ -126,7 +126,7 @@ djinn session events --all --json
 djinn session events --all --strict
 ```
 
-The readiness report lists each cache-backed session, event count, event turn-pair
+The health report lists each cache-backed session, event count, event turn-pair
 count, existing turn count, summary agreement, issue codes, and latest rebuild
 backup when present. `--strict` is intended for scripts/CI: it still writes no
 artifacts, but exits with an error if any reported session is not ready.

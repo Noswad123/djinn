@@ -112,58 +112,27 @@ behavior belongs in [`agent-design-decisions.md`](./agent-design-decisions.md) a
 the app guide rather than being repeated here. Remaining ready slices should build
 on the file-first surfaces without restoring the removed legacy saved-row model.
 
-#### Buddy-style interactive UI over Djinn-owned sessions
+#### Interactive UI over Djinn-owned sessions
 
-Long-term direction: fold the useful parts of the Buddy/OpenCode interactive chat
-experience into Djinn while keeping Djinn's folder-backed session as the durable
-source of truth. Buddy may remain a bridge/runtime during the transition, but the
-session folder belongs to Djinn. Do **not** move existing session storage roots as
-part of this work; keep the current `~/.cache/djinn`-based location until there is
-a separate, explicit migration reason and command.
-
-Terminology constraints:
-
-- `agent` remains reserved for Djinn's configured personas/profiles from global
-  config. Buddy/OpenCode/Djinn are runtimes or UIs, not agents.
-- The root `request.md` is the draft input buffer, equivalent to the interactive
-  chat box. Submitting a turn snapshots it into history and then clears the root
-  `request.md`.
-- The root `summary.md` is the latest output/result for the session. Previous
-  request/summary pairs continue to live under `turns/<id>/` for now.
-- Runtime-specific state, such as a Buddy native session id, should live under a
-  conventional runtime-specific file (for example `runtime/buddy.json`) instead
-  of being listed from `session.yaml`.
-
-Incremental target shape:
-
-```text
-<session>/
-  djinn.toml
-  request.md          # current draft, cleared after submit
-  summary.md          # latest output/result
-  events.jsonl        # folder-local event history
-  .djinn/<id>.jsonl   # Djinn native runtime log while the core still uses it
-  turns/<id>/         # optional compatibility projection only
-  runtime/buddy.json  # optional bridge metadata while Buddy exists
-```
-
-Current direction: folder-backed continuations should read/write `events.jsonl`
-first, while `.djinn/<id>.jsonl` remains a runtime-private compatibility log and
-`turns/<id>/` remains an optional projection for older workflows. Rebuild/restore
-commands remain useful for compatibility, not as the main product path.
+Future interactive work should fold useful Buddy/OpenCode-style ergonomics into
+Djinn without changing the folder-session ownership model documented in the app
+guide and design decisions. Do **not** move existing session storage roots as part
+of this work; keep storage migration as a separate, explicit command if it ever
+becomes necessary.
 
 Ready implementation slices:
 
-- Extend status, compaction, and promotion packet generation to consume structured
-  event summaries directly instead of depending on projected `turns/` evidence.
-- Add a Buddy-compatible runtime bridge once Djinn and Buddy agree on the shared
-  event schema and live submission/resume contract.
+- Add a live submit/resume flow in the Sessions UI that edits `request.md`, runs
+  the selected folder session, and surfaces the resulting `events.jsonl`/summary
+  state without restoring a transcript-first chat store.
+- Add a Buddy-compatible runtime bridge only after Djinn and Buddy agree on a
+  shared event schema, live submission/resume contract, and runtime metadata file
+  shape under the session folder.
 
 #### Background run recovery follow-ups
 
-Status/watch now detect stale-pid and stale-heartbeat cases for folder-backed
-background runs. Remaining reliability slices should focus on richer provenance
-and recovery:
+Future background-run reliability slices should focus on richer provenance and
+recovery:
 
 - Expand heartbeat/progress coverage if future long-running phases emerge outside
   model calls and tool execution.
@@ -171,6 +140,8 @@ and recovery:
   to failed, recording the detector and run metadata for provenance.
 - Add explicit user commands to mark a stale run failed/cancelled or resume when a
   future runtime supports safe resume.
+
+Additional folder-session ready slices:
 
 - Keep the top-level UX canonical around `djinn ask` and `djinn session ...`.
   Legacy `djinn agent ...` commands and the global `agent-sessions` JSONL root
@@ -200,7 +171,8 @@ The user-facing product direction is **not** manual child-session management.
 For broad goals, Coven should act as the lead-agent orchestration layer: detect
 parallelizable subtasks, launch workers, monitor progress, collect worker
 summaries, and synthesize the final answer. Djinn should stay focused on being a
-local worker runtime with inspectable sessions, tools, policy, and transcripts.
+local worker runtime with inspectable folder sessions, tools, policy, and event
+ledgers.
 
 Companion roadmap:
 
@@ -211,9 +183,9 @@ Companion roadmap:
 
 Djinn-owned primitives that remain useful for Coven:
 
-- Normal agent sessions can represent worker sessions through `parent_session_id`
-  plus optional Coven orchestration/task metadata.
-- Djinn session JSONL remains the authoritative transcript for Djinn workers.
+- Folder sessions can represent worker sessions through optional Coven
+  orchestration/task metadata.
+- Folder-local `events.jsonl` is the durable event ledger for Djinn workers.
 - Lifecycle events provide selected facts (`running`, `paused`, `completed`,
   `failed`, `cancelled`) that Coven can mirror into its orchestration ledger.
 - Djinn policy/permissions remain local and scoped; parent/lead approvals do not
@@ -225,15 +197,15 @@ Djinn-owned primitives that remain useful for Coven:
 Ready Djinn implementation slices:
 
 - Add stable Coven metadata on Djinn-created worker sessions: orchestration id,
-  Coven task id, Coven worker/agent id, and result/transcript URI fields or
+  Coven task id, Coven worker/agent id, and result/event-ledger URI fields or
   events.
 - Emit a compact worker result artifact or `Summary` event suitable for Coven
   synthesis: status, summary, findings, files inspected/changed, confidence,
-  follow-ups, and transcript pointer.
+  follow-ups, and result pointer.
 - Provide a small command/adapter surface for Coven to start a Djinn worker with
   prompt, workspace, role/profile/model, mode, context refs, and scoped grants.
 - Mirror selected Djinn lifecycle/result facts in a shape Coven can append to its
-  own `logs/events.jsonl` without copying full transcripts.
+  own `logs/events.jsonl` without copying full event histories.
 - Define an inspectable scoped grant record for Coven-to-Djinn worker requests:
   parent/orchestration id, child/session id, action, resource, effect, source, and
   session scope.
@@ -253,15 +225,15 @@ wrong product shape.
 The ownership direction is decided in
 [`agent-design-decisions.md`](./agent-design-decisions.md) and specified in
 [`coven-djinn-interop.md`](./coven-djinn-interop.md): Coven is the rich
-multi-agent control plane; Djinn owns Djinn sessions, runtime policy, native
-transcripts, memory, and tools. What remains before coding the bridge is the
-smallest concrete transport and recovery slice.
+multi-agent control plane; Djinn owns Djinn sessions, runtime policy, event
+ledgers, memory, and tools. What remains before coding the bridge is the smallest
+concrete transport and recovery slice.
 
 Interop details to choose before coding the integration:
 
 - Define a stable cross-harness agent/session reference envelope with a neutral
   orchestration id, Coven task/agent id, harness kind, provider/model identity
-  when known, native session id, and optional transcript/result pointer. Keep
+  when known, native session id, and optional event-ledger/result pointer. Keep
   multiplexer-specific ids in adapter/presentation refs.
 - Define the Coven event subset Djinn consumes: start child/session, pause/resume,
   cancel, attach context, import/continue with result, and apply scoped grant.
@@ -296,7 +268,7 @@ JSONL scanning is the current storage model. Decide on a lightweight index or
 SQLite only after a real limit appears, such as:
 
 - slow session search;
-- high-volume transcripts;
+- high-volume event histories;
 - complex branch/tree queries;
 - file history/rollback needing relational joins.
 

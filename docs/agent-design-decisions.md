@@ -954,7 +954,7 @@ The first non-interactive agent slice is implemented as:
     restore creates a new safety backup of the current state before copying backed
     up artifacts into place. This is a reversible compatibility projection aid.
     `djinn session events --all [--json]`
-    reports migration readiness across cache-backed folder sessions by reusing the
+    reports event-ledger health across cache-backed folder sessions by reusing the
     same validation logic and surfacing event counts, projected turn-pair counts,
     turn counts, summary agreement, issue codes, and latest rebuild backup paths.
     `--strict` keeps the report read-only but exits with an error when any

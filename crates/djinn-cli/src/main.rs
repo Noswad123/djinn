@@ -6557,7 +6557,7 @@ fn event_readiness_report_for_folder_session_root(
         "All reported cache-backed sessions have event ledgers that agree with optional turn files."
             .to_string()
     } else {
-        "Some cache-backed sessions are not event-ledger ready. Inspect issue codes with `djinn session events <session>` and `djinn session validate-events <session>`.".to_string()
+        "Some cache-backed sessions have event ledger issues. Inspect issue codes with `djinn session events <session>` and `djinn session validate-events <session>`.".to_string()
     };
     let report = SessionEventsReadinessReport {
         root: root.display().to_string(),
@@ -6601,7 +6601,7 @@ fn normalize_event_health_filter(value: &str) -> String {
 
 fn format_event_readiness_report(report: &SessionEventsReadinessReport) -> String {
     let mut lines = Vec::new();
-    lines.push(format!("Event ledger readiness: {}", report.root));
+    lines.push(format!("Event ledger health: {}", report.root));
     if let Some(filter) = &report.filter {
         lines.push(format!("  filter: {filter}"));
     }
@@ -6653,7 +6653,7 @@ fn format_event_readiness_report(report: &SessionEventsReadinessReport) -> Strin
 fn ensure_event_readiness_strict(report: &SessionEventsReadinessReport) -> Result<()> {
     if report.not_ready > 0 {
         bail!(
-            "event ledger readiness strict check failed: {} of {} reported session(s) not ready",
+            "event ledger strict check failed: {} of {} reported session(s) not ready",
             report.not_ready,
             report.total
         );
@@ -22386,7 +22386,7 @@ mod tests {
                     .issue_codes
                     .contains(&"missing_events_jsonl".to_string())
         }));
-        assert!(text.contains("Event ledger readiness"));
+        assert!(text.contains("Event ledger health"));
         assert!(text.contains("ready: 1"));
         assert!(text.contains("not ready: 1"));
         assert!(ensure_event_readiness_strict(&report)
