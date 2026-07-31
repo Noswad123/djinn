@@ -8439,13 +8439,14 @@ fn session_status_lifecycle(
 ) -> SessionStatusLifecycleReport {
     if let Some(session) = native_session {
         let lifecycle = lifecycle_for(session);
-        SessionStatusLifecycleReport {
+        let report = SessionStatusLifecycleReport {
             state: lifecycle.state.as_str().to_string(),
             mode: lifecycle.mode.map(|mode| mode.as_str().to_string()),
             updated_at: non_empty_string(&lifecycle.updated_at),
             reason: lifecycle.reason,
             note: lifecycle.note,
-        }
+        };
+        stale_background_run_lifecycle(session_dir, &report).unwrap_or(report)
     } else if manifest.and_then(|manifest| manifest.kind.as_deref()) == Some("promotion") {
         promotion_session_status_lifecycle(session_dir, candidates)
     } else {
@@ -8457,6 +8458,44 @@ fn session_status_lifecycle(
             note: None,
         }
     }
+}
+
+fn stale_background_run_lifecycle(
+    session_dir: &Path,
+    lifecycle: &SessionStatusLifecycleReport,
+) -> Option<SessionStatusLifecycleReport> {
+    if lifecycle.state != "running" || lifecycle.mode.as_deref() != Some("background") {
+        return None;
+    }
+    let run = latest_background_session_run_status(session_dir)?;
+    if run.alive {
+        return None;
+    }
+    Some(SessionStatusLifecycleReport {
+        state: "failed".to_string(),
+        mode: Some("background".to_string()),
+        updated_at: run
+            .log_modified_at
+            .clone()
+            .or(run.started_at.clone())
+            .or_else(|| lifecycle.updated_at.clone()),
+        reason: Some("background_worker_stale".to_string()),
+        note: Some(format_stale_background_run_note(&run)),
+    })
+}
+
+fn format_stale_background_run_note(run: &BackgroundRunStatus) -> String {
+    let mut note = format!(
+        "Background worker appears stale; no live process found for pid {}.",
+        run.pid
+    );
+    if let Some(log_path) = &run.log_path {
+        note.push_str(&format!(" Inspect log: {log_path}."));
+    }
+    if let Some(log_tail) = &run.log_tail {
+        note.push_str(&format!(" Last log line: {log_tail}"));
+    }
+    note
 }
 
 fn promotion_session_status_lifecycle(
@@ -8825,7 +8864,14 @@ fn session_status_next_action(
             session_dir.display()
         ))
     } else if lifecycle.state == "failed" {
-        Some("inspect the failure note, edit request.md or context, then run again".to_string())
+        if lifecycle.reason.as_deref() == Some("background_worker_stale") {
+            Some(format!(
+                "inspect background log/transcript, then rerun foreground: djinn session run {} --fg",
+                session_dir.display()
+            ))
+        } else {
+            Some("inspect the failure note, edit request.md or context, then run again".to_string())
+        }
     } else if request_exists && turn_count == 0 {
         Some(format!(
             "run request.md: djinn session run {}",
@@ -20103,6 +20149,83 @@ link = "context/repo"
         assert!(text.contains("Mode: foreground"));
         assert!(text.contains("State note: all done"));
         assert!(text.contains("response.md"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_status_marks_dead_background_worker_as_failed() {
+        let store = temp_agent_store("folder-status-stale-background");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Stale background session".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "test".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        append_agent_session_lifecycle_event(
+            &store,
+            &id,
+            AgentSessionLifecycleState::Running,
+            AgentSessionExecutionMode::Background,
+            "djinn session run started",
+            None,
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-status-stale-background-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("session");
+        let session = store.load_session(&id).unwrap();
+        project_agent_session_dir(&session_dir, &session, "request", "in progress").unwrap();
+        relocate_agent_session_into_folder(&store, &session_dir, &id).unwrap();
+        let log_path = session_dir.join(".djinn/runs/session-run-stale.log");
+        fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        fs::write(&log_path, "worker started\n").unwrap();
+        write_background_session_run_marker(&session_dir, &log_path, 4_294_967_295).unwrap();
+
+        let report = folder_session_status(&session_dir).unwrap();
+        let rendered = format_session_watch_snapshot(&report);
+
+        assert_eq!(report.lifecycle.state, "failed");
+        assert_eq!(report.lifecycle.mode.as_deref(), Some("background"));
+        assert_eq!(
+            report.lifecycle.reason.as_deref(),
+            Some("background_worker_stale")
+        );
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("no live process found"));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("worker started"));
+        assert!(report
+            .next_action
+            .as_deref()
+            .unwrap()
+            .contains("djinn session run"));
+        assert!(report.next_action.as_deref().unwrap().contains("--fg"));
+        assert!(rendered.contains("State: failed (background)"));
+        assert!(rendered.contains("Reason: background_worker_stale"));
+        assert!(rendered.contains("Next:"));
+        session_watch(SessionWatchArgs {
+            dir: session_dir.clone(),
+            interval_ms: 1,
+            timeout_seconds: Some(1),
+            json: false,
+        })
+        .unwrap();
 
         let _ = fs::remove_dir_all(&root);
     }

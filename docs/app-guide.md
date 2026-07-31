@@ -96,6 +96,12 @@ failed, completed, and draft states, and surfaces each session's next suggested
 action directly in the list preview so routine triage does not require opening
 the focused view first.
 
+For background runs, `djinn session status` and `djinn session watch` use the
+recorded worker pid under `.djinn/runs/` to detect a `running/background` lifecycle
+whose process is no longer alive. Such sessions are projected as failed with
+reason `background_worker_stale`, a log-aware diagnostic note, and a next action
+that points to inspecting the log/transcript and rerunning foreground.
+
 `djinn session promote ...` creates a promotion session folder from one or more
 source sessions. It records source refs in `context/sources.toml`, writes the
 current deterministic evidence packet to `context/source-packet.md`, and preserves

@@ -165,33 +165,19 @@ Ready implementation slices:
 - Add validation that `turns/<id>/request.md`/`summary.md`, root `summary.md`, and
   `events.jsonl` agree before treating events as resumable state.
 
-#### Stale background run detection
+#### Background run recovery follow-ups
 
-`djinn session watch <session>` can currently block forever when a background
-worker dies after appending `running/background` but before appending a terminal
-`completed` or `failed` lifecycle event. The observed `rebrand-opencode` session
-had no live Djinn worker, an empty `summary.md`, no projected `turns/`, and a
-native JSONL transcript that stopped after successful file edits. Because
-`watch` only polls the derived lifecycle state, the stale `running` event remained
-authoritative even though execution was no longer progressing.
+Status/watch now detect the common stale-pid case for folder-backed background
+runs. Remaining reliability slices should focus on richer provenance and recovery:
 
-Ready implementation slice:
-
-- Persist background run metadata when `djinn session run <dir>` spawns a worker:
-  run id, pid, started_at, command, log path, and native session id.
-- Have `djinn session status` and `djinn session watch` detect stale background
-  runs when lifecycle is `running/background` but the pid is gone, the log has no
-  recent activity, or no heartbeat/progress marker has advanced for a conservative
-  threshold.
-- Surface the state as `stale` or `failed` with a clear reason such as
-  "background worker exited before terminal lifecycle event" and next actions:
-  inspect log/transcript, rerun foreground, mark failed/cancelled, or resume.
-- Prefer append-only recovery events over silently rewriting history. If a stale
-  detector promotes the lifecycle to `failed`, record the detector, run metadata,
-  and last observed transcript event for provenance.
-- Add focused tests for: healthy running worker, completed worker, failed worker,
-  stale pid with no terminal lifecycle event, and `watch --timeout-seconds`
-  returning a useful diagnostic instead of an unqualified timeout.
+- Add heartbeat/progress markers so stale detection can also identify a live but
+  wedged worker after a conservative inactivity threshold.
+- Persist richer run metadata: run id, full command, native session id, and last
+  observed transcript event.
+- Prefer append-only recovery events when a stale detector promotes derived state
+  to failed, recording the detector and run metadata for provenance.
+- Add explicit user commands to mark a stale run failed/cancelled or resume when a
+  future runtime supports safe resume.
 
 - Keep the top-level UX canonical around `djinn ask` and `djinn session ...`.
   Legacy `djinn agent ...` commands and the global `agent-sessions` JSONL root
