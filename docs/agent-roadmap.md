@@ -148,9 +148,9 @@ Incremental target shape:
 Future direction: convert `turns/<id>/` from the canonical history store into a
 projection over the folder-local append-only `events.jsonl` shadow ledger. The
 migration should remain opt-in and reversible while being proven: Djinn already
-appends events alongside the existing turn folders and can validate agreement, so
-next slices should regenerate turns from events and only later make `events.jsonl`
-authoritative.
+appends events alongside the existing turn folders, can validate agreement, and
+can preview event-to-turn projection, so next slices should add an explicit
+reversible rebuild/write path and only later make `events.jsonl` authoritative.
 
 Ready implementation slices:
 
@@ -160,8 +160,9 @@ Ready implementation slices:
   next Djinn turn: copy submitted text to `turns/<id>/request.md`, clear root
   `request.md`, stream/update root `summary.md`, then finalize
   `turns/<id>/summary.md`.
-- Add a dry-run event replay/projection command that renders the `turns/` tree
-  that would be regenerated from `events.jsonl` without writing it.
+- Add an explicit, reversible event rebuild/write command that can regenerate
+  `turns/` from a previously validated `events.jsonl` ledger while preserving a
+  backup of the replaced tree.
 
 #### Background run recovery follow-ups
 

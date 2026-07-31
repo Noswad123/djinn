@@ -90,7 +90,9 @@ lifecycle status. Session folders keep `turns/<id>/` as the canonical turn
 evidence and maintain a folder-local `events.jsonl` shadow ledger for diagnostics
 and future event-based projections. `djinn session validate-events <session>`
 checks that the shadow ledger, turn files, and latest summary agree without
-rewriting anything. The old transcript subcommand has been removed.
+rewriting anything; `djinn session events <session>` previews the `turns/`
+tree that would be regenerated from the ledger. The old transcript subcommand has
+been removed.
 
 `djinn agent config list` and the TUI command palette include Copilot model
 options from `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`, comma/semicolon-list

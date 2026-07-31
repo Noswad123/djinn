@@ -92,10 +92,17 @@ message events, compares them to `turns/<id>/request.md` and
 latest turn response. The command reports issues but does not rewrite artifacts or
 make events authoritative.
 
+Use `djinn session events <session>` to preview the `turns/` tree that would be
+regenerated from `events.jsonl`. This is also read-only: it reports the projected
+turn ids, request/response paths, create/update/match state, concise content
+previews, and the projected `summary.md` source without writing files. The longer
+`project-events` spelling remains an alias.
+
 ```bash
 djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
 djinn session validate-events ./debugging-session
+djinn session events ./debugging-session
 djinn session compact ./debugging-session
 djinn session promote ./debugging-session --type memory
 djinn session run ./promotion-memory --fg

@@ -942,7 +942,12 @@ The first non-interactive agent slice is implemented as:
     shadow ledger, pairs user/assistant message events, compares them to
     `turns/<id>/request.md` and `turns/<id>/response.md`, and checks root
     `summary.md` against the latest turn response. It reports agreement issues but
-    must not rewrite artifacts or make events authoritative.
+    must not rewrite artifacts or make events authoritative. `djinn session
+    events <session>` is the companion read-only projection preview: it
+    renders the turn ids, request/response paths, create/update/match state,
+    concise previews, and projected `summary.md` source that an event-to-turn
+    regeneration would produce. It is intentionally non-mutating until a later
+    explicit write/rebuild command is designed.
 71. Bare folder-session names resolve under Djinn's cache directory, not the
     current working directory. For example `djinn session init small-question` and
     `djinn ask --session-dir small-question` target

@@ -145,6 +145,9 @@ enum SessionCommand {
     ValidateCandidates(SessionValidateCandidatesArgs),
     /// Validate that events.jsonl, turns/, and root summary.md agree.
     ValidateEvents(SessionValidateEventsArgs),
+    /// Preview the turns/ tree that would be projected from events.jsonl.
+    #[command(alias = "project-events")]
+    Events(SessionEventsArgs),
     /// Permanently clean up explicit promotion-session source material.
     Cleanup(SessionCleanupArgs),
     /// Manage session-local context files and links.
@@ -346,6 +349,15 @@ struct SessionValidateCandidatesArgs {
 #[derive(Debug, Args)]
 struct SessionValidateEventsArgs {
     /// Folder-backed session name or directory to validate.
+    dir: PathBuf,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionEventsArgs {
+    /// Folder-backed session name or directory to project from.
     dir: PathBuf,
     /// Output JSON instead of text.
     #[arg(long)]
@@ -5077,6 +5089,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::ExportPattern(args) => session_export_pattern(args),
         SessionCommand::ValidateCandidates(args) => session_validate_candidates(args),
         SessionCommand::ValidateEvents(args) => session_validate_events(args),
+        SessionCommand::Events(args) => session_events(args),
         SessionCommand::Cleanup(args) => session_cleanup(args),
         SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
@@ -5824,6 +5837,253 @@ fn format_session_validate_events_report(report: &SessionValidateEventsReport) -
     if report.issues.is_empty() {
         lines.push("  issues: none".to_string());
     } else {
+        lines.push("  issues:".to_string());
+        for issue in &report.issues {
+            let mut suffix = String::new();
+            if let Some(path) = &issue.path {
+                suffix.push_str(&format!(" ({path}"));
+                if let Some(line) = issue.line {
+                    suffix.push_str(&format!(":{line}"));
+                }
+                suffix.push(')');
+            }
+            lines.push(format!(
+                "    - [{}] {}{}",
+                issue.code, issue.message, suffix
+            ));
+        }
+    }
+    lines.push(format!("  note: {}", report.note));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionProjectEventsReport {
+    session_dir: String,
+    events_path: String,
+    events_exists: bool,
+    event_count: usize,
+    projected_turn_count: usize,
+    existing_turn_count: usize,
+    writes: bool,
+    turns: Vec<SessionProjectedEventTurn>,
+    summary: Option<SessionProjectedSummary>,
+    issues: Vec<SessionValidateEventsIssue>,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionProjectedEventTurn {
+    index: usize,
+    id: String,
+    existing_turn_id: Option<String>,
+    request_path: String,
+    response_path: String,
+    request_chars: usize,
+    response_chars: usize,
+    request_preview: String,
+    response_preview: String,
+    request_state: String,
+    response_state: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionProjectedSummary {
+    path: String,
+    source_turn_id: String,
+    response_chars: usize,
+    response_preview: String,
+    state: String,
+}
+
+fn session_events(args: SessionEventsArgs) -> Result<()> {
+    let report = project_folder_session_events(&args.dir)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_project_events_report(&report));
+    }
+    Ok(())
+}
+
+fn project_folder_session_events(dir: &Path) -> Result<SessionProjectEventsReport> {
+    let session_dir = resolve_session_dir(dir)?;
+    let events_path = session_dir.join("events.jsonl");
+    let turns = read_folder_session_turns(&session_dir.join("turns"))?;
+    let mut issues = Vec::new();
+    let mut event_count = 0;
+    let mut event_turns = Vec::new();
+    let mut events_exists = events_path.exists();
+
+    if events_exists && !events_path.is_file() {
+        push_session_event_validation_issue(
+            &mut issues,
+            "invalid_events_path",
+            format!(
+                "events.jsonl exists but is not a file: {}",
+                events_path.display()
+            ),
+            Some(&events_path),
+            None,
+        );
+        events_exists = false;
+    }
+
+    if events_exists {
+        let raw = fs::read_to_string(&events_path)
+            .with_context(|| format!("reading {}", events_path.display()))?;
+        event_count = raw.lines().filter(|line| !line.trim().is_empty()).count();
+        event_turns = read_event_turn_pairs(&events_path, &raw, &mut issues);
+    } else {
+        push_session_event_validation_issue(
+            &mut issues,
+            "missing_events_jsonl",
+            format!(
+                "missing folder-local event ledger: {}",
+                events_path.display()
+            ),
+            Some(&events_path),
+            None,
+        );
+    }
+
+    let projected_turns = event_turns
+        .iter()
+        .enumerate()
+        .map(|(index, event_turn)| {
+            let existing_turn = turns.get(index);
+            let id = existing_turn
+                .map(|turn| turn.id.clone())
+                .unwrap_or_else(|| projected_event_turn_id(index));
+            let turn_dir = session_dir.join("turns").join(&id);
+            SessionProjectedEventTurn {
+                index: index + 1,
+                id: id.clone(),
+                existing_turn_id: existing_turn.map(|turn| turn.id.clone()),
+                request_path: turn_dir.join("request.md").display().to_string(),
+                response_path: turn_dir.join("response.md").display().to_string(),
+                request_chars: event_turn.request.chars().count(),
+                response_chars: event_turn.response.chars().count(),
+                request_preview: compact_text_snippet(&event_turn.request, 160),
+                response_preview: compact_text_snippet(&event_turn.response, 160),
+                request_state: projected_content_state(
+                    existing_turn.and_then(|turn| turn.request.as_deref()),
+                    &event_turn.request,
+                ),
+                response_state: projected_content_state(
+                    existing_turn.and_then(|turn| turn.response.as_deref()),
+                    &event_turn.response,
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let summary_path = session_dir.join("summary.md");
+    let existing_summary = read_optional_markdown_file(&summary_path)?;
+    let latest_event_response = event_turns.last().map(|turn| turn.response.as_str());
+    let summary = projected_turns.last().map(|turn| SessionProjectedSummary {
+        path: summary_path.display().to_string(),
+        source_turn_id: turn.id.clone(),
+        response_chars: latest_event_response
+            .map(|response| response.chars().count())
+            .unwrap_or_default(),
+        response_preview: latest_event_response
+            .map(|response| compact_text_snippet(response, 160))
+            .unwrap_or_default(),
+        state: projected_content_state(
+            existing_summary.as_deref(),
+            latest_event_response.unwrap_or_default(),
+        ),
+    });
+
+    let note = if issues.is_empty() {
+        "Dry-run only: no files were written. This projection can be used to review a future event-to-turn regeneration."
+    } else {
+        "Dry-run only: no files were written. Repair event issues before using this projection as a regeneration source."
+    }
+    .to_string();
+
+    Ok(SessionProjectEventsReport {
+        session_dir: session_dir.display().to_string(),
+        events_path: events_path.display().to_string(),
+        events_exists,
+        event_count,
+        projected_turn_count: projected_turns.len(),
+        existing_turn_count: turns.len(),
+        writes: false,
+        turns: projected_turns,
+        summary,
+        issues,
+        note,
+    })
+}
+
+fn projected_event_turn_id(index: usize) -> String {
+    format!("event-turn-{number:04}", number = index + 1)
+}
+
+fn projected_content_state(existing: Option<&str>, projected: &str) -> String {
+    match existing {
+        Some(existing) if same_session_text(existing, projected) => "matches".to_string(),
+        Some(_) => "would_update".to_string(),
+        None => "would_create".to_string(),
+    }
+}
+
+fn format_session_project_events_report(report: &SessionProjectEventsReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "Projected session event ledger: {}",
+        report.session_dir
+    ));
+    lines.push("  writes: no".to_string());
+    lines.push(format!(
+        "  events.jsonl: {} ({})",
+        yes_no(report.events_exists),
+        report.events_path
+    ));
+    lines.push(format!("  events: {}", report.event_count));
+    lines.push(format!(
+        "  projected turns: {}",
+        report.projected_turn_count
+    ));
+    lines.push(format!(
+        "  existing turn folders: {}",
+        report.existing_turn_count
+    ));
+    if report.turns.is_empty() {
+        lines.push("  turns/: none projected".to_string());
+    } else {
+        lines.push("  turns/:".to_string());
+        for turn in &report.turns {
+            lines.push(format!("    - {} (event pair {})", turn.id, turn.index));
+            if let Some(existing) = &turn.existing_turn_id {
+                lines.push(format!("      existing: {existing}"));
+            }
+            lines.push(format!(
+                "      request.md: {} ({} chars)",
+                turn.request_state, turn.request_chars
+            ));
+            lines.push(format!("        path: {}", turn.request_path));
+            lines.push(format!("        preview: {}", turn.request_preview));
+            lines.push(format!(
+                "      response.md: {} ({} chars)",
+                turn.response_state, turn.response_chars
+            ));
+            lines.push(format!("        path: {}", turn.response_path));
+            lines.push(format!("        preview: {}", turn.response_preview));
+        }
+    }
+    if let Some(summary) = &report.summary {
+        lines.push("  summary.md:".to_string());
+        lines.push(format!("    state: {}", summary.state));
+        lines.push(format!("    path: {}", summary.path));
+        lines.push(format!("    source turn: {}", summary.source_turn_id));
+        lines.push(format!("    response chars: {}", summary.response_chars));
+        lines.push(format!("    preview: {}", summary.response_preview));
+    }
+    if !report.issues.is_empty() {
         lines.push("  issues:".to_string());
         for issue in &report.issues {
             let mut suffix = String::new();
@@ -20633,6 +20893,40 @@ mod tests {
         assert_eq!(args.dir, PathBuf::from("./debugging-session"));
         assert!(args.json);
 
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "events",
+            "./debugging-session",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Events(args)) = args.command else {
+            panic!("expected session events command");
+        };
+        assert_eq!(args.dir, PathBuf::from("./debugging-session"));
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
+            "project-events",
+            "./debugging-session",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Events(args)) = args.command else {
+            panic!("expected session events alias command");
+        };
+        assert_eq!(args.dir, PathBuf::from("./debugging-session"));
+        assert!(args.json);
+
         let cli = Cli::try_parse_from(["djinn", "session", "bap-questions"]).unwrap();
         let Some(Command::Session(args)) = cli.command else {
             panic!("expected session command");
@@ -20808,6 +21102,44 @@ mod tests {
         assert_eq!(report.root_summary_matches_latest_turn, Some(false));
         assert!(codes.contains(&"turn_response_mismatch"));
         assert!(codes.contains(&"root_summary_mismatch"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_project_events_renders_dry_run_turn_tree() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-project-events-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let turn_dir = dir.join("turns/existing-turn");
+        fs::create_dir_all(&turn_dir).unwrap();
+        fs::write(turn_dir.join("request.md"), "question\n").unwrap();
+        fs::write(turn_dir.join("response.md"), "old answer\n").unwrap();
+        fs::write(dir.join("summary.md"), "old answer\n").unwrap();
+        fs::write(
+            dir.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"question\"}\n{\"type\":\"assistant_message\",\"content\":\"new answer\"}\n{\"type\":\"user_message\",\"content\":\"follow-up\"}\n{\"type\":\"assistant_message\",\"content\":\"follow-up answer\"}\n",
+        )
+        .unwrap();
+
+        let report = project_folder_session_events(&dir).unwrap();
+        let text = format_session_project_events_report(&report);
+
+        assert!(!report.writes);
+        assert_eq!(report.projected_turn_count, 2);
+        assert_eq!(report.existing_turn_count, 1);
+        assert_eq!(report.turns[0].id, "existing-turn");
+        assert_eq!(report.turns[0].request_state, "matches");
+        assert_eq!(report.turns[0].response_state, "would_update");
+        assert_eq!(report.turns[1].id, "event-turn-0002");
+        assert_eq!(report.turns[1].request_state, "would_create");
+        assert_eq!(report.summary.as_ref().unwrap().state, "would_update");
+        assert!(text.contains("writes: no"));
+        assert!(text.contains("event-turn-0002"));
+        assert!(text.contains("summary.md:"));
 
         let _ = fs::remove_dir_all(&dir);
     }
