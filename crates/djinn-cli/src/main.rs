@@ -40,6 +40,7 @@ use sha2::{Digest, Sha256};
 
 const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
 const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
+const BACKGROUND_RUN_UNRESPONSIVE_SECONDS: i64 = 30 * 60;
 const FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES: u64 = 32 * 1024;
 const FOLDER_SESSION_CONTEXT_MAX_TOTAL_BYTES: usize = 96 * 1024;
 const FOLDER_SESSION_CONTEXT_MAX_FILES: usize = 16;
@@ -8446,7 +8447,7 @@ fn session_status_lifecycle(
             reason: lifecycle.reason,
             note: lifecycle.note,
         };
-        stale_background_run_lifecycle(session_dir, &report).unwrap_or(report)
+        stale_background_run_lifecycle(session_dir, &report, session).unwrap_or(report)
     } else if manifest.and_then(|manifest| manifest.kind.as_deref()) == Some("promotion") {
         promotion_session_status_lifecycle(session_dir, candidates)
     } else {
@@ -8463,13 +8464,29 @@ fn session_status_lifecycle(
 fn stale_background_run_lifecycle(
     session_dir: &Path,
     lifecycle: &SessionStatusLifecycleReport,
+    native_session: &AgentSession,
 ) -> Option<SessionStatusLifecycleReport> {
     if lifecycle.state != "running" || lifecycle.mode.as_deref() != Some("background") {
         return None;
     }
-    let run = latest_background_session_run_status(session_dir)?;
-    if run.alive {
+    let mut run = latest_background_session_run_status(session_dir)?;
+    if run.alive && !background_run_unresponsive(&run) {
         return None;
+    }
+    run.last_observed_event = last_observed_agent_session_event(native_session);
+    if run.alive {
+        return Some(SessionStatusLifecycleReport {
+            state: "failed".to_string(),
+            mode: Some("background".to_string()),
+            updated_at: run
+                .heartbeat_at
+                .clone()
+                .or(run.log_modified_at.clone())
+                .or(run.started_at.clone())
+                .or_else(|| lifecycle.updated_at.clone()),
+            reason: Some("background_worker_unresponsive".to_string()),
+            note: Some(format_unresponsive_background_run_note(&run)),
+        });
     }
     Some(SessionStatusLifecycleReport {
         state: "failed".to_string(),
@@ -8482,6 +8499,40 @@ fn stale_background_run_lifecycle(
         reason: Some("background_worker_stale".to_string()),
         note: Some(format_stale_background_run_note(&run)),
     })
+}
+
+fn background_run_unresponsive(run: &BackgroundRunStatus) -> bool {
+    run.heartbeat_age_seconds
+        .is_some_and(|age| age >= BACKGROUND_RUN_UNRESPONSIVE_SECONDS)
+}
+
+fn format_unresponsive_background_run_note(run: &BackgroundRunStatus) -> String {
+    let mut note = format!(
+        "Background worker is still alive but appears unresponsive (pid {}, run {}).",
+        run.pid, run.run_id
+    );
+    if let Some(age) = run.heartbeat_age_seconds {
+        note.push_str(&format!(" Last heartbeat was {age}s ago."));
+    }
+    if let Some(heartbeat_at) = &run.heartbeat_at {
+        note.push_str(&format!(" Heartbeat at {heartbeat_at}."));
+    }
+    if let Some(phase) = &run.heartbeat_phase {
+        note.push_str(&format!(" Phase: {phase}."));
+    }
+    if let Some(native_session_id) = &run.native_session_id {
+        note.push_str(&format!(" Native session: {native_session_id}."));
+    }
+    if let Some(log_path) = &run.log_path {
+        note.push_str(&format!(" Inspect log: {log_path}."));
+    }
+    if let Some(event) = &run.last_observed_event {
+        note.push_str(&format!(" Last transcript event: {event}."));
+    }
+    if let Some(log_tail) = &run.log_tail {
+        note.push_str(&format!(" Last log line: {log_tail}"));
+    }
+    note
 }
 
 fn format_stale_background_run_note(run: &BackgroundRunStatus) -> String {
@@ -8498,10 +8549,121 @@ fn format_stale_background_run_note(run: &BackgroundRunStatus) -> String {
     if let Some(command) = &run.command {
         note.push_str(&format!(" Command: {command}."));
     }
+    if let Some(event) = &run.last_observed_event {
+        note.push_str(&format!(" Last transcript event: {event}."));
+    }
     if let Some(log_tail) = &run.log_tail {
         note.push_str(&format!(" Last log line: {log_tail}"));
     }
     note
+}
+
+fn last_observed_agent_session_event(session: &AgentSession) -> Option<String> {
+    session
+        .events
+        .iter()
+        .rev()
+        .map(format_agent_session_event_summary)
+        .find(|summary| !summary.trim().is_empty())
+}
+
+fn format_agent_session_event_summary(event: &AgentSessionEvent) -> String {
+    let kind = match &event.kind {
+        AgentSessionEventKind::SessionCreated { .. } => "session_created".to_string(),
+        AgentSessionEventKind::SessionTitleUpdated { title } => {
+            format!("session_title_updated title={}", truncate_inline(title, 80))
+        }
+        AgentSessionEventKind::SessionProfileUpdated { profile } => {
+            format!("session_profile_updated profile={profile}")
+        }
+        AgentSessionEventKind::SessionModelUpdated { model } => {
+            format!("session_model_updated model={model}")
+        }
+        AgentSessionEventKind::UserMessage { content } => {
+            format!("user_message chars={}", content.chars().count())
+        }
+        AgentSessionEventKind::AssistantMessage { content } => {
+            format!("assistant_message chars={}", content.chars().count())
+        }
+        AgentSessionEventKind::ModelResponseMetadata {
+            model,
+            round,
+            elapsed_ms,
+            tool_calls,
+            ..
+        } => format!(
+            "model_response model={model} round={} elapsed_ms={elapsed_ms} tool_calls={tool_calls}",
+            round
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        AgentSessionEventKind::ToolCall { id, name, .. } => {
+            format!("tool_call id={id} name={name}")
+        }
+        AgentSessionEventKind::ToolResult { id, success, .. } => {
+            format!("tool_result id={id} success={success}")
+        }
+        AgentSessionEventKind::ToolExecutionMetadata {
+            id,
+            name,
+            elapsed_ms,
+            success,
+            ..
+        } => {
+            format!("tool_execution id={id} name={name} elapsed_ms={elapsed_ms} success={success}")
+        }
+        AgentSessionEventKind::Error { phase, message, .. } => {
+            format!(
+                "error phase={phase} message={}",
+                truncate_inline(message, 120)
+            )
+        }
+        AgentSessionEventKind::Summary { content } => {
+            format!("summary chars={}", content.chars().count())
+        }
+        AgentSessionEventKind::Checkpoint { label } => {
+            format!("checkpoint label={}", truncate_inline(label, 80))
+        }
+        AgentSessionEventKind::SessionLifecycleUpdated {
+            state,
+            mode,
+            reason,
+            ..
+        } => format!(
+            "lifecycle state={} mode={} reason={}",
+            state.as_str(),
+            mode.as_ref().map(|mode| mode.as_str()).unwrap_or("-"),
+            reason.as_deref().unwrap_or("-")
+        ),
+        AgentSessionEventKind::ChildSessionStatusChanged {
+            child_session_id,
+            state,
+            mode,
+            ..
+        } => format!(
+            "child_session_status child={} state={} mode={}",
+            child_session_id,
+            state.as_str(),
+            mode.as_ref().map(|mode| mode.as_str()).unwrap_or("-")
+        ),
+    };
+    if event.event_id.trim().is_empty() {
+        format!("{} {kind}", event.created_at)
+    } else {
+        format!("{} {} {kind}", event.created_at, event.event_id)
+    }
+}
+
+fn truncate_inline(value: &str, max_chars: usize) -> String {
+    let mut normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() > max_chars {
+        normalized = normalized
+            .chars()
+            .take(max_chars.saturating_sub(1))
+            .collect();
+        normalized.push('…');
+    }
+    normalized
 }
 
 fn promotion_session_status_lifecycle(
@@ -8874,9 +9036,12 @@ fn session_status_next_action(
             session_dir.display()
         ))
     } else if lifecycle.state == "failed" {
-        if lifecycle.reason.as_deref() == Some("background_worker_stale") {
+        if matches!(
+            lifecycle.reason.as_deref(),
+            Some("background_worker_stale" | "background_worker_unresponsive")
+        ) {
             Some(format!(
-                "inspect background log/transcript, then rerun foreground: djinn session run {} --fg",
+                "inspect background log/transcript, then stop or rerun foreground: djinn session run {} --fg",
                 session_dir.display()
             ))
         } else {
@@ -12299,6 +12464,9 @@ fn session_run(args: SessionRunArgs) -> Result<()> {
         bail!("--background-worker cannot be combined with --fg");
     }
     let session_dir = resolve_session_dir(&args.dir)?;
+    if args.background_worker {
+        touch_background_run_marker_from_env("worker_started");
+    }
     let manifest = read_folder_session_manifest(&session_dir)?;
     if manifest
         .as_ref()
@@ -12365,6 +12533,10 @@ struct BackgroundRunStatus {
     log_path: Option<String>,
     command: Option<String>,
     native_session_id: Option<String>,
+    last_observed_event: Option<String>,
+    heartbeat_at: Option<String>,
+    heartbeat_phase: Option<String>,
+    heartbeat_age_seconds: Option<i64>,
     log_bytes: Option<u64>,
     log_modified_at: Option<String>,
     log_tail: Option<String>,
@@ -12620,6 +12792,7 @@ fn spawn_background_session_run(
     args: &SessionRunArgs,
 ) -> Result<SessionRunBackgroundReport> {
     let log_path = background_session_run_log_path(session_dir)?;
+    let marker_path = log_path.with_extension("toml");
     let log_file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -12638,6 +12811,7 @@ fn spawn_background_session_run(
         .arg("run")
         .arg(session_dir)
         .arg("--background-worker")
+        .env("DJINN_BACKGROUND_RUN_MARKER", &marker_path)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(err_file));
@@ -12694,13 +12868,13 @@ fn write_background_session_run_marker(
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or("session-run");
+    let now = chrono::Local::now().to_rfc3339();
     let mut content = String::new();
     content.push_str("version = 1\n");
     content.push_str(&format!("run_id = {}\n", toml_string(run_id)?));
-    content.push_str(&format!(
-        "started_at = {}\n",
-        toml_string(&chrono::Local::now().to_rfc3339())?
-    ));
+    content.push_str(&format!("started_at = {}\n", toml_string(&now)?));
+    content.push_str(&format!("heartbeat_at = {}\n", toml_string(&now)?));
+    content.push_str("heartbeat_phase = \"spawned\"\n");
     content.push_str(&format!(
         "session_dir = {}\n",
         toml_string(&session_dir.display().to_string())?
@@ -12759,6 +12933,44 @@ fn background_session_run_command_hint(
     }
 }
 
+fn touch_background_run_marker_from_env(phase: &str) {
+    let Some(path) = env::var_os("DJINN_BACKGROUND_RUN_MARKER").map(PathBuf::from) else {
+        return;
+    };
+    let _ = touch_background_run_marker(&path, phase);
+}
+
+fn touch_background_run_marker(marker_path: &Path, phase: &str) -> Result<()> {
+    let content = fs::read_to_string(marker_path)
+        .with_context(|| format!("reading background run marker {}", marker_path.display()))?;
+    let heartbeat_at = chrono::Local::now().to_rfc3339();
+    let content = upsert_toml_root_string(&content, "heartbeat_at", &heartbeat_at)?;
+    let content = upsert_toml_root_string(&content, "heartbeat_phase", phase)?;
+    fs::write(marker_path, content)
+        .with_context(|| format!("writing background run marker {}", marker_path.display()))
+}
+
+fn upsert_toml_root_string(content: &str, key: &str, value: &str) -> Result<String> {
+    let rendered = format!("{key} = {}", toml_string(value)?);
+    let mut replaced = false;
+    let mut output = String::new();
+    for line in content.lines() {
+        if !replaced && line.trim_start().starts_with(&format!("{key} =")) {
+            output.push_str(&rendered);
+            output.push('\n');
+            replaced = true;
+        } else {
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+    if !replaced {
+        output.push_str(&rendered);
+        output.push('\n');
+    }
+    Ok(output)
+}
+
 fn latest_background_session_run_status(session_dir: &Path) -> Option<BackgroundRunStatus> {
     let run_dir = session_dir.join(".djinn").join("runs");
     let marker = fs::read_dir(run_dir)
@@ -12777,6 +12989,10 @@ fn latest_background_session_run_status(session_dir: &Path) -> Option<Background
         .parse::<u32>()
         .ok()?;
     let log_path = manifest_root_string_value(&content, "log_path");
+    let heartbeat_at = manifest_root_string_value(&content, "heartbeat_at");
+    let heartbeat_age_seconds = heartbeat_at
+        .as_deref()
+        .and_then(background_run_heartbeat_age_seconds);
     let log_path_buf = log_path.as_ref().map(PathBuf::from);
     let log_metadata = log_path_buf
         .as_deref()
@@ -12794,6 +13010,10 @@ fn latest_background_session_run_status(session_dir: &Path) -> Option<Background
         log_path,
         command: manifest_root_string_value(&content, "command"),
         native_session_id: manifest_root_string_value(&content, "native_session_id"),
+        last_observed_event: None,
+        heartbeat_at,
+        heartbeat_phase: manifest_root_string_value(&content, "heartbeat_phase"),
+        heartbeat_age_seconds,
         log_bytes: log_metadata.as_ref().map(|metadata| metadata.len()),
         log_modified_at: log_metadata
             .as_ref()
@@ -12803,6 +13023,12 @@ fn latest_background_session_run_status(session_dir: &Path) -> Option<Background
         started_at: manifest_root_string_value(&content, "started_at"),
         alive: process_pid_alive(pid),
     })
+}
+
+fn background_run_heartbeat_age_seconds(value: &str) -> Option<i64> {
+    let heartbeat = chrono::DateTime::parse_from_rfc3339(value.trim()).ok()?;
+    let now = chrono::Utc::now();
+    Some((now.timestamp() - heartbeat.with_timezone(&chrono::Utc).timestamp()).max(0))
 }
 
 fn latest_nonempty_file_line(path: &Path) -> Option<String> {
@@ -20200,6 +20426,16 @@ link = "context/repo"
             Some("all done".to_string()),
         )
         .unwrap();
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::ToolCall {
+                    id: "tool-1".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({"path": "summary.md"}),
+                }),
+            )
+            .unwrap();
         let root = std::env::temp_dir().join(format!(
             "djinn-session-status-lifecycle-test-{}",
             chrono::Local::now()
@@ -20323,6 +20559,26 @@ link = "context/repo"
             .unwrap()
             .contains(id.as_str()));
         assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("Last transcript event"));
+        assert!(format_agent_session_event_summary(&AgentSessionEvent::new(
+            AgentSessionEventKind::ToolCall {
+                id: "tool-1".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"path": "summary.md"}),
+            }
+        ))
+        .contains("tool_call id=tool-1 name=read"));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("lifecycle state=running"));
+        assert!(report
             .next_action
             .as_deref()
             .unwrap()
@@ -20338,6 +20594,82 @@ link = "context/repo"
             json: false,
         })
         .unwrap();
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_status_marks_stale_heartbeat_worker_as_unresponsive() {
+        let store = temp_agent_store("folder-status-unresponsive-background");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Unresponsive background session".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "test".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        append_agent_session_lifecycle_event(
+            &store,
+            &id,
+            AgentSessionLifecycleState::Running,
+            AgentSessionExecutionMode::Background,
+            "djinn session run started",
+            None,
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-status-unresponsive-background-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("session");
+        let session = store.load_session(&id).unwrap();
+        project_agent_session_dir(&session_dir, &session, "request", "in progress").unwrap();
+        relocate_agent_session_into_folder(&store, &session_dir, &id).unwrap();
+        let log_path = session_dir.join(".djinn/runs/session-run-unresponsive.log");
+        fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        fs::write(&log_path, "waiting for model\n").unwrap();
+        write_background_session_run_marker(
+            &session_dir,
+            &log_path,
+            std::process::id(),
+            "djinn session run /tmp/session --background-worker",
+            Some(id.as_str()),
+        )
+        .unwrap();
+        let marker_path = log_path.with_extension("toml");
+        let marker = fs::read_to_string(&marker_path).unwrap();
+        let marker =
+            upsert_toml_root_string(&marker, "heartbeat_at", "2000-01-01T00:00:00Z").unwrap();
+        let marker = upsert_toml_root_string(&marker, "heartbeat_phase", "model_call").unwrap();
+        fs::write(&marker_path, marker).unwrap();
+
+        let report = folder_session_status(&session_dir).unwrap();
+        let run = latest_background_session_run_status(&session_dir).unwrap();
+
+        assert!(run.alive);
+        assert!(run.heartbeat_age_seconds.unwrap() >= BACKGROUND_RUN_UNRESPONSIVE_SECONDS);
+        assert_eq!(report.lifecycle.state, "failed");
+        assert_eq!(
+            report.lifecycle.reason.as_deref(),
+            Some("background_worker_unresponsive")
+        );
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("still alive but appears unresponsive"));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("Phase: model_call"));
+        assert!(report.next_action.as_deref().unwrap().contains("--fg"));
 
         let _ = fs::remove_dir_all(&root);
     }

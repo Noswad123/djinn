@@ -167,13 +167,14 @@ Ready implementation slices:
 
 #### Background run recovery follow-ups
 
-Status/watch now detect the common stale-pid case for folder-backed background
-runs. Remaining reliability slices should focus on richer provenance and recovery:
+Status/watch now detect stale-pid and stale-heartbeat cases for folder-backed
+background runs. Remaining reliability slices should focus on richer provenance
+and recovery:
 
-- Add heartbeat/progress markers so stale detection can also identify a live but
-  wedged worker after a conservative inactivity threshold.
-- Persist the last observed transcript event alongside the existing run id,
-  command, pid, log path, and native session id metadata.
+- Persist the last observed transcript event into the run/recovery marker; stale
+  diagnostics currently compute and display it from the native transcript.
+- Add more granular progress phases around long-running provider calls and tool
+  execution if heartbeat updates at worker start are not enough in practice.
 - Prefer append-only recovery events when a stale detector promotes derived state
   to failed, recording the detector and run metadata for provenance.
 - Add explicit user commands to mark a stale run failed/cancelled or resume when a
