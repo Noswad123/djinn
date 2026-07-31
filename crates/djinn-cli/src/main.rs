@@ -146,7 +146,6 @@ enum SessionCommand {
     /// Validate that events.jsonl, optional turns/, and root summary.md agree.
     ValidateEvents(SessionValidateEventsArgs),
     /// Preview the turns/ tree that would be projected from events.jsonl.
-    #[command(alias = "project-events")]
     Events(SessionEventsArgs),
     /// Permanently clean up explicit promotion-session source material.
     Cleanup(SessionCleanupArgs),
@@ -21939,26 +21938,14 @@ mod tests {
         ])
         .is_err());
 
-        let cli = Cli::try_parse_from([
+        assert!(Cli::try_parse_from([
             "djinn",
             "session",
             "project-events",
             "./debugging-session",
             "--json",
         ])
-        .unwrap();
-        let Some(Command::Session(args)) = cli.command else {
-            panic!("expected session command");
-        };
-        let Some(SessionCommand::Events(args)) = args.command else {
-            panic!("expected session events alias command");
-        };
-        assert_eq!(args.dir, Some(PathBuf::from("./debugging-session")));
-        assert!(!args.all);
-        assert!(!args.write);
-        assert!(!args.strict);
-        assert!(args.restore.is_none());
-        assert!(args.json);
+        .is_err());
 
         let cli = Cli::try_parse_from(["djinn", "session", "bap-questions"]).unwrap();
         let Some(Command::Session(args)) = cli.command else {

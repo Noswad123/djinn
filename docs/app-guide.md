@@ -94,8 +94,7 @@ latest response. The command reports issues but does not rewrite artifacts.
 Use `djinn session events <session>` to preview the `turns/` tree that would be
 regenerated from `events.jsonl`. This is also read-only: it reports the projected
 turn ids, request/response paths, create/update/match state, concise content
-previews, and the projected `summary.md` source without writing files. The longer
-`project-events` spelling remains an alias.
+previews, and the projected `summary.md` source without writing files.
 
 After reviewing the projection, `djinn session events <session> --write` rebuilds
 `turns/` and root `summary.md` from complete user/assistant event pairs. It first
