@@ -137,6 +137,8 @@ enum SessionCommand {
     Run(SessionRunArgs),
     /// Open Buddy over request.md and write the final response back to the folder session.
     Buddy(SessionBuddyArgs),
+    /// Reconcile Djinn folder sessions and Buddy native sessions.
+    Consolidate(SessionConsolidateArgs),
     /// Poll a folder-backed session until it is no longer running.
     Watch(SessionWatchArgs),
     /// Deterministically compact turn request/response evidence into context/compacted.md.
@@ -244,6 +246,19 @@ struct SessionBuddyArgs {
     /// Preview the Buddy command and request without running Buddy or writing files.
     #[arg(long)]
     dry_run: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionConsolidateArgs {
+    /// Preview reconciliation without creating Buddy sessions, folders, or bindings.
+    #[arg(long)]
+    dry_run: bool,
+    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, then buddy.
+    #[arg(long = "buddy-bin")]
+    buddy_bin: Option<String>,
     /// Output JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -5288,6 +5303,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Init(args) => session_init(args),
         SessionCommand::Run(args) => session_run(args),
         SessionCommand::Buddy(args) => session_buddy(args),
+        SessionCommand::Consolidate(args) => session_consolidate(args),
         SessionCommand::Watch(args) => session_watch(args),
         SessionCommand::Compact(args) => session_compact(args),
         SessionCommand::Promote(args) => session_promote(args),
@@ -9521,11 +9537,20 @@ struct FolderSessionSummary {
     summary_preview: Option<String>,
     turn_count: usize,
     event_health: FolderSessionEventHealth,
+    buddy: Option<FolderSessionBuddySummary>,
     latest_turn: Option<SessionStatusTurnReport>,
     candidates: Option<SessionStatusCandidateReport>,
     next_action: Option<String>,
     modified_at: Option<String>,
     modified_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct FolderSessionBuddySummary {
+    buddy_session: Option<String>,
+    command: Option<String>,
+    last_run_at: Option<String>,
+    runtime_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -9920,6 +9945,454 @@ fn format_session_buddy_report(report: &SessionBuddyReport) -> String {
     ));
     lines.push(format!("  runtime metadata: {}", report.runtime_path));
     lines.push(format!("  note: {}", report.note));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct BuddySessionsJson {
+    sessions: Vec<BuddySessionListRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct BuddySessionListRecord {
+    id: String,
+    title: String,
+    repo_path: String,
+    created_at: String,
+    updated_at: String,
+    summary: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct BuddySessionCreateRecord {
+    id: String,
+    title: String,
+    repo_path: String,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionConsolidateReport {
+    root: String,
+    buddy_command: String,
+    dry_run: bool,
+    total_djinn_sessions: usize,
+    total_buddy_sessions: usize,
+    already_bound: usize,
+    matched_existing: usize,
+    created_buddy_sessions: usize,
+    adopted_buddy_sessions: usize,
+    entries: Vec<SessionConsolidateEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionConsolidateEntry {
+    action: String,
+    session_name: Option<String>,
+    session_dir: Option<String>,
+    buddy_session: Option<String>,
+    note: String,
+}
+
+fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
+    let root = default_folder_session_root();
+    let report = consolidate_sessions_in_root(&root, &args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_consolidate_report(&report));
+    }
+    Ok(())
+}
+
+fn consolidate_sessions_in_root(
+    root: &Path,
+    args: &SessionConsolidateArgs,
+) -> Result<SessionConsolidateReport> {
+    let buddy_bin = args
+        .buddy_bin
+        .clone()
+        .or_else(|| {
+            env::var("DJINN_BUDDY_BIN")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| "buddy".to_string());
+    let buddy_sessions = buddy_list_sessions(&buddy_bin)?;
+    let folder_report = list_folder_sessions_in_root(root, None)?;
+    let mut entries = Vec::new();
+    let mut used_buddy_ids = BTreeSet::new();
+    let mut created_buddy_sessions = 0usize;
+    let mut matched_existing = 0usize;
+    let mut already_bound = 0usize;
+
+    for session in &folder_report.sessions {
+        if let Some(buddy) = &session.buddy {
+            if let Some(id) = buddy
+                .buddy_session
+                .as_deref()
+                .filter(|id| !id.trim().is_empty())
+            {
+                used_buddy_ids.insert(id.to_string());
+                already_bound += 1;
+                entries.push(SessionConsolidateEntry {
+                    action: "already_bound".to_string(),
+                    session_name: Some(session.reference_name.clone()),
+                    session_dir: Some(session.path.clone()),
+                    buddy_session: Some(id.to_string()),
+                    note: "Folder session already has runtime/buddy.json binding.".to_string(),
+                });
+                continue;
+            }
+        }
+
+        if let Some(buddy) = deterministic_buddy_match(session, &buddy_sessions, &used_buddy_ids) {
+            used_buddy_ids.insert(buddy.id.clone());
+            matched_existing += 1;
+            if !args.dry_run {
+                write_buddy_runtime_state(
+                    &PathBuf::from(&session.path).join("runtime/buddy.json"),
+                    &BuddyRuntimeState {
+                        buddy_session: Some(buddy.id.clone()),
+                        command: Some(buddy_bin.clone()),
+                        args: Vec::new(),
+                        last_run_at: None,
+                        last_prompt_chars: 0,
+                        last_response_chars: 0,
+                    },
+                )?;
+            }
+            entries.push(SessionConsolidateEntry {
+                action: if args.dry_run {
+                    "would_match_existing_buddy"
+                } else {
+                    "matched_existing_buddy"
+                }
+                .to_string(),
+                session_name: Some(session.reference_name.clone()),
+                session_dir: Some(session.path.clone()),
+                buddy_session: Some(buddy.id.clone()),
+                note: "Matched by normalized session title/name and repo path when known."
+                    .to_string(),
+            });
+        } else {
+            let title = session.display_name.clone();
+            let repo = buddy_repo_for_folder_session(session);
+            let created = if args.dry_run {
+                None
+            } else {
+                let created = buddy_create_session(&buddy_bin, &title, &repo)?;
+                used_buddy_ids.insert(created.id.clone());
+                Some(created)
+            };
+            let buddy_session = created.as_ref().map(|created| created.id.clone());
+            if let Some(id) = &buddy_session {
+                write_buddy_runtime_state(
+                    &PathBuf::from(&session.path).join("runtime/buddy.json"),
+                    &BuddyRuntimeState {
+                        buddy_session: Some(id.clone()),
+                        command: Some(buddy_bin.clone()),
+                        args: Vec::new(),
+                        last_run_at: None,
+                        last_prompt_chars: 0,
+                        last_response_chars: 0,
+                    },
+                )?;
+            }
+            created_buddy_sessions += 1;
+            entries.push(SessionConsolidateEntry {
+                action: if args.dry_run {
+                    "would_create_buddy_for_folder"
+                } else {
+                    "created_buddy_for_folder"
+                }
+                .to_string(),
+                session_name: Some(session.reference_name.clone()),
+                session_dir: Some(session.path.clone()),
+                buddy_session,
+                note: if args.dry_run {
+                    "No deterministic Buddy match; dry-run would create a new Buddy session."
+                } else {
+                    "No deterministic Buddy match; created and bound a new Buddy session."
+                }
+                .to_string(),
+            });
+        }
+    }
+
+    let mut adopted_buddy_sessions = 0usize;
+    for buddy in &buddy_sessions {
+        if used_buddy_ids.contains(&buddy.id) {
+            continue;
+        }
+        let folder_dir = buddy_adopted_folder_path(root, buddy)?;
+        if !args.dry_run {
+            create_folder_session_from_buddy(root, &folder_dir, buddy, &buddy_bin)?;
+        }
+        adopted_buddy_sessions += 1;
+        entries.push(SessionConsolidateEntry {
+            action: if args.dry_run {
+                "would_adopt_buddy_session"
+            } else {
+                "adopted_buddy_session"
+            }
+            .to_string(),
+            session_name: Some(folder_session_reference_name(
+                folder_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(&buddy.title),
+            )),
+            session_dir: Some(folder_dir.display().to_string()),
+            buddy_session: Some(buddy.id.clone()),
+            note: "Buddy session had no Djinn folder binding; created a folder capsule."
+                .to_string(),
+        });
+    }
+
+    Ok(SessionConsolidateReport {
+        root: root.display().to_string(),
+        buddy_command: buddy_bin,
+        dry_run: args.dry_run,
+        total_djinn_sessions: folder_report.sessions.len(),
+        total_buddy_sessions: buddy_sessions.len(),
+        already_bound,
+        matched_existing,
+        created_buddy_sessions,
+        adopted_buddy_sessions,
+        entries,
+    })
+}
+
+fn buddy_list_sessions(buddy_bin: &str) -> Result<Vec<BuddySessionListRecord>> {
+    let list: BuddySessionsJson = run_buddy_json_command(buddy_bin, &["sessions", "--json"])?;
+    Ok(list.sessions)
+}
+
+fn buddy_create_session(
+    buddy_bin: &str,
+    title: &str,
+    repo_path: &str,
+) -> Result<BuddySessionCreateRecord> {
+    run_buddy_json_command(
+        buddy_bin,
+        &[
+            "session", "create", "--json", "--title", title, "--repo", repo_path,
+        ],
+    )
+}
+
+fn run_buddy_json_command<T>(buddy_bin: &str, args: &[&str]) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let mut parts = buddy_bin.split_whitespace();
+    let Some(program) = parts.next() else {
+        bail!("Buddy command is empty");
+    };
+    let output = ProcessCommand::new(program)
+        .args(parts)
+        .args(args)
+        .output()
+        .with_context(|| {
+            format!(
+                "running Buddy command `{}`",
+                buddy_json_command_hint(buddy_bin, args)
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "Buddy command `{}` exited with status {}{}",
+            buddy_json_command_hint(buddy_bin, args),
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        );
+    }
+    serde_json::from_slice(&output.stdout).with_context(|| {
+        format!(
+            "parsing strict Buddy JSON from `{}`",
+            buddy_json_command_hint(buddy_bin, args)
+        )
+    })
+}
+
+fn buddy_json_command_hint(buddy_bin: &str, args: &[&str]) -> String {
+    let mut command = shell_quote(buddy_bin);
+    for arg in args {
+        command.push(' ');
+        command.push_str(&shell_quote(arg));
+    }
+    command
+}
+
+fn deterministic_buddy_match<'a>(
+    session: &FolderSessionSummary,
+    buddy_sessions: &'a [BuddySessionListRecord],
+    used_buddy_ids: &BTreeSet<String>,
+) -> Option<&'a BuddySessionListRecord> {
+    let folder_titles = [
+        normalize_session_match_key(&session.display_name),
+        normalize_session_match_key(&session.reference_name),
+        normalize_session_match_key(&session.name),
+    ];
+    let folder_repo = session.repo_path.as_deref().map(normalize_repo_match_key);
+    let matches = buddy_sessions
+        .iter()
+        .filter(|buddy| !used_buddy_ids.contains(&buddy.id))
+        .filter(|buddy| {
+            let buddy_title = normalize_session_match_key(&buddy.title);
+            folder_titles
+                .iter()
+                .any(|title| !title.is_empty() && *title == buddy_title)
+        })
+        .filter(|buddy| {
+            if let Some(folder_repo) = &folder_repo {
+                let buddy_repo = normalize_repo_match_key(&buddy.repo_path);
+                buddy_repo.is_empty() || *folder_repo == buddy_repo
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches[0])
+}
+
+fn normalize_session_match_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
+}
+
+fn normalize_repo_match_key(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_string()
+}
+
+fn buddy_repo_for_folder_session(session: &FolderSessionSummary) -> String {
+    session
+        .repo_path
+        .as_deref()
+        .or(session.workspace.as_deref())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn buddy_adopted_folder_path(root: &Path, buddy: &BuddySessionListRecord) -> Result<PathBuf> {
+    let base = format!(
+        "{}-{}",
+        safe_folder_session_slug(&buddy.title),
+        safe_folder_session_slug(&buddy.id)
+    );
+    let mut candidate = root.join(&base);
+    let mut suffix = 2usize;
+    while candidate.exists() {
+        candidate = root.join(format!("{base}-{suffix}"));
+        suffix += 1;
+    }
+    Ok(candidate)
+}
+
+fn create_folder_session_from_buddy(
+    _root: &Path,
+    folder_dir: &Path,
+    buddy: &BuddySessionListRecord,
+    buddy_bin: &str,
+) -> Result<()> {
+    fs::create_dir_all(folder_dir).with_context(|| format!("creating {}", folder_dir.display()))?;
+    let session_id = AgentSessionId::new(format!("buddy_{}", safe_folder_session_slug(&buddy.id)));
+    write_buddy_adopted_manifest(folder_dir, &session_id, buddy)?;
+    fs::write(folder_dir.join("request.md"), "")
+        .with_context(|| format!("writing {}/request.md", folder_dir.display()))?;
+    fs::write(
+        folder_dir.join("summary.md"),
+        ensure_trailing_newline(&buddy.summary),
+    )
+    .with_context(|| format!("writing {}/summary.md", folder_dir.display()))?;
+    write_buddy_runtime_state(
+        &folder_dir.join("runtime/buddy.json"),
+        &BuddyRuntimeState {
+            buddy_session: Some(buddy.id.clone()),
+            command: Some(buddy_bin.to_string()),
+            args: Vec::new(),
+            last_run_at: non_empty_string(&buddy.updated_at),
+            last_prompt_chars: 0,
+            last_response_chars: buddy.summary.chars().count(),
+        },
+    )
+}
+
+fn write_buddy_adopted_manifest(
+    folder_dir: &Path,
+    session_id: &AgentSessionId,
+    buddy: &BuddySessionListRecord,
+) -> Result<()> {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "session_id = {}\n",
+        toml_string(session_id.as_str())?
+    ));
+    output.push_str(&format!(
+        "created_at = {}\n",
+        toml_string(&buddy.created_at)?
+    ));
+    output.push_str(&format!("title = {}\n", toml_string(&buddy.title)?));
+    output.push_str(&format!("workspace = {}\n", toml_string(&buddy.repo_path)?));
+    output.push_str("profile = \"default\"\n");
+    output.push_str("source = \"buddy\"\n");
+    output.push_str("\n[context.repo]\n");
+    output.push_str(&format!("path = {}\n", toml_string(&buddy.repo_path)?));
+    fs::write(folder_dir.join("djinn.toml"), output)
+        .with_context(|| format!("writing {}/djinn.toml", folder_dir.display()))
+}
+
+fn format_session_consolidate_report(report: &SessionConsolidateReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Session consolidation: {}", report.root));
+    lines.push(format!("  dry run: {}", yes_no(report.dry_run)));
+    lines.push(format!("  buddy command: {}", report.buddy_command));
+    lines.push(format!("  djinn folders: {}", report.total_djinn_sessions));
+    lines.push(format!("  buddy sessions: {}", report.total_buddy_sessions));
+    lines.push(format!("  already bound: {}", report.already_bound));
+    lines.push(format!("  matched existing: {}", report.matched_existing));
+    lines.push(format!(
+        "  created buddy sessions: {}",
+        report.created_buddy_sessions
+    ));
+    lines.push(format!(
+        "  adopted buddy sessions: {}",
+        report.adopted_buddy_sessions
+    ));
+    if report.entries.is_empty() {
+        lines.push("  entries: none".to_string());
+    } else {
+        lines.push("  entries:".to_string());
+        for entry in &report.entries {
+            lines.push(format!(
+                "    - {}: {}{} ({})",
+                entry.action,
+                entry.session_name.as_deref().unwrap_or("-"),
+                entry
+                    .buddy_session
+                    .as_deref()
+                    .map(|id| format!(" -> {id}"))
+                    .unwrap_or_default(),
+                entry.note
+            ));
+            if let Some(path) = &entry.session_dir {
+                lines.push(format!("      path: {path}"));
+            }
+        }
+    }
     lines.push(String::new());
     lines.join("\n")
 }
@@ -11103,6 +11576,7 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
     let turns = read_folder_session_turns(&path.join("turns"))?;
     let turn_count = turns.len();
     let event_health = folder_session_event_health(path)?;
+    let buddy = folder_session_buddy_summary(path)?;
     let latest_turn = turns.last().map(session_status_turn_report);
     let request_md = path.join("request.md").exists();
     let candidates = session_status_candidates(path)?;
@@ -11142,12 +11616,26 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         summary_preview: folder_session_summary_preview(path),
         turn_count,
         event_health,
+        buddy,
         latest_turn,
         candidates,
         next_action,
         modified_at: folder_session_modified_at(path),
         modified_at_ms: folder_session_modified_at_ms(path),
     })
+}
+
+fn folder_session_buddy_summary(path: &Path) -> Result<Option<FolderSessionBuddySummary>> {
+    let runtime_path = path.join("runtime/buddy.json");
+    let Some(runtime) = read_buddy_runtime_state(&runtime_path)? else {
+        return Ok(None);
+    };
+    Ok(Some(FolderSessionBuddySummary {
+        buddy_session: runtime.buddy_session,
+        command: runtime.command,
+        last_run_at: runtime.last_run_at,
+        runtime_path: runtime_path.display().to_string(),
+    }))
 }
 
 fn folder_session_event_health(path: &Path) -> Result<FolderSessionEventHealth> {
@@ -11422,10 +11910,10 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
         }
         lines.push(format!("Repo: {}", group.repo));
         lines.push(format!(
-            "  {:<20} {:<12} {:>5}  {:<18} {:<32} {}",
-            "UPDATED", "STATE", "TURNS", "EVENTS", "NAME", "SUMMARY"
+            "  {:<20} {:<12} {:>5}  {:<18} {:<18} {:<32} {}",
+            "UPDATED", "STATE", "TURNS", "EVENTS", "BUDDY", "NAME", "SUMMARY"
         ));
-        lines.push(format!("  {}", "-".repeat(112)));
+        lines.push(format!("  {}", "-".repeat(132)));
         for session in &group.sessions {
             let updated = session
                 .updated_at
@@ -11436,7 +11924,7 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
             let summary = session.summary_preview.as_deref().unwrap_or("");
             let state = folder_session_summary_state_label(session);
             lines.push(format!(
-                "  {:<20} {:<12} {:>5}  {:<18} {:<32} {}",
+                "  {:<20} {:<12} {:>5}  {:<18} {:<18} {:<32} {}",
                 truncate_table_cell(&updated, 20),
                 truncate_table_cell(&state, 12),
                 session.turn_count,
@@ -11444,6 +11932,7 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
                     &folder_session_event_health_label(&session.event_health),
                     18
                 ),
+                truncate_table_cell(&folder_session_buddy_label(session.buddy.as_ref()), 18),
                 truncate_table_cell(
                     &format!(
                         "{}{}",
@@ -11466,6 +11955,14 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
     ));
     lines.push(String::new());
     lines.join("\n")
+}
+
+fn folder_session_buddy_label(buddy: Option<&FolderSessionBuddySummary>) -> String {
+    buddy
+        .and_then(|buddy| buddy.buddy_session.as_deref())
+        .filter(|session| !session.trim().is_empty())
+        .unwrap_or("-")
+        .to_string()
 }
 
 fn folder_session_summary_state_label(session: &FolderSessionSummary) -> String {
@@ -22197,6 +22694,26 @@ mod tests {
         let cli = Cli::try_parse_from([
             "djinn",
             "session",
+            "consolidate",
+            "--dry-run",
+            "--buddy-bin",
+            "buddy-dev",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Consolidate(args)) = args.command else {
+            panic!("expected session consolidate command");
+        };
+        assert!(args.dry_run);
+        assert_eq!(args.buddy_bin.as_deref(), Some("buddy-dev"));
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
             "watch",
             "bap-questions",
             "--interval-ms",
@@ -22689,6 +23206,112 @@ mod tests {
         assert!(format_session_buddy_report(&report).contains("Buddy composer:"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_consolidate_reconciles_djinn_and_buddy_sessions() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "djinn-consolidate-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        fs::create_dir_all(&alpha).unwrap();
+        fs::create_dir_all(&beta).unwrap();
+        fs::write(
+            alpha.join("djinn.toml"),
+            "title = \"Alpha\"\nworkspace = \"/tmp/repo-a\"\n\n[context.repo]\npath = \"/tmp/repo-a\"\n",
+        )
+        .unwrap();
+        fs::write(alpha.join("summary.md"), "alpha summary\n").unwrap();
+        fs::write(
+            beta.join("djinn.toml"),
+            "title = \"Beta\"\nworkspace = \"/tmp/repo-c\"\n\n[context.repo]\npath = \"/tmp/repo-c\"\n",
+        )
+        .unwrap();
+        fs::write(beta.join("summary.md"), "beta summary\n").unwrap();
+
+        let create_log = root.join("create-log.txt");
+        let buddy_bin = root.join("buddy-json.sh");
+        fs::write(
+            &buddy_bin,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"sessions\" ] && [ \"$2\" = \"--json\" ]; then\n  cat <<'JSON'\n{{\"sessions\":[{{\"id\":\"bud_alpha\",\"title\":\"Alpha\",\"repo_path\":\"/tmp/repo-a\",\"created_at\":\"2026-08-01T10:00:00Z\",\"updated_at\":\"2026-08-01T10:10:00Z\",\"summary\":\"alpha buddy summary\"}},{{\"id\":\"bud_orphan\",\"title\":\"Orphan Buddy\",\"repo_path\":\"/tmp/repo-b\",\"created_at\":\"2026-08-01T11:00:00Z\",\"updated_at\":\"2026-08-01T11:10:00Z\",\"summary\":\"orphan summary\"}}]}}\nJSON\n  exit 0\nfi\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$5\" \"$7\" >> '{}'\n  printf '{{\"id\":\"bud_created_beta\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}}\\n' \"$5\" \"$7\"\n  exit 0\nfi\necho unexpected buddy args: \"$@\" >&2\nexit 2\n",
+                create_log.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&buddy_bin, permissions).unwrap();
+        }
+
+        let dry_run = consolidate_sessions_in_root(
+            &root,
+            &SessionConsolidateArgs {
+                dry_run: true,
+                buddy_bin: Some(buddy_bin.display().to_string()),
+                json: false,
+            },
+        )
+        .unwrap();
+
+        assert!(dry_run.dry_run);
+        assert_eq!(dry_run.total_djinn_sessions, 2);
+        assert_eq!(dry_run.total_buddy_sessions, 2);
+        assert_eq!(dry_run.matched_existing, 1);
+        assert_eq!(dry_run.created_buddy_sessions, 1);
+        assert_eq!(dry_run.adopted_buddy_sessions, 1);
+        assert!(dry_run
+            .entries
+            .iter()
+            .any(|entry| entry.action == "would_match_existing_buddy"
+                && entry.buddy_session.as_deref() == Some("bud_alpha")));
+        assert!(!alpha.join("runtime/buddy.json").exists());
+        assert!(!create_log.exists());
+
+        let report = consolidate_sessions_in_root(
+            &root,
+            &SessionConsolidateArgs {
+                dry_run: false,
+                buddy_bin: Some(buddy_bin.display().to_string()),
+                json: false,
+            },
+        )
+        .unwrap();
+
+        assert!(!report.dry_run);
+        assert_eq!(report.matched_existing, 1);
+        assert_eq!(report.created_buddy_sessions, 1);
+        assert_eq!(report.adopted_buddy_sessions, 1);
+        assert!(fs::read_to_string(alpha.join("runtime/buddy.json"))
+            .unwrap()
+            .contains("bud_alpha"));
+        assert!(fs::read_to_string(beta.join("runtime/buddy.json"))
+            .unwrap()
+            .contains("bud_created_beta"));
+        assert_eq!(
+            fs::read_to_string(&create_log).unwrap(),
+            "beta|/tmp/repo-c\n"
+        );
+        let orphan = root.join("orphan_buddy-bud_orphan");
+        assert!(orphan.join("djinn.toml").exists());
+        assert!(fs::read_to_string(orphan.join("summary.md"))
+            .unwrap()
+            .contains("orphan summary"));
+        assert!(fs::read_to_string(orphan.join("runtime/buddy.json"))
+            .unwrap()
+            .contains("bud_orphan"));
+        assert!(format_session_consolidate_report(&report).contains("created_buddy_for_folder"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -23911,6 +24534,19 @@ link = "context/repo"
         fs::write(alpha.join("request.md"), "request\n").unwrap();
         fs::write(alpha.join("summary.md"), "summary\n").unwrap();
         fs::write(alpha.join("turns/turn-a/response.md"), "response\n").unwrap();
+        fs::create_dir_all(alpha.join("runtime")).unwrap();
+        fs::write(
+            alpha.join("runtime/buddy.json"),
+            r#"{
+  "buddy_session": "bud_alpha",
+  "command": "buddy-dev",
+  "last_run_at": "2026-08-01T12:00:00Z",
+  "last_prompt_chars": 7,
+  "last_response_chars": 8
+}
+"#,
+        )
+        .unwrap();
         let alpha_store = folder_agent_session_store(&alpha);
         let alpha_id = alpha_store
             .create_session(AgentSessionMeta {
@@ -24011,6 +24647,20 @@ link = "context/repo"
                 .as_deref()
         );
         assert_eq!(report.sessions[3].turn_count, 1);
+        assert_eq!(
+            report.sessions[3]
+                .buddy
+                .as_ref()
+                .and_then(|buddy| buddy.buddy_session.as_deref()),
+            Some("bud_alpha")
+        );
+        assert_eq!(
+            report.sessions[3]
+                .buddy
+                .as_ref()
+                .and_then(|buddy| buddy.command.as_deref()),
+            Some("buddy-dev")
+        );
         assert!(report.sessions[0].event_health.ready);
         assert_eq!(report.sessions[0].event_health.event_turn_count, 1);
         assert!(!report.sessions[3].event_health.ready);
@@ -24040,6 +24690,8 @@ link = "context/repo"
         assert!(text.contains("UPDATED"));
         assert!(text.contains("STATE"));
         assert!(text.contains("EVENTS"));
+        assert!(text.contains("BUDDY"));
+        assert!(text.contains("bud_alpha"));
         assert!(text.contains("ready:1/2"));
         assert!(text.contains("missing"));
         assert!(text.contains("running/bac…"));
@@ -24056,6 +24708,8 @@ link = "context/repo"
         assert!(!text.contains("native: agt_alpha"));
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["sessions"][3]["lifecycle"]["state"], "running");
+        assert_eq!(json["sessions"][3]["buddy"]["buddy_session"], "bud_alpha");
+        assert_eq!(json["sessions"][3]["buddy"]["command"], "buddy-dev");
         assert_eq!(json["sessions"][3]["latest_turn"]["id"], "turn-a");
         assert_eq!(json["groups"][0]["repo"], "repo-a");
         assert_eq!(json["groups"][0]["sessions"][0]["name"], "gamma");
@@ -24066,6 +24720,10 @@ link = "context/repo"
         assert_eq!(
             json["groups"][1]["sessions"][0]["lifecycle"]["mode"],
             "background"
+        );
+        assert_eq!(
+            json["groups"][1]["sessions"][0]["buddy"]["buddy_session"],
+            "bud_alpha"
         );
         assert_eq!(json["groups"][0]["sessions"][2]["display_name"], "session");
         assert_eq!(

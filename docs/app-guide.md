@@ -96,7 +96,9 @@ captures Buddy's final stdout response, then writes `summary.md`, appends a
 user/assistant pair to `events.jsonl`, clears `request.md`, and records bridge
 metadata under `runtime/buddy.json`. The focused Sessions UI exposes the same flow
 as “Open Buddy composer”. Use `--dry-run` to preview the Buddy command without
-launching Buddy or mutating session files.
+launching Buddy or mutating session files. `djinn session ls` surfaces the Buddy
+session id when `runtime/buddy.json` records one, so picker/list views can show the
+shared session's Buddy binding.
 
 Use `djinn session validate-events <session>` to check compatibility projections.
 It is read-only: it parses `events.jsonl`, pairs user/assistant message events,
