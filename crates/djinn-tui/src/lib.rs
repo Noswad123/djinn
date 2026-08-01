@@ -179,6 +179,7 @@ pub struct SessionRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FolderSessionAction {
     Run,
+    Buddy,
     Watch,
     OpenSummary,
     EditRequest,
@@ -584,6 +585,7 @@ where
 fn folder_session_action_for_key(code: KeyCode) -> Option<FolderSessionAction> {
     match code {
         KeyCode::Char('r') => Some(FolderSessionAction::Run),
+        KeyCode::Char('b') => Some(FolderSessionAction::Buddy),
         KeyCode::Char('w') => Some(FolderSessionAction::Watch),
         KeyCode::Char('o') => Some(FolderSessionAction::OpenSummary),
         KeyCode::Char('e') => Some(FolderSessionAction::EditRequest),
@@ -603,6 +605,12 @@ fn folder_session_command_palette(
             "Run session",
             "Run request.md for this folder-backed session",
             FolderSessionCommand::Action(FolderSessionAction::Run),
+        ),
+        folder_session_command_entry(
+            "Session",
+            "Open Buddy composer",
+            "Launch Buddy with request.md on stdin and capture the final response",
+            FolderSessionCommand::Action(FolderSessionAction::Buddy),
         ),
         folder_session_command_entry(
             "Session",
@@ -3771,6 +3779,10 @@ mod tests {
             Some(FolderSessionAction::Run)
         );
         assert_eq!(
+            folder_session_action_for_key(KeyCode::Char('b')),
+            Some(FolderSessionAction::Buddy)
+        );
+        assert_eq!(
             folder_session_action_for_key(KeyCode::Char('w')),
             Some(FolderSessionAction::Watch)
         );
@@ -3857,6 +3869,9 @@ mod tests {
         );
 
         let palette = folder_session_command_palette(&view, 0);
+        assert!(palette
+            .iter()
+            .any(|entry| entry.label == "Open Buddy composer"));
         assert!(palette
             .iter()
             .any(|entry| entry.label == "Show keybindings"));

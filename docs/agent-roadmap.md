@@ -122,12 +122,10 @@ becomes necessary.
 
 Ready implementation slices:
 
-- Add a live submit/resume flow in the Sessions UI that edits `request.md`, runs
-  the selected folder session, and surfaces the resulting `events.jsonl`/summary
-  state without restoring a transcript-first chat store.
-- Add a Buddy-compatible runtime bridge only after Djinn and Buddy agree on a
-  shared event schema, live submission/resume contract, and runtime metadata file
-  shape under the session folder.
+- Add an inline or docked request composer in the Sessions UI for quick edits to
+  `request.md` before launching the existing folder-session or Buddy run paths.
+- Extend the Buddy bridge from final-response capture to a structured event stream
+  once Djinn and Buddy agree on event schema and partial-run recovery semantics.
 
 #### Background run recovery follow-ups
 

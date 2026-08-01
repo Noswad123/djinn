@@ -85,6 +85,19 @@ keeps `.djinn/<native-id>.jsonl` as runtime-private compatibility state while th
 runtime is being simplified, and `turns/<id>/` is an optional projection for older
 tools rather than the central history path.
 
+For direct session entry, use `djinn -s <session>` to open the focused
+folder-session view. For occasional Buddy-style quick interaction without turning
+Djinn into a full chat UI, use `djinn -b` to open Buddy directly. Use `djinn -b -s
+<session>` or the clustered short form `djinn -bs <session>` to open a specific
+folder session through Buddy. The lower-level `djinn session buddy <session>` command reads the
+current `request.md`, sends that prompt to Buddy on stdin, passes `-s
+<buddy-session>` when provided or when `runtime/buddy.json` already records one,
+captures Buddy's final stdout response, then writes `summary.md`, appends a
+user/assistant pair to `events.jsonl`, clears `request.md`, and records bridge
+metadata under `runtime/buddy.json`. The focused Sessions UI exposes the same flow
+as “Open Buddy composer”. Use `--dry-run` to preview the Buddy command without
+launching Buddy or mutating session files.
+
 Use `djinn session validate-events <session>` to check compatibility projections.
 It is read-only: it parses `events.jsonl`, pairs user/assistant message events,
 compares them to any projected `turns/<id>/request.md` and

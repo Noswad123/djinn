@@ -84,9 +84,14 @@ djinn session watch repo-review
 Folder-backed sessions are the canonical interactive workflow. The dashboard
 calls these file-backed capsules **Sessions**: `djinn` opens that tab by
 default, and `djinn tui sessions` opens it explicitly. Use
-`djinn session <name-or-path>` for the focused session view,
+`djinn -s <session>` or `djinn session <name-or-path>` for the focused session view,
 `djinn session run` to execute turns, and `djinn session watch` to follow
-lifecycle status. Session folders use folder-local `events.jsonl` as the
+lifecycle status. For occasional Buddy-style quick interaction, `djinn -b` opens
+Buddy mode directly, while `djinn -b -s <session>` / `djinn -bs <session>` opens a
+specific folder session through Buddy. The lower-level `djinn session buddy
+<session>` command sends `request.md` to Buddy on stdin and captures Buddy's final
+response back into `summary.md` and `events.jsonl`. Session folders use
+folder-local `events.jsonl` as the
 conversation history for folder-session continuation. `turns/<id>/` is now an
 optional compatibility projection for older tools. `djinn session validate-events
 <session>` checks that any projected turn files and latest summary agree with the
