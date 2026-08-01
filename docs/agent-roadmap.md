@@ -124,11 +124,11 @@ Ready implementation slices:
 
 - Add `djinn session consolidate` as the strict Buddy/Djinn session reconciliation
   command. Default behavior mutates; `--dry-run` previews. Djinn calls `buddy
-  sessions --json` and expects exactly `{ "sessions": [...] }` with stable fields
-  `id`, `title`, `repo_path`, `created_at`, `updated_at`, and `summary`. For each
+  session list --format json` and expects the stable array shape emitted by Buddy:
+  records with `id`, `title`, `updated`, `created`, `projectId`, and `directory`. For each
   Djinn folder without `runtime/buddy.json`, match by normalized folder title/name
   plus repo path when known; if no deterministic match exists, create a new Buddy
-  session via `buddy session create --json --title <title> --repo <repo-path>` and
+  session via `buddy session create --format json --title <title> --repo <repo-path>` and
   record the returned id. For each Buddy session without a folder, create a Djinn
   folder capsule seeded with `djinn.toml`, `request.md`, `summary.md`, optional
   `events.jsonl`, and `runtime/buddy.json`. Fail loudly on malformed Buddy JSON;

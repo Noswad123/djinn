@@ -9951,12 +9951,17 @@ fn format_session_buddy_report(report: &SessionBuddyReport) -> String {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct BuddySessionsJson {
-    sessions: Vec<BuddySessionListRecord>,
+struct BuddySessionListJsonRecord {
+    id: String,
+    title: String,
+    updated: i64,
+    created: i64,
+    #[serde(rename = "projectId")]
+    project_id: String,
+    directory: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BuddySessionListRecord {
     id: String,
     title: String,
@@ -10169,8 +10174,25 @@ fn consolidate_sessions_in_root(
 }
 
 fn buddy_list_sessions(buddy_bin: &str) -> Result<Vec<BuddySessionListRecord>> {
-    let list: BuddySessionsJson = run_buddy_json_command(buddy_bin, &["sessions", "--json"])?;
-    Ok(list.sessions)
+    let list: Vec<BuddySessionListJsonRecord> =
+        run_buddy_json_command(buddy_bin, &["session", "list", "--format", "json"])?;
+    Ok(list
+        .into_iter()
+        .map(|session| BuddySessionListRecord {
+            id: session.id,
+            title: session.title,
+            repo_path: session.directory,
+            created_at: buddy_millis_to_rfc3339(session.created),
+            updated_at: buddy_millis_to_rfc3339(session.updated),
+            summary: String::new(),
+        })
+        .collect())
+}
+
+fn buddy_millis_to_rfc3339(value: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value)
+        .map(|datetime| datetime.to_rfc3339())
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn buddy_create_session(
@@ -10181,7 +10203,7 @@ fn buddy_create_session(
     run_buddy_json_command(
         buddy_bin,
         &[
-            "session", "create", "--json", "--title", title, "--repo", repo_path,
+            "session", "create", "--format", "json", "--title", title, "--repo", repo_path,
         ],
     )
 }
@@ -23240,10 +23262,8 @@ mod tests {
         let buddy_bin = root.join("buddy-json.sh");
         fs::write(
             &buddy_bin,
-            format!(
-                "#!/bin/sh\nif [ \"$1\" = \"sessions\" ] && [ \"$2\" = \"--json\" ]; then\n  cat <<'JSON'\n{{\"sessions\":[{{\"id\":\"bud_alpha\",\"title\":\"Alpha\",\"repo_path\":\"/tmp/repo-a\",\"created_at\":\"2026-08-01T10:00:00Z\",\"updated_at\":\"2026-08-01T10:10:00Z\",\"summary\":\"alpha buddy summary\"}},{{\"id\":\"bud_orphan\",\"title\":\"Orphan Buddy\",\"repo_path\":\"/tmp/repo-b\",\"created_at\":\"2026-08-01T11:00:00Z\",\"updated_at\":\"2026-08-01T11:10:00Z\",\"summary\":\"orphan summary\"}}]}}\nJSON\n  exit 0\nfi\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$5\" \"$7\" >> '{}'\n  printf '{{\"id\":\"bud_created_beta\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}}\\n' \"$5\" \"$7\"\n  exit 0\nfi\necho unexpected buddy args: \"$@\" >&2\nexit 2\n",
-                create_log.display()
-            ),
+            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"--format\" ] && [ \"$4\" = \"json\" ]; then\n  cat <<'JSON'\n[{\"id\":\"bud_alpha\",\"title\":\"Alpha\",\"updated\":1785599577905,\"created\":1785081429401,\"projectId\":\"project-a\",\"directory\":\"/tmp/repo-a\"},{\"id\":\"bud_orphan\",\"title\":\"Orphan Buddy\",\"updated\":1785595306273,\"created\":1785595040658,\"projectId\":\"project-b\",\"directory\":\"/tmp/repo-b\"}]\nJSON\n  exit 0\nfi\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"bud_created_beta\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected buddy args: \"$@\" >&2\nexit 2\n"
+                .replace("__CREATE_LOG__", &create_log.display().to_string()),
         )
         .unwrap();
         #[cfg(unix)]
@@ -23303,9 +23323,7 @@ mod tests {
         );
         let orphan = root.join("orphan_buddy-bud_orphan");
         assert!(orphan.join("djinn.toml").exists());
-        assert!(fs::read_to_string(orphan.join("summary.md"))
-            .unwrap()
-            .contains("orphan summary"));
+        assert!(orphan.join("summary.md").exists());
         assert!(fs::read_to_string(orphan.join("runtime/buddy.json"))
             .unwrap()
             .contains("bud_orphan"));
