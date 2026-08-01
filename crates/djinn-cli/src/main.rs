@@ -359,7 +359,7 @@ struct SessionEventsArgs {
     /// Folder-backed session name or directory to project from.
     #[arg(required_unless_present = "all")]
     dir: Option<PathBuf>,
-    /// Report event-ledger readiness for all cache-backed sessions.
+    /// Report event-ledger health for all cache-backed sessions.
     #[arg(long, conflicts_with_all = ["dir", "write", "restore"])]
     all: bool,
     /// Maximum cache-backed sessions to include with --all.
@@ -4846,23 +4846,45 @@ fn folder_session_action_message(
     session_dir: &Path,
 ) -> String {
     match action {
-        djinn_tui::FolderSessionAction::Run => {
-            if folder_session_is_promotion(session_dir).unwrap_or(false) {
-                "Started promotion generation in background".to_string()
-            } else {
-                "Started session run".to_string()
-            }
-        }
-        djinn_tui::FolderSessionAction::Watch => "Watched session status".to_string(),
-        djinn_tui::FolderSessionAction::OpenSummary => "Opened summary.md".to_string(),
-        djinn_tui::FolderSessionAction::EditRequest => "Opened request.md".to_string(),
-        djinn_tui::FolderSessionAction::OpenContext => "Opened context".to_string(),
-        djinn_tui::FolderSessionAction::DiscoverContext => "Discovered session context".to_string(),
+        djinn_tui::FolderSessionAction::Run => format!(
+            "Run command: djinn session run {}",
+            shell_quote(&session_dir.display().to_string())
+        ),
+        djinn_tui::FolderSessionAction::Watch => format!(
+            "Watch command: djinn session watch {}",
+            shell_quote(&session_dir.display().to_string())
+        ),
+        djinn_tui::FolderSessionAction::OpenSummary => folder_session_open_action_message(
+            session_dir,
+            SessionOpenTarget::Summary,
+            "Open summary command",
+        ),
+        djinn_tui::FolderSessionAction::EditRequest => folder_session_open_action_message(
+            session_dir,
+            SessionOpenTarget::Request,
+            "Edit request command",
+        ),
+        djinn_tui::FolderSessionAction::OpenContext => folder_session_open_action_message(
+            session_dir,
+            SessionOpenTarget::Context,
+            "Open context command",
+        ),
+        djinn_tui::FolderSessionAction::DiscoverContext => format!(
+            "Discover context command: djinn session context discover {}",
+            shell_quote(&session_dir.display().to_string())
+        ),
         djinn_tui::FolderSessionAction::ValidateCandidates => {
-            "Validated promotion candidates".to_string()
+            format!(
+                "Validate candidates command: djinn session validate-candidates {}",
+                shell_quote(&session_dir.display().to_string())
+            )
         }
         djinn_tui::FolderSessionAction::ValidateCandidate(candidate) => {
-            format!("Validated candidate {candidate}")
+            format!(
+                "Validate candidate command: djinn session validate-candidates {} {}",
+                shell_quote(&session_dir.display().to_string()),
+                shell_quote(candidate)
+            )
         }
         djinn_tui::FolderSessionAction::ShowPatternExportCommand(candidate) => format!(
             "Pattern export command: {}",
@@ -4885,17 +4907,67 @@ fn folder_session_action_message(
             session_events_command_hint(session_dir, "events", true, Some(backup))
         ),
         djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => {
-            format!("Accepted candidate {candidate}")
+            format!(
+                "Accept candidate command: djinn session accept {} {}",
+                shell_quote(&session_dir.display().to_string()),
+                shell_quote(candidate)
+            )
         }
         djinn_tui::FolderSessionAction::AcceptCandidateAndSyncMindweaver(candidate) => {
-            format!("Accepted candidate {candidate} and ran MindWeaver sync handoff")
+            format!(
+                "Accept candidate + MindWeaver sync command: djinn session accept {} {} --sync-mindweaver",
+                shell_quote(&session_dir.display().to_string()),
+                shell_quote(candidate)
+            )
         }
         djinn_tui::FolderSessionAction::DenyCandidate(candidate) => {
-            format!("Denied candidate {candidate}")
+            format!(
+                "Deny candidate command: djinn session deny {} {}",
+                shell_quote(&session_dir.display().to_string()),
+                shell_quote(candidate)
+            )
         }
-        djinn_tui::FolderSessionAction::OpenCandidate(_) => "Opened candidate file".to_string(),
-        djinn_tui::FolderSessionAction::OpenPath(path) => format!("Opened {path}"),
+        djinn_tui::FolderSessionAction::OpenCandidate(path) => format!(
+            "Open candidate command: {}",
+            editor_open_command_hint(Path::new(path))
+        ),
+        djinn_tui::FolderSessionAction::OpenPath(path) => {
+            format!(
+                "Open path command: {}",
+                editor_open_command_hint(Path::new(path))
+            )
+        }
     }
+}
+
+fn folder_session_open_action_message(
+    session_dir: &Path,
+    target: SessionOpenTarget,
+    label: &str,
+) -> String {
+    let path = resolve_folder_session_open_target(session_dir, target)
+        .unwrap_or_else(|_| fallback_folder_session_open_target(session_dir, target));
+    format!("{label}: {}", editor_open_command_hint(&path))
+}
+
+fn fallback_folder_session_open_target(session_dir: &Path, target: SessionOpenTarget) -> PathBuf {
+    match target {
+        SessionOpenTarget::Summary => session_dir.join("summary.md"),
+        SessionOpenTarget::Request => session_dir.join("request.md"),
+        SessionOpenTarget::Context => session_dir.join("context"),
+        SessionOpenTarget::Compacted => session_dir.join("context/compacted.md"),
+        SessionOpenTarget::Turns => session_dir.join("turns"),
+        SessionOpenTarget::Manifest => session_dir.join("djinn.toml"),
+        SessionOpenTarget::Repo => session_dir.join("repo"),
+    }
+}
+
+fn editor_open_command_hint(path: &Path) -> String {
+    format!(
+        "{} {}",
+        default_editor(),
+        shell_quote(&path.display().to_string())
+    )
 }
 
 fn handle_folder_session_tui_action(
@@ -5035,13 +5107,6 @@ fn session_events_command_hint(
         command.push_str(" --write");
     }
     command
-}
-
-fn folder_session_is_promotion(session_dir: &Path) -> Result<bool> {
-    Ok(read_folder_session_manifest(session_dir)?
-        .and_then(|manifest| manifest.kind)
-        .as_deref()
-        == Some("promotion"))
 }
 
 fn folder_session_status_tui_view(
@@ -5992,14 +6057,14 @@ struct SessionProjectedSummary {
 fn session_events(args: SessionEventsArgs) -> Result<()> {
     if args.all {
         let report =
-            event_readiness_report_for_cache_sessions(args.limit, args.health_filter.as_deref())?;
+            event_health_report_for_cache_sessions(args.limit, args.health_filter.as_deref())?;
         if args.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
-            print!("{}", format_event_readiness_report(&report));
+            print!("{}", format_event_health_report(&report));
         }
         if args.strict {
-            ensure_event_readiness_strict(&report)?;
+            ensure_event_health_strict(&report)?;
         }
         return Ok(());
     }
@@ -6457,18 +6522,18 @@ fn format_session_restore_events_report(report: &SessionRestoreEventsReport) -> 
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionEventsReadinessReport {
+struct SessionEventsHealthReport {
     root: String,
     filter: Option<String>,
     total: usize,
     ready: usize,
     not_ready: usize,
-    sessions: Vec<SessionEventsReadinessEntry>,
+    sessions: Vec<SessionEventsHealthEntry>,
     note: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionEventsReadinessEntry {
+struct SessionEventsHealthEntry {
     name: String,
     path: String,
     ready: bool,
@@ -6482,19 +6547,19 @@ struct SessionEventsReadinessEntry {
     latest_event_rebuild_backup: Option<String>,
 }
 
-fn event_readiness_report_for_cache_sessions(
+fn event_health_report_for_cache_sessions(
     limit: Option<usize>,
     health_filter: Option<&str>,
-) -> Result<SessionEventsReadinessReport> {
+) -> Result<SessionEventsHealthReport> {
     let root = default_folder_session_root();
-    event_readiness_report_for_folder_session_root(&root, limit, health_filter)
+    event_health_report_for_folder_session_root(&root, limit, health_filter)
 }
 
-fn event_readiness_report_for_folder_session_root(
+fn event_health_report_for_folder_session_root(
     root: &Path,
     limit: Option<usize>,
     health_filter: Option<&str>,
-) -> Result<SessionEventsReadinessReport> {
+) -> Result<SessionEventsHealthReport> {
     let health_filter = health_filter
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -6521,7 +6586,7 @@ fn event_readiness_report_for_folder_session_root(
                 .iter()
                 .map(|issue| issue.code.clone())
                 .collect::<Vec<_>>();
-            let entry = SessionEventsReadinessEntry {
+            let entry = SessionEventsHealthEntry {
                 name,
                 path: path.display().to_string(),
                 ready: report.all_valid,
@@ -6535,7 +6600,7 @@ fn event_readiness_report_for_folder_session_root(
                 latest_event_rebuild_backup: latest_event_rebuild_backup_path(&path)
                     .map(|path| path.display().to_string()),
             };
-            if readiness_entry_matches_health_filter(&entry, health_filter.as_deref()) {
+            if event_health_entry_matches_filter(&entry, health_filter.as_deref()) {
                 sessions.push(entry);
             }
         }
@@ -6559,7 +6624,7 @@ fn event_readiness_report_for_folder_session_root(
     } else {
         "Some cache-backed sessions have event ledger issues. Inspect issue codes with `djinn session events <session>` and `djinn session validate-events <session>`.".to_string()
     };
-    let report = SessionEventsReadinessReport {
+    let report = SessionEventsHealthReport {
         root: root.display().to_string(),
         filter: health_filter,
         total,
@@ -6571,8 +6636,8 @@ fn event_readiness_report_for_folder_session_root(
     Ok(report)
 }
 
-fn readiness_entry_matches_health_filter(
-    entry: &SessionEventsReadinessEntry,
+fn event_health_entry_matches_filter(
+    entry: &SessionEventsHealthEntry,
     filter: Option<&str>,
 ) -> bool {
     let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -6599,7 +6664,7 @@ fn normalize_event_health_filter(value: &str) -> String {
         .collect()
 }
 
-fn format_event_readiness_report(report: &SessionEventsReadinessReport) -> String {
+fn format_event_health_report(report: &SessionEventsHealthReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!("Event ledger health: {}", report.root));
     if let Some(filter) = &report.filter {
@@ -6650,7 +6715,7 @@ fn format_event_readiness_report(report: &SessionEventsReadinessReport) -> Strin
     lines.join("\n")
 }
 
-fn ensure_event_readiness_strict(report: &SessionEventsReadinessReport) -> Result<()> {
+fn ensure_event_health_strict(report: &SessionEventsHealthReport) -> Result<()> {
     if report.not_ready > 0 {
         bail!(
             "event ledger strict check failed: {} of {} reported session(s) not ready",
@@ -22347,9 +22412,9 @@ mod tests {
     }
 
     #[test]
-    fn session_events_all_reports_cache_readiness() {
+    fn session_events_all_reports_cache_health() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-events-readiness-test-{}",
+            "djinn-events-health-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -22370,8 +22435,8 @@ mod tests {
         fs::create_dir_all(&not_ready).unwrap();
         fs::write(not_ready.join("summary.md"), "orphan summary\n").unwrap();
 
-        let report = event_readiness_report_for_folder_session_root(&root, None, None).unwrap();
-        let text = format_event_readiness_report(&report);
+        let report = event_health_report_for_folder_session_root(&root, None, None).unwrap();
+        let text = format_event_health_report(&report);
 
         assert_eq!(report.total, 2);
         assert_eq!(report.ready, 1);
@@ -22389,12 +22454,12 @@ mod tests {
         assert!(text.contains("Event ledger health"));
         assert!(text.contains("ready: 1"));
         assert!(text.contains("not ready: 1"));
-        assert!(ensure_event_readiness_strict(&report)
+        assert!(ensure_event_health_strict(&report)
             .unwrap_err()
             .to_string()
             .contains("strict check failed"));
 
-        let strict_ok = SessionEventsReadinessReport {
+        let strict_ok = SessionEventsHealthReport {
             root: root.display().to_string(),
             filter: None,
             total: 1,
@@ -22403,19 +22468,19 @@ mod tests {
             sessions: Vec::new(),
             note: "ok".to_string(),
         };
-        ensure_event_readiness_strict(&strict_ok).unwrap();
+        ensure_event_health_strict(&strict_ok).unwrap();
         let not_ready =
-            event_readiness_report_for_folder_session_root(&root, None, Some("not-ready")).unwrap();
+            event_health_report_for_folder_session_root(&root, None, Some("not-ready")).unwrap();
         assert_eq!(not_ready.filter.as_deref(), Some("not-ready"));
         assert_eq!(not_ready.total, 1);
         assert_eq!(not_ready.not_ready, 1);
         assert_eq!(not_ready.sessions[0].name, "not-ready-session");
         let missing =
-            event_readiness_report_for_folder_session_root(&root, None, Some("missing")).unwrap();
+            event_health_report_for_folder_session_root(&root, None, Some("missing")).unwrap();
         assert_eq!(missing.total, 1);
         assert_eq!(missing.sessions[0].name, "not-ready-session");
         let ready_only =
-            event_readiness_report_for_folder_session_root(&root, None, Some("ready")).unwrap();
+            event_health_report_for_folder_session_root(&root, None, Some("ready")).unwrap();
         assert_eq!(ready_only.total, 1);
         assert_eq!(ready_only.sessions[0].name, "ready-session");
 
@@ -23110,11 +23175,40 @@ link = "context/repo"
             .unwrap()
             .ends_with("response.md"));
         assert_eq!(
+            folder_session_action_message(&djinn_tui::FolderSessionAction::Run, &session_dir,),
+            format!("Run command: djinn session run '{}'", session_dir.display())
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::OpenSummary,
+                &session_dir,
+            ),
+            format!(
+                "Open summary command: {}",
+                editor_open_command_hint(&session_dir.join("summary.md"))
+            )
+        );
+        assert_eq!(
             folder_session_action_message(
                 &djinn_tui::FolderSessionAction::AcceptCandidate("todo-001".to_string()),
                 &session_dir,
             ),
-            "Accepted candidate todo-001"
+            format!(
+                "Accept candidate command: djinn session accept '{}' 'todo-001'",
+                session_dir.display()
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::OpenCandidate(
+                    view.candidate_entries[0].path.clone()
+                ),
+                &session_dir,
+            ),
+            format!(
+                "Open candidate command: {}",
+                editor_open_command_hint(Path::new(&view.candidate_entries[0].path))
+            )
         );
         assert_eq!(
             folder_session_action_message(

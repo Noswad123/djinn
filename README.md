@@ -95,10 +95,10 @@ the `turns/` tree that would be regenerated from the ledger, and `--write`
 performs that rebuild after preserving a backup. Use `djinn session events <session> --restore
 <backup> --write` to roll back from an event rebuild backup. The old transcript
 subcommand has been removed. Use `djinn session events --all --json` to audit
-event-ledger readiness across cache-backed sessions, or add `--strict` for a
+event-ledger health across cache-backed sessions, or add `--strict` for a
 read-only script/CI guard that fails when any reported session is not ready.
 `djinn session ls` and the Sessions dashboard show compact event health labels for
-routine triage, and readiness audits can be focused with `--health ready`,
+routine triage, and health audits can be focused with `--health ready`,
 `--health not-ready`, `--health missing`, or an issue code.
 
 `djinn agent config list` and the TUI command palette include Copilot model

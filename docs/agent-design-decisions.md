@@ -962,7 +962,7 @@ The first non-interactive agent slice is implemented as:
     mutating session artifacts. `djinn session ls` and the Sessions dashboard show
     compact event health labels derived from the same validation state, so normal
     triage can spot missing, invalid, or ready event ledgers without opening each
-    session. Readiness audits accept `--health` filters for `ready`, `not-ready`,
+    session. Health audits accept `--health` filters for `ready`, `not-ready`,
     `missing`, or specific validation issue codes; the Sessions dashboard fuzzy
     filter also matches compact event health labels.
 71. Bare folder-session names resolve under Djinn's cache directory, not the

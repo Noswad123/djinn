@@ -134,7 +134,7 @@ Use `--health ready`, `--health not-ready`, `--health missing`, or an issue code
 such as `--health root_summary_mismatch` to focus the audit.
 Routine `djinn session ls` and the Sessions dashboard also show compact event
 health labels such as `ready:2/5`, `missing`, or the first validation issue code
-so ledger readiness is visible during normal triage. The Sessions dashboard fuzzy
+so ledger health is visible during normal triage. The Sessions dashboard fuzzy
 filter also matches those event health labels.
 
 ```bash
