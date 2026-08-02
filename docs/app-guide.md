@@ -97,10 +97,16 @@ prompt to Buddy on stdin, passes `-s <buddy-session>` when provided or when
 then writes `summary.md`, appends a user/assistant pair to `events.jsonl`, clears
 `request.md`, and records bridge metadata under `runtime/buddy.json`. The focused
 Sessions UI exposes the same flow as “Open Buddy composer”. Top-level Buddy mode
-is also a resume affordance: when `djinn -bs <ref>` resolves a folder with an empty
-or missing `request.md`, Djinn launches Buddy interactively with the bound
-`-s <buddy-session>` instead of running the capture bridge. Use `--dry-run` to
-preview the lower-level Buddy command without launching Buddy or mutating session files.
+is the interactive resume affordance: `djinn -bs <ref>` launches Buddy directly
+with the bound `-s <buddy-session>` instead of running the capture bridge, even if
+`request.md` contains a pending prompt. Use `--dry-run` to preview the lower-level
+Buddy command without launching Buddy or mutating session files.
+When a bound Buddy session's recorded workspace/repo path no longer exists, Djinn
+promotes the folder capsule to a session-local Buddy workspace: it removes the
+stale workspace and `[context.repo]` binding from `djinn.toml`, creates a new Buddy
+session for the folder path, records that id in `runtime/buddy.json`, and keeps the
+old Buddy id as an alias so existing `djinn -bs <old-id>` references continue to
+resolve.
 `djinn session ls` surfaces the Buddy session id when `runtime/buddy.json` records
 one, so picker/list views can show the shared session's Buddy binding.
 
