@@ -106,7 +106,9 @@ with the bound `-s <buddy-session>` instead of running the capture bridge, even 
 `DJINN_SESSION_DIR` and `DJINN_EVENTS_JSONL`; Buddy uses those to append completed
 interactive user/assistant exchanges to the capsule's `events.jsonl`. When Buddy
 exits, Djinn reads the latest valid event pair and refreshes `summary.md` from the
-assistant response, then prints a short sync status. Use `--dry-run` to preview the
+assistant response, then prints a short sync status. Buddy-stamped events include
+deterministic event ids so replayed message writes can be skipped without collapsing
+legitimate repeated prompts. Use `--dry-run` to preview the
 lower-level Buddy command without launching Buddy or mutating session files.
 When a bound Buddy session's recorded workspace/repo path no longer exists, Djinn
 promotes the folder capsule to a session-local Buddy workspace: it removes the

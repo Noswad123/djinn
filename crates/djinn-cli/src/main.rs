@@ -5839,6 +5839,7 @@ fn read_event_turn_pairs(
 ) -> Vec<SessionEventTurnPair> {
     let mut pending_user: Option<PendingSessionUserMessage> = None;
     let mut pairs = Vec::new();
+    let mut event_ids: BTreeMap<String, usize> = BTreeMap::new();
     for (index, line) in raw.lines().enumerate() {
         let line_number = index + 1;
         let trimmed = line.trim();
@@ -5858,6 +5859,22 @@ fn read_event_turn_pairs(
                 continue;
             }
         };
+        if !event.event_id.trim().is_empty() {
+            if let Some(first_line) = event_ids.get(&event.event_id) {
+                push_session_event_validation_issue(
+                    issues,
+                    "duplicate_event_id",
+                    format!(
+                        "event_id `{}` on line {line_number} duplicates line {first_line}",
+                        event.event_id
+                    ),
+                    Some(events_path),
+                    Some(line_number),
+                );
+            } else {
+                event_ids.insert(event.event_id.clone(), line_number);
+            }
+        }
         match event.kind {
             AgentSessionEventKind::UserMessage { content } => {
                 if let Some(previous) = pending_user.take() {
@@ -23995,6 +24012,42 @@ mod tests {
         assert_eq!(report.root_summary_matches_latest_turn, Some(false));
         assert!(codes.contains(&"turn_response_mismatch"));
         assert!(codes.contains(&"root_summary_mismatch"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_validate_events_reports_duplicate_event_ids() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-validate-events-duplicate-id-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            dir.join("events.jsonl"),
+            concat!(
+                "{\"event_id\":\"buddy:user_message:msg_1\",\"type\":\"user_message\",\"content\":\"question\"}\n",
+                "{\"event_id\":\"buddy:assistant_message:msg_2\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+                "{\"event_id\":\"buddy:user_message:msg_1\",\"type\":\"checkpoint\",\"label\":\"duplicate envelope\"}\n",
+            ),
+        )
+        .unwrap();
+
+        let report = validate_folder_session_events(&dir).unwrap();
+
+        assert!(!report.all_valid);
+        assert_eq!(report.event_turn_count, 1);
+        assert_eq!(report.root_summary_matches_latest_turn, Some(true));
+        let duplicate = report
+            .issues
+            .iter()
+            .find(|issue| issue.code == "duplicate_event_id")
+            .expect("expected duplicate_event_id issue");
+        assert_eq!(duplicate.line, Some(3));
+        assert!(duplicate.message.contains("duplicates line 1"));
 
         let _ = fs::remove_dir_all(&dir);
     }
