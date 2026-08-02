@@ -102,8 +102,11 @@ then writes `summary.md`, appends a user/assistant pair to `events.jsonl`, clear
 Sessions UI exposes the same flow as “Open Buddy composer”. Top-level Buddy mode
 is the interactive resume affordance: `djinn -bs <ref>` launches Buddy directly
 with the bound `-s <buddy-session>` instead of running the capture bridge, even if
-`request.md` contains a pending prompt. Use `--dry-run` to preview the lower-level
-Buddy command without launching Buddy or mutating session files.
+`request.md` contains a pending prompt. For folder-backed launches, Djinn also sets
+`DJINN_SESSION_DIR` and `DJINN_EVENTS_JSONL`; Buddy uses those to append completed
+interactive user/assistant exchanges to the capsule's `events.jsonl`. Use
+`--dry-run` to preview the lower-level Buddy command without launching Buddy or
+mutating session files.
 When a bound Buddy session's recorded workspace/repo path no longer exists, Djinn
 promotes the folder capsule to a session-local Buddy workspace: it removes the
 stale workspace and `[context.repo]` binding from `djinn.toml`, creates a new Buddy

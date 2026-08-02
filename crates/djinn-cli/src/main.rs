@@ -9898,6 +9898,8 @@ fn run_interactive_session_buddy(
     if let Some(cwd) = &behavior.cwd {
         command.current_dir(cwd);
     }
+    command.env("DJINN_SESSION_DIR", session_dir);
+    command.env("DJINN_EVENTS_JSONL", session_dir.join("events.jsonl"));
     let status = command
         .status()
         .with_context(|| format!("launching Buddy command `{buddy_bin}`"))?;

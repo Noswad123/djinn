@@ -139,8 +139,10 @@ Ready implementation slices:
   Buddy is becoming part of Djinn, so do not support loose legacy shapes.
 - Add an inline or docked request composer in the Sessions UI for quick edits to
   `request.md` before launching the existing folder-session or Buddy run paths.
-- Extend the Buddy bridge from final-response capture to a structured event stream
-  once Djinn and Buddy agree on event schema and partial-run recovery semantics.
+- Buddy now accepts `DJINN_EVENTS_JSONL` from Djinn-launched interactive folder
+  sessions and appends completed user/assistant message events to that ledger. Keep
+  future streaming work scoped to richer event schema and partial-run recovery; do
+  not make `turns/<id>/` the active history path again.
 
 #### Background run recovery follow-ups
 
