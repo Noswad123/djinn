@@ -92,7 +92,8 @@ specific folder session through Buddy. `<ref>` can be a folder-session name/path
 a Buddy session id already recorded in `runtime/buddy.json` by consolidation. The
 lower-level `djinn session buddy <session>` command sends `request.md` to Buddy on
 stdin and captures Buddy's final response back into `summary.md` and
-`events.jsonl`. Session folders use
+`events.jsonl`; when top-level Buddy mode has no pending `request.md`, it resumes
+Buddy interactively instead. Session folders use
 folder-local `events.jsonl` as the
 conversation history for folder-session continuation. `turns/<id>/` is now an
 optional compatibility projection for older tools. `djinn session validate-events

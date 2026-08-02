@@ -9624,6 +9624,13 @@ struct BuddyRuntimeState {
     last_response_chars: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TopLevelBuddySessionBehavior {
+    request_has_prompt: bool,
+    buddy_session: Option<String>,
+    cwd: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SessionBuddyReport {
     session_dir: String,
@@ -9654,11 +9661,15 @@ fn session_buddy(args: SessionBuddyArgs) -> Result<()> {
 
 fn run_top_level_buddy_mode(session: Option<PathBuf>) -> Result<()> {
     if let Some(session) = session {
-        let (session, buddy_session) = resolve_top_level_buddy_session_arg(session)?;
+        let (session_dir, buddy_session) = resolve_top_level_buddy_session_arg(session)?;
+        let behavior = top_level_buddy_session_behavior(&session_dir, buddy_session)?;
+        if !behavior.request_has_prompt {
+            return run_interactive_session_buddy(&session_dir, behavior);
+        }
         return session_buddy(SessionBuddyArgs {
-            dir: session,
+            dir: session_dir,
             buddy_bin: None,
-            buddy_session,
+            buddy_session: behavior.buddy_session,
             buddy_args: Vec::new(),
             dry_run: false,
             json: false,
@@ -9680,6 +9691,37 @@ fn resolve_top_level_buddy_session_arg(session: PathBuf) -> Result<(PathBuf, Opt
     }
 
     Ok((session_dir, None))
+}
+
+fn top_level_buddy_session_behavior(
+    session_dir: &Path,
+    explicit_buddy_session: Option<String>,
+) -> Result<TopLevelBuddySessionBehavior> {
+    let runtime_path = session_dir.join("runtime/buddy.json");
+    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
+    let request_has_prompt = folder_session_request_has_prompt(session_dir)?;
+    let buddy_session = explicit_buddy_session.or_else(|| {
+        previous_runtime
+            .as_ref()
+            .and_then(|state| state.buddy_session.clone())
+    });
+    let manifest = read_folder_session_manifest(session_dir)?;
+    let cwd = session_manifest_workspace_path(manifest.as_ref()).filter(|path| path.is_dir());
+    Ok(TopLevelBuddySessionBehavior {
+        request_has_prompt,
+        buddy_session,
+        cwd,
+    })
+}
+
+fn folder_session_request_has_prompt(session_dir: &Path) -> Result<bool> {
+    let request_path = session_dir.join("request.md");
+    if !request_path.exists() {
+        return Ok(false);
+    }
+    let prompt = fs::read_to_string(&request_path)
+        .with_context(|| format!("reading {}", request_path.display()))?;
+    Ok(!prompt.trim().is_empty())
 }
 
 fn resolve_buddy_session_reference_in_root(
@@ -9752,6 +9794,72 @@ fn run_plain_buddy_mode() -> Result<()> {
     if !status.success() {
         bail!("Buddy exited with status {status}");
     }
+    Ok(())
+}
+
+fn run_interactive_session_buddy(
+    session_dir: &Path,
+    behavior: TopLevelBuddySessionBehavior,
+) -> Result<()> {
+    let runtime_path = session_dir.join("runtime/buddy.json");
+    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
+    let buddy_bin = env::var("DJINN_BUDDY_BIN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            previous_runtime
+                .as_ref()
+                .and_then(|state| state.command.clone())
+        })
+        .unwrap_or_else(|| "buddy".to_string());
+    let mut parts = buddy_bin.split_whitespace();
+    let Some(program) = parts.next() else {
+        bail!("Buddy command is empty");
+    };
+    let mut command = ProcessCommand::new(program);
+    command.args(parts);
+    if let Some(session) = behavior
+        .buddy_session
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        command.arg("-s").arg(session);
+    }
+    if let Some(cwd) = &behavior.cwd {
+        command.current_dir(cwd);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("launching Buddy command `{buddy_bin}`"))?;
+    if !status.success() {
+        bail!("Buddy exited with status {status}");
+    }
+
+    if let Some(buddy_session) = behavior.buddy_session {
+        let previous_args = previous_runtime
+            .as_ref()
+            .map(|state| state.args.clone())
+            .unwrap_or_default();
+        write_buddy_runtime_state(
+            &runtime_path,
+            &BuddyRuntimeState {
+                buddy_session: Some(buddy_session),
+                command: Some(buddy_bin),
+                args: previous_args,
+                last_run_at: Some(chrono::Utc::now().to_rfc3339()),
+                last_prompt_chars: previous_runtime
+                    .as_ref()
+                    .map(|state| state.last_prompt_chars)
+                    .unwrap_or_default(),
+                last_response_chars: previous_runtime
+                    .as_ref()
+                    .map(|state| state.last_response_chars)
+                    .unwrap_or_default(),
+            },
+        )?;
+    }
+
     Ok(())
 }
 
@@ -23437,6 +23545,54 @@ mod tests {
         let missing =
             resolve_buddy_session_reference_in_root(&root, Path::new("ses_missing")).unwrap();
         assert_eq!(missing, None);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn top_level_buddy_session_uses_interactive_resume_when_request_is_empty() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-behavior-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let workspace = root.join("workspace");
+        let session_dir = root.join("session");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(session_dir.join("runtime")).unwrap();
+        fs::write(
+            session_dir.join("djinn.toml"),
+            format!(
+                "title = \"Session\"\nworkspace = {}\n",
+                serde_json::to_string(&workspace.display().to_string()).unwrap()
+            ),
+        )
+        .unwrap();
+        fs::write(session_dir.join("request.md"), "\n").unwrap();
+        fs::write(
+            session_dir.join("runtime/buddy.json"),
+            serde_json::json!({
+                "buddy_session": "ses_resume",
+                "command": "buddy",
+                "args": [],
+                "last_run_at": null,
+                "last_prompt_chars": 0,
+                "last_response_chars": 0
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let behavior = top_level_buddy_session_behavior(&session_dir, None).unwrap();
+        assert!(!behavior.request_has_prompt);
+        assert_eq!(behavior.buddy_session.as_deref(), Some("ses_resume"));
+        assert_eq!(behavior.cwd.as_deref(), Some(workspace.as_path()));
+
+        fs::write(session_dir.join("request.md"), "please answer\n").unwrap();
+        let behavior = top_level_buddy_session_behavior(&session_dir, None).unwrap();
+        assert!(behavior.request_has_prompt);
+        assert_eq!(behavior.buddy_session.as_deref(), Some("ses_resume"));
 
         let _ = fs::remove_dir_all(&root);
     }
