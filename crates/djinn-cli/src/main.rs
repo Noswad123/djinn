@@ -48,6 +48,9 @@ const FOLDER_SESSION_COMPACT_SNIPPET_CHARS: usize = 1_200;
 const FOLDER_SESSION_COMPACT_START_MARKER: &str = "<!-- djinn:generated:start -->";
 const FOLDER_SESSION_COMPACT_END_MARKER: &str = "<!-- djinn:generated:end -->";
 const FOLDER_NATIVE_SESSION_DIR: &str = ".djinn";
+const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
+const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy";
+const DEFAULT_BUDDY_COMMAND: &str = "buddy";
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -234,7 +237,7 @@ struct SessionRunArgs {
 struct SessionBuddyArgs {
     /// Folder-backed session name or directory to run through Buddy.
     dir: PathBuf,
-    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, then buddy.
+    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, runtime binding, tools/buddy, then buddy.
     #[arg(long = "buddy-bin")]
     buddy_bin: Option<String>,
     /// Buddy session id to resume. Defaults to runtime/buddy.json when present.
@@ -256,7 +259,7 @@ struct SessionConsolidateArgs {
     /// Preview reconciliation without creating Buddy sessions, folders, or bindings.
     #[arg(long)]
     dry_run: bool,
-    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, then buddy.
+    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, tools/buddy, then buddy.
     #[arg(long = "buddy-bin")]
     buddy_bin: Option<String>,
     /// Output JSON instead of text.
@@ -9688,7 +9691,7 @@ fn top_level_buddy_session_behavior(
 ) -> Result<TopLevelBuddySessionBehavior> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_bin = buddy_bin_for_runtime(previous_runtime.as_ref());
+    let buddy_bin = resolve_buddy_command(previous_runtime.as_ref());
     let buddy_session = explicit_buddy_session.or_else(|| {
         previous_runtime
             .as_ref()
@@ -9718,12 +9721,37 @@ fn top_level_buddy_session_behavior(
     Ok(TopLevelBuddySessionBehavior { buddy_session, cwd })
 }
 
-fn buddy_bin_for_runtime(previous_runtime: Option<&BuddyRuntimeState>) -> String {
-    env::var("DJINN_BUDDY_BIN")
-        .ok()
+fn resolve_buddy_command(previous_runtime: Option<&BuddyRuntimeState>) -> String {
+    resolve_buddy_command_from(
+        env::var(DJINN_BUDDY_BIN_ENV).ok(),
+        previous_runtime.and_then(|state| state.command.clone()),
+        Some(&djinn_source_workspace_root()),
+    )
+}
+
+fn resolve_buddy_command_from(
+    env_command: Option<String>,
+    runtime_command: Option<String>,
+    workspace_root: Option<&Path>,
+) -> String {
+    env_command
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| previous_runtime.and_then(|state| state.command.clone()))
-        .unwrap_or_else(|| "buddy".to_string())
+        .or_else(|| runtime_command.filter(|value| !value.trim().is_empty()))
+        .or_else(|| workspace_root.and_then(in_tree_buddy_command))
+        .unwrap_or_else(|| DEFAULT_BUDDY_COMMAND.to_string())
+}
+
+fn djinn_source_workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn in_tree_buddy_command(workspace_root: &Path) -> Option<String> {
+    let candidate = workspace_root.join(IN_TREE_BUDDY_COMMAND);
+    candidate.is_file().then(|| candidate.display().to_string())
 }
 
 fn promote_stale_buddy_workspace(
@@ -9871,10 +9899,7 @@ fn resolve_buddy_session_reference_in_root(
 }
 
 fn run_plain_buddy_mode() -> Result<()> {
-    let buddy_bin = env::var("DJINN_BUDDY_BIN")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "buddy".to_string());
+    let buddy_bin = resolve_buddy_command(None);
     let mut parts = buddy_bin.split_whitespace();
     let Some(program) = parts.next() else {
         bail!("Buddy command is empty");
@@ -9895,15 +9920,7 @@ fn run_interactive_session_buddy(
 ) -> Result<()> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_bin = env::var("DJINN_BUDDY_BIN")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            previous_runtime
-                .as_ref()
-                .and_then(|state| state.command.clone())
-        })
-        .unwrap_or_else(|| "buddy".to_string());
+    let buddy_bin = resolve_buddy_command(previous_runtime.as_ref());
     let mut parts = buddy_bin.split_whitespace();
     let Some(program) = parts.next() else {
         bail!("Buddy command is empty");
@@ -10037,17 +10054,8 @@ fn run_session_buddy(args: &SessionBuddyArgs) -> Result<SessionBuddyReport> {
     let buddy_bin = args
         .buddy_bin
         .clone()
-        .or_else(|| {
-            env::var("DJINN_BUDDY_BIN")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .or_else(|| {
-            previous_runtime
-                .as_ref()
-                .and_then(|state| state.command.clone())
-        })
-        .unwrap_or_else(|| "buddy".to_string());
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| resolve_buddy_command(previous_runtime.as_ref()));
     let buddy_session = args.buddy_session.clone().or_else(|| {
         previous_runtime
             .as_ref()
@@ -10362,12 +10370,8 @@ fn consolidate_sessions_in_root(
     let buddy_bin = args
         .buddy_bin
         .clone()
-        .or_else(|| {
-            env::var("DJINN_BUDDY_BIN")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or_else(|| "buddy".to_string());
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| resolve_buddy_command(None));
     let buddy_sessions = buddy_list_sessions(&buddy_bin)?;
     let folder_report = list_folder_sessions_in_root(root, None)?;
     let mut entries = Vec::new();
@@ -23737,6 +23741,43 @@ mod tests {
     }
 
     #[test]
+    fn buddy_command_resolver_uses_env_runtime_in_tree_then_path() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-command-resolver-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(root.join("tools")).unwrap();
+        let in_tree = root.join("tools/buddy");
+        fs::write(&in_tree, "#!/bin/sh\n").unwrap();
+        let runtime = Some("runtime-buddy --flag".to_string());
+
+        assert_eq!(
+            resolve_buddy_command_from(
+                Some("env-buddy --debug".to_string()),
+                runtime.clone(),
+                Some(&root),
+            ),
+            "env-buddy --debug"
+        );
+        assert_eq!(
+            resolve_buddy_command_from(Some("  ".to_string()), runtime.clone(), Some(&root)),
+            "runtime-buddy --flag"
+        );
+        assert_eq!(
+            resolve_buddy_command_from(None, Some("  ".to_string()), Some(&root)),
+            in_tree.display().to_string()
+        );
+        assert_eq!(
+            resolve_buddy_command_from(None, None, Some(&root.join("missing-root"))),
+            DEFAULT_BUDDY_COMMAND
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn top_level_buddy_session_plans_interactive_resume_even_with_pending_request() {
         let root = std::env::temp_dir().join(format!(
             "djinn-buddy-behavior-test-{}",
@@ -24050,6 +24091,56 @@ mod tests {
         assert!(duplicate.message.contains("duplicates line 1"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_events_health_filters_duplicate_event_ids() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-events-health-duplicate-id-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let ok = root.join("ok-session");
+        let duplicate = root.join("duplicate-session");
+        fs::create_dir_all(&ok).unwrap();
+        fs::create_dir_all(&duplicate).unwrap();
+        fs::write(ok.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            ok.join("events.jsonl"),
+            concat!(
+                "{\"event_id\":\"buddy:user_message:msg_ok_1\",\"type\":\"user_message\",\"content\":\"question\"}\n",
+                "{\"event_id\":\"buddy:assistant_message:msg_ok_2\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+            ),
+        )
+        .unwrap();
+        fs::write(duplicate.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            duplicate.join("events.jsonl"),
+            concat!(
+                "{\"event_id\":\"buddy:user_message:msg_dup\",\"type\":\"user_message\",\"content\":\"question\"}\n",
+                "{\"event_id\":\"buddy:assistant_message:msg_dup_reply\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+                "{\"event_id\":\"buddy:user_message:msg_dup\",\"type\":\"checkpoint\",\"label\":\"duplicate\"}\n",
+            ),
+        )
+        .unwrap();
+
+        let report =
+            event_health_report_for_folder_session_root(&root, None, Some("duplicate_event_id"))
+                .unwrap();
+        let text = format_event_health_report(&report);
+
+        assert_eq!(report.total, 1);
+        assert_eq!(report.not_ready, 1);
+        assert_eq!(report.sessions[0].name, "duplicate-session");
+        assert!(report.sessions[0]
+            .issue_codes
+            .contains(&"duplicate_event_id".to_string()));
+        assert!(text.contains("filter: duplicate_event_id"));
+        assert!(text.contains("duplicate_event_id"));
+        assert!(!text.contains("ok-session"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

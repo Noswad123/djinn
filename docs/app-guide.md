@@ -110,6 +110,10 @@ assistant response, then prints a short sync status. Buddy-stamped events includ
 deterministic event ids so replayed message writes can be skipped without collapsing
 legitimate repeated prompts. Use `--dry-run` to preview the
 lower-level Buddy command without launching Buddy or mutating session files.
+Djinn resolves the Buddy command in one place: explicit `--buddy-bin` where a
+subcommand has one, then `DJINN_BUDDY_BIN`, then `runtime/buddy.json.command` for
+session-scoped launches, then an in-tree `tools/buddy` file when present, and
+finally `buddy` on `PATH`.
 When a bound Buddy session's recorded workspace/repo path no longer exists, Djinn
 promotes the folder capsule to a session-local Buddy workspace: it removes the
 stale workspace and `[context.repo]` binding from `djinn.toml`, creates a new Buddy
@@ -124,6 +128,8 @@ It is read-only: it parses `events.jsonl`, pairs user/assistant message events,
 compares them to any projected `turns/<id>/request.md` and
 `turns/<id>/response.md` in turn order, and verifies root `summary.md` matches the
 latest response. The command reports issues but does not rewrite artifacts.
+Buddy-stamped duplicate event ids are reported as `duplicate_event_id`; audit them
+across cached sessions with `djinn session events --all --health duplicate_event_id`.
 
 Use `djinn session events <session>` to preview the `turns/` tree that would be
 regenerated from `events.jsonl`. This is also read-only: it reports the projected
