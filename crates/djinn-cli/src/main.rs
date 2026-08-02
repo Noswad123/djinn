@@ -56,7 +56,7 @@ struct Cli {
     /// Open Buddy mode immediately instead of the Djinn dashboard.
     #[arg(short = 'b', long = "buddy")]
     buddy: bool,
-    /// Folder-backed session to open. With -b/--buddy, open it in Buddy mode.
+    /// Folder-backed session to open. With -b/--buddy, accepts a folder session or bound Buddy id.
     #[arg(short = 's', long = "session", value_name = "SESSION")]
     session: Option<PathBuf>,
     #[command(subcommand)]
@@ -9654,16 +9654,86 @@ fn session_buddy(args: SessionBuddyArgs) -> Result<()> {
 
 fn run_top_level_buddy_mode(session: Option<PathBuf>) -> Result<()> {
     if let Some(session) = session {
+        let (session, buddy_session) = resolve_top_level_buddy_session_arg(session)?;
         return session_buddy(SessionBuddyArgs {
             dir: session,
             buddy_bin: None,
-            buddy_session: None,
+            buddy_session,
             buddy_args: Vec::new(),
             dry_run: false,
             json: false,
         });
     }
     run_plain_buddy_mode()
+}
+
+fn resolve_top_level_buddy_session_arg(session: PathBuf) -> Result<(PathBuf, Option<String>)> {
+    let session_dir = resolve_session_dir(&session)?;
+    if session_dir.exists() {
+        return Ok((session_dir, None));
+    }
+
+    if let Some((session_dir, buddy_session)) =
+        resolve_buddy_session_reference_in_root(&default_folder_session_root(), &session)?
+    {
+        return Ok((session_dir, Some(buddy_session)));
+    }
+
+    Ok((session_dir, None))
+}
+
+fn resolve_buddy_session_reference_in_root(
+    root: &Path,
+    reference: &Path,
+) -> Result<Option<(PathBuf, String)>> {
+    if !is_named_folder_session_reference(reference) {
+        return Ok(None);
+    }
+    let Some(reference) = reference
+        .to_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    if !root.is_dir() {
+        return Ok(None);
+    }
+
+    let entries = fs::read_dir(root)
+        .with_context(|| format!("reading folder session root {}", root.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut matches = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let runtime_path = path.join("runtime/buddy.json");
+        let Some(runtime) = read_buddy_runtime_state(&runtime_path)? else {
+            continue;
+        };
+        let Some(buddy_session) = runtime
+            .buddy_session
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if buddy_session == reference {
+            matches.push((path, buddy_session.to_string()));
+        }
+    }
+    matches.sort_by(|a, b| a.0.cmp(&b.0));
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.pop()),
+        _ => bail!(
+            "ambiguous Buddy session reference `{reference}` matched {} folder sessions; run `djinn session consolidate --dry-run` and remove duplicate bindings",
+            matches.len()
+        ),
+    }
 }
 
 fn run_plain_buddy_mode() -> Result<()> {
@@ -23328,6 +23398,45 @@ mod tests {
             .unwrap()
             .contains("bud_orphan"));
         assert!(format_session_consolidate_report(&report).contains("created_buddy_for_folder"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn buddy_session_reference_resolves_to_bound_folder_session() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-ref-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("from-buddy");
+        fs::create_dir_all(session_dir.join("runtime")).unwrap();
+        fs::write(
+            session_dir.join("runtime/buddy.json"),
+            serde_json::json!({
+                "buddy_session": "ses_boundBuddy123",
+                "command": "buddy",
+                "args": [],
+                "last_run_at": null,
+                "last_prompt_chars": 0,
+                "last_response_chars": 0
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let resolved =
+            resolve_buddy_session_reference_in_root(&root, Path::new("ses_boundBuddy123")).unwrap();
+
+        assert_eq!(
+            resolved,
+            Some((session_dir.clone(), "ses_boundBuddy123".to_string()))
+        );
+
+        let missing =
+            resolve_buddy_session_reference_in_root(&root, Path::new("ses_missing")).unwrap();
+        assert_eq!(missing, None);
 
         let _ = fs::remove_dir_all(&root);
     }

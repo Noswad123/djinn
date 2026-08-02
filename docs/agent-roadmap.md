@@ -41,6 +41,10 @@ schemas evolvable; durable behavior belongs in the app guide and design decision
 No promotion-session slice is currently queued here; add the next recovery,
 handoff, or review-ergonomics improvement when it is ready to implement.
 
+### Trim djinn session ls
+- remove turns and events from ls output
+- the rationale is that we need to be able to see the buddy_id and name in full
+
 ### Session TUI polish
 
 Use the folder-backed Sessions dashboard and focused session view as the primary
