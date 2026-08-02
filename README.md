@@ -97,7 +97,7 @@ When Buddy is launched through `djinn -bs <ref>`, Djinn passes the session capsu
 `events.jsonl` path to Buddy so completed interactive user/assistant exchanges are
 also appended to the same folder-local event history. After Buddy exits, Djinn
 refreshes `summary.md` from the latest valid assistant event so the folder capsule
-stays file-native and current.
+stays file-native and current, then prints a short sync status.
 If a bound Buddy session points at a workspace that no longer exists, Djinn clears
 that stale workspace/repo link, creates a fresh Buddy session scoped to the folder
 capsule itself, and keeps the old Buddy id as an alias.

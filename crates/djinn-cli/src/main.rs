@@ -9948,7 +9948,31 @@ fn run_interactive_session_buddy(
         )?;
     }
 
+    eprint!(
+        "{}",
+        format_interactive_buddy_sync_status(session_dir, summary_sync.as_ref())
+    );
+
     Ok(())
+}
+
+fn format_interactive_buddy_sync_status(
+    session_dir: &Path,
+    summary_sync: Option<&BuddyInteractiveSummarySync>,
+) -> String {
+    let mut lines = vec!["Buddy session completed.".to_string()];
+    match summary_sync {
+        Some(sync) => lines.push(format!(
+            "Synced {} from latest events.jsonl assistant message ({} chars).",
+            sync.summary_path.display(),
+            sync.response_chars
+        )),
+        None => lines.push(format!(
+            "No valid event pair found in {}; summary.md unchanged.",
+            session_dir.join("events.jsonl").display()
+        )),
+    }
+    lines.join("\n") + "\n"
 }
 
 fn refresh_folder_summary_from_latest_event(
@@ -23875,6 +23899,25 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn interactive_buddy_sync_status_reports_synced_or_unchanged() {
+        let session_dir = PathBuf::from("/tmp/djinn-session");
+        let sync = BuddyInteractiveSummarySync {
+            summary_path: session_dir.join("summary.md"),
+            response_chars: 42,
+        };
+
+        let synced = format_interactive_buddy_sync_status(&session_dir, Some(&sync));
+        assert!(synced.contains("Buddy session completed."));
+        assert!(synced.contains("Synced /tmp/djinn-session/summary.md"));
+        assert!(synced.contains("42 chars"));
+
+        let unchanged = format_interactive_buddy_sync_status(&session_dir, None);
+        assert!(unchanged.contains("Buddy session completed."));
+        assert!(unchanged.contains("No valid event pair found in /tmp/djinn-session/events.jsonl"));
+        assert!(unchanged.contains("summary.md unchanged"));
     }
 
     #[test]
