@@ -9607,6 +9607,12 @@ struct TopLevelBuddySessionBehavior {
     cwd: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuddyInteractiveSummarySync {
+    summary_path: PathBuf,
+    response_chars: usize,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SessionBuddyReport {
     session_dir: String,
@@ -9907,6 +9913,8 @@ fn run_interactive_session_buddy(
         bail!("Buddy exited with status {status}");
     }
 
+    let summary_sync = refresh_folder_summary_from_latest_event(session_dir)?;
+
     if let Some(buddy_session) = behavior.buddy_session {
         let previous_args = previous_runtime
             .as_ref()
@@ -9927,15 +9935,50 @@ fn run_interactive_session_buddy(
                     .as_ref()
                     .map(|state| state.last_prompt_chars)
                     .unwrap_or_default(),
-                last_response_chars: previous_runtime
+                last_response_chars: summary_sync
                     .as_ref()
-                    .map(|state| state.last_response_chars)
-                    .unwrap_or_default(),
+                    .map(|sync| sync.response_chars)
+                    .unwrap_or_else(|| {
+                        previous_runtime
+                            .as_ref()
+                            .map(|state| state.last_response_chars)
+                            .unwrap_or_default()
+                    }),
             },
         )?;
     }
 
     Ok(())
+}
+
+fn refresh_folder_summary_from_latest_event(
+    session_dir: &Path,
+) -> Result<Option<BuddyInteractiveSummarySync>> {
+    let events_path = session_dir.join("events.jsonl");
+    if !events_path.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&events_path)
+        .with_context(|| format!("reading {}", events_path.display()))?;
+    let mut issues = Vec::new();
+    let event_turns = read_event_turn_pairs(&events_path, &raw, &mut issues);
+    if !issues.is_empty() {
+        return Ok(None);
+    }
+    let Some(latest) = event_turns.last() else {
+        return Ok(None);
+    };
+    if latest.response.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let summary_path = session_dir.join("summary.md");
+    fs::write(&summary_path, ensure_trailing_newline(&latest.response))
+        .with_context(|| format!("writing {}", summary_path.display()))?;
+    Ok(Some(BuddyInteractiveSummarySync {
+        summary_path,
+        response_chars: latest.response.chars().count(),
+    }))
 }
 
 fn run_session_buddy(args: &SessionBuddyArgs) -> Result<SessionBuddyReport> {
@@ -23765,6 +23808,70 @@ mod tests {
         assert_eq!(
             resolved,
             Some((session_dir.clone(), "ses_promoted".to_string()))
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn interactive_buddy_summary_refresh_uses_latest_event_pair() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-summary-refresh-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("session");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(session_dir.join("summary.md"), "stale summary\n").unwrap();
+        let id = AgentSessionId::new("agt_buddy_summary_refresh");
+        let events = vec![
+            AgentSessionEvent::with_session(
+                id.clone(),
+                AgentSessionEventKind::UserMessage {
+                    content: "first request".to_string(),
+                },
+            ),
+            AgentSessionEvent::with_session(
+                id.clone(),
+                AgentSessionEventKind::AssistantMessage {
+                    content: "first response".to_string(),
+                },
+            ),
+            AgentSessionEvent::with_session(
+                id.clone(),
+                AgentSessionEventKind::UserMessage {
+                    content: "interactive request".to_string(),
+                },
+            ),
+            AgentSessionEvent::with_session(
+                id,
+                AgentSessionEventKind::AssistantMessage {
+                    content: "fresh interactive summary".to_string(),
+                },
+            ),
+        ];
+        let events_jsonl = events
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n")
+            + "\n";
+        fs::write(session_dir.join("events.jsonl"), events_jsonl).unwrap();
+
+        let sync = refresh_folder_summary_from_latest_event(&session_dir)
+            .unwrap()
+            .expect("expected summary refresh");
+
+        assert_eq!(sync.summary_path, session_dir.join("summary.md"));
+        assert_eq!(
+            sync.response_chars,
+            "fresh interactive summary".chars().count()
+        );
+        assert_eq!(
+            fs::read_to_string(session_dir.join("summary.md")).unwrap(),
+            "fresh interactive summary\n"
         );
 
         let _ = fs::remove_dir_all(&root);

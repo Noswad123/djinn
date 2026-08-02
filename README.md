@@ -95,7 +95,9 @@ stdin and captures Buddy's final response back into `summary.md` and
 `events.jsonl`; top-level Buddy mode always resumes Buddy interactively instead.
 When Buddy is launched through `djinn -bs <ref>`, Djinn passes the session capsule's
 `events.jsonl` path to Buddy so completed interactive user/assistant exchanges are
-also appended to the same folder-local event history.
+also appended to the same folder-local event history. After Buddy exits, Djinn
+refreshes `summary.md` from the latest valid assistant event so the folder capsule
+stays file-native and current.
 If a bound Buddy session points at a workspace that no longer exists, Djinn clears
 that stale workspace/repo link, creates a fresh Buddy session scoped to the folder
 capsule itself, and keeps the old Buddy id as an alias.
