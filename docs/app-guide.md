@@ -84,6 +84,9 @@ folder-local append-only `events.jsonl` as the continuation history. Djinn still
 keeps `.djinn/<native-id>.jsonl` as runtime-private compatibility state while the
 runtime is being simplified, and `turns/<id>/` is an optional projection for older
 tools rather than the central history path.
+Session status and list views prefer `events.jsonl` for the latest exchange,
+conversation count, and response preview; `turns/` is only consulted when no valid
+event pairs are available.
 
 For direct session entry, use `djinn -s <session>` to open the focused
 folder-session view. For occasional Buddy-style quick interaction without turning

@@ -9166,31 +9166,6 @@ fn push_session_promote_event_turn_artifacts(
     Ok(())
 }
 
-fn latest_session_status_turn_from_events(
-    session_dir: &Path,
-) -> Result<Option<SessionStatusTurnReport>> {
-    let events_path = session_dir.join("events.jsonl");
-    if !events_path.exists() || !events_path.is_file() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&events_path)
-        .with_context(|| format!("reading {}", events_path.display()))?;
-    let mut issues = Vec::new();
-    let pairs = read_event_turn_pairs(&events_path, &raw, &mut issues);
-    if !issues.is_empty() {
-        return Ok(None);
-    }
-    let Some((index, _turn)) = pairs.iter().enumerate().last() else {
-        return Ok(None);
-    };
-    Ok(Some(SessionStatusTurnReport {
-        id: projected_event_turn_id(index),
-        request_path: Some(events_path.display().to_string()),
-        response_path: Some(session_dir.join("summary.md").display().to_string()),
-        has_response: true,
-    }))
-}
-
 fn push_session_promote_artifact(
     artifacts: &mut Vec<SessionPromoteArtifact>,
     session_dir: &Path,
@@ -11023,17 +10998,16 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
     let turns = read_folder_session_turns(&turns_dir)?;
     let events_path = session_dir.join("events.jsonl");
     let event_count = count_folder_session_events_jsonl(&events_path);
-    let event_turn_count = read_folder_session_event_turn_count(&session_dir)?.unwrap_or(0);
-    let turn_count = if turns.is_empty() {
-        event_turn_count
-    } else {
+    let event_turns = read_folder_session_event_turns(&session_dir)?;
+    let turn_count = if event_turns.is_empty() {
         turns.len()
+    } else {
+        event_turns.len()
     };
-    let latest_turn = turns.last().map(session_status_turn_report).or_else(|| {
-        latest_session_status_turn_from_events(&session_dir)
-            .ok()
-            .flatten()
-    });
+    let latest_turn = event_turns
+        .last()
+        .map(session_status_turn_report)
+        .or_else(|| turns.last().map(session_status_turn_report));
     let candidates = session_status_candidates(&session_dir)?;
     let lifecycle = session_status_lifecycle(
         &session_dir,
@@ -11879,10 +11853,18 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         .unwrap_or("session")
         .to_string();
     let turns = read_folder_session_turns(&path.join("turns"))?;
-    let turn_count = turns.len();
+    let event_turns = read_folder_session_event_turns(path)?;
+    let turn_count = if event_turns.is_empty() {
+        turns.len()
+    } else {
+        event_turns.len()
+    };
     let event_health = folder_session_event_health(path)?;
     let buddy = folder_session_buddy_summary(path)?;
-    let latest_turn = turns.last().map(session_status_turn_report);
+    let latest_turn = event_turns
+        .last()
+        .map(session_status_turn_report)
+        .or_else(|| turns.last().map(session_status_turn_report));
     let request_md = path.join("request.md").exists();
     let candidates = session_status_candidates(path)?;
     let lifecycle = session_status_lifecycle(
@@ -11918,7 +11900,7 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
             .and_then(|manifest| manifest.repo_path.clone()),
         request_md,
         summary_md: path.join("summary.md").exists(),
-        summary_preview: folder_session_summary_preview(path),
+        summary_preview: folder_session_summary_preview(path, &event_turns),
         turn_count,
         event_health,
         buddy,
@@ -12055,9 +12037,23 @@ fn folder_session_recency_sort_key(session: &FolderSessionSummary) -> i64 {
         .unwrap_or(0)
 }
 
-fn folder_session_summary_preview(path: &Path) -> Option<String> {
-    let summary = fs::read_to_string(path.join("summary.md")).ok()?;
-    let preview = summary
+fn folder_session_summary_preview(
+    path: &Path,
+    event_turns: &[FolderSessionTurnDigest],
+) -> Option<String> {
+    event_turns
+        .last()
+        .and_then(|turn| turn.response.as_deref())
+        .and_then(first_non_empty_preview)
+        .or_else(|| {
+            fs::read_to_string(path.join("summary.md"))
+                .ok()
+                .and_then(|summary| first_non_empty_preview(&summary))
+        })
+}
+
+fn first_non_empty_preview(value: &str) -> Option<String> {
+    let preview = value
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())?
@@ -24321,7 +24317,7 @@ link = "context/repo"
             .response_path
             .as_deref()
             .unwrap()
-            .ends_with("summary.md"));
+            .ends_with("events.jsonl"));
         assert!(report
             .next_action
             .as_deref()
@@ -24333,6 +24329,61 @@ link = "context/repo"
         assert!(text.contains("events.jsonl: yes"));
         assert!(text.contains("Events: 4"));
         assert!(text.contains("summary.md"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_status_and_list_prefer_events_jsonl_without_turns() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-event-native-status-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("event-native");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("djinn.toml"),
+            "title = \"Event Native\"\ncreated_at = \"2026-08-01T12:00:00Z\"\n",
+        )
+        .unwrap();
+        fs::write(session_dir.join("summary.md"), "stale summary\n").unwrap();
+        fs::write(
+            session_dir.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"first question\"}\n{\"type\":\"assistant_message\",\"content\":\"first answer\"}\n{\"type\":\"user_message\",\"content\":\"latest question\"}\n{\"type\":\"assistant_message\",\"content\":\"latest event answer\"}\n",
+        )
+        .unwrap();
+
+        let status = folder_session_status(&session_dir).unwrap();
+        assert!(status.files.events_jsonl);
+        assert!(!status.files.turns_dir);
+        assert_eq!(status.event_count, 4);
+        assert_eq!(status.turn_count, 2);
+        let latest = status.latest_turn.as_ref().unwrap();
+        assert_eq!(latest.id, "event-turn-0002");
+        assert!(latest
+            .request_path
+            .as_deref()
+            .unwrap()
+            .ends_with("events.jsonl"));
+        assert!(latest
+            .response_path
+            .as_deref()
+            .unwrap()
+            .ends_with("events.jsonl"));
+
+        let list = list_folder_sessions_in_root(&root, None).unwrap();
+        assert_eq!(list.sessions.len(), 1);
+        assert_eq!(list.sessions[0].turn_count, 2);
+        assert_eq!(
+            list.sessions[0].summary_preview.as_deref(),
+            Some("latest event answer")
+        );
+        assert_eq!(
+            list.sessions[0].latest_turn.as_ref().unwrap().id,
+            "event-turn-0002"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
