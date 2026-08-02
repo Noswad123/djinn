@@ -1,0 +1,48 @@
+#!/bin/sh
+set -eu
+
+# Repo-local Buddy launcher used by Djinn's Buddy command resolver.
+#
+# This path deliberately lives under tools/buddy/ so that directory can become
+# the in-repo Buddy home without changing Djinn's launch contract.
+#
+# Resolution order inside this wrapper:
+#   1. DJINN_TOOLS_BUDDY_TARGET, when set (may include command arguments).
+#   2. In-repo Buddy build/source layouts under tools/buddy/.
+#   3. A sibling Buddy checkout's built binary or package launcher.
+#   4. The user's installed ~/.local/bin/buddy.
+#   5. buddy on PATH, unless PATH resolves back to this wrapper.
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+buddy_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+repo_root=$(CDPATH= cd -- "$buddy_root/../.." && pwd)
+
+if [ "${DJINN_TOOLS_BUDDY_TARGET:-}" != "" ]; then
+  # Intentionally allow shell word splitting so callers can provide a command
+  # with fixed leading arguments, matching Djinn's whitespace-split command
+  # behavior for Buddy commands.
+  # shellcheck disable=SC2086
+  exec ${DJINN_TOOLS_BUDDY_TARGET} "$@"
+fi
+
+for candidate in \
+  "$buddy_root"/packages/opencode/dist/buddy-*/bin/buddy \
+  "$buddy_root/packages/opencode/bin/buddy" \
+  "$buddy_root"/dist/buddy-*/bin/buddy \
+  "$repo_root"/../buddy/packages/opencode/dist/buddy-*/bin/buddy \
+  "$repo_root/../buddy/packages/opencode/bin/buddy" \
+  "$HOME/.local/bin/buddy"
+do
+  if [ -x "$candidate" ]; then
+    exec "$candidate" "$@"
+  fi
+done
+
+path_buddy=$(command -v buddy 2>/dev/null || true)
+if [ "$path_buddy" != "" ] && [ "$path_buddy" != "$script_dir/buddy" ]; then
+  exec "$path_buddy" "$@"
+fi
+
+printf '%s\n' "djinn tools/buddy/bin/buddy: no Buddy executable found" >&2
+printf '%s\n' "Set DJINN_TOOLS_BUDDY_TARGET or place Buddy under tools/buddy/." >&2
+exit 127

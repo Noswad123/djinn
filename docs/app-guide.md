@@ -112,8 +112,14 @@ legitimate repeated prompts. Use `--dry-run` to preview the
 lower-level Buddy command without launching Buddy or mutating session files.
 Djinn resolves the Buddy command in one place: explicit `--buddy-bin` where a
 subcommand has one, then `DJINN_BUDDY_BIN`, then `runtime/buddy.json.command` for
-session-scoped launches, then an in-tree `tools/buddy` file when present, and
+session-scoped launches, then an in-tree `tools/buddy/bin/buddy` launcher when present, and
 finally `buddy` on `PATH`.
+The checked-in `tools/buddy/bin/buddy` wrapper is the migration seam for moving
+Buddy into Djinn while keeping `tools/buddy/` available as Buddy's future in-repo
+home: it honors `DJINN_TOOLS_BUDDY_TARGET`, then tries in-repo Buddy layouts under
+`tools/buddy/`, then a sibling Buddy checkout's built binary or package launcher,
+then `~/.local/bin/buddy`, then `buddy` on `PATH` while avoiding recursion back
+into the wrapper.
 When a bound Buddy session's recorded workspace/repo path no longer exists, Djinn
 promotes the folder capsule to a session-local Buddy workspace: it removes the
 stale workspace and `[context.repo]` binding from `djinn.toml`, creates a new Buddy

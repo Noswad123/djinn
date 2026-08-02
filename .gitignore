@@ -1,3 +1,5 @@
 bin/
 target/
 .DS_Store
+!tools/buddy/bin/
+!tools/buddy/bin/buddy

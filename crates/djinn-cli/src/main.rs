@@ -49,7 +49,7 @@ const FOLDER_SESSION_COMPACT_START_MARKER: &str = "<!-- djinn:generated:start --
 const FOLDER_SESSION_COMPACT_END_MARKER: &str = "<!-- djinn:generated:end -->";
 const FOLDER_NATIVE_SESSION_DIR: &str = ".djinn";
 const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
-const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy";
+const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/buddy";
 const DEFAULT_BUDDY_COMMAND: &str = "buddy";
 
 #[derive(Debug, Parser)]
@@ -237,7 +237,7 @@ struct SessionRunArgs {
 struct SessionBuddyArgs {
     /// Folder-backed session name or directory to run through Buddy.
     dir: PathBuf,
-    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, runtime binding, tools/buddy, then buddy.
+    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, runtime binding, tools/buddy/bin/buddy, then buddy.
     #[arg(long = "buddy-bin")]
     buddy_bin: Option<String>,
     /// Buddy session id to resume. Defaults to runtime/buddy.json when present.
@@ -259,7 +259,7 @@ struct SessionConsolidateArgs {
     /// Preview reconciliation without creating Buddy sessions, folders, or bindings.
     #[arg(long)]
     dry_run: bool,
-    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, tools/buddy, then buddy.
+    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, tools/buddy/bin/buddy, then buddy.
     #[arg(long = "buddy-bin")]
     buddy_bin: Option<String>,
     /// Output JSON instead of text.
@@ -23748,8 +23748,8 @@ mod tests {
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
         ));
-        fs::create_dir_all(root.join("tools")).unwrap();
-        let in_tree = root.join("tools/buddy");
+        fs::create_dir_all(root.join("tools/buddy/bin")).unwrap();
+        let in_tree = root.join(IN_TREE_BUDDY_COMMAND);
         fs::write(&in_tree, "#!/bin/sh\n").unwrap();
         let runtime = Some("runtime-buddy --flag".to_string());
 
