@@ -22756,6 +22756,12 @@ if [ "$1" = "djinn-bridge" ]; then
 JSON
       exit 0
       ;;
+    *get_session*)
+      cat <<'JSON'
+{"type":"session","session":{"id":"bud_bridge","title":"Bridge Session","updated":0,"created":0,"projectId":"project-bridge","directory":"/tmp/bridge"}}
+JSON
+      exit 0
+      ;;
     *create_session*)
       cat <<'JSON'
 {"type":"created_session","session":{"id":"bud_created_bridge","title":"Created Through Bridge","repo_path":"/tmp/created","created_at":"2026-08-01T12:00:00Z"}}
@@ -22781,6 +22787,7 @@ exit 2
 
         let backend = BuddyBridgeBackend::explicit(buddy_bin.display().to_string());
         let sessions = backend.list_sessions().unwrap();
+        let fetched = backend.get_session("bud_bridge").unwrap();
         let created = backend
             .create_session("Created Through Bridge", "/tmp/created")
             .unwrap();
@@ -22790,11 +22797,14 @@ exit 2
         assert_eq!(sessions[0].id, "bud_bridge");
         assert_eq!(sessions[0].repo_path, "/tmp/bridge");
         assert_eq!(sessions[0].created_at, "1970-01-01T00:00:00+00:00");
+        assert_eq!(fetched.id, "bud_bridge");
+        assert_eq!(fetched.title, "Bridge Session");
         assert_eq!(created.id, "bud_created_bridge");
         assert_eq!(created.repo_path, "/tmp/created");
 
         let requests = fs::read_to_string(&request_log).unwrap();
         assert!(requests.contains(r#""type":"list_sessions""#));
+        assert!(requests.contains(r#""type":"get_session""#));
         assert!(requests.contains(r#""type":"create_session""#));
         assert!(requests.contains(r#""type":"delete_session""#));
         assert!(requests.contains(r#""title":"Created Through Bridge""#));
@@ -22850,6 +22860,7 @@ exit 2
 
         let backend = BuddyBridgeBackend::explicit(buddy_bin.display().to_string());
         let sessions = backend.list_sessions().unwrap();
+        let fetched = backend.get_session("bud_legacy").unwrap();
         let created = backend
             .create_session("Fallback Title", "/tmp/fallback")
             .unwrap();
@@ -22858,12 +22869,14 @@ exit 2
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "bud_legacy");
         assert_eq!(sessions[0].repo_path, "/tmp/legacy");
+        assert_eq!(fetched.id, "bud_legacy");
+        assert_eq!(fetched.title, "Legacy Session");
         assert_eq!(created.id, "bud_legacy_created");
         assert_eq!(created.title, "Fallback Title");
         assert_eq!(created.repo_path, "/tmp/fallback");
         assert_eq!(
             fs::read_to_string(&fallback_log).unwrap(),
-            "legacy-list\nlegacy-create:Fallback Title:/tmp/fallback\nlegacy-delete:bud_legacy_created\n"
+            "legacy-list\nlegacy-list\nlegacy-create:Fallback Title:/tmp/fallback\nlegacy-delete:bud_legacy_created\n"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -23192,6 +23205,17 @@ exit 2
 
         fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
             Ok(Vec::new())
+        }
+
+        fn get_session(&self, session_id: &str) -> Result<BuddySessionListRecord> {
+            Ok(BuddySessionListRecord {
+                id: session_id.to_string(),
+                title: session_id.to_string(),
+                repo_path: String::new(),
+                created_at: "2026-08-01T12:00:00Z".to_string(),
+                updated_at: "2026-08-01T12:00:00Z".to_string(),
+                summary: String::new(),
+            })
         }
 
         fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord> {

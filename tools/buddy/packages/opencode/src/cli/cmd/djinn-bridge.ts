@@ -4,6 +4,7 @@ import { SessionID } from "../../session/schema"
 
 type BridgeRequest =
   | { type: "list_sessions" }
+  | { type: "get_session"; session_id: string }
   | { type: "create_session"; title: string; repo_path: string }
   | { type: "delete_session"; session_id: string }
 
@@ -31,14 +32,21 @@ async function handleBridgeRequest(request: BridgeRequest) {
       )
       return {
         type: "sessions",
-        sessions: sessions.map((session) => ({
-          id: session.id,
-          title: session.title,
-          updated: session.time.updated,
-          created: session.time.created,
-          projectId: session.projectID,
-          directory: session.directory,
-        })),
+        sessions: sessions.map(formatSession),
+      }
+    })
+  }
+
+  if (request.type === "get_session") {
+    return withInstance(process.cwd(), async (runtime) => {
+      const session = await runtime.AppRuntime.runPromise(
+        runtime.Session.Service.use((svc) => svc.get(SessionID.make(request.session_id))).pipe(
+          Effect.provideService(runtime.InstanceRef, runtime.ctx),
+        ),
+      )
+      return {
+        type: "session",
+        session: formatSession(session),
       }
     })
   }
@@ -101,6 +109,12 @@ async function loadBridgeRuntime(directory: string) {
 function parseBridgeRequest(raw: string): BridgeRequest {
   const parsed = JSON.parse(raw) as { type?: unknown; title?: unknown; repo_path?: unknown; session_id?: unknown }
   if (parsed.type === "list_sessions") return { type: "list_sessions" }
+  if (parsed.type === "get_session") {
+    if (typeof parsed.session_id !== "string" || !parsed.session_id.trim()) {
+      throw new Error("Bridge request session_id is required")
+    }
+    return { type: "get_session", session_id: parsed.session_id.trim() }
+  }
   if (parsed.type === "delete_session") {
     if (typeof parsed.session_id !== "string" || !parsed.session_id.trim()) {
       throw new Error("Bridge request session_id is required")
@@ -111,4 +125,15 @@ function parseBridgeRequest(raw: string): BridgeRequest {
   if (typeof parsed.title !== "string" || !parsed.title.trim()) throw new Error("Bridge request title is required")
   if (typeof parsed.repo_path !== "string" || !parsed.repo_path.trim()) throw new Error("Bridge request repo_path is required")
   return { type: "create_session", title: parsed.title.trim(), repo_path: parsed.repo_path }
+}
+
+function formatSession(session: { id: string; title: string; time: { updated: number; created: number }; projectID: string; directory: string }) {
+  return {
+    id: session.id,
+    title: session.title,
+    updated: session.time.updated,
+    created: session.time.created,
+    projectId: session.projectID,
+    directory: session.directory,
+  }
 }

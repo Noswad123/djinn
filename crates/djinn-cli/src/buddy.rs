@@ -157,6 +157,10 @@ enum BuddyBridgeRequest {
         repo_path: String,
     },
     #[allow(dead_code)]
+    GetSession {
+        session_id: String,
+    },
+    #[allow(dead_code)]
     DeleteSession {
         session_id: String,
     },
@@ -167,6 +171,7 @@ enum BuddyBridgeResponse {
     Unit,
     FinalResponse(String),
     Sessions(Vec<BuddySessionListRecord>),
+    Session(BuddySessionListRecord),
     CreatedSession(BuddySessionCreateRecord),
     DeletedSession(String),
 }
@@ -191,6 +196,8 @@ pub(crate) trait BuddySessionBackend {
     fn command(&self) -> &str;
     fn runtime_command_override(&self) -> Option<String>;
     fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>>;
+    #[allow(dead_code)]
+    fn get_session(&self, session_id: &str) -> Result<BuddySessionListRecord>;
     fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord>;
     #[allow(dead_code)]
     fn delete_session(&self, session_id: &str) -> Result<()>;
@@ -339,6 +346,14 @@ impl BuddyCliBackend {
                     ],
                 )?))
             }
+            BuddyBridgeRequest::GetSession { session_id } => {
+                let session = self
+                    .list_sessions()?
+                    .into_iter()
+                    .find(|session| session.id == session_id)
+                    .ok_or_else(|| anyhow::anyhow!("Buddy session not found: {session_id}"))?;
+                Ok(BuddyBridgeResponse::Session(session))
+            }
             BuddyBridgeRequest::DeleteSession { session_id } => {
                 run_buddy_status_command(self.command(), &["session", "delete", &session_id])?;
                 Ok(BuddyBridgeResponse::DeletedSession(session_id))
@@ -475,6 +490,15 @@ impl BuddySessionBackend for BuddyCliBackend {
         }
     }
 
+    fn get_session(&self, session_id: &str) -> Result<BuddySessionListRecord> {
+        match self.execute_bridge_request(BuddyBridgeRequest::GetSession {
+            session_id: session_id.to_string(),
+        })? {
+            BuddyBridgeResponse::Session(session) => Ok(session),
+            other => bail!("unexpected Buddy bridge response: {other:?}"),
+        }
+    }
+
     fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord> {
         match self.execute_bridge_request(BuddyBridgeRequest::CreateSession {
             title: title.to_string(),
@@ -533,14 +557,7 @@ impl BuddySessionBackend for BuddyBridgeBackend {
         match self.execute_wire_request(BuddyBridgeWireRequest::ListSessions) {
             Ok(BuddyBridgeWireResponse::Sessions { sessions }) => Ok(sessions
                 .into_iter()
-                .map(|session| BuddySessionListRecord {
-                    id: session.id,
-                    title: session.title,
-                    repo_path: session.directory,
-                    created_at: buddy_millis_to_rfc3339(session.created),
-                    updated_at: buddy_millis_to_rfc3339(session.updated),
-                    summary: String::new(),
-                })
+                .map(buddy_bridge_session_record)
                 .collect()),
             Ok(other) => self.cli.list_sessions().with_context(|| {
                 format!(
@@ -551,6 +568,22 @@ impl BuddySessionBackend for BuddyBridgeBackend {
                 format!(
                     "Buddy bridge list_sessions failed ({bridge_error}); CLI fallback also failed"
                 )
+            }),
+        }
+    }
+
+    fn get_session(&self, session_id: &str) -> Result<BuddySessionListRecord> {
+        match self.execute_wire_request(BuddyBridgeWireRequest::GetSession {
+            session_id: session_id.to_string(),
+        }) {
+            Ok(BuddyBridgeWireResponse::Session { session }) => Ok(buddy_bridge_session_record(session)),
+            Ok(other) => self.cli.get_session(session_id).with_context(|| {
+                format!(
+                    "Buddy bridge get_session returned unexpected response ({other:?}); CLI fallback also failed"
+                )
+            }),
+            Err(bridge_error) => self.cli.get_session(session_id).with_context(|| {
+                format!("Buddy bridge get_session failed ({bridge_error}); CLI fallback also failed")
             }),
         }
     }
@@ -1501,6 +1534,10 @@ struct BuddySessionListJsonRecord {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BuddyBridgeWireRequest {
     ListSessions,
+    #[allow(dead_code)]
+    GetSession {
+        session_id: String,
+    },
     CreateSession {
         title: String,
         repo_path: String,
@@ -1516,6 +1553,9 @@ enum BuddyBridgeWireRequest {
 enum BuddyBridgeWireResponse {
     Sessions {
         sessions: Vec<BuddyBridgeSessionListRecord>,
+    },
+    Session {
+        session: BuddyBridgeSessionListRecord,
     },
     CreatedSession {
         session: BuddySessionCreateRecord,
@@ -1535,6 +1575,17 @@ struct BuddyBridgeSessionListRecord {
     #[serde(rename = "projectId")]
     project_id: String,
     directory: String,
+}
+
+fn buddy_bridge_session_record(session: BuddyBridgeSessionListRecord) -> BuddySessionListRecord {
+    BuddySessionListRecord {
+        id: session.id,
+        title: session.title,
+        repo_path: session.directory,
+        created_at: buddy_millis_to_rfc3339(session.created),
+        updated_at: buddy_millis_to_rfc3339(session.updated),
+        summary: String::new(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

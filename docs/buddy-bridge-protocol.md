@@ -16,8 +16,8 @@ small protocol instead of assembling user-facing Buddy CLI commands.
 - Response: one JSON object on stdout.
 - Failure: non-zero exit status with a human-readable stderr message.
 - Compatibility: Djinn currently falls back to legacy Buddy commands for session
-  listing, creation, and deletion if this bridge is unavailable or returns an
-  unexpected response.
+  listing, lookup, creation, and deletion if this bridge is unavailable or returns
+  an unexpected response. Lookup fallback scans the strict JSON session list.
 
 ## Requests
 
@@ -28,6 +28,17 @@ small protocol instead of assembling user-facing Buddy CLI commands.
 ```
 
 Lists root Buddy sessions for the current Buddy project/instance context.
+
+### `get_session`
+
+```json
+{
+  "type": "get_session",
+  "session_id": "ses_..."
+}
+```
+
+Returns one Buddy session by id.
 
 ### `create_session`
 
@@ -86,6 +97,22 @@ operation; it does not mutate Djinn folder-session artifacts by itself.
 `updated` and `created` are epoch milliseconds from Buddy. Djinn converts them to
 RFC3339 strings in its internal session-management model.
 
+### `session`
+
+```json
+{
+  "type": "session",
+  "session": {
+    "id": "ses_...",
+    "title": "Session title",
+    "updated": 1785775177508,
+    "created": 1785081429401,
+    "projectId": "project-id",
+    "directory": "/absolute/session/directory"
+  }
+}
+```
+
 ### `created_session`
 
 ```json
@@ -107,7 +134,7 @@ Djinn keeps two separate Buddy integration traits:
 - `BuddyLauncher`: process-oriented launches such as plain Buddy, interactive
   resume, and final-response capture.
 - `BuddySessionBackend`: control-plane session metadata operations such as
-  listing, creating, and deleting Buddy sessions.
+  listing, looking up, creating, and deleting Buddy sessions.
 
 `BuddyBridgeBackend` implements both. Its session-management implementation
 prefers `buddy djinn-bridge`; its launcher implementation still delegates to the
