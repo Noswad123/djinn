@@ -126,17 +126,13 @@ becomes necessary.
 
 Ready implementation slices:
 
-- Add `djinn session consolidate` as the strict Buddy/Djinn session reconciliation
-  command. Default behavior mutates; `--dry-run` previews. Djinn calls `buddy
-  session list --format json` and expects the stable array shape emitted by Buddy:
-  records with `id`, `title`, `updated`, `created`, `projectId`, and `directory`. For each
-  Djinn folder without `runtime/buddy.json`, match by normalized folder title/name
-  plus repo path when known; if no deterministic match exists, create a new Buddy
-  session via `buddy session create --format json --title <title> --repo <repo-path>` and
-  record the returned id. For each Buddy session without a folder, create a Djinn
-  folder capsule seeded with `djinn.toml`, `request.md`, `summary.md`, optional
-  `events.jsonl`, and `runtime/buddy.json`. Fail loudly on malformed Buddy JSON;
-  Buddy is becoming part of Djinn, so do not support loose legacy shapes.
+- Build future Buddy/Djinn reconciliation work on the existing folder-session
+  contract: `djinn session consolidate` mutates by default, `--dry-run` previews,
+  and `runtime/buddy.json` remains the binding authority. Djinn now prefers the
+  hidden `buddy djinn-bridge` JSON stdin/stdout protocol for Buddy session
+  listing/creation and falls back to the legacy strict JSON `buddy session
+  list/create --format json` commands only when the bridge is unavailable. Keep
+  future protocol expansion strict and explicit; do not support loose legacy shapes.
 - Add an inline or docked request composer in the Sessions UI for quick edits to
   `request.md` before launching the existing folder-session or Buddy run paths.
 - Buddy now accepts `DJINN_EVENTS_JSONL` from Djinn-launched interactive folder

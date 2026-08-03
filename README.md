@@ -101,6 +101,9 @@ stays file-native and current, then prints a short sync status.
 If a bound Buddy session points at a workspace that no longer exists, Djinn clears
 that stale workspace/repo link, creates a fresh Buddy session scoped to the folder
 capsule itself, and keeps the old Buddy id as an alias.
+For Buddy session listing and creation, Djinn now prefers Buddy's hidden
+`buddy djinn-bridge` JSON stdin/stdout entrypoint and falls back to the legacy
+`buddy session list/create --format json` commands when that bridge is unavailable.
 Session folders use
 folder-local `events.jsonl` as the
 conversation history for folder-session continuation. `turns/<id>/` is now an

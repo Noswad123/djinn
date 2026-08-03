@@ -120,14 +120,18 @@ in-tree launches leave it unset so Djinn re-resolves the current in-tree launche
 the next run. Explicit `--buddy-bin`, `DJINN_BUDDY_BIN`, or manually-authored runtime
 commands are preserved as overrides.
 Djinn routes Buddy operations through a Buddy backend boundary and an internal bridge
-request/response contract. The current backend still adapts bridge requests to the
-in-tree Buddy launcher for session listing, creation, interactive launches, and
-final-response capture, but feature code calls backend operations instead of
-assembling Buddy CLI subcommands directly. This keeps the integration ready for a
-future in-process or protocol transport. The backend, bridge contract, command
-resolver, runtime metadata, and doctor formatting live in `crates/djinn-cli/src/buddy.rs`;
-top-level interactive Buddy launch planning and summary sync live there as well.
-Buddy/Djinn session reconciliation lives in `crates/djinn-cli/src/buddy_consolidate.rs`.
+request/response contract. Session listing and creation prefer Buddy's hidden
+`buddy djinn-bridge` JSON stdin/stdout entrypoint with request types
+`list_sessions` and `create_session`; if that bridge is missing or returns an
+unexpected response, Djinn falls back to the legacy strict JSON commands
+`buddy session list --format json` and `buddy session create --format json ...`.
+Interactive launches and final-response capture still delegate to the in-tree Buddy
+launcher. Feature code calls backend operations instead of assembling Buddy CLI
+subcommands directly, keeping the integration ready for a future in-process
+transport. The backend, bridge contract, command resolver, runtime metadata, and
+doctor formatting live in `crates/djinn-cli/src/buddy.rs`; top-level interactive
+Buddy launch planning and summary sync live there as well. Buddy/Djinn session
+reconciliation lives in `crates/djinn-cli/src/buddy_consolidate.rs`.
 When `djinn -bs <folder-session>` opens a folder session without a Buddy binding,
 Djinn now asks the Buddy backend to create one before launch, records the resulting
 Buddy session id in `runtime/buddy.json`, and launches Buddy with that stable id. The

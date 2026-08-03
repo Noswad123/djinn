@@ -22733,6 +22733,130 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn buddy_bridge_backend_uses_hidden_json_protocol_for_list_and_create() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-bridge-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let request_log = root.join("bridge-requests.jsonl");
+        let buddy_bin = root.join("buddy-bridge.sh");
+        let script = r#"#!/bin/sh
+if [ "$1" = "djinn-bridge" ]; then
+  request=$(cat)
+  printf '%s\n' "$request" >> '__REQUEST_LOG__'
+  case "$request" in
+    *list_sessions*)
+      cat <<'JSON'
+{"type":"sessions","sessions":[{"id":"bud_bridge","title":"Bridge Session","updated":0,"created":0,"projectId":"project-bridge","directory":"/tmp/bridge"}]}
+JSON
+      exit 0
+      ;;
+    *create_session*)
+      cat <<'JSON'
+{"type":"created_session","session":{"id":"bud_created_bridge","title":"Created Through Bridge","repo_path":"/tmp/created","created_at":"2026-08-01T12:00:00Z"}}
+JSON
+      exit 0
+      ;;
+  esac
+fi
+printf 'legacy fallback unexpectedly used: %s\n' "$*" >&2
+exit 2
+"#
+        .replace("__REQUEST_LOG__", &request_log.display().to_string());
+        fs::write(&buddy_bin, script).unwrap();
+        let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&buddy_bin, permissions).unwrap();
+
+        let backend = BuddyBridgeBackend::explicit(buddy_bin.display().to_string());
+        let sessions = backend.list_sessions().unwrap();
+        let created = backend
+            .create_session("Created Through Bridge", "/tmp/created")
+            .unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "bud_bridge");
+        assert_eq!(sessions[0].repo_path, "/tmp/bridge");
+        assert_eq!(sessions[0].created_at, "1970-01-01T00:00:00+00:00");
+        assert_eq!(created.id, "bud_created_bridge");
+        assert_eq!(created.repo_path, "/tmp/created");
+
+        let requests = fs::read_to_string(&request_log).unwrap();
+        assert!(requests.contains(r#""type":"list_sessions""#));
+        assert!(requests.contains(r#""type":"create_session""#));
+        assert!(requests.contains(r#""title":"Created Through Bridge""#));
+        assert!(requests.contains(r#""repo_path":"/tmp/created""#));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn buddy_bridge_backend_falls_back_to_legacy_cli_when_bridge_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-bridge-fallback-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let fallback_log = root.join("fallback-log.txt");
+        let buddy_bin = root.join("buddy-fallback.sh");
+        let script = r#"#!/bin/sh
+if [ "$1" = "djinn-bridge" ]; then
+  echo bridge unavailable >&2
+  exit 77
+fi
+if [ "$1" = "session" ] && [ "$2" = "list" ] && [ "$3" = "--format" ] && [ "$4" = "json" ]; then
+  printf 'legacy-list\n' >> '__FALLBACK_LOG__'
+  cat <<'JSON'
+[{"id":"bud_legacy","title":"Legacy Session","updated":0,"created":0,"projectId":"project-legacy","directory":"/tmp/legacy"}]
+JSON
+  exit 0
+fi
+if [ "$1" = "session" ] && [ "$2" = "create" ]; then
+  printf 'legacy-create:%s:%s\n' "$6" "$8" >> '__FALLBACK_LOG__'
+  printf '{"id":"bud_legacy_created","title":"%s","repo_path":"%s","created_at":"2026-08-01T12:00:00Z"}\n' "$6" "$8"
+  exit 0
+fi
+echo unexpected buddy args: "$@" >&2
+exit 2
+"#
+        .replace("__FALLBACK_LOG__", &fallback_log.display().to_string());
+        fs::write(&buddy_bin, script).unwrap();
+        let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&buddy_bin, permissions).unwrap();
+
+        let backend = BuddyBridgeBackend::explicit(buddy_bin.display().to_string());
+        let sessions = backend.list_sessions().unwrap();
+        let created = backend
+            .create_session("Fallback Title", "/tmp/fallback")
+            .unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "bud_legacy");
+        assert_eq!(sessions[0].repo_path, "/tmp/legacy");
+        assert_eq!(created.id, "bud_legacy_created");
+        assert_eq!(created.title, "Fallback Title");
+        assert_eq!(created.repo_path, "/tmp/fallback");
+        assert_eq!(
+            fs::read_to_string(&fallback_log).unwrap(),
+            "legacy-list\nlegacy-create:Fallback Title:/tmp/fallback\n"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn buddy_session_reference_resolves_to_bound_folder_session() {
         let root = std::env::temp_dir().join(format!(
             "djinn-buddy-ref-test-{}",
