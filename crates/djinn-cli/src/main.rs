@@ -9697,13 +9697,18 @@ fn buddy_command_doctor_report(session: Option<&Path>) -> Result<BuddyCommandDoc
         .map(|path| read_buddy_runtime_state(path))
         .transpose()?
         .flatten();
-    Ok(buddy_command_doctor_report_from(
+    let mut report = buddy_command_doctor_report_from(
         env::var(DJINN_BUDDY_BIN_ENV).ok(),
         runtime.as_ref().and_then(|state| state.command.clone()),
         Some(&djinn_source_workspace_root()),
         session_dir.as_deref(),
         runtime_path.as_deref(),
-    ))
+    );
+    report.bridge = Some(probe_buddy_bridge_doctor(
+        &report.command,
+        report.exists && report.executable,
+    ));
+    Ok(report)
 }
 
 fn resolve_buddy_session_reference_in_root(
@@ -23008,6 +23013,124 @@ exit 2
 
         let json = format_buddy_command_doctor_report(&runtime_report, OutputFormat::Json).unwrap();
         assert!(json.contains("\"source\": \"runtime/buddy.json.command\""));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn buddy_doctor_reports_bridge_health() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-doctor-bridge-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let buddy_bin = root.join("buddy-bridge-ok.sh");
+        fs::write(
+            &buddy_bin,
+            r#"#!/bin/sh
+if [ "$1" = "djinn-bridge" ]; then
+  cat >/dev/null
+  printf '{"type":"sessions","sessions":[]}\n'
+  exit 0
+fi
+if [ "$1" = "session" ] && [ "$2" = "list" ] && [ "$3" = "--format" ] && [ "$4" = "json" ]; then
+  printf '[]\n'
+  exit 0
+fi
+exit 2
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&buddy_bin, permissions).unwrap();
+
+        let mut report = buddy_command_doctor_report_from(
+            Some(buddy_bin.display().to_string()),
+            None,
+            None,
+            None,
+            None,
+        );
+        report.bridge = Some(probe_buddy_bridge_doctor(
+            &report.command,
+            report.exists && report.executable,
+        ));
+
+        let bridge = report.bridge.as_ref().unwrap();
+        assert!(bridge.bridge_available);
+        assert!(bridge.bridge_list_sessions_ok);
+        assert!(bridge.fallback_available);
+        assert!(bridge.fallback_list_sessions_ok);
+        let text = format_buddy_command_doctor_report(&report, OutputFormat::Text).unwrap();
+        assert!(text.contains("bridge:"));
+        assert!(text.contains("status: ok"));
+        let json = format_buddy_command_doctor_report(&report, OutputFormat::Json).unwrap();
+        assert!(json.contains("\"bridge_available\": true"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn buddy_doctor_reports_bridge_failure_with_legacy_fallback() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-doctor-bridge-fallback-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let buddy_bin = root.join("buddy-bridge-fallback.sh");
+        fs::write(
+            &buddy_bin,
+            r#"#!/bin/sh
+if [ "$1" = "djinn-bridge" ]; then
+  echo bridge unavailable >&2
+  exit 77
+fi
+if [ "$1" = "session" ] && [ "$2" = "list" ] && [ "$3" = "--format" ] && [ "$4" = "json" ]; then
+  printf '[]\n'
+  exit 0
+fi
+exit 2
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&buddy_bin, permissions).unwrap();
+
+        let mut report = buddy_command_doctor_report_from(
+            Some(buddy_bin.display().to_string()),
+            None,
+            None,
+            None,
+            None,
+        );
+        report.bridge = Some(probe_buddy_bridge_doctor(
+            &report.command,
+            report.exists && report.executable,
+        ));
+
+        let bridge = report.bridge.as_ref().unwrap();
+        assert!(!bridge.bridge_available);
+        assert!(!bridge.bridge_list_sessions_ok);
+        assert!(bridge.bridge_error.as_deref().unwrap().contains("status"));
+        assert!(bridge.fallback_available);
+        assert!(bridge.fallback_list_sessions_ok);
+        let text = format_buddy_command_doctor_report(&report, OutputFormat::Text).unwrap();
+        assert!(text.contains("status: unavailable; legacy CLI fallback will be used"));
+        let json = format_buddy_command_doctor_report(&report, OutputFormat::Json).unwrap();
+        assert!(json.contains("\"bridge_available\": false"));
+        assert!(json.contains("\"fallback_available\": true"));
 
         let _ = fs::remove_dir_all(&root);
     }

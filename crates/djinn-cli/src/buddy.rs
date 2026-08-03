@@ -47,8 +47,23 @@ pub(crate) struct BuddyCommandDoctorReport {
     pub(crate) resolved_path: Option<String>,
     pub(crate) session_dir: Option<String>,
     pub(crate) runtime_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bridge: Option<BuddyBridgeDoctorReport>,
     pub(crate) candidates: Vec<BuddyCommandDoctorCandidate>,
     pub(crate) note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct BuddyBridgeDoctorReport {
+    pub(crate) command: String,
+    pub(crate) bridge_available: bool,
+    pub(crate) bridge_list_sessions_ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bridge_error: Option<String>,
+    pub(crate) fallback_available: bool,
+    pub(crate) fallback_list_sessions_ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) fallback_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -604,8 +619,60 @@ pub(crate) fn buddy_command_doctor_report_from(
         resolved_path: resolved_path.map(|path| path.display().to_string()),
         session_dir: session_dir.map(|path| path.display().to_string()),
         runtime_path: runtime_path.map(|path| path.display().to_string()),
+        bridge: None,
         candidates,
         note,
+    }
+}
+
+pub(crate) fn probe_buddy_bridge_doctor(
+    command: &str,
+    command_available: bool,
+) -> BuddyBridgeDoctorReport {
+    let bridge_command = if command.trim().is_empty() || command == "<unavailable>" {
+        "<unavailable> djinn-bridge".to_string()
+    } else {
+        format!("{} djinn-bridge", shell_quote(command))
+    };
+    if !command_available || command == "<unavailable>" {
+        return BuddyBridgeDoctorReport {
+            command: bridge_command,
+            bridge_available: false,
+            bridge_list_sessions_ok: false,
+            bridge_error: Some("Buddy command is unavailable or not executable.".to_string()),
+            fallback_available: false,
+            fallback_list_sessions_ok: false,
+            fallback_error: Some("Buddy command is unavailable or not executable.".to_string()),
+        };
+    }
+
+    let bridge_backend = BuddyBridgeBackend::explicit(command.to_string());
+    let (bridge_available, bridge_list_sessions_ok, bridge_error) =
+        match bridge_backend.execute_wire_request(BuddyBridgeWireRequest::ListSessions) {
+            Ok(BuddyBridgeWireResponse::Sessions { .. }) => (true, true, None),
+            Ok(other) => (
+                false,
+                false,
+                Some(format!("unexpected Buddy bridge response: {other:?}")),
+            ),
+            Err(error) => (false, false, Some(error.to_string())),
+        };
+
+    let cli_backend = BuddyCliBackend::explicit(command.to_string());
+    let (fallback_available, fallback_list_sessions_ok, fallback_error) =
+        match cli_backend.list_sessions() {
+            Ok(_) => (true, true, None),
+            Err(error) => (false, false, Some(error.to_string())),
+        };
+
+    BuddyBridgeDoctorReport {
+        command: bridge_command,
+        bridge_available,
+        bridge_list_sessions_ok,
+        bridge_error,
+        fallback_available,
+        fallback_list_sessions_ok,
+        fallback_error,
     }
 }
 
@@ -728,6 +795,32 @@ pub(crate) fn format_buddy_command_doctor_report(
     lines.push(format!("  executable: {}", yes_no(report.executable)));
     if let Some(path) = &report.resolved_path {
         lines.push(format!("  resolved path: {path}"));
+    }
+    if let Some(bridge) = &report.bridge {
+        lines.push("  bridge:".to_string());
+        lines.push(format!("    command: {}", bridge.command));
+        let status = if bridge.bridge_list_sessions_ok {
+            "ok"
+        } else if bridge.fallback_list_sessions_ok {
+            "unavailable; legacy CLI fallback will be used"
+        } else {
+            "unavailable; legacy CLI fallback also failed"
+        };
+        lines.push(format!("    status: {status}"));
+        lines.push(format!(
+            "    bridge list sessions: {}",
+            yes_no(bridge.bridge_list_sessions_ok)
+        ));
+        if let Some(error) = &bridge.bridge_error {
+            lines.push(format!("    bridge error: {error}"));
+        }
+        lines.push(format!(
+            "    fallback list sessions: {}",
+            yes_no(bridge.fallback_list_sessions_ok)
+        ));
+        if let Some(error) = &bridge.fallback_error {
+            lines.push(format!("    fallback error: {error}"));
+        }
     }
     lines.push("  candidates:".to_string());
     for candidate in &report.candidates {
