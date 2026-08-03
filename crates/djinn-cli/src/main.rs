@@ -9715,6 +9715,34 @@ impl BuddyCommandResolution {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BuddyBridgeRequest {
+    LaunchPlain,
+    LaunchInteractive {
+        buddy_session: Option<String>,
+        cwd: Option<PathBuf>,
+        session_dir: PathBuf,
+    },
+    FinalResponse {
+        buddy_session: Option<String>,
+        buddy_args: Vec<String>,
+        prompt: String,
+    },
+    ListSessions,
+    CreateSession {
+        title: String,
+        repo_path: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BuddyBridgeResponse {
+    Unit,
+    FinalResponse(String),
+    Sessions(Vec<BuddySessionListRecord>),
+    CreatedSession(BuddySessionCreateRecord),
+}
+
 trait BuddyBackend {
     fn command(&self) -> &str;
     fn runtime_command_override(&self) -> Option<String>;
@@ -9755,6 +9783,118 @@ impl BuddyCliBackend {
             },
         }
     }
+
+    fn execute_bridge_request(&self, request: BuddyBridgeRequest) -> Result<BuddyBridgeResponse> {
+        match request {
+            BuddyBridgeRequest::LaunchPlain => {
+                let mut command = buddy_process_command(self.command())?;
+                let status = command
+                    .status()
+                    .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
+                if !status.success() {
+                    bail!("Buddy exited with status {status}");
+                }
+                Ok(BuddyBridgeResponse::Unit)
+            }
+            BuddyBridgeRequest::LaunchInteractive {
+                buddy_session,
+                cwd,
+                session_dir,
+            } => {
+                let mut command = buddy_process_command(self.command())?;
+                if let Some(session) = buddy_session
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    command.arg("-s").arg(session);
+                }
+                if let Some(cwd) = cwd {
+                    command.current_dir(cwd);
+                }
+                command.env("DJINN_SESSION_DIR", &session_dir);
+                command.env("DJINN_EVENTS_JSONL", session_dir.join("events.jsonl"));
+                let status = command
+                    .status()
+                    .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
+                if !status.success() {
+                    bail!("Buddy exited with status {status}");
+                }
+                Ok(BuddyBridgeResponse::Unit)
+            }
+            BuddyBridgeRequest::FinalResponse {
+                buddy_session,
+                buddy_args,
+                prompt,
+            } => {
+                let mut command = buddy_process_command(self.command())?;
+                if let Some(session) = buddy_session
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    command.arg("-s").arg(session);
+                }
+                command.args(buddy_args);
+                command.stdin(Stdio::piped());
+                command.stdout(Stdio::piped());
+                command.stderr(Stdio::piped());
+                let mut child = command
+                    .spawn()
+                    .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
+                if let Some(stdin) = child.stdin.as_mut() {
+                    stdin
+                        .write_all(prompt.as_bytes())
+                        .context("writing request.md prompt to Buddy stdin")?;
+                }
+                let output = child
+                    .wait_with_output()
+                    .context("waiting for Buddy to finish")?;
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    bail!(
+                        "Buddy exited with status {}{}",
+                        output.status,
+                        if stderr.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {stderr}")
+                        }
+                    );
+                }
+                Ok(BuddyBridgeResponse::FinalResponse(
+                    String::from_utf8_lossy(&output.stdout).to_string(),
+                ))
+            }
+            BuddyBridgeRequest::ListSessions => {
+                let list: Vec<BuddySessionListJsonRecord> = run_buddy_json_command(
+                    self.command(),
+                    &["session", "list", "--format", "json"],
+                )?;
+                Ok(BuddyBridgeResponse::Sessions(
+                    list.into_iter()
+                        .map(|session| BuddySessionListRecord {
+                            id: session.id,
+                            title: session.title,
+                            repo_path: session.directory,
+                            created_at: buddy_millis_to_rfc3339(session.created),
+                            updated_at: buddy_millis_to_rfc3339(session.updated),
+                            summary: String::new(),
+                        })
+                        .collect(),
+                ))
+            }
+            BuddyBridgeRequest::CreateSession { title, repo_path } => {
+                Ok(BuddyBridgeResponse::CreatedSession(run_buddy_json_command(
+                    self.command(),
+                    &[
+                        "session", "create", "--format", "json", "--title", &title, "--repo",
+                        &repo_path,
+                    ],
+                )?))
+            }
+        }
+    }
 }
 
 impl BuddyBackend for BuddyCliBackend {
@@ -9767,14 +9907,10 @@ impl BuddyBackend for BuddyCliBackend {
     }
 
     fn launch_plain(&self) -> Result<()> {
-        let mut command = buddy_process_command(self.command())?;
-        let status = command
-            .status()
-            .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
-        if !status.success() {
-            bail!("Buddy exited with status {status}");
+        match self.execute_bridge_request(BuddyBridgeRequest::LaunchPlain)? {
+            BuddyBridgeResponse::Unit => Ok(()),
+            other => bail!("unexpected Buddy bridge response: {other:?}"),
         }
-        Ok(())
     }
 
     fn launch_interactive_session(
@@ -9783,25 +9919,14 @@ impl BuddyBackend for BuddyCliBackend {
         cwd: Option<&Path>,
         session_dir: &Path,
     ) -> Result<()> {
-        let mut command = buddy_process_command(self.command())?;
-        if let Some(session) = buddy_session
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            command.arg("-s").arg(session);
+        match self.execute_bridge_request(BuddyBridgeRequest::LaunchInteractive {
+            buddy_session: buddy_session.map(str::to_string),
+            cwd: cwd.map(Path::to_path_buf),
+            session_dir: session_dir.to_path_buf(),
+        })? {
+            BuddyBridgeResponse::Unit => Ok(()),
+            other => bail!("unexpected Buddy bridge response: {other:?}"),
         }
-        if let Some(cwd) = cwd {
-            command.current_dir(cwd);
-        }
-        command.env("DJINN_SESSION_DIR", session_dir);
-        command.env("DJINN_EVENTS_JSONL", session_dir.join("events.jsonl"));
-        let status = command
-            .status()
-            .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
-        if !status.success() {
-            bail!("Buddy exited with status {status}");
-        }
-        Ok(())
     }
 
     fn final_response(
@@ -9810,66 +9935,31 @@ impl BuddyBackend for BuddyCliBackend {
         buddy_args: &[String],
         prompt: &str,
     ) -> Result<String> {
-        let mut command = buddy_process_command(self.command())?;
-        if let Some(session) = buddy_session
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            command.arg("-s").arg(session);
+        match self.execute_bridge_request(BuddyBridgeRequest::FinalResponse {
+            buddy_session: buddy_session.map(str::to_string),
+            buddy_args: buddy_args.to_vec(),
+            prompt: prompt.to_string(),
+        })? {
+            BuddyBridgeResponse::FinalResponse(response) => Ok(response),
+            other => bail!("unexpected Buddy bridge response: {other:?}"),
         }
-        command.args(buddy_args);
-        command.stdin(Stdio::piped());
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
-        if let Some(stdin) = child.stdin.as_mut() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .context("writing request.md prompt to Buddy stdin")?;
-        }
-        let output = child
-            .wait_with_output()
-            .context("waiting for Buddy to finish")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            bail!(
-                "Buddy exited with status {}{}",
-                output.status,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {stderr}")
-                }
-            );
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
-        let list: Vec<BuddySessionListJsonRecord> =
-            run_buddy_json_command(self.command(), &["session", "list", "--format", "json"])?;
-        Ok(list
-            .into_iter()
-            .map(|session| BuddySessionListRecord {
-                id: session.id,
-                title: session.title,
-                repo_path: session.directory,
-                created_at: buddy_millis_to_rfc3339(session.created),
-                updated_at: buddy_millis_to_rfc3339(session.updated),
-                summary: String::new(),
-            })
-            .collect())
+        match self.execute_bridge_request(BuddyBridgeRequest::ListSessions)? {
+            BuddyBridgeResponse::Sessions(sessions) => Ok(sessions),
+            other => bail!("unexpected Buddy bridge response: {other:?}"),
+        }
     }
 
     fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord> {
-        run_buddy_json_command(
-            self.command(),
-            &[
-                "session", "create", "--format", "json", "--title", title, "--repo", repo_path,
-            ],
-        )
+        match self.execute_bridge_request(BuddyBridgeRequest::CreateSession {
+            title: title.to_string(),
+            repo_path: repo_path.to_string(),
+        })? {
+            BuddyBridgeResponse::CreatedSession(session) => Ok(session),
+            other => bail!("unexpected Buddy bridge response: {other:?}"),
+        }
     }
 }
 

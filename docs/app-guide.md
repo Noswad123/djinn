@@ -119,11 +119,12 @@ New runtime metadata treats `runtime/buddy.json.command` as an override only: no
 in-tree launches leave it unset so Djinn re-resolves the current in-tree launcher on
 the next run. Explicit `--buddy-bin`, `DJINN_BUDDY_BIN`, or manually-authored runtime
 commands are preserved as overrides.
-Djinn routes Buddy operations through a Buddy backend boundary. The current backend
-still adapts to the in-tree Buddy launcher for session listing, creation, interactive
-launches, and final-response capture, but feature code calls backend operations
-instead of assembling Buddy CLI subcommands directly. This keeps the integration ready
-for a future in-process or protocol bridge.
+Djinn routes Buddy operations through a Buddy backend boundary and an internal bridge
+request/response contract. The current backend still adapts bridge requests to the
+in-tree Buddy launcher for session listing, creation, interactive launches, and
+final-response capture, but feature code calls backend operations instead of
+assembling Buddy CLI subcommands directly. This keeps the integration ready for a
+future in-process or protocol transport.
 When `djinn -bs <folder-session>` opens a folder session without a Buddy binding,
 Djinn now asks the Buddy backend to create one before launch, records the resulting
 Buddy session id in `runtime/buddy.json`, and launches Buddy with that stable id. The
