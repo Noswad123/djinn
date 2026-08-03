@@ -11495,7 +11495,15 @@ fn compact_session_list_datetime(value: &str) -> String {
 }
 
 fn resolve_folder_session_open_target(dir: &Path, target: SessionOpenTarget) -> Result<PathBuf> {
-    let session_dir = resolve_session_dir(dir)?;
+    resolve_folder_session_open_target_in_root(dir, target, &default_folder_session_root())
+}
+
+fn resolve_folder_session_open_target_in_root(
+    dir: &Path,
+    target: SessionOpenTarget,
+    buddy_lookup_root: &Path,
+) -> Result<PathBuf> {
+    let session_dir = resolve_folder_session_open_dir_in_root(dir, buddy_lookup_root)?;
     let path = match target {
         SessionOpenTarget::Summary => session_dir.join("summary.md"),
         SessionOpenTarget::Request => session_dir.join("request.md"),
@@ -11506,6 +11514,34 @@ fn resolve_folder_session_open_target(dir: &Path, target: SessionOpenTarget) -> 
         SessionOpenTarget::Repo => resolve_folder_session_repo_open_target(&session_dir)?,
     };
     Ok(path)
+}
+
+fn resolve_folder_session_open_dir_in_root(
+    dir: &Path,
+    buddy_lookup_root: &Path,
+) -> Result<PathBuf> {
+    let session_dir = resolve_session_dir(dir)?;
+    if session_dir.exists() {
+        if !session_dir.is_dir() {
+            bail!(
+                "folder session path is not a directory: {}",
+                session_dir.display()
+            );
+        }
+        return Ok(session_dir);
+    }
+
+    if let Some((session_dir, _buddy_session)) =
+        resolve_buddy_session_reference_in_root(buddy_lookup_root, dir)?
+    {
+        return Ok(session_dir);
+    }
+
+    bail!(
+        "folder session does not exist: {} (run `djinn session init {}` first)",
+        session_dir.display(),
+        dir.display()
+    )
 }
 
 fn resolve_folder_session_repo_open_target(session_dir: &Path) -> Result<PathBuf> {
@@ -25470,6 +25506,64 @@ link = "context/repo"
             resolve_folder_session_open_target(&dir, SessionOpenTarget::Repo).unwrap(),
             PathBuf::from(repo.display().to_string())
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_open_resolves_buddy_session_id() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-open-buddy-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        fs::create_dir_all(dir.join("runtime")).unwrap();
+        fs::write(dir.join("summary.md"), "summary\n").unwrap();
+        fs::write(
+            dir.join("runtime/buddy.json"),
+            r#"{
+  "buddy_session": "ses_openBuddy123",
+  "stale_buddy_sessions": []
+}
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_folder_session_open_target_in_root(
+                Path::new("ses_openBuddy123"),
+                SessionOpenTarget::Summary,
+                &root,
+            )
+            .unwrap(),
+            dir.join("summary.md")
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_open_errors_when_session_does_not_exist() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-open-missing-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        let err = resolve_folder_session_open_target_in_root(
+            Path::new("missing-session"),
+            SessionOpenTarget::Summary,
+            &root,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("folder session does not exist"));
+        assert!(err.contains("missing-session"));
 
         let _ = fs::remove_dir_all(&root);
     }
