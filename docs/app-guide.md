@@ -124,6 +124,11 @@ still adapts to the in-tree Buddy launcher for session listing, creation, intera
 launches, and final-response capture, but feature code calls backend operations
 instead of assembling Buddy CLI subcommands directly. This keeps the integration ready
 for a future in-process or protocol bridge.
+When `djinn -bs <folder-session>` opens a folder session without a Buddy binding,
+Djinn now asks the Buddy backend to create one before launch, records the resulting
+Buddy session id in `runtime/buddy.json`, and launches Buddy with that stable id. The
+binding uses the session title from `djinn.toml` when present and uses a valid
+workspace/repo path when available, otherwise the folder-session directory itself.
 The checked-in `tools/buddy/bin/buddy` wrapper is the migration seam for moving
 Buddy into Djinn while keeping `tools/buddy/` available as Buddy's future in-repo
 home: it honors `DJINN_TOOLS_BUDDY_TARGET`, then tries in-repo Buddy builds under

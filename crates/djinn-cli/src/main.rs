@@ -9672,6 +9672,12 @@ struct TopLevelBuddySessionBehavior {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct BuddySessionBinding {
+    buddy_session: String,
+    repo_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BuddyInteractiveSummarySync {
     summary_path: PathBuf,
     response_chars: usize,
@@ -9933,6 +9939,19 @@ fn top_level_buddy_session_behavior(
     });
     let manifest = read_folder_session_manifest(session_dir)?;
     let requested_cwd = session_manifest_workspace_path(manifest.as_ref());
+    if buddy_session.is_none() && session_dir.is_dir() {
+        let binding = ensure_buddy_session_binding(
+            session_dir,
+            &buddy_backend,
+            previous_runtime.as_ref(),
+            manifest.as_ref(),
+            requested_cwd.as_deref(),
+        )?;
+        return Ok(TopLevelBuddySessionBehavior {
+            buddy_session: Some(binding.buddy_session),
+            cwd: Some(binding.repo_path),
+        });
+    }
     let cwd = match (&buddy_session, requested_cwd) {
         (Some(_), Some(path)) if path.is_dir() => Some(path),
         (Some(id), Some(path)) => {
@@ -10221,6 +10240,83 @@ fn djinn_source_workspace_root() -> PathBuf {
 fn in_tree_buddy_command(workspace_root: &Path) -> Option<String> {
     let candidate = workspace_root.join(IN_TREE_BUDDY_COMMAND);
     candidate.is_file().then(|| candidate.display().to_string())
+}
+
+fn ensure_buddy_session_binding(
+    session_dir: &Path,
+    buddy_backend: &dyn BuddyBackend,
+    previous_runtime: Option<&BuddyRuntimeState>,
+    manifest: Option<&FolderSessionManifest>,
+    requested_workspace: Option<&Path>,
+) -> Result<BuddySessionBinding> {
+    if let Some(existing) = previous_runtime
+        .and_then(|state| state.buddy_session.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(BuddySessionBinding {
+            buddy_session: existing.to_string(),
+            repo_path: buddy_binding_repo_path(session_dir, requested_workspace),
+        });
+    }
+
+    let title = buddy_binding_title(session_dir, manifest);
+    let repo_path = buddy_binding_repo_path(session_dir, requested_workspace);
+    let repo = repo_path.display().to_string();
+    let created = buddy_backend
+        .create_session(&title, &repo)
+        .with_context(|| {
+            format!(
+                "creating Buddy session binding for {}",
+                session_dir.display()
+            )
+        })?;
+    write_buddy_runtime_state(
+        &session_dir.join("runtime/buddy.json"),
+        &BuddyRuntimeState {
+            buddy_session: Some(created.id.clone()),
+            stale_buddy_sessions: previous_runtime
+                .map(|state| state.stale_buddy_sessions.clone())
+                .unwrap_or_default(),
+            command: buddy_backend.runtime_command_override(),
+            args: previous_runtime
+                .map(|state| state.args.clone())
+                .unwrap_or_default(),
+            last_run_at: previous_runtime.and_then(|state| state.last_run_at.clone()),
+            last_prompt_chars: previous_runtime
+                .map(|state| state.last_prompt_chars)
+                .unwrap_or_default(),
+            last_response_chars: previous_runtime
+                .map(|state| state.last_response_chars)
+                .unwrap_or_default(),
+        },
+    )?;
+    Ok(BuddySessionBinding {
+        buddy_session: created.id,
+        repo_path,
+    })
+}
+
+fn buddy_binding_title(session_dir: &Path, manifest: Option<&FolderSessionManifest>) -> String {
+    manifest
+        .and_then(|manifest| manifest.title.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            session_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(folder_session_display_name)
+        })
+        .unwrap_or_else(|| "Djinn session".to_string())
+}
+
+fn buddy_binding_repo_path(session_dir: &Path, requested_workspace: Option<&Path>) -> PathBuf {
+    requested_workspace
+        .filter(|path| path.is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| session_dir.to_path_buf())
 }
 
 fn promote_stale_buddy_workspace(
@@ -15612,6 +15708,7 @@ fn ensure_trailing_newline(value: &str) -> String {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct FolderSessionManifest {
+    title: Option<String>,
     kind: Option<String>,
     session_id: Option<AgentSessionId>,
     created_at: Option<String>,
@@ -15636,6 +15733,7 @@ fn read_folder_session_manifest(session_dir: &Path) -> Result<Option<FolderSessi
 
 fn parse_folder_session_manifest(manifest: &str) -> FolderSessionManifest {
     FolderSessionManifest {
+        title: manifest_root_string_value(manifest, "title"),
         kind: manifest_root_string_value(manifest, "kind"),
         session_id: manifest_root_string_value(manifest, "session_id").map(AgentSessionId::new),
         created_at: manifest_root_string_value(manifest, "created_at"),
@@ -24283,6 +24381,117 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[derive(Clone)]
+    struct TestBuddyBackend {
+        command: String,
+        runtime_command_override: Option<String>,
+        create_id: String,
+        creates: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl BuddyBackend for TestBuddyBackend {
+        fn command(&self) -> &str {
+            &self.command
+        }
+
+        fn runtime_command_override(&self) -> Option<String> {
+            self.runtime_command_override.clone()
+        }
+
+        fn launch_plain(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn launch_interactive_session(
+            &self,
+            _buddy_session: Option<&str>,
+            _cwd: Option<&Path>,
+            _session_dir: &Path,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn final_response(
+            &self,
+            _buddy_session: Option<&str>,
+            _buddy_args: &[String],
+            _prompt: &str,
+        ) -> Result<String> {
+            Ok(String::new())
+        }
+
+        fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord> {
+            self.creates
+                .lock()
+                .unwrap()
+                .push((title.to_string(), repo_path.to_string()));
+            Ok(BuddySessionCreateRecord {
+                id: self.create_id.clone(),
+                title: title.to_string(),
+                repo_path: repo_path.to_string(),
+                created_at: "2026-08-01T12:00:00Z".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn ensure_buddy_session_binding_creates_runtime_without_default_command_override() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-ensure-binding-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let workspace = root.join("workspace");
+        let session_dir = root.join("session");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("djinn.toml"),
+            format!(
+                "title = \"Custom Buddy Title\"\nworkspace = {}\n",
+                serde_json::to_string(&workspace.display().to_string()).unwrap()
+            ),
+        )
+        .unwrap();
+        let manifest = read_folder_session_manifest(&session_dir).unwrap();
+        let creates = Arc::new(Mutex::new(Vec::new()));
+        let backend = TestBuddyBackend {
+            command: "in-tree-buddy".to_string(),
+            runtime_command_override: None,
+            create_id: "ses_auto_bound".to_string(),
+            creates: creates.clone(),
+        };
+
+        let binding = ensure_buddy_session_binding(
+            &session_dir,
+            &backend,
+            None,
+            manifest.as_ref(),
+            Some(&workspace),
+        )
+        .unwrap();
+
+        assert_eq!(binding.buddy_session, "ses_auto_bound");
+        assert_eq!(binding.repo_path, workspace);
+        assert_eq!(
+            creates.lock().unwrap().as_slice(),
+            &[(
+                "Custom Buddy Title".to_string(),
+                binding.repo_path.display().to_string()
+            )]
+        );
+        let runtime = fs::read_to_string(session_dir.join("runtime/buddy.json")).unwrap();
+        assert!(runtime.contains("ses_auto_bound"));
+        assert!(!runtime.contains("command"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn top_level_buddy_session_plans_interactive_resume_even_with_pending_request() {
         let root = std::env::temp_dir().join(format!(
@@ -24321,6 +24530,70 @@ mod tests {
         let behavior = top_level_buddy_session_behavior(&session_dir, None).unwrap();
         assert_eq!(behavior.buddy_session.as_deref(), Some("ses_resume"));
         assert_eq!(behavior.cwd.as_deref(), Some(workspace.as_path()));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn top_level_buddy_session_auto_binds_unbound_folder_session() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-auto-bind-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let workspace = root.join("workspace");
+        let session_dir = root.join("session");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(session_dir.join("runtime")).unwrap();
+        let create_log = root.join("create-log.txt");
+        let buddy_bin = root.join("buddy-json.sh");
+        fs::write(
+            &buddy_bin,
+            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ses_auto_bound\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected buddy args: \"$@\" >&2\nexit 2\n"
+                .replace("__CREATE_LOG__", &create_log.display().to_string()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&buddy_bin, permissions).unwrap();
+        }
+        fs::write(
+            session_dir.join("djinn.toml"),
+            format!(
+                "title = \"Auto Bound Session\"\nworkspace = {}\n",
+                serde_json::to_string(&workspace.display().to_string()).unwrap()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            session_dir.join("runtime/buddy.json"),
+            serde_json::json!({
+                "command": buddy_bin.display().to_string(),
+                "args": [],
+                "last_run_at": null,
+                "last_prompt_chars": 0,
+                "last_response_chars": 0
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let behavior = top_level_buddy_session_behavior(&session_dir, None).unwrap();
+        assert_eq!(behavior.buddy_session.as_deref(), Some("ses_auto_bound"));
+        assert_eq!(behavior.cwd.as_deref(), Some(workspace.as_path()));
+        assert_eq!(
+            fs::read_to_string(&create_log).unwrap(),
+            format!("Auto Bound Session|{}\n", workspace.display())
+        );
+        let runtime = fs::read_to_string(session_dir.join("runtime/buddy.json")).unwrap();
+        assert!(runtime.contains("ses_auto_bound"));
+        assert!(runtime.contains(&buddy_bin.display().to_string()));
 
         let _ = fs::remove_dir_all(&root);
     }
