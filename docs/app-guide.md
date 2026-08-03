@@ -119,6 +119,11 @@ New runtime metadata treats `runtime/buddy.json.command` as an override only: no
 in-tree launches leave it unset so Djinn re-resolves the current in-tree launcher on
 the next run. Explicit `--buddy-bin`, `DJINN_BUDDY_BIN`, or manually-authored runtime
 commands are preserved as overrides.
+Djinn routes Buddy operations through a Buddy backend boundary. The current backend
+still adapts to the in-tree Buddy launcher for session listing, creation, interactive
+launches, and final-response capture, but feature code calls backend operations
+instead of assembling Buddy CLI subcommands directly. This keeps the integration ready
+for a future in-process or protocol bridge.
 The checked-in `tools/buddy/bin/buddy` wrapper is the migration seam for moving
 Buddy into Djinn while keeping `tools/buddy/` available as Buddy's future in-repo
 home: it honors `DJINN_TOOLS_BUDDY_TARGET`, then tries in-repo Buddy builds under

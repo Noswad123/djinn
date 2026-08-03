@@ -50,6 +50,7 @@ const FOLDER_SESSION_COMPACT_END_MARKER: &str = "<!-- djinn:generated:end -->";
 const FOLDER_NATIVE_SESSION_DIR: &str = ".djinn";
 const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
 const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/buddy";
+const EXPLICIT_BUDDY_COMMAND_SOURCE: &str = "--buddy-bin";
 const UNAVAILABLE_BUDDY_COMMAND_SOURCE: &str = "unavailable";
 
 #[derive(Debug, Parser)]
@@ -9708,6 +9709,164 @@ impl BuddyCommandResolution {
     }
 }
 
+trait BuddyBackend {
+    fn command(&self) -> &str;
+    fn runtime_command_override(&self) -> Option<String>;
+    fn launch_plain(&self) -> Result<()>;
+    fn launch_interactive_session(
+        &self,
+        buddy_session: Option<&str>,
+        cwd: Option<&Path>,
+        session_dir: &Path,
+    ) -> Result<()>;
+    fn final_response(
+        &self,
+        buddy_session: Option<&str>,
+        buddy_args: &[String],
+        prompt: &str,
+    ) -> Result<String>;
+    fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>>;
+    fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuddyCliBackend {
+    resolution: BuddyCommandResolution,
+}
+
+impl BuddyCliBackend {
+    fn resolved(previous_runtime: Option<&BuddyRuntimeState>) -> Result<Self> {
+        Ok(Self {
+            resolution: resolve_buddy_command_resolution(previous_runtime)?,
+        })
+    }
+
+    fn explicit(command: String) -> Self {
+        Self {
+            resolution: BuddyCommandResolution {
+                command,
+                source: EXPLICIT_BUDDY_COMMAND_SOURCE.to_string(),
+            },
+        }
+    }
+}
+
+impl BuddyBackend for BuddyCliBackend {
+    fn command(&self) -> &str {
+        &self.resolution.command
+    }
+
+    fn runtime_command_override(&self) -> Option<String> {
+        self.resolution.runtime_command_override()
+    }
+
+    fn launch_plain(&self) -> Result<()> {
+        let mut command = buddy_process_command(self.command())?;
+        let status = command
+            .status()
+            .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
+        if !status.success() {
+            bail!("Buddy exited with status {status}");
+        }
+        Ok(())
+    }
+
+    fn launch_interactive_session(
+        &self,
+        buddy_session: Option<&str>,
+        cwd: Option<&Path>,
+        session_dir: &Path,
+    ) -> Result<()> {
+        let mut command = buddy_process_command(self.command())?;
+        if let Some(session) = buddy_session
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            command.arg("-s").arg(session);
+        }
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        command.env("DJINN_SESSION_DIR", session_dir);
+        command.env("DJINN_EVENTS_JSONL", session_dir.join("events.jsonl"));
+        let status = command
+            .status()
+            .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
+        if !status.success() {
+            bail!("Buddy exited with status {status}");
+        }
+        Ok(())
+    }
+
+    fn final_response(
+        &self,
+        buddy_session: Option<&str>,
+        buddy_args: &[String],
+        prompt: &str,
+    ) -> Result<String> {
+        let mut command = buddy_process_command(self.command())?;
+        if let Some(session) = buddy_session
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            command.arg("-s").arg(session);
+        }
+        command.args(buddy_args);
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin
+                .write_all(prompt.as_bytes())
+                .context("writing request.md prompt to Buddy stdin")?;
+        }
+        let output = child
+            .wait_with_output()
+            .context("waiting for Buddy to finish")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            bail!(
+                "Buddy exited with status {}{}",
+                output.status,
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                }
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
+        let list: Vec<BuddySessionListJsonRecord> =
+            run_buddy_json_command(self.command(), &["session", "list", "--format", "json"])?;
+        Ok(list
+            .into_iter()
+            .map(|session| BuddySessionListRecord {
+                id: session.id,
+                title: session.title,
+                repo_path: session.directory,
+                created_at: buddy_millis_to_rfc3339(session.created),
+                updated_at: buddy_millis_to_rfc3339(session.updated),
+                summary: String::new(),
+            })
+            .collect())
+    }
+
+    fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord> {
+        run_buddy_json_command(
+            self.command(),
+            &[
+                "session", "create", "--format", "json", "--title", title, "--repo", repo_path,
+            ],
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SessionBuddyReport {
     session_dir: String,
@@ -9766,9 +9925,7 @@ fn top_level_buddy_session_behavior(
 ) -> Result<TopLevelBuddySessionBehavior> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_resolution = resolve_buddy_command_resolution(previous_runtime.as_ref())?;
-    let buddy_bin = buddy_resolution.command.clone();
-    let runtime_command_override = buddy_resolution.runtime_command_override();
+    let buddy_backend = BuddyCliBackend::resolved(previous_runtime.as_ref())?;
     let buddy_session = explicit_buddy_session.or_else(|| {
         previous_runtime
             .as_ref()
@@ -9781,8 +9938,7 @@ fn top_level_buddy_session_behavior(
         (Some(id), Some(path)) => {
             let promoted = promote_stale_buddy_workspace(
                 session_dir,
-                &buddy_bin,
-                runtime_command_override,
+                &buddy_backend,
                 previous_runtime.as_ref(),
                 id,
                 Some(&path),
@@ -9799,24 +9955,24 @@ fn top_level_buddy_session_behavior(
     Ok(TopLevelBuddySessionBehavior { buddy_session, cwd })
 }
 
-fn resolve_buddy_command(previous_runtime: Option<&BuddyRuntimeState>) -> Result<String> {
-    Ok(resolve_buddy_command_resolution(previous_runtime)?.command)
-}
-
 fn resolve_buddy_command_resolution(
     previous_runtime: Option<&BuddyRuntimeState>,
 ) -> Result<BuddyCommandResolution> {
+    let env_command = env::var(DJINN_BUDDY_BIN_ENV).ok();
+    let runtime_command = previous_runtime.and_then(|state| state.command.clone());
+    let workspace_root = djinn_source_workspace_root();
+    let in_tree = in_tree_buddy_command(&workspace_root);
     resolve_buddy_command_from(
-        env::var(DJINN_BUDDY_BIN_ENV).ok(),
-        previous_runtime.and_then(|state| state.command.clone()),
-        Some(&djinn_source_workspace_root()),
+        env_command.clone(),
+        runtime_command.clone(),
+        Some(&workspace_root),
     )
     .map(|command| BuddyCommandResolution {
         source: buddy_command_source(
             Some(command.as_str()),
-            env::var(DJINN_BUDDY_BIN_ENV).ok().as_deref(),
-            previous_runtime.and_then(|state| state.command.as_deref()),
-            in_tree_buddy_command(&djinn_source_workspace_root()).as_deref(),
+            env_command.as_deref(),
+            runtime_command.as_deref(),
+            in_tree.as_deref(),
         ),
         command,
     })
@@ -9977,6 +10133,16 @@ fn buddy_command_status(command: &str) -> (Option<PathBuf>, bool, bool) {
     (Some(path), exists, executable)
 }
 
+fn buddy_process_command(buddy_command: &str) -> Result<ProcessCommand> {
+    let mut parts = buddy_command.split_whitespace();
+    let Some(program) = parts.next() else {
+        bail!("Buddy command is empty");
+    };
+    let mut command = ProcessCommand::new(program);
+    command.args(parts);
+    Ok(command)
+}
+
 fn find_program_on_path(program: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|path| {
         env::split_paths(&path)
@@ -10059,8 +10225,7 @@ fn in_tree_buddy_command(workspace_root: &Path) -> Option<String> {
 
 fn promote_stale_buddy_workspace(
     session_dir: &Path,
-    buddy_bin: &str,
-    runtime_command_override: Option<String>,
+    buddy_backend: &dyn BuddyBackend,
     previous_runtime: Option<&BuddyRuntimeState>,
     stale_buddy_session: &str,
     stale_workspace: Option<&Path>,
@@ -10071,15 +10236,17 @@ fn promote_stale_buddy_workspace(
         .and_then(|name| name.to_str())
         .unwrap_or("djinn-session");
     let repo = session_dir.display().to_string();
-    let created = buddy_create_session(buddy_bin, title, &repo).with_context(|| {
-        format!(
-            "promoting stale Buddy binding for {} into session-local workspace {}",
-            stale_workspace
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string()),
-            session_dir.display()
-        )
-    })?;
+    let created = buddy_backend
+        .create_session(title, &repo)
+        .with_context(|| {
+            format!(
+                "promoting stale Buddy binding for {} into session-local workspace {}",
+                stale_workspace
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                session_dir.display()
+            )
+        })?;
 
     let mut stale_ids = previous_runtime
         .map(|state| state.stale_buddy_sessions.clone())
@@ -10095,7 +10262,7 @@ fn promote_stale_buddy_workspace(
         &BuddyRuntimeState {
             buddy_session: Some(created.id.clone()),
             stale_buddy_sessions: stale_ids,
-            command: runtime_command_override,
+            command: buddy_backend.runtime_command_override(),
             args: previous_runtime
                 .map(|state| state.args.clone())
                 .unwrap_or_default(),
@@ -10203,19 +10370,7 @@ fn resolve_buddy_session_reference_in_root(
 }
 
 fn run_plain_buddy_mode() -> Result<()> {
-    let buddy_bin = resolve_buddy_command(None)?;
-    let mut parts = buddy_bin.split_whitespace();
-    let Some(program) = parts.next() else {
-        bail!("Buddy command is empty");
-    };
-    let status = ProcessCommand::new(program)
-        .args(parts)
-        .status()
-        .with_context(|| format!("launching Buddy command `{buddy_bin}`"))?;
-    if !status.success() {
-        bail!("Buddy exited with status {status}");
-    }
-    Ok(())
+    BuddyCliBackend::resolved(None)?.launch_plain()
 }
 
 fn run_interactive_session_buddy(
@@ -10224,34 +10379,12 @@ fn run_interactive_session_buddy(
 ) -> Result<()> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_resolution = resolve_buddy_command_resolution(previous_runtime.as_ref())?;
-    let buddy_bin = buddy_resolution.command.clone();
-    let runtime_command_override = buddy_resolution.runtime_command_override();
-    let mut parts = buddy_bin.split_whitespace();
-    let Some(program) = parts.next() else {
-        bail!("Buddy command is empty");
-    };
-    let mut command = ProcessCommand::new(program);
-    command.args(parts);
-    if let Some(session) = behavior
-        .buddy_session
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        command.arg("-s").arg(session);
-    }
-    if let Some(cwd) = &behavior.cwd {
-        command.current_dir(cwd);
-    }
-    command.env("DJINN_SESSION_DIR", session_dir);
-    command.env("DJINN_EVENTS_JSONL", session_dir.join("events.jsonl"));
-    let status = command
-        .status()
-        .with_context(|| format!("launching Buddy command `{buddy_bin}`"))?;
-    if !status.success() {
-        bail!("Buddy exited with status {status}");
-    }
+    let buddy_backend = BuddyCliBackend::resolved(previous_runtime.as_ref())?;
+    buddy_backend.launch_interactive_session(
+        behavior.buddy_session.as_deref(),
+        behavior.cwd.as_deref(),
+        session_dir,
+    )?;
 
     let summary_sync = refresh_folder_summary_from_latest_event(session_dir)?;
 
@@ -10268,7 +10401,7 @@ fn run_interactive_session_buddy(
                     .as_ref()
                     .map(|state| state.stale_buddy_sessions.clone())
                     .unwrap_or_default(),
-                command: runtime_command_override,
+                command: buddy_backend.runtime_command_override(),
                 args: previous_args,
                 last_run_at: Some(chrono::Utc::now().to_rfc3339()),
                 last_prompt_chars: previous_runtime
@@ -10357,23 +10490,25 @@ fn run_session_buddy(args: &SessionBuddyArgs) -> Result<SessionBuddyReport> {
     }
 
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let (buddy_bin, runtime_command_override) = if let Some(buddy_bin) = args
+    let buddy_backend = if let Some(buddy_bin) = args
         .buddy_bin
         .clone()
         .filter(|value| !value.trim().is_empty())
     {
-        (buddy_bin.clone(), Some(buddy_bin))
+        BuddyCliBackend::explicit(buddy_bin)
     } else {
-        let resolution = resolve_buddy_command_resolution(previous_runtime.as_ref())?;
-        let runtime_command_override = resolution.runtime_command_override();
-        (resolution.command, runtime_command_override)
+        BuddyCliBackend::resolved(previous_runtime.as_ref())?
     };
     let buddy_session = args.buddy_session.clone().or_else(|| {
         previous_runtime
             .as_ref()
             .and_then(|state| state.buddy_session.clone())
     });
-    let buddy_command = buddy_command_hint(&buddy_bin, buddy_session.as_deref(), &args.buddy_args);
+    let buddy_command = buddy_command_hint(
+        buddy_backend.command(),
+        buddy_session.as_deref(),
+        &args.buddy_args,
+    );
 
     if args.dry_run {
         return Ok(SessionBuddyReport {
@@ -10395,12 +10530,8 @@ fn run_session_buddy(args: &SessionBuddyArgs) -> Result<SessionBuddyReport> {
         });
     }
 
-    let response = run_buddy_final_response(
-        &buddy_bin,
-        buddy_session.as_deref(),
-        &args.buddy_args,
-        &prompt,
-    )?;
+    let response =
+        buddy_backend.final_response(buddy_session.as_deref(), &args.buddy_args, &prompt)?;
     let response = response.trim().to_string();
     if response.is_empty() {
         bail!("Buddy returned an empty final response");
@@ -10444,7 +10575,7 @@ fn run_session_buddy(args: &SessionBuddyArgs) -> Result<SessionBuddyReport> {
                 .as_ref()
                 .map(|state| state.stale_buddy_sessions.clone())
                 .unwrap_or_default(),
-            command: runtime_command_override,
+            command: buddy_backend.runtime_command_override(),
             args: args.buddy_args.clone(),
             last_run_at: Some(chrono::Utc::now().to_rfc3339()),
             last_prompt_chars: prompt.chars().count(),
@@ -10469,54 +10600,6 @@ fn run_session_buddy(args: &SessionBuddyArgs) -> Result<SessionBuddyReport> {
         note: "Buddy final response captured into summary.md and events.jsonl; request.md was cleared."
             .to_string(),
     })
-}
-
-fn run_buddy_final_response(
-    buddy_bin: &str,
-    buddy_session: Option<&str>,
-    buddy_args: &[String],
-    prompt: &str,
-) -> Result<String> {
-    let mut parts = buddy_bin.split_whitespace();
-    let Some(program) = parts.next() else {
-        bail!("Buddy command is empty");
-    };
-    let mut command = ProcessCommand::new(program);
-    command.args(parts);
-    if let Some(session) = buddy_session
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        command.arg("-s").arg(session);
-    }
-    command.args(buddy_args);
-    command.stdin(Stdio::piped());
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("launching Buddy command `{buddy_bin}`"))?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(prompt.as_bytes())
-            .context("writing request.md prompt to Buddy stdin")?;
-    }
-    let output = child
-        .wait_with_output()
-        .context("waiting for Buddy to finish")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!(
-            "Buddy exited with status {}{}",
-            output.status,
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr}")
-            }
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn read_buddy_runtime_state(path: &Path) -> Result<Option<BuddyRuntimeState>> {
@@ -10679,18 +10762,16 @@ fn consolidate_sessions_in_root(
     root: &Path,
     args: &SessionConsolidateArgs,
 ) -> Result<SessionConsolidateReport> {
-    let (buddy_bin, runtime_command_override) = if let Some(buddy_bin) = args
+    let buddy_backend = if let Some(buddy_bin) = args
         .buddy_bin
         .clone()
         .filter(|value| !value.trim().is_empty())
     {
-        (buddy_bin.clone(), Some(buddy_bin))
+        BuddyCliBackend::explicit(buddy_bin)
     } else {
-        let resolution = resolve_buddy_command_resolution(None)?;
-        let runtime_command_override = resolution.runtime_command_override();
-        (resolution.command, runtime_command_override)
+        BuddyCliBackend::resolved(None)?
     };
-    let buddy_sessions = buddy_list_sessions(&buddy_bin)?;
+    let buddy_sessions = buddy_backend.list_sessions()?;
     let folder_report = list_folder_sessions_in_root(root, None)?;
     let mut entries = Vec::new();
     let mut used_buddy_ids = BTreeSet::new();
@@ -10727,7 +10808,7 @@ fn consolidate_sessions_in_root(
                     &BuddyRuntimeState {
                         buddy_session: Some(buddy.id.clone()),
                         stale_buddy_sessions: Vec::new(),
-                        command: runtime_command_override.clone(),
+                        command: buddy_backend.runtime_command_override(),
                         args: Vec::new(),
                         last_run_at: None,
                         last_prompt_chars: 0,
@@ -10754,7 +10835,7 @@ fn consolidate_sessions_in_root(
             let created = if args.dry_run {
                 None
             } else {
-                let created = buddy_create_session(&buddy_bin, &title, &repo)?;
+                let created = buddy_backend.create_session(&title, &repo)?;
                 used_buddy_ids.insert(created.id.clone());
                 Some(created)
             };
@@ -10765,7 +10846,7 @@ fn consolidate_sessions_in_root(
                     &BuddyRuntimeState {
                         buddy_session: Some(id.clone()),
                         stale_buddy_sessions: Vec::new(),
-                        command: runtime_command_override.clone(),
+                        command: buddy_backend.runtime_command_override(),
                         args: Vec::new(),
                         last_run_at: None,
                         last_prompt_chars: 0,
@@ -10805,7 +10886,7 @@ fn consolidate_sessions_in_root(
                 root,
                 &folder_dir,
                 buddy,
-                runtime_command_override.clone(),
+                buddy_backend.runtime_command_override(),
             )?;
         }
         adopted_buddy_sessions += 1;
@@ -10831,7 +10912,7 @@ fn consolidate_sessions_in_root(
 
     Ok(SessionConsolidateReport {
         root: root.display().to_string(),
-        buddy_command: buddy_bin,
+        buddy_command: buddy_backend.command().to_string(),
         dry_run: args.dry_run,
         total_djinn_sessions: folder_report.sessions.len(),
         total_buddy_sessions: buddy_sessions.len(),
@@ -10843,39 +10924,10 @@ fn consolidate_sessions_in_root(
     })
 }
 
-fn buddy_list_sessions(buddy_bin: &str) -> Result<Vec<BuddySessionListRecord>> {
-    let list: Vec<BuddySessionListJsonRecord> =
-        run_buddy_json_command(buddy_bin, &["session", "list", "--format", "json"])?;
-    Ok(list
-        .into_iter()
-        .map(|session| BuddySessionListRecord {
-            id: session.id,
-            title: session.title,
-            repo_path: session.directory,
-            created_at: buddy_millis_to_rfc3339(session.created),
-            updated_at: buddy_millis_to_rfc3339(session.updated),
-            summary: String::new(),
-        })
-        .collect())
-}
-
 fn buddy_millis_to_rfc3339(value: i64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value)
         .map(|datetime| datetime.to_rfc3339())
         .unwrap_or_else(|| value.to_string())
-}
-
-fn buddy_create_session(
-    buddy_bin: &str,
-    title: &str,
-    repo_path: &str,
-) -> Result<BuddySessionCreateRecord> {
-    run_buddy_json_command(
-        buddy_bin,
-        &[
-            "session", "create", "--format", "json", "--title", title, "--repo", repo_path,
-        ],
-    )
 }
 
 fn run_buddy_json_command<T>(buddy_bin: &str, args: &[&str]) -> Result<T>
