@@ -98,6 +98,8 @@ enum Command {
     Open(OpenArgs),
     /// Inspect Djinn configuration and external harness config adapters.
     Config(ConfigArgs),
+    /// Diagnose Djinn runtime integration points.
+    Doctor(DoctorArgs),
     /// Manage provider credentials.
     Auth(AuthArgs),
     /// Ask Djinn from a new or existing session without the legacy agent prefix.
@@ -887,6 +889,31 @@ struct OpenArgs {
 struct ConfigArgs {
     #[command(subcommand)]
     command: ConfigCommand,
+}
+
+#[derive(Debug, Args)]
+struct DoctorArgs {
+    #[command(subcommand)]
+    command: DoctorCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum DoctorCommand {
+    /// Show which Buddy command Djinn will use without launching Buddy.
+    Buddy(DoctorBuddyArgs),
+}
+
+#[derive(Debug, Args)]
+struct DoctorBuddyArgs {
+    /// Folder-backed session name or directory whose runtime/buddy.json should be considered.
+    #[arg(short = 's', long = "session", value_name = "SESSION")]
+    session: Option<PathBuf>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Shortcut for --format json.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1914,6 +1941,7 @@ fn main() -> Result<()> {
         Command::Switch(args) => run_switch(args),
         Command::Open(args) => run_open(args),
         Command::Config(args) => run_config(args),
+        Command::Doctor(args) => run_doctor(args),
         Command::Auth(args) => run_auth(args),
         Command::Ask(args) => top_level_ask(args),
         Command::Session(args) => run_session(args),
@@ -2079,6 +2107,21 @@ fn run_config(args: ConfigArgs) -> Result<()> {
         ConfigCommand::Import(args) => config_import(args),
         ConfigCommand::Export(args) => config_export(args),
     }
+}
+
+fn run_doctor(args: DoctorArgs) -> Result<()> {
+    match args.command {
+        DoctorCommand::Buddy(args) => doctor_buddy(args),
+    }
+}
+
+fn doctor_buddy(args: DoctorBuddyArgs) -> Result<()> {
+    let report = buddy_command_doctor_report(args.session.as_deref())?;
+    print!(
+        "{}",
+        format_buddy_command_doctor_report(&report, output_format(args.format, args.json))?
+    );
+    Ok(())
 }
 
 fn run_auth(args: AuthArgs) -> Result<()> {
@@ -9634,6 +9677,26 @@ struct BuddyInteractiveSummarySync {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct BuddyCommandDoctorReport {
+    command: String,
+    source: String,
+    exists: bool,
+    executable: bool,
+    resolved_path: Option<String>,
+    session_dir: Option<String>,
+    runtime_path: Option<String>,
+    candidates: Vec<BuddyCommandDoctorCandidate>,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct BuddyCommandDoctorCandidate {
+    source: String,
+    value: Option<String>,
+    status: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SessionBuddyReport {
     session_dir: String,
     buddy_command: String,
@@ -9727,6 +9790,211 @@ fn resolve_buddy_command(previous_runtime: Option<&BuddyRuntimeState>) -> String
         previous_runtime.and_then(|state| state.command.clone()),
         Some(&djinn_source_workspace_root()),
     )
+}
+
+fn buddy_command_doctor_report(session: Option<&Path>) -> Result<BuddyCommandDoctorReport> {
+    let session_dir = session.map(resolve_session_dir).transpose()?;
+    let runtime_path = session_dir
+        .as_ref()
+        .map(|session_dir| session_dir.join("runtime/buddy.json"));
+    let runtime = runtime_path
+        .as_ref()
+        .map(|path| read_buddy_runtime_state(path))
+        .transpose()?
+        .flatten();
+    Ok(buddy_command_doctor_report_from(
+        env::var(DJINN_BUDDY_BIN_ENV).ok(),
+        runtime.as_ref().and_then(|state| state.command.clone()),
+        Some(&djinn_source_workspace_root()),
+        session_dir.as_deref(),
+        runtime_path.as_deref(),
+    ))
+}
+
+fn buddy_command_doctor_report_from(
+    env_command: Option<String>,
+    runtime_command: Option<String>,
+    workspace_root: Option<&Path>,
+    session_dir: Option<&Path>,
+    runtime_path: Option<&Path>,
+) -> BuddyCommandDoctorReport {
+    let in_tree = workspace_root.and_then(in_tree_buddy_command);
+    let command =
+        resolve_buddy_command_from(env_command.clone(), runtime_command.clone(), workspace_root);
+    let source = buddy_command_source(
+        &command,
+        env_command.as_deref(),
+        runtime_command.as_deref(),
+        in_tree.as_deref(),
+    );
+    let (resolved_path, exists, executable) = buddy_command_status(&command);
+    let candidates = vec![
+        buddy_command_candidate(
+            DJINN_BUDDY_BIN_ENV,
+            env_command.as_deref(),
+            source == DJINN_BUDDY_BIN_ENV,
+        ),
+        buddy_command_candidate(
+            "runtime/buddy.json.command",
+            runtime_command.as_deref(),
+            source == "runtime/buddy.json.command",
+        ),
+        BuddyCommandDoctorCandidate {
+            source: IN_TREE_BUDDY_COMMAND.to_string(),
+            value: in_tree.clone(),
+            status: if source == IN_TREE_BUDDY_COMMAND {
+                "selected".to_string()
+            } else if in_tree.is_some() {
+                "available".to_string()
+            } else {
+                "missing".to_string()
+            },
+        },
+        BuddyCommandDoctorCandidate {
+            source: DEFAULT_BUDDY_COMMAND.to_string(),
+            value: Some(DEFAULT_BUDDY_COMMAND.to_string()),
+            status: if source == DEFAULT_BUDDY_COMMAND {
+                "selected".to_string()
+            } else {
+                "fallback".to_string()
+            },
+        },
+    ];
+    let note = if source == "runtime/buddy.json.command" {
+        "Session runtime command overrides the in-tree Buddy launcher.".to_string()
+    } else if source == IN_TREE_BUDDY_COMMAND {
+        "Djinn will use its in-tree Buddy launcher.".to_string()
+    } else if source == DJINN_BUDDY_BIN_ENV {
+        "Environment override is active.".to_string()
+    } else {
+        "Djinn will fall back to `buddy`; prefer `make install` so tools/buddy/bin/buddy is available.".to_string()
+    };
+
+    BuddyCommandDoctorReport {
+        command,
+        source,
+        exists,
+        executable,
+        resolved_path: resolved_path.map(|path| path.display().to_string()),
+        session_dir: session_dir.map(|path| path.display().to_string()),
+        runtime_path: runtime_path.map(|path| path.display().to_string()),
+        candidates,
+        note,
+    }
+}
+
+fn buddy_command_source(
+    command: &str,
+    env_command: Option<&str>,
+    runtime_command: Option<&str>,
+    in_tree_command: Option<&str>,
+) -> String {
+    if env_command.map(str::trim).filter(|value| !value.is_empty()) == Some(command) {
+        return DJINN_BUDDY_BIN_ENV.to_string();
+    }
+    if runtime_command
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        == Some(command)
+    {
+        return "runtime/buddy.json.command".to_string();
+    }
+    if in_tree_command == Some(command) {
+        return IN_TREE_BUDDY_COMMAND.to_string();
+    }
+    DEFAULT_BUDDY_COMMAND.to_string()
+}
+
+fn buddy_command_candidate(
+    source: &str,
+    value: Option<&str>,
+    selected: bool,
+) -> BuddyCommandDoctorCandidate {
+    let value = value.map(str::trim).filter(|value| !value.is_empty());
+    BuddyCommandDoctorCandidate {
+        source: source.to_string(),
+        value: value.map(str::to_string),
+        status: if selected {
+            "selected".to_string()
+        } else if value.is_some() {
+            "available".to_string()
+        } else {
+            "unset".to_string()
+        },
+    }
+}
+
+fn buddy_command_status(command: &str) -> (Option<PathBuf>, bool, bool) {
+    let Some(program) = command.split_whitespace().next() else {
+        return (None, false, false);
+    };
+    let path = if program.contains(std::path::MAIN_SEPARATOR) || Path::new(program).is_absolute() {
+        Some(PathBuf::from(program))
+    } else {
+        find_program_on_path(program)
+    };
+    let Some(path) = path else {
+        return (None, false, false);
+    };
+    let exists = path.is_file();
+    let executable = exists && is_executable_file(&path);
+    (Some(path), exists, executable)
+}
+
+fn find_program_on_path(program: &str) -> Option<PathBuf> {
+    env::var_os("PATH").and_then(|path| {
+        env::split_paths(&path)
+            .map(|dir| dir.join(program))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+fn format_buddy_command_doctor_report(
+    report: &BuddyCommandDoctorReport,
+    format: OutputFormat,
+) -> Result<String> {
+    if format == OutputFormat::Json {
+        return Ok(serde_json::to_string_pretty(report)? + "\n");
+    }
+    let mut lines = vec!["Buddy doctor".to_string()];
+    if let Some(session_dir) = &report.session_dir {
+        lines.push(format!("  session: {session_dir}"));
+    }
+    if let Some(runtime_path) = &report.runtime_path {
+        lines.push(format!("  runtime: {runtime_path}"));
+    }
+    lines.push(format!("  command: {}", report.command));
+    lines.push(format!("  source: {}", report.source));
+    lines.push(format!("  exists: {}", yes_no(report.exists)));
+    lines.push(format!("  executable: {}", yes_no(report.executable)));
+    if let Some(path) = &report.resolved_path {
+        lines.push(format!("  resolved path: {path}"));
+    }
+    lines.push("  candidates:".to_string());
+    for candidate in &report.candidates {
+        let value = candidate.value.as_deref().unwrap_or("<unset>");
+        lines.push(format!(
+            "    - {}: {} ({})",
+            candidate.source, value, candidate.status
+        ));
+    }
+    lines.push(format!("  note: {}", report.note));
+    lines.push(String::new());
+    Ok(lines.join("\n"))
 }
 
 fn resolve_buddy_command_from(
@@ -21885,6 +22153,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_doctor_buddy_command() {
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "doctor",
+            "buddy",
+            "--session",
+            "rebrand-opencode",
+            "--json",
+        ])
+        .unwrap();
+
+        let Some(Command::Doctor(args)) = cli.command else {
+            panic!("expected doctor command");
+        };
+        let DoctorCommand::Buddy(args) = args.command;
+
+        assert_eq!(args.session.as_deref(), Some(Path::new("rebrand-opencode")));
+        assert!(args.json);
+    }
+
+    #[test]
     fn parses_config_show_command() {
         let cli = Cli::try_parse_from([
             "djinn",
@@ -23773,6 +24062,51 @@ mod tests {
             resolve_buddy_command_from(None, None, Some(&root.join("missing-root"))),
             DEFAULT_BUDDY_COMMAND
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn buddy_doctor_report_explains_selected_source() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-buddy-doctor-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(root.join("tools/buddy/bin")).unwrap();
+        let in_tree = root.join(IN_TREE_BUDDY_COMMAND);
+        fs::write(&in_tree, "#!/bin/sh\n").unwrap();
+
+        let in_tree_report = buddy_command_doctor_report_from(None, None, Some(&root), None, None);
+        assert_eq!(in_tree_report.command, in_tree.display().to_string());
+        assert_eq!(in_tree_report.source, IN_TREE_BUDDY_COMMAND);
+        assert!(in_tree_report.exists);
+        assert!(!in_tree_report.executable);
+        assert!(
+            format_buddy_command_doctor_report(&in_tree_report, OutputFormat::Text)
+                .unwrap()
+                .contains("source: tools/buddy/bin/buddy")
+        );
+
+        let runtime_report = buddy_command_doctor_report_from(
+            None,
+            Some("/old/buddy --dev".to_string()),
+            Some(&root),
+            Some(Path::new("/tmp/session")),
+            Some(Path::new("/tmp/session/runtime/buddy.json")),
+        );
+        assert_eq!(runtime_report.command, "/old/buddy --dev");
+        assert_eq!(runtime_report.source, "runtime/buddy.json.command");
+        assert_eq!(runtime_report.session_dir.as_deref(), Some("/tmp/session"));
+        assert_eq!(
+            runtime_report.runtime_path.as_deref(),
+            Some("/tmp/session/runtime/buddy.json")
+        );
+        assert!(runtime_report.note.contains("runtime command overrides"));
+
+        let json = format_buddy_command_doctor_report(&runtime_report, OutputFormat::Json).unwrap();
+        assert!(json.contains("\"source\": \"runtime/buddy.json.command\""));
 
         let _ = fs::remove_dir_all(&root);
     }

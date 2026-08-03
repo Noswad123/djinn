@@ -126,6 +126,9 @@ source-run path.
 `make install` now installs both `djinn` and `buddy`: it runs `bun install` under
 `tools/buddy/`, builds Buddy from `tools/buddy/packages/opencode`, and installs the
 resulting binary as `$(INSTALL_DIR)/buddy` alongside `$(INSTALL_DIR)/djinn`.
+Use `djinn doctor buddy` to inspect this resolver without launching Buddy. Add
+`--session <session>` to include `runtime/buddy.json.command` for a specific folder
+session, or `--json` for scripts.
 When a bound Buddy session's recorded workspace/repo path no longer exists, Djinn
 promotes the folder capsule to a session-local Buddy workspace: it removes the
 stale workspace and `[context.repo]` binding from `djinn.toml`, creates a new Buddy
