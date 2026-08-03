@@ -125,7 +125,8 @@ in-tree Buddy launcher for session listing, creation, interactive launches, and
 final-response capture, but feature code calls backend operations instead of
 assembling Buddy CLI subcommands directly. This keeps the integration ready for a
 future in-process or protocol transport. The backend, bridge contract, command
-resolver, runtime metadata, and doctor formatting live in `crates/djinn-cli/src/buddy.rs`.
+resolver, runtime metadata, and doctor formatting live in `crates/djinn-cli/src/buddy.rs`;
+Buddy/Djinn session reconciliation lives in `crates/djinn-cli/src/buddy_consolidate.rs`.
 When `djinn -bs <folder-session>` opens a folder session without a Buddy binding,
 Djinn now asks the Buddy backend to create one before launch, records the resulting
 Buddy session id in `runtime/buddy.json`, and launches Buddy with that stable id. The
