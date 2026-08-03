@@ -50,7 +50,7 @@ const FOLDER_SESSION_COMPACT_END_MARKER: &str = "<!-- djinn:generated:end -->";
 const FOLDER_NATIVE_SESSION_DIR: &str = ".djinn";
 const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
 const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/buddy";
-const DEFAULT_BUDDY_COMMAND: &str = "buddy";
+const UNAVAILABLE_BUDDY_COMMAND_SOURCE: &str = "unavailable";
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -9754,7 +9754,7 @@ fn top_level_buddy_session_behavior(
 ) -> Result<TopLevelBuddySessionBehavior> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_bin = resolve_buddy_command(previous_runtime.as_ref());
+    let buddy_bin = resolve_buddy_command(previous_runtime.as_ref())?;
     let buddy_session = explicit_buddy_session.or_else(|| {
         previous_runtime
             .as_ref()
@@ -9784,12 +9784,13 @@ fn top_level_buddy_session_behavior(
     Ok(TopLevelBuddySessionBehavior { buddy_session, cwd })
 }
 
-fn resolve_buddy_command(previous_runtime: Option<&BuddyRuntimeState>) -> String {
+fn resolve_buddy_command(previous_runtime: Option<&BuddyRuntimeState>) -> Result<String> {
     resolve_buddy_command_from(
         env::var(DJINN_BUDDY_BIN_ENV).ok(),
         previous_runtime.and_then(|state| state.command.clone()),
         Some(&djinn_source_workspace_root()),
     )
+    .ok_or_else(|| anyhow::anyhow!(buddy_command_unavailable_message()))
 }
 
 fn buddy_command_doctor_report(session: Option<&Path>) -> Result<BuddyCommandDoctorReport> {
@@ -9822,13 +9823,18 @@ fn buddy_command_doctor_report_from(
     let command =
         resolve_buddy_command_from(env_command.clone(), runtime_command.clone(), workspace_root);
     let source = buddy_command_source(
-        &command,
+        command.as_deref(),
         env_command.as_deref(),
         runtime_command.as_deref(),
         in_tree.as_deref(),
     );
-    let (resolved_path, exists, executable) = buddy_command_status(&command);
-    let mut candidates = vec![
+    let command = command.unwrap_or_else(|| "<unavailable>".to_string());
+    let (resolved_path, exists, executable) = if source == UNAVAILABLE_BUDDY_COMMAND_SOURCE {
+        (None, false, false)
+    } else {
+        buddy_command_status(&command)
+    };
+    let candidates = vec![
         buddy_command_candidate(
             DJINN_BUDDY_BIN_ENV,
             env_command.as_deref(),
@@ -9851,13 +9857,6 @@ fn buddy_command_doctor_report_from(
             },
         },
     ];
-    if source == DEFAULT_BUDDY_COMMAND {
-        candidates.push(BuddyCommandDoctorCandidate {
-            source: DEFAULT_BUDDY_COMMAND.to_string(),
-            value: Some(DEFAULT_BUDDY_COMMAND.to_string()),
-            status: "selected".to_string(),
-        });
-    }
     let note = if source == "runtime/buddy.json.command" {
         "Session runtime command overrides the in-tree Buddy launcher.".to_string()
     } else if source == IN_TREE_BUDDY_COMMAND {
@@ -9865,7 +9864,7 @@ fn buddy_command_doctor_report_from(
     } else if source == DJINN_BUDDY_BIN_ENV {
         "Environment override is active.".to_string()
     } else {
-        "Djinn will fall back to `buddy`; prefer `make install` so tools/buddy/bin/buddy is available.".to_string()
+        buddy_command_unavailable_message()
     };
 
     BuddyCommandDoctorReport {
@@ -9882,11 +9881,14 @@ fn buddy_command_doctor_report_from(
 }
 
 fn buddy_command_source(
-    command: &str,
+    command: Option<&str>,
     env_command: Option<&str>,
     runtime_command: Option<&str>,
     in_tree_command: Option<&str>,
 ) -> String {
+    let Some(command) = command else {
+        return UNAVAILABLE_BUDDY_COMMAND_SOURCE.to_string();
+    };
     if env_command.map(str::trim).filter(|value| !value.is_empty()) == Some(command) {
         return DJINN_BUDDY_BIN_ENV.to_string();
     }
@@ -9900,7 +9902,13 @@ fn buddy_command_source(
     if in_tree_command == Some(command) {
         return IN_TREE_BUDDY_COMMAND.to_string();
     }
-    DEFAULT_BUDDY_COMMAND.to_string()
+    UNAVAILABLE_BUDDY_COMMAND_SOURCE.to_string()
+}
+
+fn buddy_command_unavailable_message() -> String {
+    format!(
+        "No Buddy command is configured; run `make install` from Djinn so {IN_TREE_BUDDY_COMMAND} exists, or set {DJINN_BUDDY_BIN_ENV} explicitly."
+    )
 }
 
 fn buddy_command_candidate(
@@ -9999,12 +10007,11 @@ fn resolve_buddy_command_from(
     env_command: Option<String>,
     runtime_command: Option<String>,
     workspace_root: Option<&Path>,
-) -> String {
+) -> Option<String> {
     env_command
         .filter(|value| !value.trim().is_empty())
         .or_else(|| runtime_command.filter(|value| !value.trim().is_empty()))
         .or_else(|| workspace_root.and_then(in_tree_buddy_command))
-        .unwrap_or_else(|| DEFAULT_BUDDY_COMMAND.to_string())
 }
 
 fn djinn_source_workspace_root() -> PathBuf {
@@ -10165,7 +10172,7 @@ fn resolve_buddy_session_reference_in_root(
 }
 
 fn run_plain_buddy_mode() -> Result<()> {
-    let buddy_bin = resolve_buddy_command(None);
+    let buddy_bin = resolve_buddy_command(None)?;
     let mut parts = buddy_bin.split_whitespace();
     let Some(program) = parts.next() else {
         bail!("Buddy command is empty");
@@ -10186,7 +10193,7 @@ fn run_interactive_session_buddy(
 ) -> Result<()> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_bin = resolve_buddy_command(previous_runtime.as_ref());
+    let buddy_bin = resolve_buddy_command(previous_runtime.as_ref())?;
     let mut parts = buddy_bin.split_whitespace();
     let Some(program) = parts.next() else {
         bail!("Buddy command is empty");
@@ -10317,11 +10324,15 @@ fn run_session_buddy(args: &SessionBuddyArgs) -> Result<SessionBuddyReport> {
     }
 
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_bin = args
+    let buddy_bin = if let Some(buddy_bin) = args
         .buddy_bin
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| resolve_buddy_command(previous_runtime.as_ref()));
+    {
+        buddy_bin
+    } else {
+        resolve_buddy_command(previous_runtime.as_ref())?
+    };
     let buddy_session = args.buddy_session.clone().or_else(|| {
         previous_runtime
             .as_ref()
@@ -10633,11 +10644,15 @@ fn consolidate_sessions_in_root(
     root: &Path,
     args: &SessionConsolidateArgs,
 ) -> Result<SessionConsolidateReport> {
-    let buddy_bin = args
+    let buddy_bin = if let Some(buddy_bin) = args
         .buddy_bin
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| resolve_buddy_command(None));
+    {
+        buddy_bin
+    } else {
+        resolve_buddy_command(None)?
+    };
     let buddy_sessions = buddy_list_sessions(&buddy_bin)?;
     let folder_report = list_folder_sessions_in_root(root, None)?;
     let mut entries = Vec::new();
@@ -24028,7 +24043,7 @@ mod tests {
     }
 
     #[test]
-    fn buddy_command_resolver_uses_env_runtime_in_tree_then_path() {
+    fn buddy_command_resolver_uses_env_runtime_in_tree_then_unavailable() {
         let root = std::env::temp_dir().join(format!(
             "djinn-buddy-command-resolver-test-{}",
             chrono::Local::now()
@@ -24046,19 +24061,19 @@ mod tests {
                 runtime.clone(),
                 Some(&root),
             ),
-            "env-buddy --debug"
+            Some("env-buddy --debug".to_string())
         );
         assert_eq!(
             resolve_buddy_command_from(Some("  ".to_string()), runtime.clone(), Some(&root)),
-            "runtime-buddy --flag"
+            Some("runtime-buddy --flag".to_string())
         );
         assert_eq!(
             resolve_buddy_command_from(None, Some("  ".to_string()), Some(&root)),
-            in_tree.display().to_string()
+            Some(in_tree.display().to_string())
         );
         assert_eq!(
             resolve_buddy_command_from(None, None, Some(&root.join("missing-root"))),
-            DEFAULT_BUDDY_COMMAND
+            None
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -24089,10 +24104,25 @@ mod tests {
         assert!(!in_tree_report
             .candidates
             .iter()
-            .any(|candidate| candidate.source == DEFAULT_BUDDY_COMMAND));
+            .any(|candidate| candidate.source == "buddy"));
         assert!(in_tree_report
             .note
             .contains("does not fall back to external Buddy"));
+
+        let unavailable_report = buddy_command_doctor_report_from(
+            None,
+            None,
+            Some(&root.join("missing-root")),
+            None,
+            None,
+        );
+        assert_eq!(unavailable_report.command, "<unavailable>");
+        assert_eq!(unavailable_report.source, UNAVAILABLE_BUDDY_COMMAND_SOURCE);
+        assert!(!unavailable_report.exists);
+        assert!(!unavailable_report.executable);
+        assert!(unavailable_report
+            .note
+            .contains("No Buddy command is configured"));
 
         let runtime_report = buddy_command_doctor_report_from(
             None,
