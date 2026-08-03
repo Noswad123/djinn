@@ -23167,35 +23167,13 @@ exit 2
         creates: Arc<Mutex<Vec<(String, String)>>>,
     }
 
-    impl BuddyBackend for TestBuddyBackend {
+    impl BuddySessionBackend for TestBuddyBackend {
         fn command(&self) -> &str {
             &self.command
         }
 
         fn runtime_command_override(&self) -> Option<String> {
             self.runtime_command_override.clone()
-        }
-
-        fn launch_plain(&self) -> Result<()> {
-            Ok(())
-        }
-
-        fn launch_interactive_session(
-            &self,
-            _buddy_session: Option<&str>,
-            _cwd: Option<&Path>,
-            _session_dir: &Path,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn final_response(
-            &self,
-            _buddy_session: Option<&str>,
-            _buddy_args: &[String],
-            _prompt: &str,
-        ) -> Result<String> {
-            Ok(String::new())
         }
 
         fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {

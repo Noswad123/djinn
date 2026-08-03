@@ -166,9 +166,7 @@ enum BuddyBridgeResponse {
     CreatedSession(BuddySessionCreateRecord),
 }
 
-pub(crate) trait BuddyBackend {
-    fn command(&self) -> &str;
-    fn runtime_command_override(&self) -> Option<String>;
+pub(crate) trait BuddyLauncher {
     fn launch_plain(&self) -> Result<()>;
     fn launch_interactive_session(
         &self,
@@ -182,6 +180,11 @@ pub(crate) trait BuddyBackend {
         buddy_args: &[String],
         prompt: &str,
     ) -> Result<String>;
+}
+
+pub(crate) trait BuddySessionBackend {
+    fn command(&self) -> &str;
+    fn runtime_command_override(&self) -> Option<String>;
     fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>>;
     fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord>;
 }
@@ -210,6 +213,14 @@ impl BuddyCliBackend {
                 source: EXPLICIT_BUDDY_COMMAND_SOURCE.to_string(),
             },
         }
+    }
+
+    fn command(&self) -> &str {
+        &self.resolution.command
+    }
+
+    fn runtime_command_override(&self) -> Option<String> {
+        self.resolution.runtime_command_override()
     }
 
     fn execute_bridge_request(&self, request: BuddyBridgeRequest) -> Result<BuddyBridgeResponse> {
@@ -338,6 +349,14 @@ impl BuddyBridgeBackend {
         }
     }
 
+    fn command(&self) -> &str {
+        self.cli.command()
+    }
+
+    fn runtime_command_override(&self) -> Option<String> {
+        self.cli.runtime_command_override()
+    }
+
     fn execute_wire_request(
         &self,
         request: BuddyBridgeWireRequest,
@@ -388,15 +407,7 @@ impl BuddyBridgeBackend {
     }
 }
 
-impl BuddyBackend for BuddyCliBackend {
-    fn command(&self) -> &str {
-        &self.resolution.command
-    }
-
-    fn runtime_command_override(&self) -> Option<String> {
-        self.resolution.runtime_command_override()
-    }
-
+impl BuddyLauncher for BuddyCliBackend {
     fn launch_plain(&self) -> Result<()> {
         match self.execute_bridge_request(BuddyBridgeRequest::LaunchPlain)? {
             BuddyBridgeResponse::Unit => Ok(()),
@@ -435,6 +446,16 @@ impl BuddyBackend for BuddyCliBackend {
             other => bail!("unexpected Buddy bridge response: {other:?}"),
         }
     }
+}
+
+impl BuddySessionBackend for BuddyCliBackend {
+    fn command(&self) -> &str {
+        self.command()
+    }
+
+    fn runtime_command_override(&self) -> Option<String> {
+        self.runtime_command_override()
+    }
 
     fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
         match self.execute_bridge_request(BuddyBridgeRequest::ListSessions)? {
@@ -454,15 +475,7 @@ impl BuddyBackend for BuddyCliBackend {
     }
 }
 
-impl BuddyBackend for BuddyBridgeBackend {
-    fn command(&self) -> &str {
-        self.cli.command()
-    }
-
-    fn runtime_command_override(&self) -> Option<String> {
-        self.cli.runtime_command_override()
-    }
-
+impl BuddyLauncher for BuddyBridgeBackend {
     fn launch_plain(&self) -> Result<()> {
         self.cli.launch_plain()
     }
@@ -484,6 +497,16 @@ impl BuddyBackend for BuddyBridgeBackend {
         prompt: &str,
     ) -> Result<String> {
         self.cli.final_response(buddy_session, buddy_args, prompt)
+    }
+}
+
+impl BuddySessionBackend for BuddyBridgeBackend {
+    fn command(&self) -> &str {
+        self.command()
+    }
+
+    fn runtime_command_override(&self) -> Option<String> {
+        self.runtime_command_override()
     }
 
     fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
@@ -1278,7 +1301,7 @@ pub(crate) fn safe_folder_session_slug(value: &str) -> String {
 }
 
 pub(crate) fn ensure_buddy_session_binding(
-    buddy_backend: &dyn BuddyBackend,
+    buddy_backend: &dyn BuddySessionBackend,
     input: BuddyBindingInput,
 ) -> Result<BuddySessionBinding> {
     let previous_runtime = input.previous_runtime.as_ref();
@@ -1336,7 +1359,7 @@ pub(crate) fn ensure_buddy_session_binding(
 
 pub(crate) fn promote_stale_buddy_workspace(
     session_dir: &Path,
-    buddy_backend: &dyn BuddyBackend,
+    buddy_backend: &dyn BuddySessionBackend,
     previous_runtime: Option<&BuddyRuntimeState>,
     stale_buddy_session: &str,
     stale_workspace: Option<&Path>,

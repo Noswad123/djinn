@@ -132,7 +132,8 @@ subcommands directly, keeping the integration ready for a future in-process
 transport. The backend, bridge contract, command resolver, runtime metadata, and
 doctor formatting live in `crates/djinn-cli/src/buddy.rs`; top-level interactive
 Buddy launch planning and summary sync live there as well. Buddy/Djinn session
-reconciliation lives in `crates/djinn-cli/src/buddy_consolidate.rs`.
+reconciliation lives in `crates/djinn-cli/src/buddy_consolidate.rs`. The current
+bridge JSON contract is documented in [`buddy-bridge-protocol.md`](./buddy-bridge-protocol.md).
 When `djinn -bs <folder-session>` opens a folder session without a Buddy binding,
 Djinn now asks the Buddy backend to create one before launch, records the resulting
 Buddy session id in `runtime/buddy.json`, and launches Buddy with that stable id. The
