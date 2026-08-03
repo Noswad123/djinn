@@ -9648,18 +9648,6 @@ fn session_open(args: SessionOpenArgs) -> Result<()> {
     open_editor_path(&target, args.editor)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TopLevelBuddySessionBehavior {
-    buddy_session: Option<String>,
-    cwd: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BuddyInteractiveSummarySync {
-    summary_path: PathBuf,
-    response_chars: usize,
-}
-
 fn session_buddy(args: SessionBuddyArgs) -> Result<()> {
     let report = run_session_buddy(&SessionBuddyRunArgs {
         dir: args.dir.clone(),
@@ -9679,8 +9667,7 @@ fn session_buddy(args: SessionBuddyArgs) -> Result<()> {
 fn run_top_level_buddy_mode(session: Option<PathBuf>) -> Result<()> {
     if let Some(session) = session {
         let (session_dir, buddy_session) = resolve_top_level_buddy_session_arg(session)?;
-        let behavior = top_level_buddy_session_behavior(&session_dir, buddy_session)?;
-        return run_interactive_session_buddy(&session_dir, behavior);
+        return run_top_level_folder_buddy_session(&session_dir, buddy_session);
     }
     run_plain_buddy_mode()
 }
@@ -9700,60 +9687,6 @@ fn resolve_top_level_buddy_session_arg(session: PathBuf) -> Result<(PathBuf, Opt
     Ok((session_dir, None))
 }
 
-fn top_level_buddy_session_behavior(
-    session_dir: &Path,
-    explicit_buddy_session: Option<String>,
-) -> Result<TopLevelBuddySessionBehavior> {
-    let runtime_path = session_dir.join("runtime/buddy.json");
-    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = BuddyCliBackend::resolved(previous_runtime.as_ref())?;
-    let buddy_session = explicit_buddy_session.or_else(|| {
-        previous_runtime
-            .as_ref()
-            .and_then(|state| state.buddy_session.clone())
-    });
-    let manifest = read_folder_session_manifest(session_dir)?;
-    let requested_cwd = session_manifest_workspace_path(manifest.as_ref());
-    if buddy_session.is_none() && session_dir.is_dir() {
-        let binding = ensure_buddy_session_binding(
-            &buddy_backend,
-            BuddyBindingInput {
-                session_dir: session_dir.to_path_buf(),
-                title: manifest
-                    .as_ref()
-                    .and_then(|manifest| manifest.title.clone()),
-                requested_workspace: requested_cwd.clone(),
-                previous_runtime: previous_runtime.clone(),
-            },
-        )?;
-        return Ok(TopLevelBuddySessionBehavior {
-            buddy_session: Some(binding.buddy_session),
-            cwd: Some(binding.repo_path),
-        });
-    }
-    let cwd = match (&buddy_session, requested_cwd) {
-        (Some(_), Some(path)) if path.is_dir() => Some(path),
-        (Some(id), Some(path)) => {
-            clear_folder_session_workspace(session_dir)?;
-            let promoted = promote_stale_buddy_workspace(
-                session_dir,
-                &buddy_backend,
-                previous_runtime.as_ref(),
-                id,
-                Some(&path),
-            )?;
-            return Ok(TopLevelBuddySessionBehavior {
-                buddy_session: Some(promoted),
-                cwd: Some(session_dir.to_path_buf()),
-            });
-        }
-        (Some(_), None) => Some(session_dir.to_path_buf()),
-        (None, Some(path)) if path.is_dir() => Some(path),
-        _ => None,
-    };
-    Ok(TopLevelBuddySessionBehavior { buddy_session, cwd })
-}
-
 fn buddy_command_doctor_report(session: Option<&Path>) -> Result<BuddyCommandDoctorReport> {
     let session_dir = session.map(resolve_session_dir).transpose()?;
     let runtime_path = session_dir
@@ -9771,38 +9704,6 @@ fn buddy_command_doctor_report(session: Option<&Path>) -> Result<BuddyCommandDoc
         session_dir.as_deref(),
         runtime_path.as_deref(),
     ))
-}
-
-fn clear_folder_session_workspace(session_dir: &Path) -> Result<()> {
-    let manifest_path = session_dir.join("djinn.toml");
-    if !manifest_path.exists() {
-        return Ok(());
-    }
-    let raw = fs::read_to_string(&manifest_path)
-        .with_context(|| format!("reading {}", manifest_path.display()))?;
-    let mut output = Vec::new();
-    let mut current_section: Option<String> = None;
-    let mut skip_section = false;
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            let section = trimmed.trim_matches(['[', ']']).to_string();
-            current_section = Some(section.clone());
-            skip_section = section == "context.repo";
-            if skip_section {
-                continue;
-            }
-        }
-        if skip_section {
-            continue;
-        }
-        if current_section.is_none() && trimmed.starts_with("workspace =") {
-            continue;
-        }
-        output.push(line.to_string());
-    }
-    fs::write(&manifest_path, ensure_trailing_newline(&output.join("\n")))
-        .with_context(|| format!("writing {}", manifest_path.display()))
 }
 
 fn resolve_buddy_session_reference_in_root(
@@ -9862,115 +9763,6 @@ fn resolve_buddy_session_reference_in_root(
             matches.len()
         ),
     }
-}
-
-fn run_plain_buddy_mode() -> Result<()> {
-    BuddyCliBackend::resolved(None)?.launch_plain()
-}
-
-fn run_interactive_session_buddy(
-    session_dir: &Path,
-    behavior: TopLevelBuddySessionBehavior,
-) -> Result<()> {
-    let runtime_path = session_dir.join("runtime/buddy.json");
-    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = BuddyCliBackend::resolved(previous_runtime.as_ref())?;
-    buddy_backend.launch_interactive_session(
-        behavior.buddy_session.as_deref(),
-        behavior.cwd.as_deref(),
-        session_dir,
-    )?;
-
-    let summary_sync = refresh_folder_summary_from_latest_event(session_dir)?;
-
-    if let Some(buddy_session) = behavior.buddy_session {
-        let previous_args = previous_runtime
-            .as_ref()
-            .map(|state| state.args.clone())
-            .unwrap_or_default();
-        write_buddy_runtime_state(
-            &runtime_path,
-            &BuddyRuntimeState {
-                buddy_session: Some(buddy_session),
-                stale_buddy_sessions: previous_runtime
-                    .as_ref()
-                    .map(|state| state.stale_buddy_sessions.clone())
-                    .unwrap_or_default(),
-                command: buddy_backend.runtime_command_override(),
-                args: previous_args,
-                last_run_at: Some(chrono::Utc::now().to_rfc3339()),
-                last_prompt_chars: previous_runtime
-                    .as_ref()
-                    .map(|state| state.last_prompt_chars)
-                    .unwrap_or_default(),
-                last_response_chars: summary_sync
-                    .as_ref()
-                    .map(|sync| sync.response_chars)
-                    .unwrap_or_else(|| {
-                        previous_runtime
-                            .as_ref()
-                            .map(|state| state.last_response_chars)
-                            .unwrap_or_default()
-                    }),
-            },
-        )?;
-    }
-
-    eprint!(
-        "{}",
-        format_interactive_buddy_sync_status(session_dir, summary_sync.as_ref())
-    );
-
-    Ok(())
-}
-
-fn format_interactive_buddy_sync_status(
-    session_dir: &Path,
-    summary_sync: Option<&BuddyInteractiveSummarySync>,
-) -> String {
-    let mut lines = vec!["Buddy session completed.".to_string()];
-    match summary_sync {
-        Some(sync) => lines.push(format!(
-            "Synced {} from latest events.jsonl assistant message ({} chars).",
-            sync.summary_path.display(),
-            sync.response_chars
-        )),
-        None => lines.push(format!(
-            "No valid event pair found in {}; summary.md unchanged.",
-            session_dir.join("events.jsonl").display()
-        )),
-    }
-    lines.join("\n") + "\n"
-}
-
-fn refresh_folder_summary_from_latest_event(
-    session_dir: &Path,
-) -> Result<Option<BuddyInteractiveSummarySync>> {
-    let events_path = session_dir.join("events.jsonl");
-    if !events_path.is_file() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&events_path)
-        .with_context(|| format!("reading {}", events_path.display()))?;
-    let mut issues = Vec::new();
-    let event_turns = read_event_turn_pairs(&events_path, &raw, &mut issues);
-    if !issues.is_empty() {
-        return Ok(None);
-    }
-    let Some(latest) = event_turns.last() else {
-        return Ok(None);
-    };
-    if latest.response.trim().is_empty() {
-        return Ok(None);
-    }
-
-    let summary_path = session_dir.join("summary.md");
-    fs::write(&summary_path, ensure_trailing_newline(&latest.response))
-        .with_context(|| format!("writing {}", summary_path.display()))?;
-    Ok(Some(BuddyInteractiveSummarySync {
-        summary_path,
-        response_chars: latest.response.chars().count(),
-    }))
 }
 
 fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
