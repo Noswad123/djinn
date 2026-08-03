@@ -1,9 +1,11 @@
 import { Effect } from "effect"
 import { cmd } from "./cmd"
+import { SessionID } from "../../session/schema"
 
 type BridgeRequest =
   | { type: "list_sessions" }
   | { type: "create_session"; title: string; repo_path: string }
+  | { type: "delete_session"; session_id: string }
 
 export const DjinnBridgeCommand = cmd({
   command: "djinn-bridge",
@@ -37,6 +39,20 @@ async function handleBridgeRequest(request: BridgeRequest) {
           projectId: session.projectID,
           directory: session.directory,
         })),
+      }
+    })
+  }
+
+  if (request.type === "delete_session") {
+    return withInstance(process.cwd(), async (runtime) => {
+      await runtime.AppRuntime.runPromise(
+        runtime.Session.Service.use((svc) => svc.remove(SessionID.make(request.session_id))).pipe(
+          Effect.provideService(runtime.InstanceRef, runtime.ctx),
+        ),
+      )
+      return {
+        type: "deleted_session",
+        session_id: request.session_id,
       }
     })
   }
@@ -83,8 +99,14 @@ async function loadBridgeRuntime(directory: string) {
 }
 
 function parseBridgeRequest(raw: string): BridgeRequest {
-  const parsed = JSON.parse(raw) as { type?: unknown; title?: unknown; repo_path?: unknown }
+  const parsed = JSON.parse(raw) as { type?: unknown; title?: unknown; repo_path?: unknown; session_id?: unknown }
   if (parsed.type === "list_sessions") return { type: "list_sessions" }
+  if (parsed.type === "delete_session") {
+    if (typeof parsed.session_id !== "string" || !parsed.session_id.trim()) {
+      throw new Error("Bridge request session_id is required")
+    }
+    return { type: "delete_session", session_id: parsed.session_id.trim() }
+  }
   if (parsed.type !== "create_session") throw new Error("Unsupported Djinn bridge request type")
   if (typeof parsed.title !== "string" || !parsed.title.trim()) throw new Error("Bridge request title is required")
   if (typeof parsed.repo_path !== "string" || !parsed.repo_path.trim()) throw new Error("Bridge request repo_path is required")

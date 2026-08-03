@@ -156,6 +156,10 @@ enum BuddyBridgeRequest {
         title: String,
         repo_path: String,
     },
+    #[allow(dead_code)]
+    DeleteSession {
+        session_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +168,7 @@ enum BuddyBridgeResponse {
     FinalResponse(String),
     Sessions(Vec<BuddySessionListRecord>),
     CreatedSession(BuddySessionCreateRecord),
+    DeletedSession(String),
 }
 
 pub(crate) trait BuddyLauncher {
@@ -187,6 +192,8 @@ pub(crate) trait BuddySessionBackend {
     fn runtime_command_override(&self) -> Option<String>;
     fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>>;
     fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord>;
+    #[allow(dead_code)]
+    fn delete_session(&self, session_id: &str) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,6 +339,10 @@ impl BuddyCliBackend {
                     ],
                 )?))
             }
+            BuddyBridgeRequest::DeleteSession { session_id } => {
+                run_buddy_status_command(self.command(), &["session", "delete", &session_id])?;
+                Ok(BuddyBridgeResponse::DeletedSession(session_id))
+            }
         }
     }
 }
@@ -473,6 +484,15 @@ impl BuddySessionBackend for BuddyCliBackend {
             other => bail!("unexpected Buddy bridge response: {other:?}"),
         }
     }
+
+    fn delete_session(&self, session_id: &str) -> Result<()> {
+        match self.execute_bridge_request(BuddyBridgeRequest::DeleteSession {
+            session_id: session_id.to_string(),
+        })? {
+            BuddyBridgeResponse::DeletedSession(_) => Ok(()),
+            other => bail!("unexpected Buddy bridge response: {other:?}"),
+        }
+    }
 }
 
 impl BuddyLauncher for BuddyBridgeBackend {
@@ -549,6 +569,24 @@ impl BuddySessionBackend for BuddyBridgeBackend {
             Err(bridge_error) => self.cli.create_session(title, repo_path).with_context(|| {
                 format!(
                     "Buddy bridge create_session failed ({bridge_error}); CLI fallback also failed"
+                )
+            }),
+        }
+    }
+
+    fn delete_session(&self, session_id: &str) -> Result<()> {
+        match self.execute_wire_request(BuddyBridgeWireRequest::DeleteSession {
+            session_id: session_id.to_string(),
+        }) {
+            Ok(BuddyBridgeWireResponse::DeletedSession { .. }) => Ok(()),
+            Ok(other) => self.cli.delete_session(session_id).with_context(|| {
+                format!(
+                    "Buddy bridge delete_session returned unexpected response ({other:?}); CLI fallback also failed"
+                )
+            }),
+            Err(bridge_error) => self.cli.delete_session(session_id).with_context(|| {
+                format!(
+                    "Buddy bridge delete_session failed ({bridge_error}); CLI fallback also failed"
                 )
             }),
         }
@@ -1463,7 +1501,14 @@ struct BuddySessionListJsonRecord {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BuddyBridgeWireRequest {
     ListSessions,
-    CreateSession { title: String, repo_path: String },
+    CreateSession {
+        title: String,
+        repo_path: String,
+    },
+    #[allow(dead_code)]
+    DeleteSession {
+        session_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -1474,6 +1519,9 @@ enum BuddyBridgeWireResponse {
     },
     CreatedSession {
         session: BuddySessionCreateRecord,
+    },
+    DeletedSession {
+        session_id: String,
     },
 }
 
@@ -1518,6 +1566,21 @@ fn run_buddy_json_command<T>(buddy_bin: &str, args: &[&str]) -> Result<T>
 where
     T: for<'de> Deserialize<'de>,
 {
+    let output = run_buddy_output_command(buddy_bin, args)?;
+    serde_json::from_slice(&output.stdout).with_context(|| {
+        format!(
+            "parsing strict Buddy JSON from `{}`",
+            buddy_json_command_hint(buddy_bin, args)
+        )
+    })
+}
+
+fn run_buddy_status_command(buddy_bin: &str, args: &[&str]) -> Result<()> {
+    let _ = run_buddy_output_command(buddy_bin, args)?;
+    Ok(())
+}
+
+fn run_buddy_output_command(buddy_bin: &str, args: &[&str]) -> Result<std::process::Output> {
     let mut parts = buddy_bin.split_whitespace();
     let Some(program) = parts.next() else {
         bail!("Buddy command is empty");
@@ -1545,12 +1608,7 @@ where
             }
         );
     }
-    serde_json::from_slice(&output.stdout).with_context(|| {
-        format!(
-            "parsing strict Buddy JSON from `{}`",
-            buddy_json_command_hint(buddy_bin, args)
-        )
-    })
+    Ok(output)
 }
 
 fn buddy_json_command_hint(buddy_bin: &str, args: &[&str]) -> String {

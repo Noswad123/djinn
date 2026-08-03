@@ -22762,6 +22762,12 @@ JSON
 JSON
       exit 0
       ;;
+    *delete_session*)
+      cat <<'JSON'
+{"type":"deleted_session","session_id":"bud_created_bridge"}
+JSON
+      exit 0
+      ;;
   esac
 fi
 printf 'legacy fallback unexpectedly used: %s\n' "$*" >&2
@@ -22778,6 +22784,7 @@ exit 2
         let created = backend
             .create_session("Created Through Bridge", "/tmp/created")
             .unwrap();
+        backend.delete_session("bud_created_bridge").unwrap();
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "bud_bridge");
@@ -22789,8 +22796,10 @@ exit 2
         let requests = fs::read_to_string(&request_log).unwrap();
         assert!(requests.contains(r#""type":"list_sessions""#));
         assert!(requests.contains(r#""type":"create_session""#));
+        assert!(requests.contains(r#""type":"delete_session""#));
         assert!(requests.contains(r#""title":"Created Through Bridge""#));
         assert!(requests.contains(r#""repo_path":"/tmp/created""#));
+        assert!(requests.contains(r#""session_id":"bud_created_bridge""#));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -22826,6 +22835,10 @@ if [ "$1" = "session" ] && [ "$2" = "create" ]; then
   printf '{"id":"bud_legacy_created","title":"%s","repo_path":"%s","created_at":"2026-08-01T12:00:00Z"}\n' "$6" "$8"
   exit 0
 fi
+if [ "$1" = "session" ] && [ "$2" = "delete" ]; then
+  printf 'legacy-delete:%s\n' "$3" >> '__FALLBACK_LOG__'
+  exit 0
+fi
 echo unexpected buddy args: "$@" >&2
 exit 2
 "#
@@ -22840,6 +22853,7 @@ exit 2
         let created = backend
             .create_session("Fallback Title", "/tmp/fallback")
             .unwrap();
+        backend.delete_session("bud_legacy_created").unwrap();
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "bud_legacy");
@@ -22849,7 +22863,7 @@ exit 2
         assert_eq!(created.repo_path, "/tmp/fallback");
         assert_eq!(
             fs::read_to_string(&fallback_log).unwrap(),
-            "legacy-list\nlegacy-create:Fallback Title:/tmp/fallback\n"
+            "legacy-list\nlegacy-create:Fallback Title:/tmp/fallback\nlegacy-delete:bud_legacy_created\n"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -23191,6 +23205,10 @@ exit 2
                 repo_path: repo_path.to_string(),
                 created_at: "2026-08-01T12:00:00Z".to_string(),
             })
+        }
+
+        fn delete_session(&self, _session_id: &str) -> Result<()> {
+            Ok(())
         }
     }
 
