@@ -8,10 +8,12 @@ set -eu
 #
 # Resolution order inside this wrapper:
 #   1. DJINN_TOOLS_BUDDY_TARGET, when set (may include command arguments).
-#   2. In-repo Buddy build/source layouts under tools/buddy/.
-#   3. A sibling Buddy checkout's built binary or package launcher.
-#   4. The user's installed ~/.local/bin/buddy.
-#   5. buddy on PATH, unless PATH resolves back to this wrapper.
+#   2. In-repo Buddy built binary under tools/buddy/.
+#   3. In-repo Buddy TypeScript source under tools/buddy/packages/opencode/.
+#   4. In-repo Buddy package launcher under tools/buddy/packages/opencode/.
+#   5. A sibling Buddy checkout's built binary or package launcher.
+#   6. The user's installed ~/.local/bin/buddy.
+#   7. buddy on PATH, unless PATH resolves back to this wrapper.
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 buddy_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
@@ -27,8 +29,38 @@ fi
 
 for candidate in \
   "$buddy_root"/packages/opencode/dist/buddy-*/bin/buddy \
-  "$buddy_root/packages/opencode/bin/buddy" \
-  "$buddy_root"/dist/buddy-*/bin/buddy \
+  "$buddy_root"/dist/buddy-*/bin/buddy
+do
+  if [ -x "$candidate" ]; then
+    exec "$candidate" "$@"
+  fi
+done
+
+source_pkg="$buddy_root/packages/opencode"
+source_entry="$source_pkg/src/index.ts"
+if [ -d "$buddy_root/node_modules" ] || [ -d "$source_pkg/node_modules" ]; then
+  deps_ready=1
+else
+  deps_ready=0
+fi
+
+if [ -f "$source_entry" ] && [ "$deps_ready" = 1 ]; then
+  bun_bin="${DJINN_TOOLS_BUDDY_BUN:-}"
+  if [ "$bun_bin" = "" ]; then
+    bun_bin=$(command -v bun 2>/dev/null || true)
+  fi
+  if [ "$bun_bin" != "" ]; then
+    cd "$source_pkg"
+    exec "$bun_bin" run --conditions=browser ./src/index.ts "$@"
+  fi
+fi
+
+source_launcher="$buddy_root/packages/opencode/bin/buddy"
+if [ "$deps_ready" = 1 ] && [ -x "$source_launcher" ]; then
+  exec "$source_launcher" "$@"
+fi
+
+for candidate in \
   "$repo_root"/../buddy/packages/opencode/dist/buddy-*/bin/buddy \
   "$repo_root/../buddy/packages/opencode/bin/buddy" \
   "$HOME/.local/bin/buddy"
