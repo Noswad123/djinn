@@ -9828,7 +9828,7 @@ fn buddy_command_doctor_report_from(
         in_tree.as_deref(),
     );
     let (resolved_path, exists, executable) = buddy_command_status(&command);
-    let candidates = vec![
+    let mut candidates = vec![
         buddy_command_candidate(
             DJINN_BUDDY_BIN_ENV,
             env_command.as_deref(),
@@ -9850,20 +9850,18 @@ fn buddy_command_doctor_report_from(
                 "missing".to_string()
             },
         },
-        BuddyCommandDoctorCandidate {
+    ];
+    if source == DEFAULT_BUDDY_COMMAND {
+        candidates.push(BuddyCommandDoctorCandidate {
             source: DEFAULT_BUDDY_COMMAND.to_string(),
             value: Some(DEFAULT_BUDDY_COMMAND.to_string()),
-            status: if source == DEFAULT_BUDDY_COMMAND {
-                "selected".to_string()
-            } else {
-                "fallback".to_string()
-            },
-        },
-    ];
+            status: "selected".to_string(),
+        });
+    }
     let note = if source == "runtime/buddy.json.command" {
         "Session runtime command overrides the in-tree Buddy launcher.".to_string()
     } else if source == IN_TREE_BUDDY_COMMAND {
-        "Djinn will use its in-tree Buddy launcher.".to_string()
+        "Djinn will use its in-tree Buddy launcher; the launcher itself does not fall back to external Buddy.".to_string()
     } else if source == DJINN_BUDDY_BIN_ENV {
         "Environment override is active.".to_string()
     } else {
@@ -24088,6 +24086,13 @@ mod tests {
                 .unwrap()
                 .contains("source: tools/buddy/bin/buddy")
         );
+        assert!(!in_tree_report
+            .candidates
+            .iter()
+            .any(|candidate| candidate.source == DEFAULT_BUDDY_COMMAND));
+        assert!(in_tree_report
+            .note
+            .contains("does not fall back to external Buddy"));
 
         let runtime_report = buddy_command_doctor_report_from(
             None,

@@ -112,8 +112,9 @@ legitimate repeated prompts. Use `--dry-run` to preview the
 lower-level Buddy command without launching Buddy or mutating session files.
 Djinn resolves the Buddy command in one place: explicit `--buddy-bin` where a
 subcommand has one, then `DJINN_BUDDY_BIN`, then `runtime/buddy.json.command` for
-session-scoped launches, then an in-tree `tools/buddy/bin/buddy` launcher when present, and
-finally `buddy` on `PATH`.
+session-scoped launches, then the in-tree `tools/buddy/bin/buddy` launcher. A bare
+`buddy` on `PATH` is only a last-resort resolver fallback when the in-tree launcher
+is unavailable.
 The checked-in `tools/buddy/bin/buddy` wrapper is the migration seam for moving
 Buddy into Djinn while keeping `tools/buddy/` available as Buddy's future in-repo
 home: it honors `DJINN_TOOLS_BUDDY_TARGET`, then tries in-repo Buddy builds under
@@ -126,9 +127,10 @@ source-run path.
 `make install` now installs both `djinn` and `buddy`: it runs `bun install` under
 `tools/buddy/`, builds Buddy from `tools/buddy/packages/opencode`, and installs the
 resulting binary as `$(INSTALL_DIR)/buddy` alongside `$(INSTALL_DIR)/djinn`.
-Use `djinn doctor buddy` to inspect this resolver without launching Buddy. Add
-`--session <session>` to include `runtime/buddy.json.command` for a specific folder
-session, or `--json` for scripts.
+Use `djinn doctor buddy` to inspect this resolver without launching Buddy. Normal
+output shows the configured resolver candidates and omits the bare `buddy` fallback
+unless that fallback is actually selected. Add `--session <session>` to include
+`runtime/buddy.json.command` for a specific folder session, or `--json` for scripts.
 When a bound Buddy session's recorded workspace/repo path no longer exists, Djinn
 promotes the folder capsule to a session-local Buddy workspace: it removes the
 stale workspace and `[context.repo]` binding from `djinn.toml`, creates a new Buddy
