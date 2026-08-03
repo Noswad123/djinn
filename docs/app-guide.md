@@ -118,10 +118,11 @@ The checked-in `tools/buddy/bin/buddy` wrapper is the migration seam for moving
 Buddy into Djinn while keeping `tools/buddy/` available as Buddy's future in-repo
 home: it honors `DJINN_TOOLS_BUDDY_TARGET`, then tries in-repo Buddy builds under
 `tools/buddy/`, then runs `tools/buddy/packages/opencode/src/index.ts` with Bun
-when the source tree is present, then tries the in-repo package launcher, then a
-sibling Buddy checkout's built binary or package launcher, then `~/.local/bin/buddy`,
-then `buddy` on `PATH` while avoiding recursion back into the wrapper. Set
-`DJINN_TOOLS_BUDDY_BUN` to override the Bun executable used for the source-run path.
+when the source tree and dependencies are present, then tries the in-repo package
+launcher. It intentionally does not fall back to a sibling checkout, `~/.local/bin`,
+or `buddy` on `PATH`; use `DJINN_TOOLS_BUDDY_TARGET` for an explicit temporary
+override. Set `DJINN_TOOLS_BUDDY_BUN` to override the Bun executable used for the
+source-run path.
 `make install` now installs both `djinn` and `buddy`: it runs `bun install` under
 `tools/buddy/`, builds Buddy from `tools/buddy/packages/opencode`, and installs the
 resulting binary as `$(INSTALL_DIR)/buddy` alongside `$(INSTALL_DIR)/djinn`.
