@@ -65,6 +65,20 @@ impl BuddyCommandResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BuddyBindingInput {
+    pub(crate) session_dir: PathBuf,
+    pub(crate) title: Option<String>,
+    pub(crate) requested_workspace: Option<PathBuf>,
+    pub(crate) previous_runtime: Option<BuddyRuntimeState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BuddySessionBinding {
+    pub(crate) buddy_session: String,
+    pub(crate) repo_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum BuddyBridgeRequest {
     LaunchPlain,
     LaunchInteractive {
@@ -577,6 +591,153 @@ pub(crate) fn write_buddy_runtime_state(path: &Path, state: &BuddyRuntimeState) 
     }
     fs::write(path, serde_json::to_string_pretty(state)? + "\n")
         .with_context(|| format!("writing {}", path.display()))
+}
+
+pub(crate) fn ensure_buddy_session_binding(
+    buddy_backend: &dyn BuddyBackend,
+    input: BuddyBindingInput,
+) -> Result<BuddySessionBinding> {
+    let previous_runtime = input.previous_runtime.as_ref();
+    if let Some(existing) = previous_runtime
+        .and_then(|state| state.buddy_session.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(BuddySessionBinding {
+            buddy_session: existing.to_string(),
+            repo_path: buddy_binding_repo_path(
+                &input.session_dir,
+                input.requested_workspace.as_deref(),
+            ),
+        });
+    }
+
+    let title = buddy_binding_title(&input.session_dir, input.title.as_deref());
+    let repo_path =
+        buddy_binding_repo_path(&input.session_dir, input.requested_workspace.as_deref());
+    let repo = repo_path.display().to_string();
+    let created = buddy_backend
+        .create_session(&title, &repo)
+        .with_context(|| {
+            format!(
+                "creating Buddy session binding for {}",
+                input.session_dir.display()
+            )
+        })?;
+    write_buddy_runtime_state(
+        &input.session_dir.join("runtime/buddy.json"),
+        &BuddyRuntimeState {
+            buddy_session: Some(created.id.clone()),
+            stale_buddy_sessions: previous_runtime
+                .map(|state| state.stale_buddy_sessions.clone())
+                .unwrap_or_default(),
+            command: buddy_backend.runtime_command_override(),
+            args: previous_runtime
+                .map(|state| state.args.clone())
+                .unwrap_or_default(),
+            last_run_at: previous_runtime.and_then(|state| state.last_run_at.clone()),
+            last_prompt_chars: previous_runtime
+                .map(|state| state.last_prompt_chars)
+                .unwrap_or_default(),
+            last_response_chars: previous_runtime
+                .map(|state| state.last_response_chars)
+                .unwrap_or_default(),
+        },
+    )?;
+    Ok(BuddySessionBinding {
+        buddy_session: created.id,
+        repo_path,
+    })
+}
+
+pub(crate) fn promote_stale_buddy_workspace(
+    session_dir: &Path,
+    buddy_backend: &dyn BuddyBackend,
+    previous_runtime: Option<&BuddyRuntimeState>,
+    stale_buddy_session: &str,
+    stale_workspace: Option<&Path>,
+) -> Result<String> {
+    let title = session_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("djinn-session");
+    let repo = session_dir.display().to_string();
+    let created = buddy_backend
+        .create_session(title, &repo)
+        .with_context(|| {
+            format!(
+                "promoting stale Buddy binding for {} into session-local workspace {}",
+                stale_workspace
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                session_dir.display()
+            )
+        })?;
+
+    let mut stale_ids = previous_runtime
+        .map(|state| state.stale_buddy_sessions.clone())
+        .unwrap_or_default();
+    if !stale_buddy_session.trim().is_empty()
+        && !stale_ids.iter().any(|id| id == stale_buddy_session)
+    {
+        stale_ids.push(stale_buddy_session.to_string());
+    }
+
+    write_buddy_runtime_state(
+        &session_dir.join("runtime/buddy.json"),
+        &BuddyRuntimeState {
+            buddy_session: Some(created.id.clone()),
+            stale_buddy_sessions: stale_ids,
+            command: buddy_backend.runtime_command_override(),
+            args: previous_runtime
+                .map(|state| state.args.clone())
+                .unwrap_or_default(),
+            last_run_at: None,
+            last_prompt_chars: previous_runtime
+                .map(|state| state.last_prompt_chars)
+                .unwrap_or_default(),
+            last_response_chars: previous_runtime
+                .map(|state| state.last_response_chars)
+                .unwrap_or_default(),
+        },
+    )?;
+    Ok(created.id)
+}
+
+fn buddy_binding_title(session_dir: &Path, title: Option<&str>) -> String {
+    title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            session_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(folder_session_display_name)
+        })
+        .unwrap_or_else(|| "Djinn session".to_string())
+}
+
+fn buddy_binding_repo_path(session_dir: &Path, requested_workspace: Option<&Path>) -> PathBuf {
+    requested_workspace
+        .filter(|path| path.is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| session_dir.to_path_buf())
+}
+
+fn folder_session_display_name(name: &str) -> String {
+    name.replace(['_', '-'], " ")
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

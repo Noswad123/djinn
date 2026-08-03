@@ -9653,12 +9653,6 @@ struct TopLevelBuddySessionBehavior {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BuddySessionBinding {
-    buddy_session: String,
-    repo_path: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct BuddyInteractiveSummarySync {
     summary_path: PathBuf,
     response_chars: usize,
@@ -9732,11 +9726,15 @@ fn top_level_buddy_session_behavior(
     let requested_cwd = session_manifest_workspace_path(manifest.as_ref());
     if buddy_session.is_none() && session_dir.is_dir() {
         let binding = ensure_buddy_session_binding(
-            session_dir,
             &buddy_backend,
-            previous_runtime.as_ref(),
-            manifest.as_ref(),
-            requested_cwd.as_deref(),
+            BuddyBindingInput {
+                session_dir: session_dir.to_path_buf(),
+                title: manifest
+                    .as_ref()
+                    .and_then(|manifest| manifest.title.clone()),
+                requested_workspace: requested_cwd.clone(),
+                previous_runtime: previous_runtime.clone(),
+            },
         )?;
         return Ok(TopLevelBuddySessionBehavior {
             buddy_session: Some(binding.buddy_session),
@@ -9746,6 +9744,7 @@ fn top_level_buddy_session_behavior(
     let cwd = match (&buddy_session, requested_cwd) {
         (Some(_), Some(path)) if path.is_dir() => Some(path),
         (Some(id), Some(path)) => {
+            clear_folder_session_workspace(session_dir)?;
             let promoted = promote_stale_buddy_workspace(
                 session_dir,
                 &buddy_backend,
@@ -9782,138 +9781,6 @@ fn buddy_command_doctor_report(session: Option<&Path>) -> Result<BuddyCommandDoc
         session_dir.as_deref(),
         runtime_path.as_deref(),
     ))
-}
-
-fn ensure_buddy_session_binding(
-    session_dir: &Path,
-    buddy_backend: &dyn BuddyBackend,
-    previous_runtime: Option<&BuddyRuntimeState>,
-    manifest: Option<&FolderSessionManifest>,
-    requested_workspace: Option<&Path>,
-) -> Result<BuddySessionBinding> {
-    if let Some(existing) = previous_runtime
-        .and_then(|state| state.buddy_session.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return Ok(BuddySessionBinding {
-            buddy_session: existing.to_string(),
-            repo_path: buddy_binding_repo_path(session_dir, requested_workspace),
-        });
-    }
-
-    let title = buddy_binding_title(session_dir, manifest);
-    let repo_path = buddy_binding_repo_path(session_dir, requested_workspace);
-    let repo = repo_path.display().to_string();
-    let created = buddy_backend
-        .create_session(&title, &repo)
-        .with_context(|| {
-            format!(
-                "creating Buddy session binding for {}",
-                session_dir.display()
-            )
-        })?;
-    write_buddy_runtime_state(
-        &session_dir.join("runtime/buddy.json"),
-        &BuddyRuntimeState {
-            buddy_session: Some(created.id.clone()),
-            stale_buddy_sessions: previous_runtime
-                .map(|state| state.stale_buddy_sessions.clone())
-                .unwrap_or_default(),
-            command: buddy_backend.runtime_command_override(),
-            args: previous_runtime
-                .map(|state| state.args.clone())
-                .unwrap_or_default(),
-            last_run_at: previous_runtime.and_then(|state| state.last_run_at.clone()),
-            last_prompt_chars: previous_runtime
-                .map(|state| state.last_prompt_chars)
-                .unwrap_or_default(),
-            last_response_chars: previous_runtime
-                .map(|state| state.last_response_chars)
-                .unwrap_or_default(),
-        },
-    )?;
-    Ok(BuddySessionBinding {
-        buddy_session: created.id,
-        repo_path,
-    })
-}
-
-fn buddy_binding_title(session_dir: &Path, manifest: Option<&FolderSessionManifest>) -> String {
-    manifest
-        .and_then(|manifest| manifest.title.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            session_dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(folder_session_display_name)
-        })
-        .unwrap_or_else(|| "Djinn session".to_string())
-}
-
-fn buddy_binding_repo_path(session_dir: &Path, requested_workspace: Option<&Path>) -> PathBuf {
-    requested_workspace
-        .filter(|path| path.is_dir())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| session_dir.to_path_buf())
-}
-
-fn promote_stale_buddy_workspace(
-    session_dir: &Path,
-    buddy_backend: &dyn BuddyBackend,
-    previous_runtime: Option<&BuddyRuntimeState>,
-    stale_buddy_session: &str,
-    stale_workspace: Option<&Path>,
-) -> Result<String> {
-    clear_folder_session_workspace(session_dir)?;
-    let title = session_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("djinn-session");
-    let repo = session_dir.display().to_string();
-    let created = buddy_backend
-        .create_session(title, &repo)
-        .with_context(|| {
-            format!(
-                "promoting stale Buddy binding for {} into session-local workspace {}",
-                stale_workspace
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "<none>".to_string()),
-                session_dir.display()
-            )
-        })?;
-
-    let mut stale_ids = previous_runtime
-        .map(|state| state.stale_buddy_sessions.clone())
-        .unwrap_or_default();
-    if !stale_buddy_session.trim().is_empty()
-        && !stale_ids.iter().any(|id| id == stale_buddy_session)
-    {
-        stale_ids.push(stale_buddy_session.to_string());
-    }
-
-    write_buddy_runtime_state(
-        &session_dir.join("runtime/buddy.json"),
-        &BuddyRuntimeState {
-            buddy_session: Some(created.id.clone()),
-            stale_buddy_sessions: stale_ids,
-            command: buddy_backend.runtime_command_override(),
-            args: previous_runtime
-                .map(|state| state.args.clone())
-                .unwrap_or_default(),
-            last_run_at: None,
-            last_prompt_chars: previous_runtime
-                .map(|state| state.last_prompt_chars)
-                .unwrap_or_default(),
-            last_response_chars: previous_runtime
-                .map(|state| state.last_response_chars)
-                .unwrap_or_default(),
-        },
-    )?;
-    Ok(created.id)
 }
 
 fn clear_folder_session_workspace(session_dir: &Path) -> Result<()> {
@@ -23907,11 +23774,15 @@ mod tests {
         };
 
         let binding = ensure_buddy_session_binding(
-            &session_dir,
             &backend,
-            None,
-            manifest.as_ref(),
-            Some(&workspace),
+            BuddyBindingInput {
+                session_dir: session_dir.clone(),
+                title: manifest
+                    .as_ref()
+                    .and_then(|manifest| manifest.title.clone()),
+                requested_workspace: Some(workspace.clone()),
+                previous_runtime: None,
+            },
         )
         .unwrap();
 
