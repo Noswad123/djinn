@@ -898,14 +898,16 @@ The first non-interactive agent slice is implemented as:
 66. The CLI should gradually remove the user-facing need to type `agent` for the
     common path. `djinn ask` is the preferred shorthand for `djinn agent ask` and
     creates a native Djinn session by default using the effective global +
-    repo-local config for the current workspace. `--session-id` appends a turn to
-    an existing native session. `--session-dir` reads/writes the folder-backed
-    capsule and, when its `djinn.toml` already records a `session_id`, resumes that
-    existing native session; otherwise a successful ask can create/project the
-    folder as a new session capsule. Ask resolution precedence is CLI flags over
-    session `djinn.toml`, then repo-local `.djinn.json`, then global config, then
-    built-ins. Removed chat spellings are not user-facing surfaces; keep new
-    behavior on the file-first ask/session flow.
+    repo-local config for the current workspace. When top-level `djinn ask` creates
+    a new cache-backed folder capsule, it also creates or reuses the Buddy binding
+    before the model call and records it in `runtime/buddy.json`. `--session-id`
+    appends a turn to an existing native session. `--session-dir` reads/writes the
+    folder-backed capsule and, when its `djinn.toml` already records a
+    `session_id`, resumes that existing native session; otherwise a successful ask
+    can create/project the folder as a new session capsule. Ask resolution
+    precedence is CLI flags over session `djinn.toml`, then repo-local
+    `.djinn.json`, then global config, then built-ins. Removed chat spellings are
+    not user-facing surfaces; keep new behavior on the file-first ask/session flow.
     `djinn session run <session>` is the folder-native spelling for processing
     the current `request.md`; it starts a background worker by default and reports
     the pid/log path plus a `djinn session watch <session>` hint. `--fg` uses the

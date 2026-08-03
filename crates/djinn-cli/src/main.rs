@@ -14258,6 +14258,25 @@ fn write_agent_session_toml(session_dir: &Path, session: &AgentSession) -> Resul
         .with_context(|| format!("writing {}", manifest_path.display()))
 }
 
+fn ensure_folder_session_buddy_binding_for_ask(
+    session_dir: &Path,
+    session: &AgentSession,
+    workspace: &Path,
+    buddy_backend: &dyn BuddySessionBackend,
+) -> Result<BuddySessionBinding> {
+    let runtime_path = session_dir.join("runtime/buddy.json");
+    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
+    ensure_buddy_session_binding(
+        buddy_backend,
+        BuddyBindingInput {
+            session_dir: session_dir.to_path_buf(),
+            title: nonempty_owned_string(Some(session.meta.title.clone())),
+            requested_workspace: Some(workspace.to_path_buf()),
+            previous_runtime,
+        },
+    )
+}
+
 fn preserve_manifest_context_sections(manifest: &str) -> Option<String> {
     let mut lines = Vec::new();
     let mut preserving = false;
@@ -15468,6 +15487,15 @@ fn agent_ask(
         store = relocate_agent_session_into_folder(&store, session_dir, &id)?;
         let session = store.load_session(&id)?;
         write_agent_session_toml(session_dir, &session)?;
+        if should_auto_folder_session {
+            let buddy_backend = BuddyBridgeBackend::resolved(None)?;
+            ensure_folder_session_buddy_binding_for_ask(
+                session_dir,
+                &session,
+                Path::new(&workspace),
+                &buddy_backend,
+            )?;
+        }
     }
 
     let lifecycle_mode = match output_mode {
@@ -23332,6 +23360,120 @@ exit 2
         let runtime = fs::read_to_string(session_dir.join("runtime/buddy.json")).unwrap();
         assert!(runtime.contains("ses_auto_bound"));
         assert!(!runtime.contains("command"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ask_auto_folder_session_creates_buddy_binding() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-ask-buddy-binding-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let workspace = root.join("workspace");
+        let session_dir = root.join("session");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&session_dir).unwrap();
+        let session = AgentSession {
+            id: AgentSessionId::new("ask-auto-session"),
+            meta: AgentSessionMeta {
+                title: "Ask auto title".to_string(),
+                workspace: workspace.display().to_string(),
+                profile: "default".to_string(),
+                source: "djinn".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: Vec::new(),
+        };
+        let creates = Arc::new(Mutex::new(Vec::new()));
+        let backend = TestBuddyBackend {
+            command: "in-tree-buddy".to_string(),
+            runtime_command_override: None,
+            create_id: "ses_ask_bound".to_string(),
+            creates: creates.clone(),
+        };
+
+        let binding = ensure_folder_session_buddy_binding_for_ask(
+            &session_dir,
+            &session,
+            &workspace,
+            &backend,
+        )
+        .unwrap();
+
+        assert_eq!(binding.buddy_session, "ses_ask_bound");
+        assert_eq!(binding.repo_path, workspace);
+        assert_eq!(
+            creates.lock().unwrap().as_slice(),
+            &[(
+                "Ask auto title".to_string(),
+                binding.repo_path.display().to_string()
+            )]
+        );
+        let runtime = fs::read_to_string(session_dir.join("runtime/buddy.json")).unwrap();
+        assert!(runtime.contains("ses_ask_bound"));
+        assert!(!runtime.contains("command"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ask_auto_folder_session_reuses_existing_buddy_binding() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-ask-buddy-reuse-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let workspace = root.join("workspace");
+        let session_dir = root.join("session");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(session_dir.join("runtime")).unwrap();
+        write_buddy_runtime_state(
+            &session_dir.join("runtime/buddy.json"),
+            &BuddyRuntimeState {
+                buddy_session: Some("ses_existing_ask".to_string()),
+                stale_buddy_sessions: Vec::new(),
+                command: None,
+                args: Vec::new(),
+                last_run_at: None,
+                last_prompt_chars: 0,
+                last_response_chars: 0,
+            },
+        )
+        .unwrap();
+        let session = AgentSession {
+            id: AgentSessionId::new("ask-auto-session"),
+            meta: AgentSessionMeta {
+                title: "Ask auto title".to_string(),
+                workspace: workspace.display().to_string(),
+                profile: "default".to_string(),
+                source: "djinn".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: Vec::new(),
+        };
+        let creates = Arc::new(Mutex::new(Vec::new()));
+        let backend = TestBuddyBackend {
+            command: "in-tree-buddy".to_string(),
+            runtime_command_override: None,
+            create_id: "ses_should_not_create".to_string(),
+            creates: creates.clone(),
+        };
+
+        let binding = ensure_folder_session_buddy_binding_for_ask(
+            &session_dir,
+            &session,
+            &workspace,
+            &backend,
+        )
+        .unwrap();
+
+        assert_eq!(binding.buddy_session, "ses_existing_ask");
+        assert_eq!(binding.repo_path, workspace);
+        assert!(creates.lock().unwrap().is_empty());
 
         let _ = fs::remove_dir_all(&root);
     }
