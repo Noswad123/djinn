@@ -11538,7 +11538,7 @@ fn resolve_folder_session_open_dir_in_root(
     }
 
     bail!(
-        "folder session does not exist: {} (run `djinn session init {}` first)",
+        "folder session does not exist: {}\nrun: djinn session init {}",
         session_dir.display(),
         dir.display()
     )
@@ -25564,6 +25564,7 @@ link = "context/repo"
 
         assert!(err.contains("folder session does not exist"));
         assert!(err.contains("missing-session"));
+        assert!(err.contains("run: djinn session init missing-session"));
 
         let _ = fs::remove_dir_all(&root);
     }
