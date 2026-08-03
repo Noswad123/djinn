@@ -30,6 +30,7 @@ import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
 import { UpstreamCommand } from "./cli/cmd/upstream"
+import { DjinnBridgeCommand, runDjinnBridgeCommand } from "./cli/cmd/djinn-bridge"
 
 const args = hideBin(process.argv)
 const cliName = "buddy"
@@ -82,6 +83,7 @@ const cli = yargs(args)
   .completion("completion", "generate shell completion script")
   .command(AcpCommand)
   .command(McpCommand)
+  .command(DjinnBridgeCommand)
   .command(TuiThreadCommand)
   .command(AttachCommand)
   .command(RunCommand)
@@ -119,7 +121,13 @@ const cli = yargs(args)
   .strict()
 
 try {
-  if (args.includes("-h") || args.includes("--help")) {
+  if (args[0] === "djinn-bridge") {
+    Heap.start()
+    process.env.AGENT = "1"
+    process.env.OPENCODE = "1"
+    process.env.OPENCODE_PID = String(process.pid)
+    await runDjinnBridgeCommand()
+  } else if (args.includes("-h") || args.includes("--help")) {
     await cli.parse(args, (err: Error | undefined, _argv: unknown, out: string) => {
       if (err) throw err
       if (!out) return

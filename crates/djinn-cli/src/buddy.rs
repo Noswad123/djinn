@@ -176,6 +176,11 @@ pub(crate) struct BuddyCliBackend {
     resolution: BuddyCommandResolution,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BuddyBridgeBackend {
+    cli: BuddyCliBackend,
+}
+
 impl BuddyCliBackend {
     pub(crate) fn resolved(previous_runtime: Option<&BuddyRuntimeState>) -> Result<Self> {
         Ok(Self {
@@ -305,6 +310,69 @@ impl BuddyCliBackend {
     }
 }
 
+impl BuddyBridgeBackend {
+    pub(crate) fn resolved(previous_runtime: Option<&BuddyRuntimeState>) -> Result<Self> {
+        Ok(Self {
+            cli: BuddyCliBackend::resolved(previous_runtime)?,
+        })
+    }
+
+    pub(crate) fn explicit(command: String) -> Self {
+        Self {
+            cli: BuddyCliBackend::explicit(command),
+        }
+    }
+
+    fn execute_wire_request(
+        &self,
+        request: BuddyBridgeWireRequest,
+    ) -> Result<BuddyBridgeWireResponse> {
+        let mut command = buddy_process_command(self.command())?;
+        command.arg("djinn-bridge");
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+
+        let mut child = command.spawn().with_context(|| {
+            format!(
+                "launching Buddy bridge command `{}`",
+                self.bridge_command_hint()
+            )
+        })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(serde_json::to_string(&request)?.as_bytes())
+                .context("writing Djinn bridge request to Buddy stdin")?;
+        }
+        let output = child
+            .wait_with_output()
+            .context("waiting for Buddy bridge to finish")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            bail!(
+                "Buddy bridge command `{}` exited with status {}{}",
+                self.bridge_command_hint(),
+                output.status,
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                }
+            );
+        }
+        serde_json::from_slice(&output.stdout).with_context(|| {
+            format!(
+                "parsing strict Buddy bridge JSON from `{}`",
+                self.bridge_command_hint()
+            )
+        })
+    }
+
+    fn bridge_command_hint(&self) -> String {
+        format!("{} djinn-bridge", shell_quote(self.command()))
+    }
+}
+
 impl BuddyBackend for BuddyCliBackend {
     fn command(&self) -> &str {
         &self.resolution.command
@@ -367,6 +435,84 @@ impl BuddyBackend for BuddyCliBackend {
         })? {
             BuddyBridgeResponse::CreatedSession(session) => Ok(session),
             other => bail!("unexpected Buddy bridge response: {other:?}"),
+        }
+    }
+}
+
+impl BuddyBackend for BuddyBridgeBackend {
+    fn command(&self) -> &str {
+        self.cli.command()
+    }
+
+    fn runtime_command_override(&self) -> Option<String> {
+        self.cli.runtime_command_override()
+    }
+
+    fn launch_plain(&self) -> Result<()> {
+        self.cli.launch_plain()
+    }
+
+    fn launch_interactive_session(
+        &self,
+        buddy_session: Option<&str>,
+        cwd: Option<&Path>,
+        session_dir: &Path,
+    ) -> Result<()> {
+        self.cli
+            .launch_interactive_session(buddy_session, cwd, session_dir)
+    }
+
+    fn final_response(
+        &self,
+        buddy_session: Option<&str>,
+        buddy_args: &[String],
+        prompt: &str,
+    ) -> Result<String> {
+        self.cli.final_response(buddy_session, buddy_args, prompt)
+    }
+
+    fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
+        match self.execute_wire_request(BuddyBridgeWireRequest::ListSessions) {
+            Ok(BuddyBridgeWireResponse::Sessions { sessions }) => Ok(sessions
+                .into_iter()
+                .map(|session| BuddySessionListRecord {
+                    id: session.id,
+                    title: session.title,
+                    repo_path: session.directory,
+                    created_at: buddy_millis_to_rfc3339(session.created),
+                    updated_at: buddy_millis_to_rfc3339(session.updated),
+                    summary: String::new(),
+                })
+                .collect()),
+            Ok(other) => self.cli.list_sessions().with_context(|| {
+                format!(
+                    "Buddy bridge list_sessions returned unexpected response ({other:?}); CLI fallback also failed"
+                )
+            }),
+            Err(bridge_error) => self.cli.list_sessions().with_context(|| {
+                format!(
+                    "Buddy bridge list_sessions failed ({bridge_error}); CLI fallback also failed"
+                )
+            }),
+        }
+    }
+
+    fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord> {
+        match self.execute_wire_request(BuddyBridgeWireRequest::CreateSession {
+            title: title.to_string(),
+            repo_path: repo_path.to_string(),
+        }) {
+            Ok(BuddyBridgeWireResponse::CreatedSession { session }) => Ok(session),
+            Ok(other) => self.cli.create_session(title, repo_path).with_context(|| {
+                format!(
+                    "Buddy bridge create_session returned unexpected response ({other:?}); CLI fallback also failed"
+                )
+            }),
+            Err(bridge_error) => self.cli.create_session(title, repo_path).with_context(|| {
+                format!(
+                    "Buddy bridge create_session failed ({bridge_error}); CLI fallback also failed"
+                )
+            }),
         }
     }
 }
@@ -639,7 +785,7 @@ pub(crate) fn write_buddy_runtime_state(path: &Path, state: &BuddyRuntimeState) 
 }
 
 pub(crate) fn run_plain_buddy_mode() -> Result<()> {
-    BuddyCliBackend::resolved(None)?.launch_plain()
+    BuddyBridgeBackend::resolved(None)?.launch_plain()
 }
 
 pub(crate) fn run_top_level_folder_buddy_session(
@@ -656,7 +802,7 @@ pub(crate) fn top_level_buddy_session_behavior(
 ) -> Result<TopLevelBuddySessionBehavior> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = BuddyCliBackend::resolved(previous_runtime.as_ref())?;
+    let buddy_backend = BuddyBridgeBackend::resolved(previous_runtime.as_ref())?;
     let buddy_session = explicit_buddy_session.or_else(|| {
         previous_runtime
             .as_ref()
@@ -710,7 +856,7 @@ pub(crate) fn run_interactive_session_buddy(
 ) -> Result<()> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = BuddyCliBackend::resolved(previous_runtime.as_ref())?;
+    let buddy_backend = BuddyBridgeBackend::resolved(previous_runtime.as_ref())?;
     buddy_backend.launch_interactive_session(
         behavior.buddy_session.as_deref(),
         behavior.cwd.as_deref(),
@@ -858,9 +1004,9 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
         .clone()
         .filter(|value| !value.trim().is_empty())
     {
-        BuddyCliBackend::explicit(buddy_bin)
+        BuddyBridgeBackend::explicit(buddy_bin)
     } else {
-        BuddyCliBackend::resolved(previous_runtime.as_ref())?
+        BuddyBridgeBackend::resolved(previous_runtime.as_ref())?
     };
     let buddy_session = args.buddy_session.clone().or_else(|| {
         previous_runtime
@@ -1188,6 +1334,36 @@ fn folder_session_display_name(name: &str) -> String {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct BuddySessionListJsonRecord {
+    id: String,
+    title: String,
+    updated: i64,
+    created: i64,
+    #[serde(rename = "projectId")]
+    project_id: String,
+    directory: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum BuddyBridgeWireRequest {
+    ListSessions,
+    CreateSession { title: String, repo_path: String },
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum BuddyBridgeWireResponse {
+    Sessions {
+        sessions: Vec<BuddyBridgeSessionListRecord>,
+    },
+    CreatedSession {
+        session: BuddySessionCreateRecord,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct BuddyBridgeSessionListRecord {
     id: String,
     title: String,
     updated: i64,

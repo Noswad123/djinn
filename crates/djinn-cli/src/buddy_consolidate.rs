@@ -7,7 +7,7 @@ use djinn_memory::AgentSessionId;
 use serde::Serialize;
 
 use crate::buddy::{
-    safe_folder_session_slug, write_buddy_runtime_state, BuddyBackend, BuddyCliBackend,
+    safe_folder_session_slug, write_buddy_runtime_state, BuddyBackend, BuddyBridgeBackend,
     BuddyRuntimeState, BuddySessionListRecord,
 };
 use crate::{
@@ -47,9 +47,9 @@ pub(crate) fn consolidate_sessions_in_root(
         .clone()
         .filter(|value| !value.trim().is_empty())
     {
-        BuddyCliBackend::explicit(buddy_bin)
+        BuddyBridgeBackend::explicit(buddy_bin)
     } else {
-        BuddyCliBackend::resolved(None)?
+        BuddyBridgeBackend::resolved(None)?
     };
     let buddy_sessions = buddy_backend.list_sessions()?;
     let folder_report = list_folder_sessions_in_root(root, None)?;
