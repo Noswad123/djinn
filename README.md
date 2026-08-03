@@ -86,7 +86,10 @@ calls these file-backed capsules **Sessions**: `djinn` opens that tab by
 default, and `djinn tui sessions` opens it explicitly. Use
 `djinn -s <session>` or `djinn session <name-or-path>` for the focused session view,
 `djinn session run` to execute turns, and `djinn session watch` to follow
-lifecycle status. For occasional Buddy-style quick interaction, `djinn -b` opens
+lifecycle status. `djinn session init <name>` creates both the folder capsule and
+the Buddy session binding recorded in `runtime/buddy.json`; Buddy is expected to
+ship with Djinn, so init fails if that binding cannot be created or reused. For
+occasional Buddy-style quick interaction, `djinn -b` opens
 Buddy mode directly, while `djinn -b -s <ref>` / `djinn -bs <ref>` opens a
 specific folder session through Buddy. `<ref>` can be a folder-session name/path or
 a Buddy session id already recorded in `runtime/buddy.json` by consolidation. The

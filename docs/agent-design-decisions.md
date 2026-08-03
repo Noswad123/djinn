@@ -890,8 +890,11 @@ The first non-interactive agent slice is implemented as:
     context can override global defaults; session-local files remain the strongest
     explicit context. The repo appears as a symlink under `context/<repo-name>`
     and is recorded in `djinn.toml` as a live reference, not as a command to
-    ingest the whole tree. Safe context discovery runs during linked-repo init by
-    default and can be skipped with `--no-discover-context`.
+    ingest the whole tree. `session init` also creates or reuses the Buddy session
+    binding immediately and writes it to `runtime/buddy.json`; Buddy is expected to
+    ship with Djinn, so init fails if that binding cannot be established. Safe
+    context discovery runs during linked-repo init by default and can be skipped
+    with `--no-discover-context`.
 66. The CLI should gradually remove the user-facing need to type `agent` for the
     common path. `djinn ask` is the preferred shorthand for `djinn agent ask` and
     creates a native Djinn session by default using the effective global +

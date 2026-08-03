@@ -9822,11 +9822,19 @@ struct SessionInitReport {
     model: String,
     workspace: String,
     repo_link: Option<SessionRepoLinkReport>,
+    buddy: Option<SessionInitBuddyReport>,
     discovered_context: Option<SessionContextDiscoverReport>,
     config_sources: Vec<String>,
     precedence: Vec<String>,
     created: Vec<String>,
     skipped: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionInitBuddyReport {
+    buddy_session: String,
+    repo_path: String,
+    runtime_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -9836,7 +9844,8 @@ struct SessionRepoLinkReport {
 }
 
 fn session_init(args: SessionInitArgs) -> Result<()> {
-    let report = initialize_folder_session(&args)?;
+    let buddy_backend = BuddyBridgeBackend::resolved(None)?;
+    let report = initialize_folder_session_with_buddy(&args, Some(&buddy_backend))?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -9849,6 +9858,10 @@ fn session_init(args: SessionInitArgs) -> Result<()> {
         println!("  workspace: {}", report.workspace);
         if let Some(repo_link) = &report.repo_link {
             println!("  repo link: {} -> {}", repo_link.path, repo_link.target);
+        }
+        if let Some(buddy) = &report.buddy {
+            println!("  buddy session: {}", buddy.buddy_session);
+            println!("  buddy repo: {}", buddy.repo_path);
         }
         if let Some(discovered) = &report.discovered_context {
             let created = discovered.links.iter().filter(|link| link.created).count();
@@ -9866,7 +9879,15 @@ fn session_init(args: SessionInitArgs) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport> {
+    initialize_folder_session_with_buddy(args, None)
+}
+
+fn initialize_folder_session_with_buddy(
+    args: &SessionInitArgs,
+    buddy_backend: Option<&dyn BuddySessionBackend>,
+) -> Result<SessionInitReport> {
     let session_dir = resolve_session_dir(&args.dir)?;
     fs::create_dir_all(&session_dir)
         .with_context(|| format!("creating session directory {}", session_dir.display()))?;
@@ -9943,6 +9964,26 @@ fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport
     } else {
         None
     };
+    let buddy = if let Some(buddy_backend) = buddy_backend {
+        let runtime_path = session_dir.join("runtime/buddy.json");
+        let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
+        let binding = ensure_buddy_session_binding(
+            buddy_backend,
+            BuddyBindingInput {
+                session_dir: session_dir.clone(),
+                title: None,
+                requested_workspace: Some(workspace.clone()),
+                previous_runtime,
+            },
+        )?;
+        Some(SessionInitBuddyReport {
+            buddy_session: binding.buddy_session,
+            repo_path: binding.repo_path.display().to_string(),
+            runtime_path: runtime_path.display().to_string(),
+        })
+    } else {
+        None
+    };
 
     Ok(SessionInitReport {
         session_dir: session_dir.display().to_string(),
@@ -9956,6 +9997,7 @@ fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport
         model,
         workspace: workspace.display().to_string(),
         repo_link,
+        buddy,
         discovered_context,
         config_sources: config_report.checked_paths,
         precedence: vec![
@@ -26881,6 +26923,61 @@ link = "context/repo"
         );
         assert!(report.discovered_context.is_some());
         assert_eq!(fs::read_to_string(dir.join("request.md")).unwrap(), "");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_init_can_create_buddy_binding() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-init-buddy-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let creates = Arc::new(Mutex::new(Vec::new()));
+        let backend = TestBuddyBackend {
+            command: "in-tree-buddy".to_string(),
+            runtime_command_override: None,
+            create_id: "ses_init_bound".to_string(),
+            creates: creates.clone(),
+        };
+
+        let args = SessionInitArgs {
+            dir: dir.clone(),
+            link_repo: Some(repo.clone()),
+            no_discover_context: true,
+            profile: "default".to_string(),
+            agent: None,
+            model: None,
+            force: false,
+            json: false,
+        };
+        let report = initialize_folder_session_with_buddy(&args, Some(&backend)).unwrap();
+
+        let runtime_path = dir.join("runtime/buddy.json");
+        assert!(runtime_path.exists());
+        assert_eq!(
+            report.buddy,
+            Some(SessionInitBuddyReport {
+                buddy_session: "ses_init_bound".to_string(),
+                repo_path: repo.canonicalize().unwrap().display().to_string(),
+                runtime_path: runtime_path.display().to_string(),
+            })
+        );
+        assert_eq!(
+            creates.lock().unwrap().as_slice(),
+            &[(
+                "Session".to_string(),
+                repo.canonicalize().unwrap().display().to_string()
+            )]
+        );
+        let runtime = fs::read_to_string(runtime_path).unwrap();
+        assert!(runtime.contains("ses_init_bound"));
+        assert!(!runtime.contains("command"));
 
         let _ = fs::remove_dir_all(&root);
     }
