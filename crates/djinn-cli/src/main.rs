@@ -11315,10 +11315,10 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
         }
         lines.push(format!("Repo: {}", group.repo));
         lines.push(format!(
-            "  {:<20} {:<12} {:>5}  {:<18} {:<18} {:<32} {}",
-            "UPDATED", "STATE", "TURNS", "EVENTS", "BUDDY", "NAME", "SUMMARY"
+            "  {:<20} {:<12} {:<34} {}",
+            "UPDATED", "STATE", "BUDDY", "NAME"
         ));
-        lines.push(format!("  {}", "-".repeat(132)));
+        lines.push(format!("  {}", "-".repeat(86)));
         for session in &group.sessions {
             let updated = session
                 .updated_at
@@ -11329,29 +11329,23 @@ fn format_folder_session_ls(report: &SessionLsReport) -> String {
             let summary = session.summary_preview.as_deref().unwrap_or("");
             let state = folder_session_summary_state_label(session);
             lines.push(format!(
-                "  {:<20} {:<12} {:>5}  {:<18} {:<18} {:<32} {}",
+                "  {:<20} {:<12} {:<34} {}",
                 truncate_table_cell(&updated, 20),
                 truncate_table_cell(&state, 12),
-                session.turn_count,
-                truncate_table_cell(
-                    &folder_session_event_health_label(&session.event_health),
-                    18
+                folder_session_buddy_label(session.buddy.as_ref()),
+                format!(
+                    "{}{}",
+                    session.reference_name,
+                    if session.manifest_exists {
+                        ""
+                    } else {
+                        " (no manifest)"
+                    }
                 ),
-                truncate_table_cell(&folder_session_buddy_label(session.buddy.as_ref()), 18),
-                truncate_table_cell(
-                    &format!(
-                        "{}{}",
-                        session.reference_name,
-                        if session.manifest_exists {
-                            ""
-                        } else {
-                            " (no manifest)"
-                        }
-                    ),
-                    32,
-                ),
-                summary
             ));
+            if !summary.is_empty() {
+                lines.push(format!("      summary: {summary}"));
+            }
         }
     }
     lines.push(format!(
@@ -25061,11 +25055,11 @@ link = "context/repo"
         assert!(text.contains("Repo: -"));
         assert!(text.contains("UPDATED"));
         assert!(text.contains("STATE"));
-        assert!(text.contains("EVENTS"));
         assert!(text.contains("BUDDY"));
+        assert!(!text.contains("TURNS"));
+        assert!(!text.contains("EVENTS"));
         assert!(text.contains("bud_alpha"));
-        assert!(text.contains("ready:1/2"));
-        assert!(text.contains("missing"));
+        assert!(!text.contains("ready:1/2"));
         assert!(text.contains("running/bac…"));
         assert!(text.contains("alpha"));
         assert!(text.contains("2026-07-27T11:34:56…"));
@@ -25080,6 +25074,8 @@ link = "context/repo"
         assert!(!text.contains("native: agt_alpha"));
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["sessions"][3]["lifecycle"]["state"], "running");
+        assert_eq!(json["sessions"][0]["event_health"]["event_turn_count"], 1);
+        assert_eq!(json["sessions"][3]["turn_count"], 1);
         assert_eq!(json["sessions"][3]["buddy"]["buddy_session"], "bud_alpha");
         assert_eq!(json["sessions"][3]["buddy"]["command"], "buddy-dev");
         assert_eq!(json["sessions"][3]["latest_turn"]["id"], "turn-a");

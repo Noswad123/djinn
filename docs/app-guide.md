@@ -84,9 +84,10 @@ folder-local append-only `events.jsonl` as the continuation history. Djinn still
 keeps `.djinn/<native-id>.jsonl` as runtime-private compatibility state while the
 runtime is being simplified, and `turns/<id>/` is an optional projection for older
 tools rather than the central history path.
-Session status and list views prefer `events.jsonl` for the latest exchange,
+Session status and JSON list data prefer `events.jsonl` for the latest exchange,
 conversation count, and response preview; `turns/` is only consulted when no valid
-event pairs are available.
+event pairs are available. The default text `djinn session ls` table stays compact:
+repo grouping, updated time, lifecycle state, Buddy id, name, and summary preview.
 
 For direct session entry, use `djinn -s <session>` to open the focused
 folder-session view. For occasional Buddy-style quick interaction without turning
@@ -211,10 +212,11 @@ backup when present. `--strict` is intended for scripts/CI: it still writes no
 artifacts, but exits with an error if any reported session is not ready.
 Use `--health ready`, `--health not-ready`, `--health missing`, or an issue code
 such as `--health root_summary_mismatch` to focus the audit.
-Routine `djinn session ls` and the Sessions dashboard also show compact event
-health labels such as `ready:2/5`, `missing`, or the first validation issue code
-so ledger health is visible during normal triage. The Sessions dashboard fuzzy
-filter also matches those event health labels.
+The Sessions dashboard shows compact event health labels such as `ready:2/5`,
+`missing`, or the first validation issue code so ledger health is visible during
+normal triage. The Sessions dashboard fuzzy filter also matches those event health
+labels. For CLI triage, keep `djinn session ls` focused on choosing recent work and
+use `djinn session events --all` for event-health detail.
 
 ```bash
 djinn ask "Summarize the debugging path" --session ./debugging-session

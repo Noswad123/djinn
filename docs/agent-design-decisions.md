@@ -959,12 +959,15 @@ The first non-interactive agent slice is implemented as:
     turn counts, summary agreement, issue codes, and latest rebuild backup paths.
     `--strict` keeps the report read-only but exits with an error when any
     reported session is not ready, making the check script/CI-friendly without
-    mutating session artifacts. `djinn session ls` and the Sessions dashboard show
-    compact event health labels derived from the same validation state, so normal
-    triage can spot missing, invalid, or ready event ledgers without opening each
-    session. Health audits accept `--health` filters for `ready`, `not-ready`,
-    `missing`, or specific validation issue codes; the Sessions dashboard fuzzy
-    filter also matches compact event health labels.
+    mutating session artifacts. The Sessions dashboard shows compact event health
+    labels derived from the same validation state, so normal triage can spot
+    missing, invalid, or ready event ledgers without opening each session. The
+    default text `djinn session ls` table stays focused on choosing recent work:
+    updated time, lifecycle state, Buddy id, name, and summary preview. JSON list
+    output still carries event-health fields. Health audits accept `--health`
+    filters for `ready`, `not-ready`, `missing`, or specific validation issue
+    codes; the Sessions dashboard fuzzy filter also matches compact event health
+    labels.
 71. Bare folder-session names resolve under Djinn's cache directory, not the
     current working directory. For example `djinn session init small-question` and
     `djinn ask --session-dir small-question` target
@@ -980,9 +983,10 @@ The first non-interactive agent slice is implemented as:
     This avoids stale index state when users manually move or rename folders. The
     listing includes created/updated timestamps, using native session metadata
     when available and folder metadata as a fallback, so duplicate-looking prompt
-    names can be distinguished. It also carries lifecycle state/mode and latest
-    turn metadata in text and JSON projections so dashboard/watch surfaces can
-    identify running/background work without opening every session folder.
+    names can be distinguished. Its text table carries lifecycle state/mode and
+    Buddy binding for quick selection; JSON projections also carry latest turn and
+    event-health metadata for dashboard/watch consumers that need detail without
+    opening every session folder.
 73. Cache-backed folder session names are unique by resolved path. Re-running
     `djinn session init <name>` is idempotent when the existing `djinn.toml`
     identity matches the requested profile/agent/model/workspace/repo. If the

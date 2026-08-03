@@ -116,10 +116,11 @@ performs that rebuild after preserving a backup. Use `djinn session events <sess
 subcommand has been removed. Use `djinn session events --all --json` to audit
 event-ledger health across cache-backed sessions, or add `--strict` for a
 read-only script/CI guard that fails when any reported session is not ready.
-`djinn session ls` and the Sessions dashboard show compact event health labels for
-routine triage; `djinn session ls` also shows any Buddy session id recorded under
-`runtime/buddy.json`. Health audits can be focused with `--health ready`,
-`--health not-ready`, `--health missing`, or an issue code.
+The Sessions dashboard shows compact event health labels for routine triage;
+`djinn session ls` keeps its text table focused on recent work, state, Buddy id,
+name, and summary preview. JSON list output still carries event-health fields.
+Health audits can be focused with `--health ready`, `--health not-ready`,
+`--health missing`, or an issue code.
 
 `djinn agent config list` and the TUI command palette include Copilot model
 options from `DJINN_COPILOT_MODEL`, `GITHUB_COPILOT_MODEL`, comma/semicolon-list
