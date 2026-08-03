@@ -9658,26 +9658,14 @@ struct BuddyInteractiveSummarySync {
     response_chars: usize,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionBuddyReport {
-    session_dir: String,
-    buddy_command: String,
-    buddy_session: Option<String>,
-    prompt_chars: usize,
-    response_chars: usize,
-    summary_path: String,
-    events_path: String,
-    request_path: String,
-    runtime_path: String,
-    dry_run: bool,
-    wrote_summary: bool,
-    appended_events: bool,
-    cleared_request: bool,
-    note: String,
-}
-
 fn session_buddy(args: SessionBuddyArgs) -> Result<()> {
-    let report = run_session_buddy(&args)?;
+    let report = run_session_buddy(&SessionBuddyRunArgs {
+        dir: args.dir.clone(),
+        buddy_bin: args.buddy_bin.clone(),
+        buddy_session: args.buddy_session.clone(),
+        buddy_args: args.buddy_args.clone(),
+        dry_run: args.dry_run,
+    })?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -9983,159 +9971,6 @@ fn refresh_folder_summary_from_latest_event(
     }))
 }
 
-fn run_session_buddy(args: &SessionBuddyArgs) -> Result<SessionBuddyReport> {
-    let session_dir = resolve_session_dir(&args.dir)?;
-    let request_path = session_dir.join("request.md");
-    let summary_path = session_dir.join("summary.md");
-    let runtime_path = session_dir.join("runtime/buddy.json");
-    let prompt = fs::read_to_string(&request_path)
-        .with_context(|| format!("reading {}", request_path.display()))?;
-    if prompt.trim().is_empty() {
-        bail!("request.md is empty; write a request before opening Buddy");
-    }
-
-    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = if let Some(buddy_bin) = args
-        .buddy_bin
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-    {
-        BuddyCliBackend::explicit(buddy_bin)
-    } else {
-        BuddyCliBackend::resolved(previous_runtime.as_ref())?
-    };
-    let buddy_session = args.buddy_session.clone().or_else(|| {
-        previous_runtime
-            .as_ref()
-            .and_then(|state| state.buddy_session.clone())
-    });
-    let buddy_command = buddy_command_hint(
-        buddy_backend.command(),
-        buddy_session.as_deref(),
-        &args.buddy_args,
-    );
-
-    if args.dry_run {
-        return Ok(SessionBuddyReport {
-            session_dir: session_dir.display().to_string(),
-            buddy_command,
-            buddy_session,
-            prompt_chars: prompt.chars().count(),
-            response_chars: 0,
-            summary_path: summary_path.display().to_string(),
-            events_path: session_dir.join("events.jsonl").display().to_string(),
-            request_path: request_path.display().to_string(),
-            runtime_path: runtime_path.display().to_string(),
-            dry_run: true,
-            wrote_summary: false,
-            appended_events: false,
-            cleared_request: false,
-            note: "Dry run only; Buddy was not launched and no session files were changed."
-                .to_string(),
-        });
-    }
-
-    let response =
-        buddy_backend.final_response(buddy_session.as_deref(), &args.buddy_args, &prompt)?;
-    let response = response.trim().to_string();
-    if response.is_empty() {
-        bail!("Buddy returned an empty final response");
-    }
-
-    fs::write(&summary_path, ensure_trailing_newline(&response))
-        .with_context(|| format!("writing {}", summary_path.display()))?;
-    fs::write(&request_path, "").with_context(|| format!("writing {}", request_path.display()))?;
-
-    let manifest = read_folder_session_manifest(&session_dir)?;
-    let id = manifest
-        .as_ref()
-        .and_then(|manifest| manifest.session_id.clone())
-        .unwrap_or_else(|| fallback_buddy_session_id(&session_dir));
-    let meta = folder_session_manifest_meta(&session_dir, manifest.as_ref());
-    let event_session = AgentSession {
-        id: id.clone(),
-        meta,
-        events: vec![
-            AgentSessionEvent::with_session(
-                id.clone(),
-                AgentSessionEventKind::UserMessage {
-                    content: prompt.trim_end().to_string(),
-                },
-            ),
-            AgentSessionEvent::with_session(
-                id,
-                AgentSessionEventKind::AssistantMessage {
-                    content: response.clone(),
-                },
-            ),
-        ],
-    };
-    let events_path = write_folder_session_events_jsonl(&session_dir, &event_session)?;
-
-    write_buddy_runtime_state(
-        &runtime_path,
-        &BuddyRuntimeState {
-            buddy_session: buddy_session.clone(),
-            stale_buddy_sessions: previous_runtime
-                .as_ref()
-                .map(|state| state.stale_buddy_sessions.clone())
-                .unwrap_or_default(),
-            command: buddy_backend.runtime_command_override(),
-            args: args.buddy_args.clone(),
-            last_run_at: Some(chrono::Utc::now().to_rfc3339()),
-            last_prompt_chars: prompt.chars().count(),
-            last_response_chars: response.chars().count(),
-        },
-    )?;
-
-    Ok(SessionBuddyReport {
-        session_dir: session_dir.display().to_string(),
-        buddy_command,
-        buddy_session,
-        prompt_chars: prompt.chars().count(),
-        response_chars: response.chars().count(),
-        summary_path: summary_path.display().to_string(),
-        events_path: events_path.display().to_string(),
-        request_path: request_path.display().to_string(),
-        runtime_path: runtime_path.display().to_string(),
-        dry_run: false,
-        wrote_summary: true,
-        appended_events: true,
-        cleared_request: true,
-        note: "Buddy final response captured into summary.md and events.jsonl; request.md was cleared."
-            .to_string(),
-    })
-}
-
-fn buddy_command_hint(
-    buddy_bin: &str,
-    buddy_session: Option<&str>,
-    buddy_args: &[String],
-) -> String {
-    let mut command = shell_quote(buddy_bin);
-    if let Some(session) = buddy_session
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        command.push_str(" -s ");
-        command.push_str(&shell_quote(session));
-    }
-    for arg in buddy_args {
-        command.push(' ');
-        command.push_str(&shell_quote(arg));
-    }
-    command.push_str(" < request.md");
-    command
-}
-
-fn fallback_buddy_session_id(session_dir: &Path) -> AgentSessionId {
-    let name = session_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("folder-session");
-    AgentSessionId::new(format!("buddy_{}", safe_folder_session_slug(name)))
-}
-
 fn safe_folder_session_slug(value: &str) -> String {
     let mut slug = value
         .chars()
@@ -10156,28 +9991,6 @@ fn safe_folder_session_slug(value: &str) -> String {
     } else {
         slug
     }
-}
-
-fn format_session_buddy_report(report: &SessionBuddyReport) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("Buddy composer: {}", report.session_dir));
-    lines.push(format!("  command: {}", report.buddy_command));
-    if let Some(session) = &report.buddy_session {
-        lines.push(format!("  buddy session: {session}"));
-    }
-    lines.push(format!("  dry run: {}", yes_no(report.dry_run)));
-    lines.push(format!("  prompt chars: {}", report.prompt_chars));
-    lines.push(format!("  response chars: {}", report.response_chars));
-    lines.push(format!("  summary.md: {}", report.summary_path));
-    lines.push(format!("  events.jsonl: {}", report.events_path));
-    lines.push(format!(
-        "  request.md cleared: {}",
-        yes_no(report.cleared_request)
-    ));
-    lines.push(format!("  runtime metadata: {}", report.runtime_path));
-    lines.push(format!("  note: {}", report.note));
-    lines.push(String::new());
-    lines.join("\n")
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -23358,13 +23171,12 @@ mod tests {
             fs::set_permissions(&buddy_bin, permissions).unwrap();
         }
 
-        let report = run_session_buddy(&SessionBuddyArgs {
+        let report = run_session_buddy(&SessionBuddyRunArgs {
             dir: dir.clone(),
             buddy_bin: Some(buddy_bin.display().to_string()),
             buddy_session: Some("bud_test".to_string()),
             buddy_args: vec!["--final".to_string()],
             dry_run: false,
-            json: false,
         })
         .unwrap();
 

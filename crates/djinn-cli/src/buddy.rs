@@ -7,7 +7,12 @@ use std::process::{Command as ProcessCommand, Stdio};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::{yes_no, OutputFormat};
+use djinn_memory::{AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId};
+
+use crate::{
+    ensure_trailing_newline, folder_session_manifest_meta, read_folder_session_manifest,
+    resolve_session_dir, write_folder_session_events_jsonl, yes_no, OutputFormat,
+};
 
 pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
 pub(crate) const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/buddy";
@@ -76,6 +81,33 @@ pub(crate) struct BuddyBindingInput {
 pub(crate) struct BuddySessionBinding {
     pub(crate) buddy_session: String,
     pub(crate) repo_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionBuddyRunArgs {
+    pub(crate) dir: PathBuf,
+    pub(crate) buddy_bin: Option<String>,
+    pub(crate) buddy_session: Option<String>,
+    pub(crate) buddy_args: Vec<String>,
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct SessionBuddyReport {
+    pub(crate) session_dir: String,
+    pub(crate) buddy_command: String,
+    pub(crate) buddy_session: Option<String>,
+    pub(crate) prompt_chars: usize,
+    pub(crate) response_chars: usize,
+    pub(crate) summary_path: String,
+    pub(crate) events_path: String,
+    pub(crate) request_path: String,
+    pub(crate) runtime_path: String,
+    pub(crate) dry_run: bool,
+    pub(crate) wrote_summary: bool,
+    pub(crate) appended_events: bool,
+    pub(crate) cleared_request: bool,
+    pub(crate) note: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -591,6 +623,203 @@ pub(crate) fn write_buddy_runtime_state(path: &Path, state: &BuddyRuntimeState) 
     }
     fs::write(path, serde_json::to_string_pretty(state)? + "\n")
         .with_context(|| format!("writing {}", path.display()))
+}
+
+pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBuddyReport> {
+    let session_dir = resolve_session_dir(&args.dir)?;
+    let request_path = session_dir.join("request.md");
+    let summary_path = session_dir.join("summary.md");
+    let runtime_path = session_dir.join("runtime/buddy.json");
+    let prompt = fs::read_to_string(&request_path)
+        .with_context(|| format!("reading {}", request_path.display()))?;
+    if prompt.trim().is_empty() {
+        bail!("request.md is empty; write a request before opening Buddy");
+    }
+
+    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
+    let buddy_backend = if let Some(buddy_bin) = args
+        .buddy_bin
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    {
+        BuddyCliBackend::explicit(buddy_bin)
+    } else {
+        BuddyCliBackend::resolved(previous_runtime.as_ref())?
+    };
+    let buddy_session = args.buddy_session.clone().or_else(|| {
+        previous_runtime
+            .as_ref()
+            .and_then(|state| state.buddy_session.clone())
+    });
+    let buddy_command = buddy_command_hint(
+        buddy_backend.command(),
+        buddy_session.as_deref(),
+        &args.buddy_args,
+    );
+
+    if args.dry_run {
+        return Ok(SessionBuddyReport {
+            session_dir: session_dir.display().to_string(),
+            buddy_command,
+            buddy_session,
+            prompt_chars: prompt.chars().count(),
+            response_chars: 0,
+            summary_path: summary_path.display().to_string(),
+            events_path: session_dir.join("events.jsonl").display().to_string(),
+            request_path: request_path.display().to_string(),
+            runtime_path: runtime_path.display().to_string(),
+            dry_run: true,
+            wrote_summary: false,
+            appended_events: false,
+            cleared_request: false,
+            note: "Dry run only; Buddy was not launched and no session files were changed."
+                .to_string(),
+        });
+    }
+
+    let response =
+        buddy_backend.final_response(buddy_session.as_deref(), &args.buddy_args, &prompt)?;
+    let response = response.trim().to_string();
+    if response.is_empty() {
+        bail!("Buddy returned an empty final response");
+    }
+
+    fs::write(&summary_path, ensure_trailing_newline(&response))
+        .with_context(|| format!("writing {}", summary_path.display()))?;
+    fs::write(&request_path, "").with_context(|| format!("writing {}", request_path.display()))?;
+
+    let manifest = read_folder_session_manifest(&session_dir)?;
+    let id = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.session_id.clone())
+        .unwrap_or_else(|| fallback_buddy_session_id(&session_dir));
+    let meta = folder_session_manifest_meta(&session_dir, manifest.as_ref());
+    let event_session = AgentSession {
+        id: id.clone(),
+        meta,
+        events: vec![
+            AgentSessionEvent::with_session(
+                id.clone(),
+                AgentSessionEventKind::UserMessage {
+                    content: prompt.trim_end().to_string(),
+                },
+            ),
+            AgentSessionEvent::with_session(
+                id,
+                AgentSessionEventKind::AssistantMessage {
+                    content: response.clone(),
+                },
+            ),
+        ],
+    };
+    let events_path = write_folder_session_events_jsonl(&session_dir, &event_session)?;
+
+    write_buddy_runtime_state(
+        &runtime_path,
+        &BuddyRuntimeState {
+            buddy_session: buddy_session.clone(),
+            stale_buddy_sessions: previous_runtime
+                .as_ref()
+                .map(|state| state.stale_buddy_sessions.clone())
+                .unwrap_or_default(),
+            command: buddy_backend.runtime_command_override(),
+            args: args.buddy_args.clone(),
+            last_run_at: Some(chrono::Utc::now().to_rfc3339()),
+            last_prompt_chars: prompt.chars().count(),
+            last_response_chars: response.chars().count(),
+        },
+    )?;
+
+    Ok(SessionBuddyReport {
+        session_dir: session_dir.display().to_string(),
+        buddy_command,
+        buddy_session,
+        prompt_chars: prompt.chars().count(),
+        response_chars: response.chars().count(),
+        summary_path: summary_path.display().to_string(),
+        events_path: events_path.display().to_string(),
+        request_path: request_path.display().to_string(),
+        runtime_path: runtime_path.display().to_string(),
+        dry_run: false,
+        wrote_summary: true,
+        appended_events: true,
+        cleared_request: true,
+        note: "Buddy final response captured into summary.md and events.jsonl; request.md was cleared."
+            .to_string(),
+    })
+}
+
+pub(crate) fn format_session_buddy_report(report: &SessionBuddyReport) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Buddy composer: {}", report.session_dir));
+    lines.push(format!("  command: {}", report.buddy_command));
+    if let Some(session) = &report.buddy_session {
+        lines.push(format!("  buddy session: {session}"));
+    }
+    lines.push(format!("  dry run: {}", yes_no(report.dry_run)));
+    lines.push(format!("  prompt chars: {}", report.prompt_chars));
+    lines.push(format!("  response chars: {}", report.response_chars));
+    lines.push(format!("  summary.md: {}", report.summary_path));
+    lines.push(format!("  events.jsonl: {}", report.events_path));
+    lines.push(format!(
+        "  request.md cleared: {}",
+        yes_no(report.cleared_request)
+    ));
+    lines.push(format!("  runtime metadata: {}", report.runtime_path));
+    lines.push(format!("  note: {}", report.note));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn buddy_command_hint(
+    buddy_bin: &str,
+    buddy_session: Option<&str>,
+    buddy_args: &[String],
+) -> String {
+    let mut command = shell_quote(buddy_bin);
+    if let Some(session) = buddy_session
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        command.push_str(" -s ");
+        command.push_str(&shell_quote(session));
+    }
+    for arg in buddy_args {
+        command.push(' ');
+        command.push_str(&shell_quote(arg));
+    }
+    command.push_str(" < request.md");
+    command
+}
+
+fn fallback_buddy_session_id(session_dir: &Path) -> AgentSessionId {
+    let name = session_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("folder-session");
+    AgentSessionId::new(format!("buddy_{}", safe_folder_session_slug(name)))
+}
+
+pub(crate) fn safe_folder_session_slug(value: &str) -> String {
+    let mut slug = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    while slug.contains("__") {
+        slug = slug.replace("__", "_");
+    }
+    let slug = slug.trim_matches('_').to_string();
+    if slug.is_empty() {
+        "session".to_string()
+    } else {
+        slug
+    }
 }
 
 pub(crate) fn ensure_buddy_session_binding(
