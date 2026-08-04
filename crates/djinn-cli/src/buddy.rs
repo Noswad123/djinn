@@ -12,7 +12,8 @@ use djinn_memory::{AgentSession, AgentSessionEvent, AgentSessionEventKind, Agent
 use crate::{
     ensure_trailing_newline, folder_session_manifest_meta, read_event_turn_pairs,
     read_folder_session_manifest, resolve_session_dir, session_manifest_workspace_path,
-    write_folder_session_events_jsonl, yes_no, OutputFormat,
+    shell::shell_quote_if_needed as shell_quote, write_folder_session_events_jsonl, yes_no,
+    OutputFormat,
 };
 
 pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
@@ -1725,15 +1726,4 @@ fn buddy_json_command_hint(buddy_bin: &str, args: &[&str]) -> String {
         command.push_str(&shell_quote(arg));
     }
     command
-}
-
-fn shell_quote(value: &str) -> String {
-    if value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':' | '='))
-    {
-        value.to_string()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
 }

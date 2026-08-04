@@ -40,8 +40,19 @@ use sha2::{Digest, Sha256};
 
 mod buddy;
 mod buddy_consolidate;
+mod editor;
+mod session_artifact;
+mod shell;
 use buddy::*;
 use buddy_consolidate::*;
+use editor::{default_editor, open_editor_at, open_editor_path};
+#[cfg(test)]
+use session_artifact::resolve_folder_session_open_target_in_root;
+use session_artifact::{
+    fallback_folder_session_open_target, resolve_folder_session_open_target,
+    resolve_folder_session_repo_open_target, SessionOpenTarget,
+};
+use shell::shell_quote;
 
 const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
 const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
@@ -621,17 +632,6 @@ struct SessionOpenArgs {
     /// Editor command. Defaults to VISUAL, then EDITOR, then nvim.
     #[arg(long)]
     editor: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum SessionOpenTarget {
-    Summary,
-    Request,
-    Context,
-    Compacted,
-    Turns,
-    Manifest,
-    Repo,
 }
 
 #[derive(Debug, Args)]
@@ -5135,18 +5135,6 @@ fn folder_session_open_action_message(
     let path = resolve_folder_session_open_target(session_dir, target)
         .unwrap_or_else(|_| fallback_folder_session_open_target(session_dir, target));
     format!("{label}: {}", editor_open_command_hint(&path, editor))
-}
-
-fn fallback_folder_session_open_target(session_dir: &Path, target: SessionOpenTarget) -> PathBuf {
-    match target {
-        SessionOpenTarget::Summary => session_dir.join("summary.md"),
-        SessionOpenTarget::Request => session_dir.join("request.md"),
-        SessionOpenTarget::Context => session_dir.join("context"),
-        SessionOpenTarget::Compacted => session_dir.join("context/compacted.md"),
-        SessionOpenTarget::Turns => session_dir.join("turns"),
-        SessionOpenTarget::Manifest => session_dir.join("djinn.toml"),
-        SessionOpenTarget::Repo => session_dir.join("repo"),
-    }
 }
 
 fn editor_open_command_hint(path: &Path, editor: Option<&str>) -> String {
@@ -11827,90 +11815,6 @@ fn compact_session_list_datetime(value: &str) -> String {
             format!("{prefix}{timezone}")
         })
         .unwrap_or_else(|| value.to_string())
-}
-
-fn resolve_folder_session_open_target(dir: &Path, target: SessionOpenTarget) -> Result<PathBuf> {
-    resolve_folder_session_open_target_in_root(dir, target, &default_folder_session_root())
-}
-
-fn resolve_folder_session_open_target_in_root(
-    dir: &Path,
-    target: SessionOpenTarget,
-    buddy_lookup_root: &Path,
-) -> Result<PathBuf> {
-    let session_dir = resolve_folder_session_open_dir_in_root(dir, buddy_lookup_root)?;
-    let path = match target {
-        SessionOpenTarget::Summary => session_dir.join("summary.md"),
-        SessionOpenTarget::Request => session_dir.join("request.md"),
-        SessionOpenTarget::Context => session_dir.join("context"),
-        SessionOpenTarget::Compacted => session_dir.join("context/compacted.md"),
-        SessionOpenTarget::Turns => session_dir.join("turns"),
-        SessionOpenTarget::Manifest => session_dir.join("djinn.toml"),
-        SessionOpenTarget::Repo => resolve_folder_session_repo_open_target(&session_dir)?,
-    };
-    Ok(path)
-}
-
-fn resolve_folder_session_open_dir_in_root(
-    dir: &Path,
-    buddy_lookup_root: &Path,
-) -> Result<PathBuf> {
-    Ok(resolve_existing_folder_session_reference_in_root(dir, buddy_lookup_root)?.session_dir)
-}
-
-fn resolve_folder_session_repo_open_target(session_dir: &Path) -> Result<PathBuf> {
-    let manifest = read_folder_session_manifest(session_dir)?;
-    if let Some(manifest) = manifest {
-        if let Some(repo_path) = manifest
-            .repo_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-        {
-            return Ok(PathBuf::from(repo_path));
-        }
-        if let Some(repo_link) = manifest
-            .repo_link
-            .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-        {
-            let path = PathBuf::from(repo_link);
-            return Ok(if path.is_absolute() {
-                path
-            } else {
-                session_dir.join(path)
-            });
-        }
-    }
-    let context_dir = session_dir.join("context");
-    if context_dir.is_dir() {
-        let mut symlink_dirs = Vec::new();
-        for entry in fs::read_dir(&context_dir).with_context(|| {
-            format!(
-                "reading session context directory {}",
-                context_dir.display()
-            )
-        })? {
-            let entry = entry?;
-            let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
-            };
-            if metadata.file_type().is_symlink()
-                && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir())
-            {
-                symlink_dirs.push(path);
-            }
-        }
-        if symlink_dirs.len() == 1 {
-            return Ok(symlink_dirs.remove(0));
-        }
-    }
-    bail!(
-        "session has no repo target in djinn.toml or unique context symlink: {}",
-        session_dir.display()
-    )
 }
 
 fn remove_folder_session(dir: &Path) -> Result<SessionRmReport> {
@@ -20028,10 +19932,6 @@ exit "$REVIEW_STATUS"
     )
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
 fn open_tool(args: OpenToolArgs) -> Result<()> {
     let roots = tool_roots(args.roots);
     let entries = scan_tools(&roots)?;
@@ -20045,37 +19945,6 @@ fn open_tool_entry(entry: &ToolEntry, editor: Option<String>) -> Result<()> {
 
 fn open_skill_entry(entry: &SkillRecord, editor: Option<String>) -> Result<()> {
     open_editor_at(&entry.path, 1, editor)
-}
-
-fn open_editor_at(path: &Path, line: usize, editor: Option<String>) -> Result<()> {
-    open_editor_path_with_line(path, Some(line), editor)
-}
-
-fn open_editor_path(path: &Path, editor: Option<String>) -> Result<()> {
-    open_editor_path_with_line(path, None, editor)
-}
-
-fn open_editor_path_with_line(
-    path: &Path,
-    line: Option<usize>,
-    editor: Option<String>,
-) -> Result<()> {
-    let editor = editor.unwrap_or_else(default_editor);
-    let mut parts = editor.split_whitespace();
-    let Some(program) = parts.next() else {
-        bail!("editor command is empty");
-    };
-    let mut cmd = ProcessCommand::new(program);
-    cmd.args(parts);
-    if let Some(line) = line {
-        cmd.arg(format!("+{}", line));
-    }
-    cmd.arg(path);
-    let status = cmd.status()?;
-    if !status.success() {
-        bail!("editor exited with status {status}");
-    }
-    Ok(())
 }
 
 fn format_memory_review_prompt(
@@ -20574,18 +20443,6 @@ fn format_roots(roots: &[PathBuf]) -> String {
         .map(|root| root.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn default_editor() -> String {
-    env::var("VISUAL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            env::var("EDITOR")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or_else(|| "nvim".to_string())
 }
 
 fn write_tools_index(roots: &[PathBuf], entries: &[ToolEntry], index_path: &Path) -> Result<bool> {
