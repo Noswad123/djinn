@@ -61,7 +61,7 @@ struct Cli {
     /// Open Buddy mode immediately instead of the Djinn dashboard.
     #[arg(short = 'b', long = "buddy")]
     buddy: bool,
-    /// Folder-backed session to open. With -b/--buddy, accepts a folder session or bound Buddy id.
+    /// Folder-backed session name, path, or Buddy id to open.
     #[arg(short = 's', long = "session", value_name = "SESSION")]
     session: Option<PathBuf>,
     #[command(subcommand)]
@@ -126,7 +126,8 @@ struct AuthArgs {
 struct SessionArgs {
     #[command(subcommand)]
     command: Option<SessionCommand>,
-    /// Folder-backed session name or directory for convenience actions.
+    /// Folder-backed session name, path, or Buddy id for convenience actions.
+    #[arg(value_name = "SESSION")]
     dir: Option<PathBuf>,
     /// Open the session summary without spelling `session open`.
     #[arg(long)]
@@ -182,7 +183,8 @@ enum SessionCommand {
 
 #[derive(Debug, Args)]
 struct SessionWatchArgs {
-    /// Folder-backed session name or directory to watch.
+    /// Folder-backed session name, path, or Buddy id to watch.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Poll interval in milliseconds while the session is running.
     #[arg(long = "interval-ms", default_value_t = 1000)]
@@ -197,7 +199,8 @@ struct SessionWatchArgs {
 
 #[derive(Debug, Args)]
 struct SessionRunArgs {
-    /// Folder-backed session name or directory to run.
+    /// Folder-backed session name, path, or Buddy id to run.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Run in the foreground and block until the answer is written. Background is the default.
     #[arg(long = "fg")]
@@ -239,7 +242,8 @@ struct SessionRunArgs {
 
 #[derive(Debug, Args)]
 struct SessionBuddyArgs {
-    /// Folder-backed session name or directory to run through Buddy.
+    /// Folder-backed session name, path, or Buddy id to run through Buddy.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, runtime binding, tools/buddy/bin/buddy, then buddy.
     #[arg(long = "buddy-bin")]
@@ -300,8 +304,8 @@ struct SessionInitArgs {
 
 #[derive(Debug, Args)]
 struct SessionCompactArgs {
-    /// Folder-backed session name or directory containing events/context artifacts.
-    #[arg(long = "session-dir")]
+    /// Folder-backed session name, path, or Buddy id containing events/context artifacts.
+    #[arg(long = "session-dir", value_name = "SESSION")]
     session_dir: PathBuf,
     /// Output path. Defaults to <session-dir>/context/compacted.md.
     #[arg(long)]
@@ -313,8 +317,8 @@ struct SessionCompactArgs {
 
 #[derive(Debug, Args)]
 struct SessionPromoteArgs {
-    /// Folder-backed session names or directories to promote from.
-    #[arg(required = true)]
+    /// Folder-backed session names, paths, or Buddy ids to promote from.
+    #[arg(required = true, value_name = "SESSION")]
     dirs: Vec<PathBuf>,
     /// Promotion type to prepare for.
     #[arg(long = "type", alias = "target", value_enum, default_value_t = SessionPromoteType::Memory)]
@@ -335,7 +339,8 @@ struct SessionPromoteArgs {
 
 #[derive(Debug, Args)]
 struct SessionDecisionArgs {
-    /// Promotion session name or directory.
+    /// Promotion session name, path, or Buddy id.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Optional candidate id/path within the promotion session. Defaults to the whole promotion outcome.
     candidate: Option<String>,
@@ -352,7 +357,8 @@ struct SessionDecisionArgs {
 
 #[derive(Debug, Args)]
 struct SessionCleanupArgs {
-    /// Promotion session name or directory whose source sessions should be removed.
+    /// Promotion session name, path, or Buddy id whose source sessions should be removed.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Permanently delete source sessions recorded in context/sources.toml.
     #[arg(long)]
@@ -367,7 +373,8 @@ struct SessionCleanupArgs {
 
 #[derive(Debug, Args)]
 struct SessionExportPatternArgs {
-    /// Pattern promotion session name or directory.
+    /// Pattern promotion session name, path, or Buddy id.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Optional pattern candidate id/path. Defaults to all generated pattern candidates.
     candidate: Option<String>,
@@ -387,7 +394,8 @@ struct SessionExportPatternArgs {
 
 #[derive(Debug, Args)]
 struct SessionValidateCandidatesArgs {
-    /// Promotion session name or directory.
+    /// Promotion session name, path, or Buddy id.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Optional candidate id/path within the promotion session. Defaults to all candidates.
     candidate: Option<String>,
@@ -398,7 +406,8 @@ struct SessionValidateCandidatesArgs {
 
 #[derive(Debug, Args)]
 struct SessionValidateEventsArgs {
-    /// Folder-backed session name or directory to validate.
+    /// Folder-backed session name, path, or Buddy id to validate.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Output JSON instead of text.
     #[arg(long)]
@@ -407,8 +416,8 @@ struct SessionValidateEventsArgs {
 
 #[derive(Debug, Args)]
 struct SessionEventsArgs {
-    /// Folder-backed session name or directory to project from.
-    #[arg(required_unless_present = "all")]
+    /// Folder-backed session name, path, or Buddy id to project from.
+    #[arg(required_unless_present = "all", value_name = "SESSION")]
     dir: Option<PathBuf>,
     /// Report event-ledger health for all cache-backed sessions.
     #[arg(long, conflicts_with_all = ["dir", "write", "restore"])]
@@ -471,7 +480,8 @@ enum SessionContextCommand {
 
 #[derive(Debug, Args)]
 struct SessionContextDiscoverArgs {
-    /// Folder-backed session name or directory to update.
+    /// Folder-backed session name, path, or Buddy id to update.
+    #[arg(value_name = "SESSION")]
     session: PathBuf,
     /// Preview discoveries without creating links or repo-index.md.
     #[arg(long = "dry-run")]
@@ -483,7 +493,8 @@ struct SessionContextDiscoverArgs {
 
 #[derive(Debug, Args)]
 struct SessionContextLsArgs {
-    /// Folder-backed session name or directory to inspect.
+    /// Folder-backed session name, path, or Buddy id to inspect.
+    #[arg(value_name = "SESSION")]
     session: PathBuf,
     /// Output JSON instead of text.
     #[arg(long)]
@@ -492,7 +503,8 @@ struct SessionContextLsArgs {
 
 #[derive(Debug, Args)]
 struct SessionContextAddArgs {
-    /// Folder-backed session name or directory to update.
+    /// Folder-backed session name, path, or Buddy id to update.
+    #[arg(value_name = "SESSION")]
     session: PathBuf,
     /// File or directory to link into context/.
     path: PathBuf,
@@ -509,7 +521,8 @@ struct SessionContextAddArgs {
 
 #[derive(Debug, Args)]
 struct SessionContextRmArgs {
-    /// Folder-backed session name or directory to update.
+    /// Folder-backed session name, path, or Buddy id to update.
+    #[arg(value_name = "SESSION")]
     session: PathBuf,
     /// Context entry name to remove.
     name: String,
@@ -520,7 +533,8 @@ struct SessionContextRmArgs {
 
 #[derive(Debug, Args)]
 struct SessionStatusArgs {
-    /// Folder-backed session name or directory to inspect.
+    /// Folder-backed session name, path, or Buddy id to inspect.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Output JSON instead of text.
     #[arg(long)]
@@ -549,7 +563,8 @@ struct SessionShortenNamesArgs {
 
 #[derive(Debug, Args)]
 struct SessionOpenArgs {
-    /// Folder-backed session name or directory to open.
+    /// Folder-backed session name, path, or Buddy id to open.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Session artifact to open. Defaults to summary.md.
     #[arg(value_enum, default_value_t = SessionOpenTarget::Summary)]
@@ -572,7 +587,8 @@ enum SessionOpenTarget {
 
 #[derive(Debug, Args)]
 struct SessionRmArgs {
-    /// Folder-backed session name or directory to remove.
+    /// Folder-backed session name, path, or Buddy id to remove.
+    #[arg(value_name = "SESSION")]
     dir: PathBuf,
     /// Output JSON instead of text.
     #[arg(long)]
@@ -4909,7 +4925,7 @@ fn run_session(args: SessionArgs) -> Result<()> {
         None if args.open => {
             let dir = args
                 .dir
-                .ok_or_else(|| anyhow!("session name or directory is required for --open"))?;
+                .ok_or_else(|| anyhow!("session name, path, or Buddy id is required for --open"))?;
             session_open(SessionOpenArgs {
                 dir,
                 target: SessionOpenTarget::Summary,
@@ -6209,10 +6225,9 @@ fn session_events(args: SessionEventsArgs) -> Result<()> {
         return Ok(());
     }
 
-    let dir = args
-        .dir
-        .as_ref()
-        .ok_or_else(|| anyhow!("session name or directory is required unless --all is used"))?;
+    let dir = args.dir.as_ref().ok_or_else(|| {
+        anyhow!("session name, path, or Buddy id is required unless --all is used")
+    })?;
     if let Some(backup) = &args.restore {
         let report = restore_folder_session_event_backup(dir, backup, args.write)?;
         if args.json {
@@ -10083,7 +10098,7 @@ fn compact_folder_session(
     session_dir: &Path,
     output: Option<&Path>,
 ) -> Result<SessionCompactReport> {
-    let session_dir = resolve_session_dir(session_dir)?;
+    let session_dir = resolve_existing_folder_session_dir(session_dir)?;
     let turns_dir = session_dir.join("turns");
     let context_dir = session_dir.join("context");
     fs::create_dir_all(&context_dir)
