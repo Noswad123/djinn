@@ -69,10 +69,13 @@ use session_registry::{
     format_session_rename_report, format_session_shorten_names_report,
     rename_folder_session_in_root, shorten_cache_folder_session_names,
 };
+#[cfg(test)]
+use session_status::SessionStatusTurnReport;
 use session_status::{
-    format_folder_session_status, SessionStatusCandidateEntry, SessionStatusCandidateReport,
-    SessionStatusFileReport, SessionStatusLifecycleReport, SessionStatusRepoReport,
-    SessionStatusReport, SessionStatusTurnReport,
+    count_folder_session_events_jsonl, format_folder_session_status, session_status_next_action,
+    session_status_repo, session_status_turn_report, SessionStatusCandidateEntry,
+    SessionStatusCandidateReport, SessionStatusFileReport, SessionStatusLifecycleReport,
+    SessionStatusReport,
 };
 #[cfg(test)]
 use session_transcript::{build_session_transcript, render_session_transcript_markdown};
@@ -10164,18 +10167,6 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
     })
 }
 
-fn count_folder_session_events_jsonl(path: &Path) -> usize {
-    fs::read_to_string(path)
-        .ok()
-        .map(|content| {
-            content
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .count()
-        })
-        .unwrap_or(0)
-}
-
 fn session_status_lifecycle(
     session_dir: &Path,
     manifest: Option<&FolderSessionManifest>,
@@ -10570,21 +10561,6 @@ fn system_time_to_rfc3339(time: SystemTime) -> Option<String> {
     .map(|time| time.to_rfc3339())
 }
 
-fn session_status_turn_report(turn: &FolderSessionTurnDigest) -> SessionStatusTurnReport {
-    SessionStatusTurnReport {
-        id: turn.id.clone(),
-        request_path: turn
-            .request_path
-            .as_ref()
-            .map(|path| path.display().to_string()),
-        response_path: turn
-            .response_path
-            .as_ref()
-            .map(|path| path.display().to_string()),
-        has_response: turn.response_path.is_some(),
-    }
-}
-
 fn session_status_candidates(session_dir: &Path) -> Result<Option<SessionStatusCandidateReport>> {
     let outputs_dir = session_dir.join("outputs");
     let candidates_dir = outputs_dir.join("candidates");
@@ -10788,53 +10764,6 @@ pub(crate) fn format_session_candidate_entry(entry: &SessionStatusCandidateEntry
         detail.push_str(&format!(" ({path})"));
     }
     detail
-}
-
-fn session_status_next_action(
-    session_dir: &Path,
-    manifest: Option<&FolderSessionManifest>,
-    request_exists: bool,
-    turn_count: usize,
-    lifecycle: &SessionStatusLifecycleReport,
-    candidates: Option<&SessionStatusCandidateReport>,
-) -> Option<String> {
-    if lifecycle.state == "running" {
-        Some(format!(
-            "check again: djinn session status {}",
-            session_dir.display()
-        ))
-    } else if manifest.and_then(|manifest| manifest.kind.as_deref()) == Some("promotion")
-        && candidates.is_some_and(|candidates| candidates.candidate_count > 0)
-    {
-        Some(format!(
-            "review candidates: djinn session accept {} --dry-run",
-            session_dir.display()
-        ))
-    } else if lifecycle.state == "failed" {
-        if matches!(
-            lifecycle.reason.as_deref(),
-            Some("background_worker_stale" | "background_worker_unresponsive")
-        ) {
-            Some(format!(
-                "inspect background log/transcript, then stop or rerun foreground: djinn session run {} --fg",
-                session_dir.display()
-            ))
-        } else {
-            Some("inspect the failure note, edit request.md or context, then run again".to_string())
-        }
-    } else if request_exists && turn_count == 0 {
-        Some(format!(
-            "run request.md: djinn session run {}",
-            session_dir.display()
-        ))
-    } else if turn_count > 0 {
-        Some(format!(
-            "open latest summary: djinn session open {} summary",
-            session_dir.display()
-        ))
-    } else {
-        None
-    }
 }
 
 fn list_cache_folder_sessions(limit: Option<usize>) -> Result<SessionLsReport> {
@@ -12138,48 +12067,6 @@ fn inspect_folder_session_context_dir(context_dir: &Path) -> Result<(usize, Vec<
     Ok((count, skipped))
 }
 
-fn session_status_repo(
-    session_dir: &Path,
-    manifest: &FolderSessionManifest,
-) -> Option<SessionStatusRepoReport> {
-    if manifest.repo_path.is_none() && manifest.repo_link.is_none() {
-        return None;
-    }
-    let link_path = manifest
-        .repo_link
-        .as_ref()
-        .map(|link| PathBuf::from(link))
-        .map(|link| {
-            if link.is_absolute() {
-                link
-            } else {
-                session_dir.join(link)
-            }
-        });
-    let (link_exists, link_is_symlink, link_target, link_broken) = link_path
-        .as_ref()
-        .map(|link| match fs::symlink_metadata(link) {
-            Ok(metadata) => {
-                let is_symlink = metadata.file_type().is_symlink();
-                let target = fs::read_link(link)
-                    .ok()
-                    .map(|target| target.display().to_string());
-                let broken = is_symlink && fs::metadata(link).is_err();
-                (true, is_symlink, target, broken)
-            }
-            Err(_) => (false, false, None, false),
-        })
-        .unwrap_or((false, false, None, false));
-    Some(SessionStatusRepoReport {
-        path: manifest.repo_path.clone(),
-        link: link_path.map(|path| path.display().to_string()),
-        link_exists,
-        link_is_symlink,
-        link_target,
-        link_broken,
-    })
-}
-
 fn format_folder_session_context_ls(report: &SessionContextLsReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!("Session context: {}", report.context_dir));
@@ -12294,10 +12181,10 @@ fn format_folder_session_context_discover(report: &SessionContextDiscoverReport)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct FolderSessionTurnDigest {
-    id: String,
-    request_path: Option<PathBuf>,
-    response_path: Option<PathBuf>,
+pub(crate) struct FolderSessionTurnDigest {
+    pub(crate) id: String,
+    pub(crate) request_path: Option<PathBuf>,
+    pub(crate) response_path: Option<PathBuf>,
     request: Option<String>,
     response: Option<String>,
 }
@@ -13912,9 +13799,9 @@ pub(crate) fn ensure_trailing_newline(value: &str) -> String {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct FolderSessionManifest {
+pub(crate) struct FolderSessionManifest {
     title: Option<String>,
-    kind: Option<String>,
+    pub(crate) kind: Option<String>,
     session_id: Option<AgentSessionId>,
     created_at: Option<String>,
     promotion_type: Option<String>,
@@ -13922,8 +13809,8 @@ struct FolderSessionManifest {
     agent: Option<String>,
     model: Option<String>,
     workspace: Option<String>,
-    repo_path: Option<String>,
-    repo_link: Option<String>,
+    pub(crate) repo_path: Option<String>,
+    pub(crate) repo_link: Option<String>,
 }
 
 fn read_folder_session_manifest(session_dir: &Path) -> Result<Option<FolderSessionManifest>> {
