@@ -238,6 +238,7 @@ Work in folder-backed sessions:
 djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
 djinn session transcript ./debugging-session
+djinn session rename ./debugging-session debugging-summary
 djinn list memories
 djinn review memory <id> --dry-run
 ```

@@ -238,6 +238,7 @@ djinn session transcript ./debugging-session
 djinn session transcript ./debugging-session --format json
 djinn session transcript ./debugging-session --output ./transcript.md
 djinn session transcript ./debugging-session --open
+djinn session rename ./debugging-session debugging-summary
 djinn session validate-events ./debugging-session
 djinn session events ./debugging-session
 djinn session events ./debugging-session --write
@@ -254,6 +255,10 @@ canonical folder-local `events.jsonl` ledger as Markdown by default. Use
 projection, or `--open` to write and open `<session>/transcript.md`. The command
 does not read or rebuild `turns/`; if `events.jsonl` has validation issues, run
 `djinn session validate-events <ref>` before generating a transcript.
+Use `djinn session rename <ref> <new-name>` to give cache-backed sessions a shorter
+human name after creation. `<ref>` can be a folder name/path or Buddy id; the new
+name must be a bare cache folder name and must not already exist. Use `--dry-run`
+or `--json` for scripted previews.
 
 The old saved-row session store, OpenCode watcher/plugin integration, and legacy
 `djinn add/list/show/search/rm/clear/promote session(s)` commands have been

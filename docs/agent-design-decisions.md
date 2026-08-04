@@ -1017,6 +1017,11 @@ The first non-interactive agent slice is implemented as:
     explicit directories without `djinn.toml` are rejected; cache-backed bare-name
     session folders remain easy to remove because they live under the disposable
     session cache root.
+    `djinn session rename <ref> <new-name>` is the targeted rename path for
+    cache-backed folder sessions. It resolves `<ref>` with the shared folder/Buddy
+    resolver, only writes inside the cache session root, rejects path-like or
+    existing target names, and moves `runtime/buddy.json` plus all artifacts with
+    the folder instead of rewriting Buddy ids.
 76. Plain top-level `djinn ask "..."` creates and projects a cache-backed folder
     session automatically, using a prompt slug plus native session id under the
     cache session root. Explicit `--session-dir` / `--session <name-or-path>` keep

@@ -177,6 +177,8 @@ enum SessionCommand {
     Ls(SessionLsArgs),
     /// Open a folder-backed session artifact in $VISUAL/$EDITOR.
     Open(SessionOpenArgs),
+    /// Rename a cache-backed folder session.
+    Rename(SessionRenameArgs),
     /// Rename legacy long cache folder names to short copy-pasteable names.
     ShortenNames(SessionShortenNamesArgs),
     /// Remove a folder-backed session and its linked native session when present.
@@ -585,6 +587,22 @@ struct SessionLsArgs {
 #[derive(Debug, Args)]
 struct SessionShortenNamesArgs {
     /// Show planned renames without changing folder names.
+    #[arg(long = "dry-run")]
+    dry_run: bool,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionRenameArgs {
+    /// Folder-backed session name, path, or Buddy id to rename.
+    #[arg(value_name = "SESSION")]
+    dir: PathBuf,
+    /// New cache-backed session folder name.
+    #[arg(value_name = "NEW_NAME")]
+    new_name: String,
+    /// Show the planned rename without changing folders.
     #[arg(long = "dry-run")]
     dry_run: bool,
     /// Output JSON instead of text.
@@ -5414,6 +5432,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Status(args) => session_status(args),
         SessionCommand::Ls(args) => session_ls(args),
         SessionCommand::Open(args) => session_open(args),
+        SessionCommand::Rename(args) => session_rename(args),
         SessionCommand::ShortenNames(args) => session_shorten_names(args),
         SessionCommand::Rm(args) => session_rm(args),
     }
@@ -9810,6 +9829,18 @@ struct SessionShortenNameSkip {
     reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SessionRenameReport {
+    root: String,
+    from: String,
+    to: String,
+    old_name: String,
+    new_name: String,
+    dry_run: bool,
+    renamed: bool,
+    note: String,
+}
+
 fn session_ls(args: SessionLsArgs) -> Result<()> {
     let report = list_cache_folder_sessions(args.limit)?;
     if args.json {
@@ -9826,6 +9857,17 @@ fn session_shorten_names(args: SessionShortenNamesArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", format_session_shorten_names_report(&report));
+    }
+    Ok(())
+}
+
+fn session_rename(args: SessionRenameArgs) -> Result<()> {
+    let root = default_folder_session_root();
+    let report = rename_folder_session_in_root(&args.dir, &args.new_name, &root, args.dry_run)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_rename_report(&report));
     }
     Ok(())
 }
@@ -11171,6 +11213,67 @@ fn shorten_folder_session_names_in_root(
     })
 }
 
+fn rename_folder_session_in_root(
+    reference: &Path,
+    new_name: &str,
+    root: &Path,
+    dry_run: bool,
+) -> Result<SessionRenameReport> {
+    let new_name = validate_session_rename_target(new_name)?;
+    let resolved = resolve_existing_folder_session_reference_in_root(reference, root)?;
+    let from = resolved.session_dir;
+    if from.parent() != Some(root) {
+        bail!(
+            "session rename currently supports cache-backed sessions only: {}",
+            from.display()
+        );
+    }
+    let to = root.join(&new_name);
+    if to.exists() && to != from {
+        bail!("target session already exists: {}", to.display());
+    }
+    let old_name = from
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| from.to_str().unwrap_or(""))
+        .to_string();
+    let renamed = from != to;
+    if renamed && !dry_run {
+        fs::rename(&from, &to)
+            .with_context(|| format!("renaming {} to {}", from.display(), to.display()))?;
+    }
+    let note = if !renamed {
+        "Session already has the requested name; no folder rename needed."
+    } else if dry_run {
+        "Dry run: no folder was renamed."
+    } else {
+        "Session folder renamed. Buddy runtime binding and artifacts moved with the folder."
+    }
+    .to_string();
+    Ok(SessionRenameReport {
+        root: root.display().to_string(),
+        from: from.display().to_string(),
+        to: to.display().to_string(),
+        old_name,
+        new_name,
+        dry_run,
+        renamed,
+        note,
+    })
+}
+
+fn validate_session_rename_target(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("new session name cannot be empty");
+    }
+    let path = Path::new(name);
+    if !is_named_folder_session_reference(path) {
+        bail!("new session name must be a bare folder name without path separators: {name}");
+    }
+    Ok(name.to_string())
+}
+
 fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
     let manifest = read_folder_session_manifest(path)?;
     let session_id = manifest
@@ -11651,6 +11754,29 @@ fn format_session_shorten_names_report(report: &SessionShortenNamesReport) -> St
             lines.push(format!("  {}: {}", skipped.path, skipped.reason));
         }
     }
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn format_session_rename_report(report: &SessionRenameReport) -> String {
+    let mut lines = Vec::new();
+    if report.renamed {
+        lines.push(format!(
+            "{} session: {} -> {}",
+            if report.dry_run {
+                "Would rename"
+            } else {
+                "Renamed"
+            },
+            report.old_name,
+            report.new_name
+        ));
+    } else {
+        lines.push(format!("Session already named: {}", report.new_name));
+    }
+    lines.push(format!("  from: {}", report.from));
+    lines.push(format!("  to: {}", report.to));
+    lines.push(format!("  note: {}", report.note));
     lines.push(String::new());
     lines.join("\n")
 }
@@ -21087,6 +21213,27 @@ mod tests {
         let cli = Cli::try_parse_from([
             "djinn",
             "session",
+            "rename",
+            "ses_abc123",
+            "structured-programming",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Session(session_args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Rename(args)) = session_args.command else {
+            panic!("expected session rename command");
+        };
+        assert_eq!(args.dir, PathBuf::from("ses_abc123"));
+        assert_eq!(args.new_name, "structured-programming");
+        assert!(args.dry_run);
+        assert!(args.json);
+
+        let cli = Cli::try_parse_from([
+            "djinn",
+            "session",
             "small-question",
             "--open",
             "--editor",
@@ -25765,6 +25912,89 @@ link = "context/repo"
             resolve_folder_session_reference_name(&root, Path::new("missing")).unwrap(),
             None
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_rename_moves_cache_folder_and_preserves_buddy_runtime() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-rename-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let from = root.join("old-session");
+        fs::create_dir_all(from.join("runtime")).unwrap();
+        fs::write(from.join("summary.md"), "summary\n").unwrap();
+        fs::write(
+            from.join("runtime/buddy.json"),
+            serde_json::json!({
+                "buddy_session": "ses_renameBuddy123",
+                "stale_buddy_sessions": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let dry = rename_folder_session_in_root(
+            Path::new("ses_renameBuddy123"),
+            "new-session",
+            &root,
+            true,
+        )
+        .unwrap();
+        assert!(dry.dry_run);
+        assert!(dry.renamed);
+        assert!(from.exists());
+        assert!(!root.join("new-session").exists());
+
+        let report = rename_folder_session_in_root(
+            Path::new("ses_renameBuddy123"),
+            "new-session",
+            &root,
+            false,
+        )
+        .unwrap();
+
+        let to = root.join("new-session");
+        assert!(report.renamed);
+        assert!(!from.exists());
+        assert!(to.join("summary.md").exists());
+        assert!(to.join("runtime/buddy.json").exists());
+        assert!(fs::read_to_string(to.join("runtime/buddy.json"))
+            .unwrap()
+            .contains("ses_renameBuddy123"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_rename_rejects_path_target_and_existing_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-rename-guard-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(root.join("old-session")).unwrap();
+        fs::create_dir_all(root.join("existing-session")).unwrap();
+
+        assert!(rename_folder_session_in_root(
+            Path::new("old-session"),
+            "nested/new-session",
+            &root,
+            false,
+        )
+        .is_err());
+        assert!(rename_folder_session_in_root(
+            Path::new("old-session"),
+            "existing-session",
+            &root,
+            false,
+        )
+        .is_err());
+        assert!(root.join("old-session").exists());
 
         let _ = fs::remove_dir_all(&root);
     }
