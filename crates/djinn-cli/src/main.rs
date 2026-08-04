@@ -4981,7 +4981,7 @@ fn run_session(args: SessionArgs) -> Result<()> {
                 editor: args.editor,
             })
         }
-        None if args.dir.is_some() => run_folder_session_tui(args.dir.unwrap()),
+        None if args.dir.is_some() => run_folder_session_tui(args.dir.unwrap(), args.editor),
         None => run_tui_command(TuiArgs {
             view: TuiView::Sessions,
             roots: Vec::new(),
@@ -4990,7 +4990,7 @@ fn run_session(args: SessionArgs) -> Result<()> {
     }
 }
 
-fn run_folder_session_tui(dir: PathBuf) -> Result<()> {
+fn run_folder_session_tui(dir: PathBuf, editor: Option<String>) -> Result<()> {
     let session_dir = resolve_existing_folder_session_reference(&dir)?.session_dir;
     let mut tui = djinn_tui::TuiSession::enter()?;
     let mut message = None::<String>;
@@ -5004,9 +5004,13 @@ fn run_folder_session_tui(dir: PathBuf) -> Result<()> {
             tui.finish()?;
             return Ok(());
         };
-        let action_message = folder_session_action_message(&action, &session_dir);
+        let action_message =
+            folder_session_action_message(&action, &session_dir, editor.as_deref());
         tui.suspend()?;
-        let action_result = handle_folder_session_tui_action(action, session_dir.clone());
+        println!("{action_message}");
+        io::stdout().flush()?;
+        let action_result =
+            handle_folder_session_tui_action(action, session_dir.clone(), editor.as_deref());
         tui.resume()?;
         message = Some(match action_result {
             Ok(()) => action_message,
@@ -5018,6 +5022,7 @@ fn run_folder_session_tui(dir: PathBuf) -> Result<()> {
 fn folder_session_action_message(
     action: &djinn_tui::FolderSessionAction,
     session_dir: &Path,
+    editor: Option<&str>,
 ) -> String {
     match action {
         djinn_tui::FolderSessionAction::Run => format!(
@@ -5036,16 +5041,19 @@ fn folder_session_action_message(
             session_dir,
             SessionOpenTarget::Summary,
             "Open summary command",
+            editor,
         ),
         djinn_tui::FolderSessionAction::EditRequest => folder_session_open_action_message(
             session_dir,
             SessionOpenTarget::Request,
             "Edit request command",
+            editor,
         ),
         djinn_tui::FolderSessionAction::OpenContext => folder_session_open_action_message(
             session_dir,
             SessionOpenTarget::Context,
             "Open context command",
+            editor,
         ),
         djinn_tui::FolderSessionAction::DiscoverContext => format!(
             "Discover context command: djinn session context discover {}",
@@ -5107,12 +5115,12 @@ fn folder_session_action_message(
         }
         djinn_tui::FolderSessionAction::OpenCandidate(path) => format!(
             "Open candidate command: {}",
-            editor_open_command_hint(Path::new(path))
+            editor_open_command_hint(Path::new(path), editor)
         ),
         djinn_tui::FolderSessionAction::OpenPath(path) => {
             format!(
                 "Open path command: {}",
-                editor_open_command_hint(Path::new(path))
+                editor_open_command_hint(Path::new(path), editor)
             )
         }
     }
@@ -5122,10 +5130,11 @@ fn folder_session_open_action_message(
     session_dir: &Path,
     target: SessionOpenTarget,
     label: &str,
+    editor: Option<&str>,
 ) -> String {
     let path = resolve_folder_session_open_target(session_dir, target)
         .unwrap_or_else(|_| fallback_folder_session_open_target(session_dir, target));
-    format!("{label}: {}", editor_open_command_hint(&path))
+    format!("{label}: {}", editor_open_command_hint(&path, editor))
 }
 
 fn fallback_folder_session_open_target(session_dir: &Path, target: SessionOpenTarget) -> PathBuf {
@@ -5140,17 +5149,15 @@ fn fallback_folder_session_open_target(session_dir: &Path, target: SessionOpenTa
     }
 }
 
-fn editor_open_command_hint(path: &Path) -> String {
-    format!(
-        "{} {}",
-        default_editor(),
-        shell_quote(&path.display().to_string())
-    )
+fn editor_open_command_hint(path: &Path, editor: Option<&str>) -> String {
+    let editor = editor.map(str::to_string).unwrap_or_else(default_editor);
+    format!("{} {}", editor, shell_quote(&path.display().to_string()))
 }
 
 fn handle_folder_session_tui_action(
     action: djinn_tui::FolderSessionAction,
     session_dir: PathBuf,
+    editor: Option<&str>,
 ) -> Result<()> {
     match action {
         djinn_tui::FolderSessionAction::Run => session_run(SessionRunArgs {
@@ -5185,17 +5192,17 @@ fn handle_folder_session_tui_action(
         djinn_tui::FolderSessionAction::OpenSummary => session_open(SessionOpenArgs {
             dir: session_dir,
             target: SessionOpenTarget::Summary,
-            editor: None,
+            editor: editor.map(str::to_string),
         }),
         djinn_tui::FolderSessionAction::EditRequest => session_open(SessionOpenArgs {
             dir: session_dir,
             target: SessionOpenTarget::Request,
-            editor: None,
+            editor: editor.map(str::to_string),
         }),
         djinn_tui::FolderSessionAction::OpenContext => session_open(SessionOpenArgs {
             dir: session_dir,
             target: SessionOpenTarget::Context,
-            editor: None,
+            editor: editor.map(str::to_string),
         }),
         djinn_tui::FolderSessionAction::DiscoverContext => {
             session_context_discover(SessionContextDiscoverArgs {
@@ -5256,9 +5263,11 @@ fn handle_folder_session_tui_action(
             SessionDecisionAction::Deny,
         ),
         djinn_tui::FolderSessionAction::OpenCandidate(path) => {
-            open_editor_path(Path::new(&path), None)
+            open_editor_path(Path::new(&path), editor.map(str::to_string))
         }
-        djinn_tui::FolderSessionAction::OpenPath(path) => open_editor_path(Path::new(&path), None),
+        djinn_tui::FolderSessionAction::OpenPath(path) => {
+            open_editor_path(Path::new(&path), editor.map(str::to_string))
+        }
     }
 }
 
@@ -18923,12 +18932,12 @@ fn run_tui_in_session(
 fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Result<bool> {
     match action {
         djinn_tui::TuiAction::OpenSession(session) => {
-            run_folder_session_tui(PathBuf::from(session.path)).map(|_| false)
+            run_folder_session_tui(PathBuf::from(session.path), editor).map(|_| false)
         }
         djinn_tui::TuiAction::PromoteSessions {
             promotion_type,
             sessions,
-        } => promote_tui_sessions(promotion_type, sessions).map(|_| false),
+        } => promote_tui_sessions(promotion_type, sessions, editor).map(|_| false),
         djinn_tui::TuiAction::OpenTool(entry) => open_tool_entry(&entry, editor).map(|_| false),
         djinn_tui::TuiAction::OpenSkill(entry) => open_skill_entry(&entry, editor).map(|_| false),
         djinn_tui::TuiAction::ReviewMemory(id) => accept_memory(AcceptMemoryArgs {
@@ -18947,6 +18956,7 @@ fn handle_tui_action(action: djinn_tui::TuiAction, editor: Option<String>) -> Re
 fn promote_tui_sessions(
     promotion_type: djinn_tui::DashboardPromotionType,
     sessions: Vec<djinn_tui::SessionRecord>,
+    editor: Option<String>,
 ) -> Result<()> {
     if sessions.is_empty() {
         bail!("select at least one session to promote");
@@ -18970,7 +18980,7 @@ fn promote_tui_sessions(
         plural_suffix(report.session_count),
         report.promotion_session_dir
     );
-    run_folder_session_tui(PathBuf::from(report.promotion_session_dir))
+    run_folder_session_tui(PathBuf::from(report.promotion_session_dir), editor)
 }
 
 fn session_promote_type_from_dashboard(
@@ -25425,11 +25435,15 @@ link = "context/repo"
             .unwrap()
             .ends_with("response.md"));
         assert_eq!(
-            folder_session_action_message(&djinn_tui::FolderSessionAction::Run, &session_dir,),
+            folder_session_action_message(&djinn_tui::FolderSessionAction::Run, &session_dir, None),
             format!("Run command: djinn session run '{}'", session_dir.display())
         );
         assert_eq!(
-            folder_session_action_message(&djinn_tui::FolderSessionAction::Buddy, &session_dir,),
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::Buddy,
+                &session_dir,
+                None
+            ),
             format!(
                 "Buddy chat command: djinn session chat '{}'",
                 session_dir.display()
@@ -25439,16 +25453,29 @@ link = "context/repo"
             folder_session_action_message(
                 &djinn_tui::FolderSessionAction::OpenSummary,
                 &session_dir,
+                None,
             ),
             format!(
                 "Open summary command: {}",
-                editor_open_command_hint(&session_dir.join("summary.md"))
+                editor_open_command_hint(&session_dir.join("summary.md"), None)
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::EditRequest,
+                &session_dir,
+                Some("code --wait"),
+            ),
+            format!(
+                "Edit request command: code --wait '{}'",
+                session_dir.join("request.md").display()
             )
         );
         assert_eq!(
             folder_session_action_message(
                 &djinn_tui::FolderSessionAction::AcceptCandidate("todo-001".to_string()),
                 &session_dir,
+                None,
             ),
             format!(
                 "Accept candidate command: djinn session accept '{}' 'todo-001'",
@@ -25461,10 +25488,11 @@ link = "context/repo"
                     view.candidate_entries[0].path.clone()
                 ),
                 &session_dir,
+                None,
             ),
             format!(
                 "Open candidate command: {}",
-                editor_open_command_hint(Path::new(&view.candidate_entries[0].path))
+                editor_open_command_hint(Path::new(&view.candidate_entries[0].path), None)
             )
         );
         assert_eq!(
@@ -25473,6 +25501,7 @@ link = "context/repo"
                     "pattern-001".to_string(),
                 )),
                 &session_dir,
+                None,
             ),
             format!(
                 "Pattern export command: djinn session export-pattern '{}' 'pattern-001' --to <notes.md>",
@@ -25483,6 +25512,7 @@ link = "context/repo"
             folder_session_action_message(
                 &djinn_tui::FolderSessionAction::ShowValidateEventsCommand,
                 &session_dir,
+                None,
             ),
             format!(
                 "Event validation command: djinn session validate-events '{}'",
@@ -25493,6 +25523,7 @@ link = "context/repo"
             folder_session_action_message(
                 &djinn_tui::FolderSessionAction::ShowEventsWriteCommand,
                 &session_dir,
+                None,
             ),
             format!(
                 "Event rebuild command: djinn session events '{}' --write",
@@ -25505,6 +25536,7 @@ link = "context/repo"
                     "events-rebuild-test".to_string(),
                 ),
                 &session_dir,
+                None,
             ),
             format!(
                 "Event restore command: djinn session events '{}' --restore 'events-rebuild-test' --write",

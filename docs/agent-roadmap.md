@@ -77,9 +77,9 @@ Borrow these concepts directly where they fit Ratatui:
   view, low-noise persistent footer, and artifact-oriented actions.
 - **Status hierarchy:** prominent lifecycle state, muted repo/model/session
   metadata, clear next-action hints, and distinct failure/warning rows.
-- **Artifact taxonomy:** summary, request, context, turns, logs, and repo links
-  should be visible as navigable artifacts rather than hidden implementation
-  details.
+- **Artifact taxonomy:** summary, request, context, events, transcripts, logs,
+  and repo links should be visible as navigable artifacts rather than hidden
+  implementation details.
 - **Progressive disclosure:** show concise previews by default, with keyboard-first
   drill-down into status, context, turn evidence, and run logs.
 - **Reusable dialogs:** one grouped fuzzy select abstraction for commands,
@@ -122,19 +122,16 @@ becomes necessary.
 
 Ready implementation slices:
 
-- Build future Buddy/Djinn reconciliation work on the existing folder-session
-  contract: `djinn session consolidate` mutates by default, `--dry-run` previews,
-  and `runtime/buddy.json` remains the binding authority. Djinn now prefers the
-  hidden `buddy djinn-bridge` JSON stdin/stdout protocol for Buddy session
-  listing/creation and falls back to the legacy strict JSON `buddy session
-  list/create --format json` commands only when the bridge is unavailable. Keep
-  future protocol expansion strict and explicit; do not support loose legacy shapes.
+- Expand the hidden `buddy djinn-bridge` protocol only for concrete Djinn-owned
+  needs that cannot be expressed through the existing list/get/create/delete
+  operations. Keep additions strict and explicit; do not support loose legacy
+  shapes.
 - Add an inline or docked request composer in the Sessions UI for quick edits to
   `request.md` before launching the existing folder-session or Buddy run paths.
-- Buddy now accepts `DJINN_EVENTS_JSONL` from Djinn-launched interactive folder
-  sessions and appends completed user/assistant message events to that ledger. Keep
-  future streaming work scoped to richer event schema and partial-run recovery; do
-  not make `turns/<id>/` the active history path again.
+- Extend interactive event capture beyond completed user/assistant pairs only when
+  richer streaming state or partial-run recovery is ready to ship. Keep
+  `events.jsonl` as the active history path; do not make `turns/<id>/` active
+  history again.
 
 #### Background run recovery follow-ups
 
@@ -278,6 +275,11 @@ SQLite only after a real limit appears, such as:
 - high-volume event histories;
 - complex branch/tree queries;
 - file history/rollback needing relational joins.
+
+### Removing sessions(s) from the tui
+- should be able to select one or more sessions to remove
+- after selecting just one there should be a keybinding to remove it
+- after removal I should be taken back to session selection tab
 
 ## Blocked/deferred
 
