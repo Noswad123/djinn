@@ -42,6 +42,7 @@ mod buddy;
 mod buddy_consolidate;
 mod editor;
 mod session_artifact;
+mod session_list;
 mod session_registry;
 mod session_transcript;
 mod shell;
@@ -53,6 +54,13 @@ use session_artifact::resolve_folder_session_open_target_in_root;
 use session_artifact::{
     fallback_folder_session_open_target, resolve_folder_session_open_target,
     resolve_folder_session_repo_open_target, SessionOpenTarget,
+};
+#[cfg(test)]
+use session_list::compact_session_list_datetime;
+pub(crate) use session_list::FolderSessionSummary;
+use session_list::{
+    format_folder_session_ls, FolderSessionBuddySummary, FolderSessionEventHealth,
+    FolderSessionGroup, SessionLsReport,
 };
 #[cfg(test)]
 use session_registry::shorten_folder_session_names_in_root;
@@ -9624,64 +9632,6 @@ fn session_context_rm(args: SessionContextRmArgs) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionLsReport {
-    root: String,
-    sessions: Vec<FolderSessionSummary>,
-    groups: Vec<FolderSessionGroup>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct FolderSessionGroup {
-    repo: String,
-    sessions: Vec<FolderSessionSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct FolderSessionSummary {
-    name: String,
-    display_name: String,
-    reference_name: String,
-    path: String,
-    manifest_exists: bool,
-    session_id: Option<String>,
-    native_session_exists: bool,
-    lifecycle: SessionStatusLifecycleReport,
-    created_at: Option<String>,
-    updated_at: Option<String>,
-    workspace: Option<String>,
-    repo_path: Option<String>,
-    request_md: bool,
-    summary_md: bool,
-    summary_preview: Option<String>,
-    turn_count: usize,
-    event_health: FolderSessionEventHealth,
-    buddy: Option<FolderSessionBuddySummary>,
-    latest_turn: Option<SessionStatusTurnReport>,
-    candidates: Option<SessionStatusCandidateReport>,
-    next_action: Option<String>,
-    modified_at: Option<String>,
-    modified_at_ms: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct FolderSessionBuddySummary {
-    buddy_session: Option<String>,
-    command: Option<String>,
-    last_run_at: Option<String>,
-    runtime_path: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct FolderSessionEventHealth {
-    ready: bool,
-    events_exists: bool,
-    event_count: usize,
-    event_turn_count: usize,
-    issue_count: usize,
-    issue_codes: Vec<String>,
-}
-
 fn session_ls(args: SessionLsArgs) -> Result<()> {
     let report = list_cache_folder_sessions(args.limit)?;
     if args.json {
@@ -11369,78 +11319,6 @@ fn parse_session_list_datetime_ms(value: &str) -> Option<i64> {
         .map(|datetime| datetime.timestamp_millis())
 }
 
-fn format_folder_session_ls(report: &SessionLsReport) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("Cache folder sessions: {}", report.root));
-    if report.sessions.is_empty() {
-        lines.push("No cache-backed folder sessions found.".to_string());
-        lines.push(String::new());
-        return lines.join("\n");
-    }
-    for (index, group) in report.groups.iter().enumerate() {
-        if index > 0 {
-            lines.push(String::new());
-        }
-        lines.push(format!("Repo: {}", group.repo));
-        lines.push(format!(
-            "  {:<20} {:<12} {:<34} {}",
-            "UPDATED", "STATE", "BUDDY", "NAME"
-        ));
-        lines.push(format!("  {}", "-".repeat(86)));
-        for session in &group.sessions {
-            let updated = session
-                .updated_at
-                .as_deref()
-                .or(session.modified_at.as_deref())
-                .map(compact_session_list_datetime)
-                .unwrap_or_else(|| "-".to_string());
-            let summary = session.summary_preview.as_deref().unwrap_or("");
-            let state = folder_session_summary_state_label(session);
-            lines.push(format!(
-                "  {:<20} {:<12} {:<34} {}",
-                truncate_table_cell(&updated, 20),
-                truncate_table_cell(&state, 12),
-                folder_session_buddy_label(session.buddy.as_ref()),
-                format!(
-                    "{}{}",
-                    session.reference_name,
-                    if session.manifest_exists {
-                        ""
-                    } else {
-                        " (no manifest)"
-                    }
-                ),
-            ));
-            if !summary.is_empty() {
-                lines.push(format!("      summary: {summary}"));
-            }
-        }
-    }
-    lines.push(format!(
-        "\nTotal: {} folder sessions",
-        report.sessions.len()
-    ));
-    lines.push(String::new());
-    lines.join("\n")
-}
-
-fn folder_session_buddy_label(buddy: Option<&FolderSessionBuddySummary>) -> String {
-    buddy
-        .and_then(|buddy| buddy.buddy_session.as_deref())
-        .filter(|session| !session.trim().is_empty())
-        .unwrap_or("-")
-        .to_string()
-}
-
-fn folder_session_summary_state_label(session: &FolderSessionSummary) -> String {
-    session
-        .lifecycle
-        .mode
-        .as_deref()
-        .map(|mode| format!("{}/{}", session.lifecycle.state, mode))
-        .unwrap_or_else(|| session.lifecycle.state.clone())
-}
-
 fn short_folder_session_path(value: &str) -> String {
     Path::new(value)
         .file_name()
@@ -11460,24 +11338,6 @@ fn truncate_table_cell(value: &str, max_chars: usize) -> String {
     let mut truncated = value.chars().take(max_chars - 1).collect::<String>();
     truncated.push('…');
     truncated
-}
-
-fn compact_session_list_datetime(value: &str) -> String {
-    value
-        .split_once('.')
-        .map(|(prefix, suffix)| {
-            let timezone = if suffix.ends_with('Z') {
-                "Z"
-            } else {
-                suffix
-                    .rfind('+')
-                    .or_else(|| suffix.rfind('-'))
-                    .map(|idx| &suffix[idx..])
-                    .unwrap_or("")
-            };
-            format!("{prefix}{timezone}")
-        })
-        .unwrap_or_else(|| value.to_string())
 }
 
 fn remove_folder_session(dir: &Path) -> Result<SessionRmReport> {
