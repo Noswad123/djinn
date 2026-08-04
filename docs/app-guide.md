@@ -234,6 +234,10 @@ use `djinn session events --all` for event-health detail.
 ```bash
 djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
+djinn session transcript ./debugging-session
+djinn session transcript ./debugging-session --format json
+djinn session transcript ./debugging-session --output ./transcript.md
+djinn session transcript ./debugging-session --open
 djinn session validate-events ./debugging-session
 djinn session events ./debugging-session
 djinn session events ./debugging-session --write
@@ -243,6 +247,13 @@ djinn session promote ./debugging-session --type memory
 djinn session run ./promotion-memory --fg
 djinn session accept ./promotion-memory --dry-run
 ```
+
+`djinn session transcript <ref>` renders complete user/assistant pairs from the
+canonical folder-local `events.jsonl` ledger as Markdown by default. Use
+`--format json` / `--json` for structured turns, `--output <path>` to write a
+projection, or `--open` to write and open `<session>/transcript.md`. The command
+does not read or rebuild `turns/`; if `events.jsonl` has validation issues, run
+`djinn session validate-events <ref>` before generating a transcript.
 
 The old saved-row session store, OpenCode watcher/plugin integration, and legacy
 `djinn add/list/show/search/rm/clear/promote session(s)` commands have been

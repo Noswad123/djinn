@@ -237,6 +237,7 @@ Work in folder-backed sessions:
 ```bash
 djinn ask "Summarize the debugging path" --session ./debugging-session
 djinn session status ./debugging-session
+djinn session transcript ./debugging-session
 djinn list memories
 djinn review memory <id> --dry-run
 ```

@@ -1006,6 +1006,10 @@ The first non-interactive agent slice is implemented as:
     targets are `summary`, `request`, `context`, `compacted`, `turns`, `manifest`,
     and `repo`; `repo` resolves through `[context.repo]` in `djinn.toml` or a
     unique repo symlink under `context/`.
+    `djinn session transcript <ref>` is the read/export surface for complete
+    user/assistant history: it renders valid `events.jsonl` pairs as Markdown or
+    JSON, can write/open `<session>/transcript.md`, and does not revive `turns/` as
+    a primary transcript source.
 75. `djinn session rm <name-or-path>` removes the folder-backed session without a
     `--force` ceremony. If `djinn.toml` records a native `session_id`, Djinn also
     removes or accounts for that native JSONL session, including JSONL stored
