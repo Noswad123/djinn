@@ -4926,7 +4926,7 @@ fn run_session(args: SessionArgs) -> Result<()> {
 }
 
 fn run_folder_session_tui(dir: PathBuf) -> Result<()> {
-    let session_dir = resolve_session_dir(&dir)?;
+    let session_dir = resolve_existing_folder_session_reference(&dir)?.session_dir;
     let mut tui = djinn_tui::TuiSession::enter()?;
     let mut message = None::<String>;
     loop {
@@ -15254,13 +15254,14 @@ fn session_watch(args: SessionWatchArgs) -> Result<()> {
     if args.interval_ms == 0 {
         bail!("--interval-ms must be greater than zero");
     }
+    let session_dir = resolve_existing_folder_session_reference(&args.dir)?.session_dir;
     let started = Instant::now();
     let timeout = args.timeout_seconds.map(Duration::from_secs);
     let interval = Duration::from_millis(args.interval_ms);
     let mut last_key: Option<String> = None;
 
     loop {
-        let report = folder_session_status(&args.dir)?;
+        let report = folder_session_status(&session_dir)?;
         let key = session_watch_snapshot_key(&report)?;
         if last_key.as_deref() != Some(key.as_str()) {
             if args.json {

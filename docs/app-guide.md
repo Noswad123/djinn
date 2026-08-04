@@ -89,14 +89,15 @@ conversation count, and response preview; `turns/` is only consulted when no val
 event pairs are available. The default text `djinn session ls` table stays compact:
 repo grouping, updated time, lifecycle state, Buddy id, name, and summary preview.
 
-For direct session entry, use `djinn -s <session>` to open the focused
+For direct session entry, use `djinn -s <ref>` to open the focused
 folder-session view. For occasional Buddy-style quick interaction without turning
 Djinn into a full chat UI, use `djinn -b` to open Buddy directly. Use `djinn -b -s
 <ref>` or the clustered short form `djinn -bs <ref>` to open a specific folder
-session through Buddy. Core existing-session commands (`session open`, `session
-status`, `session run`, `session buddy`, `session rm`, and context subcommands)
-share the same resolver for folder-session names/paths plus current or stale Buddy
-ids recorded in `runtime/buddy.json`. The lower-level
+session through Buddy. Core existing-session entry points (`djinn -s`, `session
+open`, `session status`, `session watch`, `session run`, `session buddy`,
+`session rm`, and context subcommands) share the same resolver for folder-session
+names/paths plus current or stale Buddy ids recorded in `runtime/buddy.json`. The
+lower-level
 `djinn session buddy <session>` command reads the current `request.md`, sends that
 prompt to Buddy on stdin, passes `-s <buddy-session>` when provided or when
 `runtime/buddy.json` already records one, captures Buddy's final stdout response,

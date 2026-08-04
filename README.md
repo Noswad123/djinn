@@ -92,10 +92,11 @@ binding recorded in `runtime/buddy.json`; Buddy is expected to ship with Djinn, 
 these creation paths fail if that binding cannot be created or reused. For
 occasional Buddy-style quick interaction, `djinn -b` opens
 Buddy mode directly, while `djinn -b -s <ref>` / `djinn -bs <ref>` opens a
-specific folder session through Buddy. Core existing-session commands such as
-`session open`, `session status`, `session run`, `session buddy`, and `session rm`
-resolve folder-session names/paths plus current or stale Buddy ids already recorded
-in `runtime/buddy.json`. The lower-level `djinn session buddy <session>` command
+specific folder session through Buddy. Core existing-session entry points such as
+`djinn -s`, `session open`, `session status`, `session watch`, `session run`,
+`session buddy`, and `session rm` resolve folder-session names/paths plus current
+or stale Buddy ids already recorded in `runtime/buddy.json`. The lower-level
+`djinn session buddy <session>` command
 sends `request.md` to Buddy on stdin and captures Buddy's final response back into
 `summary.md` and
 `events.jsonl`; top-level Buddy mode always resumes Buddy interactively instead.

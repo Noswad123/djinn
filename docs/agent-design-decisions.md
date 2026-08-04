@@ -998,7 +998,8 @@ The first non-interactive agent slice is implemented as:
     existing manifest conflicts, init fails unless `--force` is provided; Djinn
     should not auto-create numbered sibling names like `<name>-2`.
 74. `djinn session open <ref> [target]` is the file-first navigation command for
-    folder-backed sessions. Existing-session commands share a central resolver for
+    folder-backed sessions. Existing-session entry points, including `djinn -s`,
+    `session watch`, and other session subcommands, share a central resolver for
     bare cache names, explicit paths, and current or stale Buddy ids recorded in
     `runtime/buddy.json`; missing refs fail before opening editors or launching
     workers. `session open` opens `summary.md` by default. Supported targets are
