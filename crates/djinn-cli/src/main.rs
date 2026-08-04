@@ -44,6 +44,7 @@ mod editor;
 mod session_artifact;
 mod session_list;
 mod session_registry;
+mod session_status;
 mod session_transcript;
 mod shell;
 use buddy::*;
@@ -67,6 +68,11 @@ use session_registry::shorten_folder_session_names_in_root;
 use session_registry::{
     format_session_rename_report, format_session_shorten_names_report,
     rename_folder_session_in_root, shorten_cache_folder_session_names,
+};
+use session_status::{
+    format_folder_session_status, SessionStatusCandidateEntry, SessionStatusCandidateReport,
+    SessionStatusFileReport, SessionStatusLifecycleReport, SessionStatusRepoReport,
+    SessionStatusReport, SessionStatusTurnReport,
 };
 #[cfg(test)]
 use session_transcript::{build_session_transcript, render_session_transcript_markdown};
@@ -9415,95 +9421,11 @@ fn session_promote_type_instructions(promotion_type: SessionPromoteType) -> &'st
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionStatusReport {
-    session_dir: String,
-    manifest_exists: bool,
-    session_id: Option<String>,
-    native_session_exists: bool,
-    profile: Option<String>,
-    agent: Option<String>,
-    model: Option<String>,
-    workspace: Option<String>,
-    repo: Option<SessionStatusRepoReport>,
-    lifecycle: SessionStatusLifecycleReport,
-    files: SessionStatusFileReport,
-    turn_count: usize,
-    event_count: usize,
-    latest_turn: Option<SessionStatusTurnReport>,
-    candidates: Option<SessionStatusCandidateReport>,
-    context_ingestible_count: usize,
-    context_skipped: Vec<String>,
-    next_action: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionStatusCandidateReport {
-    candidate_count: usize,
-    accepted_count: usize,
-    denied_count: usize,
-    pending_count: usize,
-    candidates_dir: String,
-    candidate_index_path: Option<String>,
-    candidate_status_path: Option<String>,
-    entries: Vec<SessionStatusCandidateEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionStatusCandidateEntry {
-    id: String,
-    candidate_type: Option<String>,
-    status: String,
-    path: String,
-    text: Option<String>,
-    rationale: Option<String>,
-    evidence: Vec<String>,
-    destination: Option<String>,
-    writeback_path: Option<String>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PromotionCandidateDecisionStatus {
     status: String,
     destination: Option<String>,
     writeback_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionStatusLifecycleReport {
-    state: String,
-    mode: Option<String>,
-    updated_at: Option<String>,
-    reason: Option<String>,
-    note: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionStatusTurnReport {
-    id: String,
-    request_path: Option<String>,
-    response_path: Option<String>,
-    has_response: bool,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionStatusRepoReport {
-    path: Option<String>,
-    link: Option<String>,
-    link_exists: bool,
-    link_is_symlink: bool,
-    link_target: Option<String>,
-    link_broken: bool,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionStatusFileReport {
-    request_md: bool,
-    summary_md: bool,
-    context_dir: bool,
-    compacted_md: bool,
-    turns_dir: bool,
-    events_jsonl: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -10840,7 +10762,7 @@ fn record_promotion_candidate_status_event(
     );
 }
 
-fn format_session_candidate_status(candidates: &SessionStatusCandidateReport) -> String {
+pub(crate) fn format_session_candidate_status(candidates: &SessionStatusCandidateReport) -> String {
     format!(
         "{} total, {} accepted, {} denied, {} pending",
         candidates.candidate_count,
@@ -10850,7 +10772,7 @@ fn format_session_candidate_status(candidates: &SessionStatusCandidateReport) ->
     )
 }
 
-fn format_session_candidate_entry(entry: &SessionStatusCandidateEntry) -> String {
+pub(crate) fn format_session_candidate_entry(entry: &SessionStatusCandidateEntry) -> String {
     let candidate_type = entry.candidate_type.as_deref().unwrap_or("unknown");
     let mut detail = format!("{} [{}] {}", entry.id, candidate_type, entry.status);
     if let Some(destination) = &entry.destination {
@@ -12256,129 +12178,6 @@ fn session_status_repo(
         link_target,
         link_broken,
     })
-}
-
-fn format_folder_session_status(report: &SessionStatusReport) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("Djinn session: {}", report.session_dir));
-    lines.push(format!("Manifest: {}", yes_no(report.manifest_exists)));
-    if let Some(session_id) = &report.session_id {
-        lines.push(format!(
-            "Native session: {session_id} ({})",
-            if report.native_session_exists {
-                "found"
-            } else {
-                "missing"
-            }
-        ));
-    } else {
-        lines.push("Native session: none recorded".to_string());
-    }
-    lines.push(format!("State: {}", report.lifecycle.state));
-    if let Some(mode) = &report.lifecycle.mode {
-        lines.push(format!("Mode: {mode}"));
-    }
-    if let Some(updated_at) = &report.lifecycle.updated_at {
-        lines.push(format!("State updated: {updated_at}"));
-    }
-    if let Some(reason) = &report.lifecycle.reason {
-        lines.push(format!("State reason: {reason}"));
-    }
-    if let Some(note) = &report.lifecycle.note {
-        lines.push(format!("State note: {note}"));
-    }
-    if let Some(profile) = &report.profile {
-        lines.push(format!("Profile: {profile}"));
-    }
-    if let Some(agent) = &report.agent {
-        lines.push(format!("Agent: {agent}"));
-    }
-    if let Some(model) = &report.model {
-        lines.push(format!("Model: {model}"));
-    }
-    if let Some(workspace) = &report.workspace {
-        lines.push(format!("Workspace: {workspace}"));
-    }
-    if let Some(repo) = &report.repo {
-        lines.push("Repo:".to_string());
-        if let Some(path) = &repo.path {
-            lines.push(format!("  path: {path}"));
-        }
-        if let Some(link) = &repo.link {
-            lines.push(format!("  link: {link}"));
-            lines.push(format!("  link exists: {}", yes_no(repo.link_exists)));
-            lines.push(format!("  link symlink: {}", yes_no(repo.link_is_symlink)));
-            if let Some(target) = &repo.link_target {
-                lines.push(format!("  target: {target}"));
-            }
-            lines.push(format!("  broken: {}", yes_no(repo.link_broken)));
-        }
-    }
-    lines.push("Files:".to_string());
-    lines.push(format!("  request.md: {}", yes_no(report.files.request_md)));
-    lines.push(format!("  summary.md: {}", yes_no(report.files.summary_md)));
-    lines.push(format!("  context/: {}", yes_no(report.files.context_dir)));
-    lines.push(format!(
-        "  context/compacted.md: {}",
-        yes_no(report.files.compacted_md)
-    ));
-    lines.push(format!("  turns/: {}", yes_no(report.files.turns_dir)));
-    lines.push(format!(
-        "  events.jsonl: {}",
-        yes_no(report.files.events_jsonl)
-    ));
-    lines.push(format!("Turns: {}", report.turn_count));
-    lines.push(format!("Events: {}", report.event_count));
-    if let Some(turn) = &report.latest_turn {
-        lines.push("Latest turn:".to_string());
-        lines.push(format!("  id: {}", turn.id));
-        if let Some(request_path) = &turn.request_path {
-            lines.push(format!("  request: {request_path}"));
-        }
-        if let Some(response_path) = &turn.response_path {
-            lines.push(format!("  response: {response_path}"));
-        }
-        lines.push(format!("  has response: {}", yes_no(turn.has_response)));
-    }
-    if let Some(candidates) = &report.candidates {
-        lines.push("Candidates:".to_string());
-        lines.push(format!(
-            "  status: {}",
-            format_session_candidate_status(candidates)
-        ));
-        lines.push(format!("  dir: {}", candidates.candidates_dir));
-        if let Some(index_path) = &candidates.candidate_index_path {
-            lines.push(format!("  index: {index_path}"));
-        }
-        if let Some(status_path) = &candidates.candidate_status_path {
-            lines.push(format!("  decisions: {status_path}"));
-        }
-        if !candidates.entries.is_empty() {
-            lines.push("  entries:".to_string());
-            for entry in &candidates.entries {
-                lines.push(format!("    - {}", format_session_candidate_entry(entry)));
-            }
-        }
-    }
-    lines.push(format!(
-        "Ingestible context files: {}",
-        report.context_ingestible_count
-    ));
-    lines.push(format!(
-        "Manage context: djinn session context ls {}",
-        report.session_dir
-    ));
-    if !report.context_skipped.is_empty() {
-        lines.push("Skipped context:".to_string());
-        for skipped in &report.context_skipped {
-            lines.push(format!("  - {skipped}"));
-        }
-    }
-    if let Some(next_action) = &report.next_action {
-        lines.push(format!("Next: {next_action}"));
-    }
-    lines.push(String::new());
-    lines.join("\n")
 }
 
 fn format_folder_session_context_ls(report: &SessionContextLsReport) -> String {

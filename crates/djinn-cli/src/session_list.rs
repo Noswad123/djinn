@@ -1,6 +1,8 @@
 use serde::Serialize;
 
-use crate::{SessionStatusCandidateReport, SessionStatusLifecycleReport, SessionStatusTurnReport};
+use crate::session_status::{
+    SessionStatusCandidateReport, SessionStatusLifecycleReport, SessionStatusTurnReport,
+};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionLsReport {
