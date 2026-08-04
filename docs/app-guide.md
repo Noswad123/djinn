@@ -93,20 +93,23 @@ For direct session entry, use `djinn -s <ref>` to open the focused
 folder-session view. For occasional Buddy-style quick interaction without turning
 Djinn into a full chat UI, use `djinn -b` to open Buddy directly. Use `djinn -b -s
 <ref>` or the clustered short form `djinn -bs <ref>` to open a specific folder
-session through Buddy. Core existing-session entry points (`djinn -s`, `session
-open`, `session status`, `session watch`, `session run`, `session buddy`,
-`session rm`, and context subcommands) share the same resolver for folder-session
-names/paths plus current or stale Buddy ids recorded in `runtime/buddy.json`. The
-lower-level
-`djinn session buddy <session>` command reads the current `request.md`, sends that
-prompt to Buddy on stdin, passes `-s <buddy-session>` when provided or when
-`runtime/buddy.json` already records one, captures Buddy's final stdout response,
-then writes `summary.md`, appends a user/assistant pair to `events.jsonl`, clears
-`request.md`, and records bridge metadata under `runtime/buddy.json`. The focused
-Sessions UI exposes the same flow as “Open Buddy composer”. Top-level Buddy mode
-is the interactive resume affordance: `djinn -bs <ref>` launches Buddy directly
-with the bound `-s <buddy-session>` instead of running the capture bridge, even if
-`request.md` contains a pending prompt. For folder-backed launches, Djinn also sets
+session through Buddy. Use `djinn session chat <ref>` when you want the same
+interactive chat experience but prefer an explicit subcommand over `-bs`. Core
+existing-session entry points (`djinn -s`, `session open`, `session status`,
+`session watch`, `session run`, `session chat`, `session rm`, and
+context subcommands) share the same resolver for folder-session names/paths plus
+current or stale Buddy ids recorded in `runtime/buddy.json`. The
+`djinn session chat <session> --capture-request` mode reads the current
+`request.md`, sends that prompt to Buddy on stdin, passes `-s <buddy-session>` when
+provided or when `runtime/buddy.json` already records one, captures Buddy's final
+stdout response, then writes `summary.md`, appends a user/assistant pair to
+`events.jsonl`, clears `request.md`, and records bridge metadata under
+`runtime/buddy.json`. The focused Sessions UI exposes interactive chat as “Open
+Buddy chat”. Top-level Buddy mode
+and `djinn session chat <ref>` are the interactive resume affordances: they launch
+Buddy directly with the bound `-s <buddy-session>` instead of running the capture
+bridge, even if `request.md` contains a pending prompt. For folder-backed launches,
+Djinn also sets
 `DJINN_SESSION_DIR` and `DJINN_EVENTS_JSONL`; Buddy uses those to append completed
 interactive user/assistant exchanges to the capsule's `events.jsonl`. When Buddy
 exits, Djinn reads the latest valid event pair and refreshes `summary.md` from the

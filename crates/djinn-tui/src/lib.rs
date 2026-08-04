@@ -608,7 +608,7 @@ fn folder_session_command_palette(
         ),
         folder_session_command_entry(
             "Session",
-            "Open Buddy composer",
+            "Open Buddy chat",
             "Launch Buddy with request.md on stdin and capture the final response",
             FolderSessionCommand::Action(FolderSessionAction::Buddy),
         ),
@@ -3869,9 +3869,7 @@ mod tests {
         );
 
         let palette = folder_session_command_palette(&view, 0);
-        assert!(palette
-            .iter()
-            .any(|entry| entry.label == "Open Buddy composer"));
+        assert!(palette.iter().any(|entry| entry.label == "Open Buddy chat"));
         assert!(palette
             .iter()
             .any(|entry| entry.label == "Show keybindings"));

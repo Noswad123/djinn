@@ -143,6 +143,7 @@ enum BuddyBridgeRequest {
     LaunchPlain,
     LaunchInteractive {
         buddy_session: Option<String>,
+        buddy_args: Vec<String>,
         cwd: Option<PathBuf>,
         session_dir: PathBuf,
     },
@@ -181,6 +182,7 @@ pub(crate) trait BuddyLauncher {
     fn launch_interactive_session(
         &self,
         buddy_session: Option<&str>,
+        buddy_args: &[String],
         cwd: Option<&Path>,
         session_dir: &Path,
     ) -> Result<()>;
@@ -251,6 +253,7 @@ impl BuddyCliBackend {
             }
             BuddyBridgeRequest::LaunchInteractive {
                 buddy_session,
+                buddy_args,
                 cwd,
                 session_dir,
             } => {
@@ -262,6 +265,7 @@ impl BuddyCliBackend {
                 {
                     command.arg("-s").arg(session);
                 }
+                command.args(&buddy_args);
                 if let Some(cwd) = cwd {
                     command.current_dir(cwd);
                 }
@@ -444,11 +448,13 @@ impl BuddyLauncher for BuddyCliBackend {
     fn launch_interactive_session(
         &self,
         buddy_session: Option<&str>,
+        buddy_args: &[String],
         cwd: Option<&Path>,
         session_dir: &Path,
     ) -> Result<()> {
         match self.execute_bridge_request(BuddyBridgeRequest::LaunchInteractive {
             buddy_session: buddy_session.map(str::to_string),
+            buddy_args: buddy_args.to_vec(),
             cwd: cwd.map(Path::to_path_buf),
             session_dir: session_dir.to_path_buf(),
         })? {
@@ -527,11 +533,12 @@ impl BuddyLauncher for BuddyBridgeBackend {
     fn launch_interactive_session(
         &self,
         buddy_session: Option<&str>,
+        buddy_args: &[String],
         cwd: Option<&Path>,
         session_dir: &Path,
     ) -> Result<()> {
         self.cli
-            .launch_interactive_session(buddy_session, cwd, session_dir)
+            .launch_interactive_session(buddy_session, buddy_args, cwd, session_dir)
     }
 
     fn final_response(
@@ -979,10 +986,35 @@ pub(crate) fn run_top_level_folder_buddy_session(
     session_dir: &Path,
     explicit_buddy_session: Option<String>,
 ) -> Result<()> {
-    let behavior = top_level_buddy_session_behavior(session_dir, explicit_buddy_session)?;
-    run_interactive_session_buddy(session_dir, behavior)
+    run_top_level_folder_buddy_session_with_options(session_dir, explicit_buddy_session, None, &[])
 }
 
+pub(crate) fn run_top_level_folder_buddy_session_with_options(
+    session_dir: &Path,
+    explicit_buddy_session: Option<String>,
+    explicit_buddy_bin: Option<String>,
+    buddy_args: &[String],
+) -> Result<()> {
+    let runtime_path = session_dir.join("runtime/buddy.json");
+    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
+    let buddy_backend = if let Some(buddy_bin) = explicit_buddy_bin
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    {
+        BuddyBridgeBackend::explicit(buddy_bin)
+    } else {
+        BuddyBridgeBackend::resolved(previous_runtime.as_ref())?
+    };
+    let behavior = top_level_buddy_session_behavior_with_backend(
+        session_dir,
+        explicit_buddy_session,
+        &buddy_backend,
+        previous_runtime.clone(),
+    )?;
+    run_interactive_session_buddy_with_backend(session_dir, behavior, &buddy_backend, buddy_args)
+}
+
+#[cfg(test)]
 pub(crate) fn top_level_buddy_session_behavior(
     session_dir: &Path,
     explicit_buddy_session: Option<String>,
@@ -990,6 +1022,20 @@ pub(crate) fn top_level_buddy_session_behavior(
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
     let buddy_backend = BuddyBridgeBackend::resolved(previous_runtime.as_ref())?;
+    top_level_buddy_session_behavior_with_backend(
+        session_dir,
+        explicit_buddy_session,
+        &buddy_backend,
+        previous_runtime,
+    )
+}
+
+fn top_level_buddy_session_behavior_with_backend(
+    session_dir: &Path,
+    explicit_buddy_session: Option<String>,
+    buddy_backend: &dyn BuddySessionBackend,
+    previous_runtime: Option<BuddyRuntimeState>,
+) -> Result<TopLevelBuddySessionBehavior> {
     let buddy_session = explicit_buddy_session.or_else(|| {
         previous_runtime
             .as_ref()
@@ -999,7 +1045,7 @@ pub(crate) fn top_level_buddy_session_behavior(
     let requested_cwd = session_manifest_workspace_path(manifest.as_ref());
     if buddy_session.is_none() && session_dir.is_dir() {
         let binding = ensure_buddy_session_binding(
-            &buddy_backend,
+            buddy_backend,
             BuddyBindingInput {
                 session_dir: session_dir.to_path_buf(),
                 title: manifest
@@ -1020,7 +1066,7 @@ pub(crate) fn top_level_buddy_session_behavior(
             clear_folder_session_workspace(session_dir)?;
             let promoted = promote_stale_buddy_workspace(
                 session_dir,
-                &buddy_backend,
+                buddy_backend,
                 previous_runtime.as_ref(),
                 id,
                 Some(&path),
@@ -1037,15 +1083,20 @@ pub(crate) fn top_level_buddy_session_behavior(
     Ok(TopLevelBuddySessionBehavior { buddy_session, cwd })
 }
 
-pub(crate) fn run_interactive_session_buddy(
+pub(crate) fn run_interactive_session_buddy_with_backend<B>(
     session_dir: &Path,
     behavior: TopLevelBuddySessionBehavior,
-) -> Result<()> {
+    buddy_backend: &B,
+    buddy_args: &[String],
+) -> Result<()>
+where
+    B: BuddyLauncher + BuddySessionBackend,
+{
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = BuddyBridgeBackend::resolved(previous_runtime.as_ref())?;
     buddy_backend.launch_interactive_session(
         behavior.buddy_session.as_deref(),
+        buddy_args,
         behavior.cwd.as_deref(),
         session_dir,
     )?;
@@ -1057,6 +1108,11 @@ pub(crate) fn run_interactive_session_buddy(
             .as_ref()
             .map(|state| state.args.clone())
             .unwrap_or_default();
+        let runtime_args = if buddy_args.is_empty() {
+            previous_args
+        } else {
+            buddy_args.to_vec()
+        };
         write_buddy_runtime_state(
             &runtime_path,
             &BuddyRuntimeState {
@@ -1066,7 +1122,7 @@ pub(crate) fn run_interactive_session_buddy(
                     .map(|state| state.stale_buddy_sessions.clone())
                     .unwrap_or_default(),
                 command: buddy_backend.runtime_command_override(),
-                args: previous_args,
+                args: runtime_args,
                 last_run_at: Some(chrono::Utc::now().to_rfc3339()),
                 last_prompt_chars: previous_runtime
                     .as_ref()
@@ -1300,7 +1356,7 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
 
 pub(crate) fn format_session_buddy_report(report: &SessionBuddyReport) -> String {
     let mut lines = Vec::new();
-    lines.push(format!("Buddy composer: {}", report.session_dir));
+    lines.push(format!("Buddy capture: {}", report.session_dir));
     lines.push(format!("  command: {}", report.buddy_command));
     if let Some(session) = &report.buddy_session {
         lines.push(format!("  buddy session: {session}"));

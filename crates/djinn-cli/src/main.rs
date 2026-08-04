@@ -143,8 +143,8 @@ enum SessionCommand {
     Init(SessionInitArgs),
     /// Start request.md for a folder-backed session in the background by default.
     Run(SessionRunArgs),
-    /// Open Buddy over request.md and write the final response back to the folder session.
-    Buddy(SessionBuddyArgs),
+    /// Open an interactive Buddy chat for a folder-backed session.
+    Chat(SessionChatArgs),
     /// Reconcile Djinn folder sessions and Buddy native sessions.
     Consolidate(SessionConsolidateArgs),
     /// Poll a folder-backed session until it is no longer running.
@@ -241,23 +241,23 @@ struct SessionRunArgs {
 }
 
 #[derive(Debug, Args)]
-struct SessionBuddyArgs {
-    /// Folder-backed session name, path, or Buddy id to run through Buddy.
+struct SessionChatArgs {
+    /// Folder-backed session name, path, or Buddy id to open in interactive Buddy chat.
     #[arg(value_name = "SESSION")]
     dir: PathBuf,
-    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, runtime binding, tools/buddy/bin/buddy, then buddy.
+    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, runtime binding, then tools/buddy/bin/buddy.
     #[arg(long = "buddy-bin")]
     buddy_bin: Option<String>,
-    /// Buddy session id to resume. Defaults to runtime/buddy.json when present.
-    #[arg(long = "buddy-session")]
-    buddy_session: Option<String>,
     /// Extra argument to pass through to Buddy. Repeat for multiple args.
     #[arg(long = "buddy-arg", allow_hyphen_values = true)]
     buddy_args: Vec<String>,
-    /// Preview the Buddy command and request without running Buddy or writing files.
+    /// Send request.md to Buddy and capture the final response instead of opening interactive chat.
+    #[arg(long = "capture-request", visible_alias = "capture")]
+    capture_request: bool,
+    /// With --capture-request, preview the Buddy command and request without writing files.
     #[arg(long)]
     dry_run: bool,
-    /// Output JSON instead of text.
+    /// With --capture-request, output JSON instead of text.
     #[arg(long)]
     json: bool,
 }
@@ -4976,7 +4976,7 @@ fn folder_session_action_message(
             shell_quote(&session_dir.display().to_string())
         ),
         djinn_tui::FolderSessionAction::Buddy => format!(
-            "Buddy composer command: djinn session buddy {}",
+            "Buddy chat command: djinn session chat {}",
             shell_quote(&session_dir.display().to_string())
         ),
         djinn_tui::FolderSessionAction::Watch => format!(
@@ -5119,11 +5119,11 @@ fn handle_folder_session_tui_action(
             print: false,
             open: false,
         }),
-        djinn_tui::FolderSessionAction::Buddy => session_buddy(SessionBuddyArgs {
+        djinn_tui::FolderSessionAction::Buddy => session_chat(SessionChatArgs {
             dir: session_dir,
             buddy_bin: None,
-            buddy_session: None,
             buddy_args: Vec::new(),
+            capture_request: false,
             dry_run: false,
             json: false,
         }),
@@ -5366,7 +5366,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
     match command {
         SessionCommand::Init(args) => session_init(args),
         SessionCommand::Run(args) => session_run(args),
-        SessionCommand::Buddy(args) => session_buddy(args),
+        SessionCommand::Chat(args) => session_chat(args),
         SessionCommand::Consolidate(args) => session_consolidate(args),
         SessionCommand::Watch(args) => session_watch(args),
         SessionCommand::Compact(args) => session_compact(args),
@@ -9664,21 +9664,38 @@ fn session_open(args: SessionOpenArgs) -> Result<()> {
     open_editor_path(&target, args.editor)
 }
 
-fn session_buddy(args: SessionBuddyArgs) -> Result<()> {
-    let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
-    let report = run_session_buddy(&SessionBuddyRunArgs {
-        dir: session_ref.session_dir,
-        buddy_bin: args.buddy_bin.clone(),
-        buddy_session: args.buddy_session.clone(),
-        buddy_args: args.buddy_args.clone(),
-        dry_run: args.dry_run,
-    })?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_session_buddy_report(&report));
+fn session_chat(args: SessionChatArgs) -> Result<()> {
+    if !args.capture_request && args.dry_run {
+        bail!("--dry-run is only supported with --capture-request");
     }
-    Ok(())
+    if !args.capture_request && args.json {
+        bail!("--json is only supported with --capture-request");
+    }
+
+    if args.capture_request {
+        let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
+        let report = run_session_buddy(&SessionBuddyRunArgs {
+            dir: session_ref.session_dir,
+            buddy_bin: args.buddy_bin.clone(),
+            buddy_session: session_ref.buddy_session,
+            buddy_args: args.buddy_args.clone(),
+            dry_run: args.dry_run,
+        })?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", format_session_buddy_report(&report));
+        }
+        return Ok(());
+    }
+
+    let (session_dir, resolved_buddy_session) = resolve_top_level_buddy_session_arg(args.dir)?;
+    run_top_level_folder_buddy_session_with_options(
+        &session_dir,
+        resolved_buddy_session,
+        args.buddy_bin,
+        &args.buddy_args,
+    )
 }
 
 fn run_top_level_buddy_mode(session: Option<PathBuf>) -> Result<()> {
@@ -20948,6 +20965,15 @@ mod tests {
         assert!(args.dry_run);
         assert!(args.json);
 
+        let cli = Cli::try_parse_from(["djinn", "session", "chat", "ses_chatBuddy123"]).unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("expected session command");
+        };
+        let Some(SessionCommand::Chat(args)) = args.command else {
+            panic!("expected session chat command");
+        };
+        assert_eq!(args.dir, PathBuf::from("ses_chatBuddy123"));
+
         let cli = Cli::try_parse_from([
             "djinn",
             "session",
@@ -22221,28 +22247,39 @@ mod tests {
         let cli = Cli::try_parse_from([
             "djinn",
             "session",
-            "buddy",
+            "chat",
             "bap-questions",
+            "--capture-request",
             "--buddy-bin",
             "buddy-dev",
-            "--buddy-session",
-            "bud_123",
             "--buddy-arg",
             "--no-stream",
+            "--dry-run",
             "--json",
         ])
         .unwrap();
         let Some(Command::Session(args)) = cli.command else {
             panic!("expected session command");
         };
-        let Some(SessionCommand::Buddy(args)) = args.command else {
-            panic!("expected session buddy command");
+        let Some(SessionCommand::Chat(args)) = args.command else {
+            panic!("expected session chat command");
         };
         assert_eq!(args.dir, PathBuf::from("bap-questions"));
+        assert!(args.capture_request);
         assert_eq!(args.buddy_bin.as_deref(), Some("buddy-dev"));
-        assert_eq!(args.buddy_session.as_deref(), Some("bud_123"));
         assert_eq!(args.buddy_args, vec!["--no-stream".to_string()]);
+        assert!(args.dry_run);
         assert!(args.json);
+
+        assert!(Cli::try_parse_from([
+            "djinn",
+            "session",
+            "chat",
+            "bap-questions",
+            "--buddy-session",
+            "bud_123",
+        ])
+        .is_err());
 
         let cli = Cli::try_parse_from([
             "djinn",
@@ -22515,6 +22552,7 @@ mod tests {
         assert!(args.command.is_none());
         assert_eq!(args.dir, Some(PathBuf::from("bap-questions")));
 
+        assert!(Cli::try_parse_from(["djinn", "session", "buddy", "bap-questions"]).is_err());
         assert!(Cli::try_parse_from(["djinn", "share", "chats"]).is_err());
     }
 
@@ -22755,7 +22793,7 @@ mod tests {
         let runtime = fs::read_to_string(dir.join("runtime/buddy.json")).unwrap();
         assert!(runtime.contains("bud_test"));
         assert!(runtime.contains("--final"));
-        assert!(format_session_buddy_report(&report).contains("Buddy composer:"));
+        assert!(format_session_buddy_report(&report).contains("Buddy capture:"));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -25006,7 +25044,7 @@ link = "context/repo"
         assert_eq!(
             folder_session_action_message(&djinn_tui::FolderSessionAction::Buddy, &session_dir,),
             format!(
-                "Buddy composer command: djinn session buddy '{}'",
+                "Buddy chat command: djinn session chat '{}'",
                 session_dir.display()
             )
         );

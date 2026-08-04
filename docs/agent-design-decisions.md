@@ -999,13 +999,13 @@ The first non-interactive agent slice is implemented as:
     should not auto-create numbered sibling names like `<name>-2`.
 74. `djinn session open <ref> [target]` is the file-first navigation command for
     folder-backed sessions. Existing-session entry points, including `djinn -s`,
-    `session watch`, and other session subcommands, share a central resolver for
-    bare cache names, explicit paths, and current or stale Buddy ids recorded in
-    `runtime/buddy.json`; missing refs fail before opening editors or launching
-    workers. `session open` opens `summary.md` by default. Supported targets are
-    `summary`, `request`, `context`, `compacted`, `turns`, `manifest`, and `repo`;
-    `repo` resolves through `[context.repo]` in `djinn.toml` or a unique repo
-    symlink under `context/`.
+    `session chat`, `session watch`, and other session subcommands, share a central
+    resolver for bare cache names, explicit paths, and current or stale Buddy ids
+    recorded in `runtime/buddy.json`; missing refs fail before opening editors or
+    launching workers. `session open` opens `summary.md` by default. Supported
+    targets are `summary`, `request`, `context`, `compacted`, `turns`, `manifest`,
+    and `repo`; `repo` resolves through `[context.repo]` in `djinn.toml` or a
+    unique repo symlink under `context/`.
 75. `djinn session rm <name-or-path>` removes the folder-backed session without a
     `--force` ceremony. If `djinn.toml` records a native `session_id`, Djinn also
     removes or accounts for that native JSONL session, including JSONL stored

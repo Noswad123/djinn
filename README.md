@@ -92,15 +92,16 @@ binding recorded in `runtime/buddy.json`; Buddy is expected to ship with Djinn, 
 these creation paths fail if that binding cannot be created or reused. For
 occasional Buddy-style quick interaction, `djinn -b` opens
 Buddy mode directly, while `djinn -b -s <ref>` / `djinn -bs <ref>` opens a
-specific folder session through Buddy. Core existing-session entry points such as
-`djinn -s`, `session open`, `session status`, `session watch`, `session run`,
-`session buddy`, and `session rm` resolve folder-session names/paths plus current
-or stale Buddy ids already recorded in `runtime/buddy.json`. The lower-level
-`djinn session buddy <session>` command
-sends `request.md` to Buddy on stdin and captures Buddy's final response back into
-`summary.md` and
-`events.jsonl`; top-level Buddy mode always resumes Buddy interactively instead.
-When Buddy is launched through `djinn -bs <ref>`, Djinn passes the session capsule's
+specific folder session through Buddy. `djinn session chat <ref>` is the explicit
+interactive chat spelling for the same folder-session Buddy experience. Core
+existing-session entry points such as `djinn -s`, `session open`, `session status`,
+`session watch`, `session run`, `session chat`, and `session rm`
+resolve folder-session names/paths plus current or stale Buddy ids already recorded
+in `runtime/buddy.json`. Use `djinn session chat <ref> --capture-request` to send
+`request.md` to Buddy on stdin and capture Buddy's final response back into
+`summary.md` and `events.jsonl`; plain Buddy/chat mode resumes Buddy interactively
+instead. When Buddy is launched through `djinn -bs <ref>` or
+`djinn session chat <ref>`, Djinn passes the session capsule's
 `events.jsonl` path to Buddy so completed interactive user/assistant exchanges are
 also appended to the same folder-local event history. After Buddy exits, Djinn
 refreshes `summary.md` from the latest valid assistant event so the folder capsule
