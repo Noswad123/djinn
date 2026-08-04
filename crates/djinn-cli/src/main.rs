@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
@@ -44,7 +44,9 @@ mod buddy_consolidate;
 mod editor;
 mod permission_gate;
 mod promotion_candidate;
+mod promotion_cleanup;
 mod promotion_decision;
+mod promotion_export;
 mod promotion_generation;
 mod promotion_session;
 mod promotion_validation;
@@ -56,6 +58,7 @@ mod session_list;
 mod session_registry;
 mod session_status;
 mod session_transcript;
+mod session_watch;
 mod shell;
 #[cfg(test)]
 use background_run::BackgroundRunStatus;
@@ -69,10 +72,8 @@ use editor::{default_editor, open_editor_at, open_editor_path};
 use permission_gate::TerminalPermissionGate;
 #[cfg(test)]
 use promotion_candidate::parse_promotion_candidate;
-use promotion_candidate::{
-    candidate_string_array_value, candidate_string_value, resolve_promotion_candidates,
-    PromotionCandidate,
-};
+use promotion_candidate::{candidate_string_array_value, candidate_string_value};
+use promotion_cleanup::session_cleanup;
 #[cfg(test)]
 pub(crate) use promotion_decision::{
     candidate_duplicate_similarity, decide_promotion_session_with_stores, PromotionWritebackStores,
@@ -80,6 +81,7 @@ pub(crate) use promotion_decision::{
 use promotion_decision::{
     decide_promotion_session, session_decision_action_label, SessionDecisionAction,
 };
+use promotion_export::session_export_pattern;
 use promotion_generation::*;
 pub(crate) use promotion_session::create_promotion_session;
 use promotion_validation::session_validate_candidates;
@@ -136,6 +138,9 @@ use session_status::{format_agent_session_event_summary, format_background_promo
 #[cfg(test)]
 use session_transcript::{build_session_transcript, render_session_transcript_markdown};
 use session_transcript::{SessionTranscriptFormat, SessionTranscriptOptions};
+use session_watch::session_watch;
+#[cfg(test)]
+use session_watch::{format_session_watch_snapshot, session_watch_snapshot_key};
 use shell::shell_quote;
 
 const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
@@ -5422,280 +5427,6 @@ fn session_events(args: SessionEventsArgs) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionCleanupReport {
-    dry_run: bool,
-    session_dir: String,
-    delete_sources: bool,
-    source_count: usize,
-    sources: Vec<SessionCleanupSourceReport>,
-    note: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionCleanupSourceReport {
-    session_dir: String,
-    exists: bool,
-    removed: bool,
-    removed_native_session: bool,
-    status: String,
-}
-
-fn session_cleanup(args: SessionCleanupArgs) -> Result<()> {
-    let report = cleanup_promotion_session(&args)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        let verb = if report.dry_run {
-            "Would clean"
-        } else {
-            "Cleaned"
-        };
-        println!("{verb} promotion session sources: {}", report.session_dir);
-        for source in &report.sources {
-            println!(
-                "  - {}: {}",
-                source.session_dir,
-                if source.removed {
-                    "removed"
-                } else {
-                    source.status.as_str()
-                }
-            );
-            if source.removed_native_session {
-                println!("    native session: removed");
-            }
-        }
-        println!("  note: {}", report.note);
-    }
-    Ok(())
-}
-
-fn cleanup_promotion_session(args: &SessionCleanupArgs) -> Result<SessionCleanupReport> {
-    if !args.delete_sources {
-        bail!("nothing to clean up; pass --delete-sources to permanently remove source sessions");
-    }
-    let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
-    let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
-        format!(
-            "missing promotion session manifest: {}",
-            session_dir.display()
-        )
-    })?;
-    if manifest.kind.as_deref() != Some("promotion") {
-        bail!(
-            "session {} is not a promotion session; `djinn session cleanup` only applies to kind = \"promotion\"",
-            session_dir.display()
-        );
-    }
-
-    let source_paths = promotion_source_session_dirs(&session_dir)?;
-    let mut sources = Vec::new();
-    for source in source_paths {
-        let exists = source.exists();
-        if args.dry_run || !exists {
-            sources.push(SessionCleanupSourceReport {
-                session_dir: source.display().to_string(),
-                exists,
-                removed: false,
-                removed_native_session: false,
-                status: if args.dry_run && exists {
-                    "would_remove".to_string()
-                } else {
-                    "missing".to_string()
-                },
-            });
-            continue;
-        }
-        let removed = remove_folder_session(&source)?;
-        sources.push(SessionCleanupSourceReport {
-            session_dir: removed.session_dir,
-            exists,
-            removed: removed.removed_folder,
-            removed_native_session: removed.removed_native_session,
-            status: "removed".to_string(),
-        });
-    }
-
-    let source_count = sources.len();
-    let note = if args.dry_run {
-        "Dry run: no source sessions were removed. Re-run without --dry-run to permanently delete them."
-    } else {
-        "Source cleanup complete. The promotion session remains on disk; use `djinn session rm` if you also want to remove it."
-    }
-    .to_string();
-
-    Ok(SessionCleanupReport {
-        dry_run: args.dry_run,
-        session_dir: session_dir.display().to_string(),
-        delete_sources: args.delete_sources,
-        source_count,
-        sources,
-        note,
-    })
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionExportPatternReport {
-    dry_run: bool,
-    session_dir: String,
-    output_path: String,
-    append: bool,
-    candidate_count: usize,
-    candidates: Vec<String>,
-    wrote: bool,
-    preview: Option<String>,
-}
-
-fn session_export_pattern(args: SessionExportPatternArgs) -> Result<()> {
-    let report = export_pattern_insights(&args)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else if args.dry_run {
-        println!("Would export pattern insight(s) to: {}", report.output_path);
-        if let Some(preview) = &report.preview {
-            println!("\n{preview}");
-        }
-    } else {
-        let verb = if report.append {
-            "Appended"
-        } else {
-            "Exported"
-        };
-        println!(
-            "{verb} {} pattern candidate{} to {}",
-            report.candidate_count,
-            plural_suffix(report.candidate_count),
-            report.output_path
-        );
-    }
-    Ok(())
-}
-
-fn export_pattern_insights(args: &SessionExportPatternArgs) -> Result<SessionExportPatternReport> {
-    let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
-    let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
-        format!(
-            "missing promotion session manifest: {}",
-            session_dir.display()
-        )
-    })?;
-    if manifest.kind.as_deref() != Some("promotion")
-        || manifest.promotion_type.as_deref() != Some("pattern")
-    {
-        bail!(
-            "session {} is not a pattern promotion session",
-            session_dir.display()
-        );
-    }
-    let candidates = resolve_promotion_candidates(&session_dir, args.candidate.as_deref())?
-        .into_iter()
-        .filter(|candidate| candidate.candidate_type == "pattern")
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        bail!("no pattern candidates found to export");
-    }
-    let output_path = expand_tilde_path(&args.to.display().to_string());
-    if output_path.exists() && !args.append && !args.dry_run {
-        bail!(
-            "notes file already exists: {} (use --append to add pattern insights)",
-            output_path.display()
-        );
-    }
-    let content = render_pattern_export_note(&session_dir, &candidates);
-    if !args.dry_run {
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating notes export directory {}", parent.display()))?;
-        }
-        if args.append && output_path.exists() {
-            let mut file = fs::OpenOptions::new()
-                .append(true)
-                .open(&output_path)
-                .with_context(|| format!("opening notes file {}", output_path.display()))?;
-            file.write_all(format!("\n\n{}", content.trim_end()).as_bytes())
-                .with_context(|| format!("appending notes file {}", output_path.display()))?;
-            file.write_all(b"\n")
-                .with_context(|| format!("appending notes file {}", output_path.display()))?;
-        } else {
-            fs::write(&output_path, ensure_trailing_newline(&content))
-                .with_context(|| format!("writing notes file {}", output_path.display()))?;
-        }
-    }
-    Ok(SessionExportPatternReport {
-        dry_run: args.dry_run,
-        session_dir: session_dir.display().to_string(),
-        output_path: output_path.display().to_string(),
-        append: args.append,
-        candidate_count: candidates.len(),
-        candidates: candidates
-            .iter()
-            .map(|candidate| candidate.id.clone())
-            .collect(),
-        wrote: !args.dry_run,
-        preview: args.dry_run.then_some(content),
-    })
-}
-
-fn render_pattern_export_note(session_dir: &Path, candidates: &[PromotionCandidate]) -> String {
-    let mut out = String::new();
-    out.push_str("# Pattern insight\n\n");
-    out.push_str(&format!(
-        "Source promotion session: `{}`\n\n",
-        session_dir.display()
-    ));
-    for candidate in candidates {
-        out.push_str(&format!("## {}\n\n", candidate.id));
-        out.push_str(candidate.text.trim());
-        out.push_str("\n\n");
-        if let Some(rationale) = candidate
-            .rationale
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            out.push_str("### Rationale\n\n");
-            out.push_str(rationale);
-            out.push_str("\n\n");
-        }
-        out.push_str("### Evidence\n\n");
-        for evidence in &candidate.evidence {
-            out.push_str(&format!("- {evidence}\n"));
-        }
-        out.push('\n');
-    }
-    out
-}
-
-fn promotion_source_session_dirs(session_dir: &Path) -> Result<Vec<PathBuf>> {
-    let sources_path = session_dir.join("context").join("sources.toml");
-    let content = fs::read_to_string(&sources_path)
-        .with_context(|| format!("reading promotion sources {}", sources_path.display()))?;
-    let mut seen = BTreeSet::new();
-    let mut sources = Vec::new();
-    for line in content.lines().map(str::trim) {
-        let Some(value) = line
-            .strip_prefix("session_dir =")
-            .and_then(|value| parse_manifest_string_value(value.trim()))
-        else {
-            continue;
-        };
-        let path = expand_tilde_path(&value);
-        let key = path.display().to_string();
-        if seen.insert(key) {
-            sources.push(path);
-        }
-    }
-    if sources.is_empty() {
-        bail!(
-            "promotion session {} has no source sessions in {}",
-            session_dir.display(),
-            sources_path.display()
-        );
-    }
-    Ok(sources)
-}
-
 fn expand_tilde_path(value: &str) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/") {
         return djinn_core::home_dir().join(rest);
@@ -9345,94 +9076,6 @@ fn format_session_run_background_started(report: &SessionRunBackgroundReport) ->
     lines.push(format!("  pid: {}", report.pid));
     lines.push(format!("  log: {}", report.log_path));
     lines.push(format!("  watch: {}", report.watch_command));
-    lines.push(String::new());
-    lines.join("\n")
-}
-
-fn session_watch(args: SessionWatchArgs) -> Result<()> {
-    if args.interval_ms == 0 {
-        bail!("--interval-ms must be greater than zero");
-    }
-    let session_dir = resolve_existing_folder_session_reference(&args.dir)?.session_dir;
-    let started = Instant::now();
-    let timeout = args.timeout_seconds.map(Duration::from_secs);
-    let interval = Duration::from_millis(args.interval_ms);
-    let mut last_key: Option<String> = None;
-
-    loop {
-        let report = folder_session_status(&session_dir)?;
-        let key = session_watch_snapshot_key(&report)?;
-        if last_key.as_deref() != Some(key.as_str()) {
-            if args.json {
-                println!("{}", serde_json::to_string(&report)?);
-            } else {
-                print!("{}", format_session_watch_snapshot(&report));
-            }
-            last_key = Some(key);
-        }
-
-        if report.lifecycle.state != "running" {
-            return Ok(());
-        }
-        if let Some(timeout) = timeout {
-            if started.elapsed() >= timeout {
-                bail!(
-                    "timed out watching session after {} seconds: {}",
-                    timeout.as_secs(),
-                    report.session_dir
-                );
-            }
-        }
-        thread::sleep(interval);
-    }
-}
-
-fn session_watch_snapshot_key(report: &SessionStatusReport) -> Result<String> {
-    serde_json::to_string(&serde_json::json!({
-        "state": report.lifecycle.state,
-        "mode": report.lifecycle.mode,
-        "updated_at": report.lifecycle.updated_at,
-        "reason": report.lifecycle.reason,
-        "note": report.lifecycle.note,
-        "turn_count": report.turn_count,
-        "event_count": report.event_count,
-        "latest_turn": report.latest_turn,
-        "next_action": report.next_action,
-    }))
-    .context("serializing session watch snapshot key")
-}
-
-fn format_session_watch_snapshot(report: &SessionStatusReport) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("Session: {}", report.session_dir));
-    let mode = report
-        .lifecycle
-        .mode
-        .as_deref()
-        .map(|mode| format!(" ({mode})"))
-        .unwrap_or_default();
-    lines.push(format!("State: {}{}", report.lifecycle.state, mode));
-    if let Some(updated_at) = &report.lifecycle.updated_at {
-        lines.push(format!("Updated: {updated_at}"));
-    }
-    if let Some(reason) = &report.lifecycle.reason {
-        lines.push(format!("Reason: {reason}"));
-    }
-    if let Some(note) = &report.lifecycle.note {
-        lines.push(format!("Note: {note}"));
-    }
-    lines.push(format!("Turns: {}", report.turn_count));
-    if let Some(turn) = &report.latest_turn {
-        lines.push(format!("Latest turn: {}", turn.id));
-        if let Some(response_path) = &turn.response_path {
-            lines.push(format!("Response: {response_path}"));
-        } else if let Some(request_path) = &turn.request_path {
-            lines.push(format!("Request: {request_path}"));
-        }
-    }
-    if let Some(next_action) = &report.next_action {
-        lines.push(format!("Next: {next_action}"));
-    }
     lines.push(String::new());
     lines.join("\n")
 }
@@ -20108,70 +19751,6 @@ link = "context/repo"
     }
 
     #[test]
-    fn session_cleanup_deletes_promotion_sources_only_when_requested() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-session-cleanup-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        let source = root.join("source-session");
-        fs::create_dir_all(source.join("context")).unwrap();
-        fs::write(source.join("djinn.toml"), "version = 1\n").unwrap();
-        fs::write(source.join("summary.md"), "A useful lesson.\n").unwrap();
-
-        let promotion_dir = root.join("promotion-memory");
-        create_promotion_session(&SessionPromoteArgs {
-            dirs: vec![source.clone()],
-            promotion_type: SessionPromoteType::Memory,
-            promotion_session_dir: Some(promotion_dir.clone()),
-            max_chars_per_artifact: 200,
-            force: false,
-            json: false,
-        })
-        .unwrap();
-
-        let no_flag = cleanup_promotion_session(&SessionCleanupArgs {
-            dir: promotion_dir.clone(),
-            delete_sources: false,
-            dry_run: false,
-            json: false,
-        })
-        .unwrap_err();
-        assert!(no_flag.to_string().contains("--delete-sources"));
-
-        let dry_run = cleanup_promotion_session(&SessionCleanupArgs {
-            dir: promotion_dir.clone(),
-            delete_sources: true,
-            dry_run: true,
-            json: false,
-        })
-        .unwrap();
-        assert!(dry_run.dry_run);
-        assert_eq!(dry_run.source_count, 1);
-        assert_eq!(dry_run.sources[0].status, "would_remove");
-        assert!(!dry_run.sources[0].removed);
-        assert!(source.exists());
-        assert!(promotion_dir.exists());
-
-        let removed = cleanup_promotion_session(&SessionCleanupArgs {
-            dir: promotion_dir.clone(),
-            delete_sources: true,
-            dry_run: false,
-            json: false,
-        })
-        .unwrap();
-        assert_eq!(removed.source_count, 1);
-        assert!(removed.sources[0].removed);
-        assert_eq!(removed.sources[0].status, "removed");
-        assert!(!source.exists());
-        assert!(promotion_dir.exists());
-        assert!(removed.note.contains("djinn session rm"));
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn session_accept_and_deny_record_promotion_decisions_with_dry_run() {
         let root = std::env::temp_dir().join(format!(
             "djinn-session-decision-test-{}",
@@ -20778,75 +20357,6 @@ link = "context/repo"
             "djinn session export-pattern <promotion-session> [candidate] --to <notes.md>"
         ));
         assert!(!summary.contains("# Promotion candidates"));
-    }
-
-    #[test]
-    fn session_export_pattern_writes_readable_notes_file() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-pattern-export-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        let session_dir = root.join("promotion-pattern");
-        let candidates_dir = session_dir.join("outputs/candidates");
-        fs::create_dir_all(&candidates_dir).unwrap();
-        fs::write(
-            session_dir.join("djinn.toml"),
-            "version = 1\nkind = \"promotion\"\npromotion_type = \"pattern\"\n",
-        )
-        .unwrap();
-        fs::write(
-            candidates_dir.join("pattern-001.toml"),
-            "type = \"pattern\"\nid = \"pattern-001\"\ntext = \"Keep pattern insights in notes after review.\"\nrationale = \"Patterns are synthesis, not durable Djinn records.\"\nevidence = [\n  \"/tmp/source/summary.md\"\n]\n",
-        )
-        .unwrap();
-        let notes_path = root.join("notes/patterns.md");
-
-        let dry_run = export_pattern_insights(&SessionExportPatternArgs {
-            dir: session_dir.clone(),
-            candidate: Some("pattern-001".to_string()),
-            to: notes_path.clone(),
-            append: false,
-            dry_run: true,
-            json: false,
-        })
-        .unwrap();
-        assert!(!notes_path.exists());
-        assert!(dry_run
-            .preview
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Keep pattern insights in notes after review."));
-
-        let written = export_pattern_insights(&SessionExportPatternArgs {
-            dir: session_dir.clone(),
-            candidate: Some("pattern-001".to_string()),
-            to: notes_path.clone(),
-            append: false,
-            dry_run: false,
-            json: false,
-        })
-        .unwrap();
-        assert!(written.wrote);
-        let notes = fs::read_to_string(&notes_path).unwrap();
-        assert!(notes.contains("# Pattern insight"));
-        assert!(notes.contains("Keep pattern insights in notes after review."));
-        assert!(notes.contains("Patterns are synthesis, not durable Djinn records."));
-        assert!(notes.contains("/tmp/source/summary.md"));
-
-        let overwrite = export_pattern_insights(&SessionExportPatternArgs {
-            dir: session_dir,
-            candidate: Some("pattern-001".to_string()),
-            to: notes_path,
-            append: false,
-            dry_run: false,
-            json: false,
-        })
-        .unwrap_err();
-        assert!(overwrite.to_string().contains("already exists"));
-
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
