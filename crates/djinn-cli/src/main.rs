@@ -21,13 +21,12 @@ use djinn_agent::{
 };
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
-    lifecycle_for, ActionRecord, ActionStore, AgentSession, AgentSessionEvent,
-    AgentSessionEventKind, AgentSessionExecutionMode, AgentSessionId, AgentSessionLifecycleState,
-    AgentSessionMeta, AgentSessionPolicyRule, AgentSessionPolicySnapshot,
-    AgentSessionRuntimeConfig, AgentSessionStore, FileHistoryEntryId, FileHistoryFilter,
-    FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
-    JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource, SuggestionInput,
-    SuggestionRecord, SuggestionStore,
+    ActionRecord, ActionStore, AgentSession, AgentSessionEvent, AgentSessionEventKind,
+    AgentSessionExecutionMode, AgentSessionId, AgentSessionLifecycleState, AgentSessionMeta,
+    AgentSessionPolicyRule, AgentSessionPolicySnapshot, AgentSessionRuntimeConfig,
+    AgentSessionStore, FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions,
+    IdeaRecord, IdeaStore, JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryInput,
+    MemoryRecord, MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -70,13 +69,18 @@ use session_registry::{
     rename_folder_session_in_root, shorten_cache_folder_session_names,
 };
 #[cfg(test)]
+use session_status::SessionStatusLifecycleReport;
+#[cfg(test)]
 use session_status::SessionStatusTurnReport;
 use session_status::{
-    count_folder_session_events_jsonl, format_folder_session_status, session_status_next_action,
-    session_status_repo, session_status_turn_report, SessionStatusCandidateEntry,
-    SessionStatusCandidateReport, SessionStatusFileReport, SessionStatusLifecycleReport,
-    SessionStatusReport,
+    count_folder_session_events_jsonl, format_folder_session_status,
+    latest_promotion_generation_response_path, session_status_lifecycle,
+    session_status_next_action, session_status_repo, session_status_turn_report,
+    system_time_to_rfc3339, SessionStatusCandidateEntry, SessionStatusCandidateReport,
+    SessionStatusFileReport, SessionStatusReport,
 };
+#[cfg(test)]
+use session_status::{format_agent_session_event_summary, format_background_promotion_run_note};
 #[cfg(test)]
 use session_transcript::{build_session_transcript, render_session_transcript_markdown};
 use session_transcript::{SessionTranscriptFormat, SessionTranscriptOptions};
@@ -10167,400 +10171,6 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
     })
 }
 
-fn session_status_lifecycle(
-    session_dir: &Path,
-    manifest: Option<&FolderSessionManifest>,
-    native_session: Option<&AgentSession>,
-    candidates: Option<&SessionStatusCandidateReport>,
-) -> SessionStatusLifecycleReport {
-    if let Some(session) = native_session {
-        let lifecycle = lifecycle_for(session);
-        let report = SessionStatusLifecycleReport {
-            state: lifecycle.state.as_str().to_string(),
-            mode: lifecycle.mode.map(|mode| mode.as_str().to_string()),
-            updated_at: non_empty_string(&lifecycle.updated_at),
-            reason: lifecycle.reason,
-            note: lifecycle.note,
-        };
-        stale_background_run_lifecycle(session_dir, &report, session).unwrap_or(report)
-    } else if manifest.and_then(|manifest| manifest.kind.as_deref()) == Some("promotion") {
-        promotion_session_status_lifecycle(session_dir, candidates)
-    } else {
-        SessionStatusLifecycleReport {
-            state: "not_started".to_string(),
-            mode: None,
-            updated_at: None,
-            reason: None,
-            note: None,
-        }
-    }
-}
-
-fn stale_background_run_lifecycle(
-    session_dir: &Path,
-    lifecycle: &SessionStatusLifecycleReport,
-    native_session: &AgentSession,
-) -> Option<SessionStatusLifecycleReport> {
-    if lifecycle.state != "running" || lifecycle.mode.as_deref() != Some("background") {
-        return None;
-    }
-    let mut run = latest_background_session_run_status(session_dir)?;
-    if run.alive && !background_run_unresponsive(&run) {
-        return None;
-    }
-    run.last_observed_event = last_observed_agent_session_event(native_session);
-    if run.alive {
-        persist_background_run_recovery_observation(&run, "background_worker_unresponsive");
-        return Some(SessionStatusLifecycleReport {
-            state: "failed".to_string(),
-            mode: Some("background".to_string()),
-            updated_at: run
-                .heartbeat_at
-                .clone()
-                .or(run.log_modified_at.clone())
-                .or(run.started_at.clone())
-                .or_else(|| lifecycle.updated_at.clone()),
-            reason: Some("background_worker_unresponsive".to_string()),
-            note: Some(format_unresponsive_background_run_note(&run)),
-        });
-    }
-    persist_background_run_recovery_observation(&run, "background_worker_stale");
-    Some(SessionStatusLifecycleReport {
-        state: "failed".to_string(),
-        mode: Some("background".to_string()),
-        updated_at: run
-            .log_modified_at
-            .clone()
-            .or(run.started_at.clone())
-            .or_else(|| lifecycle.updated_at.clone()),
-        reason: Some("background_worker_stale".to_string()),
-        note: Some(format_stale_background_run_note(&run)),
-    })
-}
-
-fn persist_background_run_recovery_observation(run: &BackgroundRunStatus, reason: &str) {
-    let Some(marker_path) = run.marker_path.as_deref().map(Path::new) else {
-        return;
-    };
-    let _ = persist_background_run_recovery_observation_to_path(marker_path, run, reason);
-}
-
-fn persist_background_run_recovery_observation_to_path(
-    marker_path: &Path,
-    run: &BackgroundRunStatus,
-    reason: &str,
-) -> Result<()> {
-    let content = fs::read_to_string(marker_path)
-        .with_context(|| format!("reading background run marker {}", marker_path.display()))?;
-    let content = upsert_toml_root_string(
-        &content,
-        "recovery_observed_at",
-        &chrono::Local::now().to_rfc3339(),
-    )?;
-    let content = upsert_toml_root_string(&content, "recovery_reason", reason)?;
-    let content = if let Some(event) = &run.last_observed_event {
-        upsert_toml_root_string(&content, "last_observed_event", event)?
-    } else {
-        content
-    };
-    fs::write(marker_path, content)
-        .with_context(|| format!("writing background run marker {}", marker_path.display()))
-}
-
-fn background_run_unresponsive(run: &BackgroundRunStatus) -> bool {
-    run.heartbeat_age_seconds
-        .is_some_and(|age| age >= BACKGROUND_RUN_UNRESPONSIVE_SECONDS)
-}
-
-fn format_unresponsive_background_run_note(run: &BackgroundRunStatus) -> String {
-    let mut note = format!(
-        "Background worker is still alive but appears unresponsive (pid {}, run {}).",
-        run.pid, run.run_id
-    );
-    if let Some(age) = run.heartbeat_age_seconds {
-        note.push_str(&format!(" Last heartbeat was {age}s ago."));
-    }
-    if let Some(heartbeat_at) = &run.heartbeat_at {
-        note.push_str(&format!(" Heartbeat at {heartbeat_at}."));
-    }
-    if let Some(phase) = &run.heartbeat_phase {
-        note.push_str(&format!(" Phase: {phase}."));
-    }
-    if let Some(native_session_id) = &run.native_session_id {
-        note.push_str(&format!(" Native session: {native_session_id}."));
-    }
-    if let Some(log_path) = &run.log_path {
-        note.push_str(&format!(" Inspect log: {log_path}."));
-    }
-    if let Some(event) = &run.last_observed_event {
-        note.push_str(&format!(" Last transcript event: {event}."));
-    }
-    if let Some(log_tail) = &run.log_tail {
-        note.push_str(&format!(" Last log line: {log_tail}"));
-    }
-    note
-}
-
-fn format_stale_background_run_note(run: &BackgroundRunStatus) -> String {
-    let mut note = format!(
-        "Background worker appears stale; no live process found for pid {} (run {}).",
-        run.pid, run.run_id
-    );
-    if let Some(native_session_id) = &run.native_session_id {
-        note.push_str(&format!(" Native session: {native_session_id}."));
-    }
-    if let Some(log_path) = &run.log_path {
-        note.push_str(&format!(" Inspect log: {log_path}."));
-    }
-    if let Some(command) = &run.command {
-        note.push_str(&format!(" Command: {command}."));
-    }
-    if let Some(event) = &run.last_observed_event {
-        note.push_str(&format!(" Last transcript event: {event}."));
-    }
-    if let Some(log_tail) = &run.log_tail {
-        note.push_str(&format!(" Last log line: {log_tail}"));
-    }
-    note
-}
-
-fn last_observed_agent_session_event(session: &AgentSession) -> Option<String> {
-    session
-        .events
-        .iter()
-        .rev()
-        .map(format_agent_session_event_summary)
-        .find(|summary| !summary.trim().is_empty())
-}
-
-fn format_agent_session_event_summary(event: &AgentSessionEvent) -> String {
-    let kind = match &event.kind {
-        AgentSessionEventKind::SessionCreated { .. } => "session_created".to_string(),
-        AgentSessionEventKind::SessionTitleUpdated { title } => {
-            format!("session_title_updated title={}", truncate_inline(title, 80))
-        }
-        AgentSessionEventKind::SessionProfileUpdated { profile } => {
-            format!("session_profile_updated profile={profile}")
-        }
-        AgentSessionEventKind::SessionModelUpdated { model } => {
-            format!("session_model_updated model={model}")
-        }
-        AgentSessionEventKind::UserMessage { content } => {
-            format!("user_message chars={}", content.chars().count())
-        }
-        AgentSessionEventKind::AssistantMessage { content } => {
-            format!("assistant_message chars={}", content.chars().count())
-        }
-        AgentSessionEventKind::ModelResponseMetadata {
-            model,
-            round,
-            elapsed_ms,
-            tool_calls,
-            ..
-        } => format!(
-            "model_response model={model} round={} elapsed_ms={elapsed_ms} tool_calls={tool_calls}",
-            round
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string())
-        ),
-        AgentSessionEventKind::ToolCall { id, name, .. } => {
-            format!("tool_call id={id} name={name}")
-        }
-        AgentSessionEventKind::ToolResult { id, success, .. } => {
-            format!("tool_result id={id} success={success}")
-        }
-        AgentSessionEventKind::ToolExecutionMetadata {
-            id,
-            name,
-            elapsed_ms,
-            success,
-            ..
-        } => {
-            format!("tool_execution id={id} name={name} elapsed_ms={elapsed_ms} success={success}")
-        }
-        AgentSessionEventKind::Error { phase, message, .. } => {
-            format!(
-                "error phase={phase} message={}",
-                truncate_inline(message, 120)
-            )
-        }
-        AgentSessionEventKind::Summary { content } => {
-            format!("summary chars={}", content.chars().count())
-        }
-        AgentSessionEventKind::Checkpoint { label } => {
-            format!("checkpoint label={}", truncate_inline(label, 80))
-        }
-        AgentSessionEventKind::SessionLifecycleUpdated {
-            state,
-            mode,
-            reason,
-            ..
-        } => format!(
-            "lifecycle state={} mode={} reason={}",
-            state.as_str(),
-            mode.as_ref().map(|mode| mode.as_str()).unwrap_or("-"),
-            reason.as_deref().unwrap_or("-")
-        ),
-        AgentSessionEventKind::ChildSessionStatusChanged {
-            child_session_id,
-            state,
-            mode,
-            ..
-        } => format!(
-            "child_session_status child={} state={} mode={}",
-            child_session_id,
-            state.as_str(),
-            mode.as_ref().map(|mode| mode.as_str()).unwrap_or("-")
-        ),
-    };
-    if event.event_id.trim().is_empty() {
-        format!("{} {kind}", event.created_at)
-    } else {
-        format!("{} {} {kind}", event.created_at, event.event_id)
-    }
-}
-
-fn truncate_inline(value: &str, max_chars: usize) -> String {
-    let mut normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.chars().count() > max_chars {
-        normalized = normalized
-            .chars()
-            .take(max_chars.saturating_sub(1))
-            .collect();
-        normalized.push('…');
-    }
-    normalized
-}
-
-fn promotion_session_status_lifecycle(
-    session_dir: &Path,
-    candidates: Option<&SessionStatusCandidateReport>,
-) -> SessionStatusLifecycleReport {
-    if let Some(run) = latest_background_session_run_status(session_dir).filter(|run| run.alive) {
-        return SessionStatusLifecycleReport {
-            state: "running".to_string(),
-            mode: Some("promotion".to_string()),
-            updated_at: run.log_modified_at.clone().or(run.started_at.clone()),
-            reason: Some("background_generation".to_string()),
-            note: Some(format_background_promotion_run_note(&run)),
-        };
-    }
-    if candidates.is_some_and(|candidates| candidates.candidate_count > 0) {
-        return SessionStatusLifecycleReport {
-            state: "completed".to_string(),
-            mode: Some("promotion".to_string()),
-            updated_at: latest_promotion_generation_modified_at(session_dir),
-            reason: Some("candidates_generated".to_string()),
-            note: Some("Promotion candidates are ready for review.".to_string()),
-        };
-    }
-    if let Some(run) = latest_background_session_run_status(session_dir) {
-        return SessionStatusLifecycleReport {
-            state: "failed".to_string(),
-            mode: Some("promotion".to_string()),
-            updated_at: run
-                .started_at
-                .or_else(|| latest_promotion_generation_modified_at(session_dir)),
-            reason: Some("generation_failed".to_string()),
-            note: Some(format!(
-                "Promotion generation exited before writing valid candidates. Inspect the model response or log: {}",
-                run.log_path.as_deref().unwrap_or("unknown")
-            )),
-        };
-    }
-    if promotion_generation_has_response(session_dir) {
-        return SessionStatusLifecycleReport {
-            state: "failed".to_string(),
-            mode: Some("promotion".to_string()),
-            updated_at: latest_promotion_generation_modified_at(session_dir),
-            reason: Some("no_candidates".to_string()),
-            note: Some(
-                "Promotion generation wrote a response but no candidate TOML files.".to_string(),
-            ),
-        };
-    }
-    SessionStatusLifecycleReport {
-        state: "not_started".to_string(),
-        mode: Some("promotion".to_string()),
-        updated_at: latest_promotion_generation_modified_at(session_dir),
-        reason: None,
-        note: None,
-    }
-}
-
-fn format_background_promotion_run_note(run: &BackgroundRunStatus) -> String {
-    let mut note = format!(
-        "Promotion candidate generation is running in the background (run {}, pid {}, log {}, {}).",
-        run.run_id,
-        run.pid,
-        run.log_path.as_deref().unwrap_or("unknown"),
-        run.log_bytes
-            .map(format_byte_count)
-            .unwrap_or_else(|| "log size unknown".to_string())
-    );
-    if let Some(command) = &run.command {
-        note.push_str(&format!(" Command: {command}."));
-    }
-    if let Some(updated) = &run.log_modified_at {
-        note.push_str(&format!(" Log updated {updated}."));
-    }
-    if let Some(tail) = &run.log_tail {
-        note.push_str(&format!(" Last log: {tail}"));
-    }
-    note
-}
-
-fn format_byte_count(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
-fn promotion_generation_has_response(session_dir: &Path) -> bool {
-    latest_promotion_generation_response_path(session_dir).is_some()
-}
-
-fn latest_promotion_generation_response_path(session_dir: &Path) -> Option<PathBuf> {
-    session_dir
-        .join("outputs")
-        .join("generation")
-        .read_dir()
-        .ok()?
-        .filter_map(std::result::Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with("-response.md"))
-        })
-        .filter_map(|path| Some((fs::metadata(&path).ok()?.modified().ok()?, path)))
-        .max_by_key(|(modified, _)| *modified)
-        .map(|(_, path)| path)
-}
-
-fn latest_promotion_generation_modified_at(session_dir: &Path) -> Option<String> {
-    let generation_dir = session_dir.join("outputs").join("generation");
-    fs::read_dir(generation_dir)
-        .ok()?
-        .filter_map(std::result::Result::ok)
-        .filter_map(|entry| entry.metadata().ok()?.modified().ok())
-        .max()
-        .and_then(system_time_to_rfc3339)
-}
-
-fn system_time_to_rfc3339(time: SystemTime) -> Option<String> {
-    let duration = time.duration_since(UNIX_EPOCH).ok()?;
-    chrono::DateTime::<chrono::Utc>::from_timestamp(
-        duration.as_secs() as i64,
-        duration.subsec_nanos(),
-    )
-    .map(|time| time.to_rfc3339())
-}
-
 fn session_status_candidates(session_dir: &Path) -> Result<Option<SessionStatusCandidateReport>> {
     let outputs_dir = session_dir.join("outputs");
     let candidates_dir = outputs_dir.join("candidates");
@@ -14115,22 +13725,22 @@ struct SessionRunBackgroundReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BackgroundRunStatus {
-    run_id: String,
-    marker_path: Option<String>,
-    pid: u32,
-    log_path: Option<String>,
-    command: Option<String>,
-    native_session_id: Option<String>,
-    last_observed_event: Option<String>,
-    heartbeat_at: Option<String>,
-    heartbeat_phase: Option<String>,
-    heartbeat_age_seconds: Option<i64>,
-    log_bytes: Option<u64>,
-    log_modified_at: Option<String>,
-    log_tail: Option<String>,
-    started_at: Option<String>,
-    alive: bool,
+pub(crate) struct BackgroundRunStatus {
+    pub(crate) run_id: String,
+    pub(crate) marker_path: Option<String>,
+    pub(crate) pid: u32,
+    pub(crate) log_path: Option<String>,
+    pub(crate) command: Option<String>,
+    pub(crate) native_session_id: Option<String>,
+    pub(crate) last_observed_event: Option<String>,
+    pub(crate) heartbeat_at: Option<String>,
+    pub(crate) heartbeat_phase: Option<String>,
+    pub(crate) heartbeat_age_seconds: Option<i64>,
+    pub(crate) log_bytes: Option<u64>,
+    pub(crate) log_modified_at: Option<String>,
+    pub(crate) log_tail: Option<String>,
+    pub(crate) started_at: Option<String>,
+    pub(crate) alive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -14569,7 +14179,9 @@ fn upsert_toml_root_string(content: &str, key: &str, value: &str) -> Result<Stri
     Ok(output)
 }
 
-fn latest_background_session_run_status(session_dir: &Path) -> Option<BackgroundRunStatus> {
+pub(crate) fn latest_background_session_run_status(
+    session_dir: &Path,
+) -> Option<BackgroundRunStatus> {
     let run_dir = session_dir.join(".djinn").join("runs");
     let marker = fs::read_dir(run_dir)
         .ok()?
