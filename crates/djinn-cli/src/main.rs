@@ -5560,7 +5560,7 @@ fn decide_promotion_session_with_stores(
     if action != SessionDecisionAction::Accept && args.sync_mindweaver {
         bail!("--sync-mindweaver only applies to `djinn session accept`");
     }
-    let session_dir = resolve_session_dir(&args.dir)?;
+    let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
     let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
         format!(
             "missing promotion session manifest: {}",
@@ -5716,7 +5716,7 @@ fn session_validate_candidates(args: SessionValidateCandidatesArgs) -> Result<()
 fn validate_promotion_session_candidates(
     args: &SessionValidateCandidatesArgs,
 ) -> Result<SessionValidateCandidatesReport> {
-    let session_dir = resolve_session_dir(&args.dir)?;
+    let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
     let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
         format!(
             "missing promotion session manifest: {}",
@@ -5814,7 +5814,7 @@ fn session_validate_events(args: SessionValidateEventsArgs) -> Result<()> {
 }
 
 fn validate_folder_session_events(dir: &Path) -> Result<SessionValidateEventsReport> {
-    let session_dir = resolve_session_dir(dir)?;
+    let session_dir = resolve_existing_folder_session_dir(dir)?;
     let events_path = session_dir.join("events.jsonl");
     let turns = read_folder_session_turns(&session_dir.join("turns"))?;
     let mut issues = Vec::new();
@@ -6237,7 +6237,7 @@ fn session_events(args: SessionEventsArgs) -> Result<()> {
 }
 
 fn project_folder_session_events(dir: &Path) -> Result<SessionProjectEventsReport> {
-    let session_dir = resolve_session_dir(dir)?;
+    let session_dir = resolve_existing_folder_session_dir(dir)?;
     let events_path = session_dir.join("events.jsonl");
     let turns = read_folder_session_turns(&session_dir.join("turns"))?;
     let mut issues = Vec::new();
@@ -6350,7 +6350,7 @@ fn project_folder_session_events(dir: &Path) -> Result<SessionProjectEventsRepor
 }
 
 fn rebuild_folder_session_from_events(dir: &Path) -> Result<SessionProjectEventsReport> {
-    let session_dir = resolve_session_dir(dir)?;
+    let session_dir = resolve_existing_folder_session_dir(dir)?;
     let events_path = session_dir.join("events.jsonl");
     let raw = fs::read_to_string(&events_path)
         .with_context(|| format!("reading {}", events_path.display()))?;
@@ -6478,7 +6478,7 @@ fn restore_folder_session_event_backup(
     backup: &Path,
     write: bool,
 ) -> Result<SessionRestoreEventsReport> {
-    let session_dir = resolve_session_dir(dir)?;
+    let session_dir = resolve_existing_folder_session_dir(dir)?;
     let backup_dir = resolve_folder_session_event_backup(&session_dir, backup)?;
     let backup_turns_dir = backup_dir.join("turns");
     let backup_summary_path = backup_dir.join("summary.md");
@@ -7052,7 +7052,7 @@ fn cleanup_promotion_session(args: &SessionCleanupArgs) -> Result<SessionCleanup
     if !args.delete_sources {
         bail!("nothing to clean up; pass --delete-sources to permanently remove source sessions");
     }
-    let session_dir = resolve_session_dir(&args.dir)?;
+    let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
     let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
         format!(
             "missing promotion session manifest: {}",
@@ -7150,7 +7150,7 @@ fn session_export_pattern(args: SessionExportPatternArgs) -> Result<()> {
 }
 
 fn export_pattern_insights(args: &SessionExportPatternArgs) -> Result<SessionExportPatternReport> {
-    let session_dir = resolve_session_dir(&args.dir)?;
+    let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
     let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
         format!(
             "missing promotion session manifest: {}",
@@ -9090,7 +9090,7 @@ fn render_promotion_sources_manifest(material: &SessionPromoteMaterial) -> Resul
 }
 
 fn collect_session_promote_artifacts(dir: &Path) -> Result<SessionPromoteSession> {
-    let session_dir = resolve_session_dir(dir)?;
+    let session_dir = resolve_existing_folder_session_dir(dir)?;
     let title = session_dir
         .file_name()
         .and_then(|name| name.to_str())
@@ -9493,7 +9493,8 @@ struct SessionContextDiscoverIndexEntry {
 }
 
 fn session_status(args: SessionStatusArgs) -> Result<()> {
-    let report = folder_session_status(&args.dir)?;
+    let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
+    let report = folder_session_status(&session_ref.session_dir)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -9649,8 +9650,9 @@ fn session_open(args: SessionOpenArgs) -> Result<()> {
 }
 
 fn session_buddy(args: SessionBuddyArgs) -> Result<()> {
+    let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
     let report = run_session_buddy(&SessionBuddyRunArgs {
-        dir: args.dir.clone(),
+        dir: session_ref.session_dir,
         buddy_bin: args.buddy_bin.clone(),
         buddy_session: args.buddy_session.clone(),
         buddy_args: args.buddy_args.clone(),
@@ -9673,18 +9675,13 @@ fn run_top_level_buddy_mode(session: Option<PathBuf>) -> Result<()> {
 }
 
 fn resolve_top_level_buddy_session_arg(session: PathBuf) -> Result<(PathBuf, Option<String>)> {
-    let session_dir = resolve_session_dir(&session)?;
+    let root = default_folder_session_root();
+    let session_dir = resolve_session_dir_in_root(&session, &root)?;
     if session_dir.exists() {
         return Ok((session_dir, None));
     }
 
-    if let Some((session_dir, buddy_session)) =
-        resolve_buddy_session_reference_in_root(&default_folder_session_root(), &session)?
-    {
-        return Ok((session_dir, Some(buddy_session)));
-    }
-
-    Ok((session_dir, None))
+    Ok(resolve_existing_folder_session_reference_in_root(&session, &root)?.map_buddy_for_launch())
 }
 
 fn buddy_command_doctor_report(session: Option<&Path>) -> Result<BuddyCommandDoctorReport> {
@@ -10126,7 +10123,7 @@ fn compact_folder_session(
 }
 
 fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
-    let session_dir = resolve_session_dir(dir)?;
+    let session_dir = resolve_existing_folder_session_dir(dir)?;
     let manifest_path = session_dir.join("djinn.toml");
     let manifest = read_folder_session_manifest(&session_dir)?;
     let session_id = manifest
@@ -11520,28 +11517,7 @@ fn resolve_folder_session_open_dir_in_root(
     dir: &Path,
     buddy_lookup_root: &Path,
 ) -> Result<PathBuf> {
-    let session_dir = resolve_session_dir(dir)?;
-    if session_dir.exists() {
-        if !session_dir.is_dir() {
-            bail!(
-                "folder session path is not a directory: {}",
-                session_dir.display()
-            );
-        }
-        return Ok(session_dir);
-    }
-
-    if let Some((session_dir, _buddy_session)) =
-        resolve_buddy_session_reference_in_root(buddy_lookup_root, dir)?
-    {
-        return Ok(session_dir);
-    }
-
-    bail!(
-        "folder session does not exist: {}\nrun: djinn session init {}",
-        session_dir.display(),
-        dir.display()
-    )
+    Ok(resolve_existing_folder_session_reference_in_root(dir, buddy_lookup_root)?.session_dir)
 }
 
 fn resolve_folder_session_repo_open_target(session_dir: &Path) -> Result<PathBuf> {
@@ -11608,16 +11584,7 @@ fn remove_folder_session_with_store(
     store: &JsonlAgentSessionStore,
 ) -> Result<SessionRmReport> {
     let named_reference = is_named_folder_session_reference(dir);
-    let session_dir = resolve_session_dir(dir)?;
-    if !session_dir.exists() {
-        bail!("folder session does not exist: {}", session_dir.display());
-    }
-    if !session_dir.is_dir() {
-        bail!(
-            "folder session path is not a directory: {}",
-            session_dir.display()
-        );
-    }
+    let session_dir = resolve_existing_folder_session_reference(dir)?.session_dir;
     let manifest_exists = session_dir.join("djinn.toml").exists();
     if !manifest_exists && !named_reference_under_cache_root(&session_dir) && !named_reference {
         bail!(
@@ -11654,22 +11621,59 @@ fn named_reference_under_cache_root(path: &Path) -> bool {
     path.parent().is_some_and(|parent| parent == root)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FolderSessionReferenceResolution {
+    session_dir: PathBuf,
+    buddy_session: Option<String>,
+}
+
+impl FolderSessionReferenceResolution {
+    fn map_buddy_for_launch(self) -> (PathBuf, Option<String>) {
+        (self.session_dir, self.buddy_session)
+    }
+}
+
+fn resolve_existing_folder_session_reference(
+    dir: &Path,
+) -> Result<FolderSessionReferenceResolution> {
+    resolve_existing_folder_session_reference_in_root(dir, &default_folder_session_root())
+}
+
+fn resolve_existing_folder_session_reference_in_root(
+    dir: &Path,
+    root: &Path,
+) -> Result<FolderSessionReferenceResolution> {
+    let session_dir = resolve_session_dir_in_root(dir, root)?;
+    if session_dir.exists() {
+        if !session_dir.is_dir() {
+            bail!(
+                "folder session path is not a directory: {}",
+                session_dir.display()
+            );
+        }
+        return Ok(FolderSessionReferenceResolution {
+            session_dir,
+            buddy_session: None,
+        });
+    }
+
+    if let Some((session_dir, buddy_session)) = resolve_buddy_session_reference_in_root(root, dir)?
+    {
+        return Ok(FolderSessionReferenceResolution {
+            session_dir,
+            buddy_session: Some(buddy_session),
+        });
+    }
+
+    bail!(
+        "folder session does not exist: {}\nrun: djinn session init {}",
+        session_dir.display(),
+        dir.display()
+    )
+}
+
 fn resolve_existing_folder_session_dir(dir: &Path) -> Result<PathBuf> {
-    let session_dir = resolve_session_dir(dir)?;
-    if !session_dir.exists() {
-        bail!(
-            "folder session does not exist: {} (run `djinn session init {}` first)",
-            session_dir.display(),
-            dir.display()
-        );
-    }
-    if !session_dir.is_dir() {
-        bail!(
-            "folder session path is not a directory: {}",
-            session_dir.display()
-        );
-    }
-    Ok(session_dir)
+    Ok(resolve_existing_folder_session_reference(dir)?.session_dir)
 }
 
 fn list_folder_session_context(session: &Path) -> Result<SessionContextLsReport> {
@@ -13911,11 +13915,14 @@ fn resolve_agent_request_prompt(
 }
 
 fn resolve_session_dir(path: &Path) -> Result<PathBuf> {
+    resolve_session_dir_in_root(path, &default_folder_session_root())
+}
+
+fn resolve_session_dir_in_root(path: &Path, root: &Path) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {
         bail!("session name or directory path cannot be empty");
     }
     if is_named_folder_session_reference(path) {
-        let root = default_folder_session_root();
         let direct = root.join(path);
         if direct.exists() {
             return Ok(direct);
@@ -14587,11 +14594,13 @@ enum AgentAskOutputMode {
     SessionRun { open: bool, background_worker: bool },
 }
 
-fn session_run(args: SessionRunArgs) -> Result<()> {
+fn session_run(mut args: SessionRunArgs) -> Result<()> {
     if args.background_worker && args.foreground {
         bail!("--background-worker cannot be combined with --fg");
     }
-    let session_dir = resolve_session_dir(&args.dir)?;
+    let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
+    let session_dir = session_ref.session_dir.clone();
+    args.dir = session_dir.clone();
     if args.background_worker {
         touch_background_run_marker_from_env("worker_started");
     }
@@ -14905,7 +14914,7 @@ fn session_run_background(args: SessionRunArgs) -> Result<()> {
     if args.print || args.open {
         bail!("--print and --open require --fg because background runs return before an answer exists");
     }
-    let session_dir = resolve_session_dir(&args.dir)?;
+    let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
     resolve_agent_request_prompt(None, Some(&session_dir))?;
     let report = spawn_background_session_run(&session_dir, &args)?;
     if args.json {
@@ -23023,6 +23032,48 @@ exit 2
         let missing =
             resolve_buddy_session_reference_in_root(&root, Path::new("ses_missing")).unwrap();
         assert_eq!(missing, None);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn existing_folder_session_reference_resolves_current_and_stale_buddy_ids() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-ref-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("from-buddy");
+        fs::create_dir_all(session_dir.join("runtime")).unwrap();
+        fs::write(
+            session_dir.join("runtime/buddy.json"),
+            serde_json::json!({
+                "buddy_session": "ses_currentBuddy123",
+                "stale_buddy_sessions": ["ses_staleBuddy123"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let current = resolve_existing_folder_session_reference_in_root(
+            Path::new("ses_currentBuddy123"),
+            &root,
+        )
+        .unwrap();
+        let stale = resolve_existing_folder_session_reference_in_root(
+            Path::new("ses_staleBuddy123"),
+            &root,
+        )
+        .unwrap();
+
+        assert_eq!(current.session_dir, session_dir);
+        assert_eq!(
+            current.buddy_session.as_deref(),
+            Some("ses_currentBuddy123")
+        );
+        assert_eq!(stale.session_dir, session_dir);
+        assert_eq!(stale.buddy_session.as_deref(), Some("ses_currentBuddy123"));
 
         let _ = fs::remove_dir_all(&root);
     }
