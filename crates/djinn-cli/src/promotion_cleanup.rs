@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
+use crate::session_remove::remove_folder_session;
 use crate::{
     expand_tilde_path, parse_manifest_string_value, read_folder_session_manifest,
-    remove_folder_session, resolve_existing_folder_session_dir, SessionCleanupArgs,
+    resolve_existing_folder_session_dir, SessionCleanupArgs,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

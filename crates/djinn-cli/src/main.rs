@@ -56,6 +56,7 @@ mod session_context;
 mod session_events;
 mod session_list;
 mod session_registry;
+mod session_remove;
 mod session_status;
 mod session_transcript;
 mod session_watch;
@@ -122,6 +123,7 @@ use session_registry::{
     format_session_rename_report, format_session_shorten_names_report,
     rename_folder_session_in_root, shorten_cache_folder_session_names,
 };
+use session_remove::session_rm;
 #[cfg(test)]
 use session_status::SessionStatusLifecycleReport;
 #[cfg(test)]
@@ -5756,34 +5758,6 @@ fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionRmReport {
-    session_dir: String,
-    removed_folder: bool,
-    session_id: Option<String>,
-    removed_native_session: bool,
-}
-
-fn session_rm(args: SessionRmArgs) -> Result<()> {
-    let report = remove_folder_session(&args.dir)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!("Removed folder session: {}", report.session_dir);
-        if let Some(session_id) = &report.session_id {
-            println!(
-                "Native session {session_id}: {}",
-                if report.removed_native_session {
-                    "removed"
-                } else {
-                    "not found"
-                }
-            );
-        }
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SessionInitReport {
     session_dir: String,
     manifest_path: String,
@@ -6768,52 +6742,6 @@ fn truncate_table_cell(value: &str, max_chars: usize) -> String {
     let mut truncated = value.chars().take(max_chars - 1).collect::<String>();
     truncated.push('…');
     truncated
-}
-
-fn remove_folder_session(dir: &Path) -> Result<SessionRmReport> {
-    remove_folder_session_with_store(dir, &agent_session_store())
-}
-
-fn remove_folder_session_with_store(
-    dir: &Path,
-    store: &JsonlAgentSessionStore,
-) -> Result<SessionRmReport> {
-    let named_reference = is_named_folder_session_reference(dir);
-    let session_dir = resolve_existing_folder_session_reference(dir)?.session_dir;
-    let manifest_exists = session_dir.join("djinn.toml").exists();
-    if !manifest_exists && !named_reference_under_cache_root(&session_dir) && !named_reference {
-        bail!(
-            "refusing to remove explicit directory without djinn.toml: {}",
-            session_dir.display()
-        );
-    }
-    let session_id = session_id_from_session_dir(&session_dir)?;
-    let removed_native_session = if let Some(id) = &session_id {
-        let folder_store = folder_agent_session_store(&session_dir);
-        if folder_store.load_session(id).is_ok() {
-            true
-        } else if store.load_session(id).is_ok() {
-            store.delete_session(id)?;
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-    fs::remove_dir_all(&session_dir)
-        .with_context(|| format!("removing folder session {}", session_dir.display()))?;
-    Ok(SessionRmReport {
-        session_dir: session_dir.display().to_string(),
-        removed_folder: true,
-        session_id: session_id.map(|id| id.to_string()),
-        removed_native_session,
-    })
-}
-
-fn named_reference_under_cache_root(path: &Path) -> bool {
-    let root = default_folder_session_root();
-    path.parent().is_some_and(|parent| parent == root)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19420,56 +19348,6 @@ link = "context/repo"
         assert!(err.contains("missing-session"));
         assert!(err.contains("run: djinn session init missing-session"));
 
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn folder_session_rm_removes_folder_and_linked_native_session_without_force() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-session-rm-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        let dir = root.join("session");
-        fs::create_dir_all(&dir).unwrap();
-        let store = temp_agent_store("folder-session-rm");
-        let id = store
-            .create_session(AgentSessionMeta {
-                title: "Folder rm".to_string(),
-                ..AgentSessionMeta::default()
-            })
-            .unwrap();
-        fs::write(dir.join("djinn.toml"), format!("session_id = \"{}\"\n", id)).unwrap();
-
-        let report = remove_folder_session_with_store(&dir, &store).unwrap();
-
-        assert!(report.removed_folder);
-        assert_eq!(report.session_id, Some(id.to_string()));
-        assert!(report.removed_native_session);
-        assert!(!dir.exists());
-        assert!(store.load_session(&id).is_err());
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn folder_session_rm_rejects_explicit_non_session_directory() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-session-rm-guard-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let store = temp_agent_store("folder-session-rm-guard");
-
-        let error = remove_folder_session_with_store(&root, &store).unwrap_err();
-
-        assert!(error
-            .to_string()
-            .contains("refusing to remove explicit directory without djinn.toml"));
-        assert!(root.exists());
         let _ = fs::remove_dir_all(&root);
     }
 
