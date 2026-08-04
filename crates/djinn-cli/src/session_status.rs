@@ -1,12 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use djinn_memory::{lifecycle_for, AgentSession, AgentSessionEvent, AgentSessionEventKind};
 use serde::Serialize;
 
-use crate::{BackgroundRunStatus, FolderSessionManifest, FolderSessionTurnDigest};
+use crate::{background_run::BackgroundRunStatus, FolderSessionManifest, FolderSessionTurnDigest};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionStatusReport {
@@ -303,7 +302,7 @@ fn stale_background_run_lifecycle(
     if lifecycle.state != "running" || lifecycle.mode.as_deref() != Some("background") {
         return None;
     }
-    let mut run = crate::latest_background_session_run_status(session_dir)?;
+    let mut run = crate::background_run::latest_background_session_run_status(session_dir)?;
     if run.alive && !background_run_unresponsive(&run) {
         return None;
     }
@@ -535,8 +534,8 @@ fn promotion_session_status_lifecycle(
     session_dir: &Path,
     candidates: Option<&SessionStatusCandidateReport>,
 ) -> SessionStatusLifecycleReport {
-    if let Some(run) =
-        crate::latest_background_session_run_status(session_dir).filter(|run| run.alive)
+    if let Some(run) = crate::background_run::latest_background_session_run_status(session_dir)
+        .filter(|run| run.alive)
     {
         return SessionStatusLifecycleReport {
             state: "running".to_string(),
@@ -555,7 +554,7 @@ fn promotion_session_status_lifecycle(
             note: Some("Promotion candidates are ready for review.".to_string()),
         };
     }
-    if let Some(run) = crate::latest_background_session_run_status(session_dir) {
+    if let Some(run) = crate::background_run::latest_background_session_run_status(session_dir) {
         return SessionStatusLifecycleReport {
             state: "failed".to_string(),
             mode: Some("promotion".to_string()),
@@ -650,16 +649,7 @@ fn latest_promotion_generation_modified_at(session_dir: &Path) -> Option<String>
         .filter_map(std::result::Result::ok)
         .filter_map(|entry| entry.metadata().ok()?.modified().ok())
         .max()
-        .and_then(system_time_to_rfc3339)
-}
-
-pub(crate) fn system_time_to_rfc3339(time: SystemTime) -> Option<String> {
-    let duration = time.duration_since(UNIX_EPOCH).ok()?;
-    chrono::DateTime::<chrono::Utc>::from_timestamp(
-        duration.as_secs() as i64,
-        duration.subsec_nanos(),
-    )
-    .map(|time| time.to_rfc3339())
+        .and_then(crate::background_run::system_time_to_rfc3339)
 }
 
 pub(crate) fn session_status_turn_report(
