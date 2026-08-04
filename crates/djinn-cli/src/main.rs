@@ -5,19 +5,20 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
-use async_trait::async_trait;
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use djinn_agent::{
     tools_with_policies_file_history_and_gate, AgentProgressEvent, AgentRuntime, CopilotClient,
     ModelClient, ModelMessage, ModelRequest, ModelRole, OpenAiAuth, OpenAiClient, OpenAiOAuth,
-    PermissionDecision, PermissionEffect, PermissionGate, PermissionPolicy, PermissionRequest,
-    PermissionRule, ReadAccessEffect, ReadAccessPolicy, ReadAccessRule, ToolSpec,
+    PermissionEffect, PermissionGate, PermissionPolicy, PermissionRule, ReadAccessEffect,
+    ReadAccessPolicy, ReadAccessRule, ToolSpec,
 };
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 use djinn_memory::{
@@ -41,9 +42,12 @@ mod background_run;
 mod buddy;
 mod buddy_consolidate;
 mod editor;
+mod permission_gate;
 mod promotion_candidate;
 mod promotion_decision;
 mod promotion_generation;
+mod promotion_session;
+mod promotion_validation;
 mod session_artifact;
 mod session_compact;
 mod session_context;
@@ -62,11 +66,12 @@ use background_run::{
 use buddy::*;
 use buddy_consolidate::*;
 use editor::{default_editor, open_editor_at, open_editor_path};
+use permission_gate::TerminalPermissionGate;
 #[cfg(test)]
 use promotion_candidate::parse_promotion_candidate;
 use promotion_candidate::{
-    candidate_string_array_value, candidate_string_value, promotion_candidate_paths,
-    resolve_promotion_candidates, validate_promotion_candidate_path, PromotionCandidate,
+    candidate_string_array_value, candidate_string_value, resolve_promotion_candidates,
+    PromotionCandidate,
 };
 #[cfg(test)]
 pub(crate) use promotion_decision::{
@@ -76,6 +81,9 @@ use promotion_decision::{
     decide_promotion_session, session_decision_action_label, SessionDecisionAction,
 };
 use promotion_generation::*;
+pub(crate) use promotion_session::create_promotion_session;
+use promotion_validation::session_validate_candidates;
+pub(crate) use promotion_validation::SessionValidateCandidateEntry;
 #[cfg(test)]
 use session_artifact::resolve_folder_session_open_target_in_root;
 use session_artifact::{
@@ -407,25 +415,25 @@ struct SessionCompactArgs {
 }
 
 #[derive(Debug, Args)]
-struct SessionPromoteArgs {
+pub(crate) struct SessionPromoteArgs {
     /// Folder-backed session names, paths, or Buddy ids to promote from.
     #[arg(required = true, value_name = "SESSION")]
-    dirs: Vec<PathBuf>,
+    pub(crate) dirs: Vec<PathBuf>,
     /// Promotion type to prepare for.
     #[arg(long = "type", alias = "target", value_enum, default_value_t = SessionPromoteType::Memory)]
-    promotion_type: SessionPromoteType,
+    pub(crate) promotion_type: SessionPromoteType,
     /// Promotion session folder to create. Bare names live under Djinn's cache session root.
     #[arg(long = "session-dir", alias = "output-dir")]
-    promotion_session_dir: Option<PathBuf>,
+    pub(crate) promotion_session_dir: Option<PathBuf>,
     /// Maximum characters to include from each artifact excerpt.
     #[arg(long = "max-chars-per-artifact", default_value_t = 1200)]
-    max_chars_per_artifact: usize,
+    pub(crate) max_chars_per_artifact: usize,
     /// Replace generated promotion-session files if they already exist.
     #[arg(long)]
-    force: bool,
+    pub(crate) force: bool,
     /// Output JSON instead of a text summary.
     #[arg(long)]
-    json: bool,
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -557,7 +565,7 @@ struct SessionEventsArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum SessionPromoteType {
+pub(crate) enum SessionPromoteType {
     #[value(alias = "memories")]
     Memory,
     #[value(
@@ -1723,240 +1731,6 @@ struct AgentAskArgs {
     /// Open the produced summary.md after an auto-created folder-backed ask completes.
     #[arg(long, conflicts_with_all = ["json", "session_id", "session_dir"])]
     open: bool,
-}
-
-#[derive(Debug, Default)]
-struct TerminalPermissionGate {
-    session_scopes: Mutex<Vec<TerminalApprovalScope>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TerminalApprovalScope {
-    action: String,
-    workspace: String,
-    resources: HashSet<String>,
-}
-
-impl TerminalPermissionGate {
-    fn new() -> Self {
-        Self {
-            session_scopes: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn cached_decision(&self, request: &PermissionRequest) -> Option<PermissionDecision> {
-        let request_resources = approval_resources_from_metadata(&request.metadata);
-        if request_resources.is_empty() {
-            return None;
-        }
-        let workspace = request
-            .metadata
-            .get("workspace")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let scopes = self.session_scopes.lock().ok()?;
-        let mut approved = Vec::new();
-        for resource in &request_resources {
-            let covered = scopes.iter().any(|scope| {
-                scope.action == request.action
-                    && scope.workspace == workspace
-                    && scope.resources.contains(resource)
-            });
-            if !covered {
-                return None;
-            }
-            approved.push(resource.clone());
-        }
-        if request
-            .metadata
-            .get("preview")
-            .and_then(Value::as_array)
-            .is_some()
-        {
-            Some(PermissionDecision::AllowPaths { paths: approved })
-        } else {
-            Some(PermissionDecision::AllowResources {
-                resources: approved,
-            })
-        }
-    }
-
-    fn remember_resources_for_session(&self, request: &PermissionRequest, resources: Vec<String>) {
-        let resources = resources
-            .into_iter()
-            .map(|resource| resource.trim().to_string())
-            .filter(|resource| !resource.is_empty())
-            .collect::<HashSet<_>>();
-        if resources.is_empty() {
-            return;
-        }
-        let workspace = request
-            .metadata
-            .get("workspace")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let Ok(mut scopes) = self.session_scopes.lock() else {
-            return;
-        };
-        if let Some(existing) = scopes
-            .iter_mut()
-            .find(|scope| scope.action == request.action && scope.workspace == workspace)
-        {
-            existing.resources.extend(resources);
-        } else {
-            scopes.push(TerminalApprovalScope {
-                action: request.action.clone(),
-                workspace,
-                resources,
-            });
-        }
-    }
-
-    fn report_permission_blocked(&self, _request: &PermissionRequest) {}
-
-    fn report_permission_resolved(&self) {}
-}
-
-#[async_trait]
-impl PermissionGate for TerminalPermissionGate {
-    async fn approve(&self, request: PermissionRequest) -> Result<PermissionDecision> {
-        if let Some(decision) = self.cached_decision(&request) {
-            return Ok(decision);
-        }
-        self.report_permission_blocked(&request);
-        if request
-            .metadata
-            .get("preview")
-            .and_then(Value::as_array)
-            .is_some()
-            && io::stdin().is_terminal()
-            && io::stdout().is_terminal()
-        {
-            let decision = match djinn_tui::run_approval_dialog(request.metadata.clone())? {
-                djinn_tui::ApprovalDecision::ApproveAll => PermissionDecision::Allow,
-                djinn_tui::ApprovalDecision::ApprovePaths(paths) => {
-                    PermissionDecision::AllowPaths { paths }
-                }
-                djinn_tui::ApprovalDecision::ApproveAllForSession(paths)
-                | djinn_tui::ApprovalDecision::ApprovePathsForSession(paths) => {
-                    self.remember_resources_for_session(&request, paths.clone());
-                    PermissionDecision::AllowPaths { paths }
-                }
-                djinn_tui::ApprovalDecision::Deny => PermissionDecision::Deny,
-            };
-            self.report_permission_resolved();
-            return Ok(decision);
-        }
-        eprintln!("\nPermission approval required: {}", request.description);
-        eprint!("{}", format_permission_preview(&request.metadata)?);
-        eprint!("Approve this request? [y]es once, [s]ession, [N]o: ");
-        io::stderr().flush()?;
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        let answer = answer.trim().to_ascii_lowercase();
-        let decision = if answer == "y" || answer == "yes" {
-            PermissionDecision::Allow
-        } else if answer == "s" || answer == "session" {
-            let resources = approval_resources_from_metadata(&request.metadata);
-            self.remember_resources_for_session(&request, resources.clone());
-            if request
-                .metadata
-                .get("preview")
-                .and_then(Value::as_array)
-                .is_some()
-            {
-                PermissionDecision::AllowPaths { paths: resources }
-            } else {
-                PermissionDecision::AllowResources { resources }
-            }
-        } else {
-            PermissionDecision::Deny
-        };
-        self.report_permission_resolved();
-        Ok(decision)
-    }
-}
-
-fn approval_resources_from_metadata(metadata: &Value) -> Vec<String> {
-    let mut resources = Vec::new();
-    if let Some(preview) = metadata.get("preview").and_then(Value::as_array) {
-        for item in preview {
-            if let Some(path) = item
-                .get("path")
-                .and_then(Value::as_str)
-                .filter(|path| !path.trim().is_empty())
-            {
-                push_unique_string(&mut resources, path);
-            }
-            if let Some(path) = item
-                .get("new_path")
-                .and_then(Value::as_str)
-                .filter(|path| !path.trim().is_empty())
-            {
-                push_unique_string(&mut resources, path);
-            }
-        }
-    }
-    if let Some(values) = metadata.get("resources").and_then(Value::as_array) {
-        for value in values {
-            if let Some(resource) = value
-                .as_str()
-                .filter(|resource| !resource.trim().is_empty())
-            {
-                push_unique_string(&mut resources, resource);
-            }
-        }
-    }
-    if let Some(resource) = metadata
-        .get("resource")
-        .and_then(Value::as_str)
-        .filter(|resource| !resource.trim().is_empty())
-    {
-        push_unique_string(&mut resources, resource);
-    }
-    resources
-}
-
-fn format_permission_preview(metadata: &Value) -> Result<String> {
-    let Some(preview) = metadata.get("preview").and_then(Value::as_array) else {
-        return Ok(format!("{}\n", serde_json::to_string_pretty(metadata)?));
-    };
-    let mut output = String::new();
-    for item in preview {
-        let operation = item["operation"].as_str().unwrap_or("operation");
-        let path = item["relative_path"]
-            .as_str()
-            .or_else(|| item["path"].as_str())
-            .unwrap_or("<unknown>");
-        let added = item["lines_added"].as_u64().unwrap_or_default();
-        let removed = item["lines_removed"].as_u64().unwrap_or_default();
-        output.push_str(&format!("- {operation} {path} (+{added}/-{removed})\n"));
-        if let Some(new_path) = item["relative_new_path"]
-            .as_str()
-            .or_else(|| item["new_path"].as_str())
-        {
-            output.push_str(&format!("  -> {new_path}\n"));
-        }
-        if let Some(hunks) = item["hunks"].as_array() {
-            for (index, hunk) in hunks.iter().enumerate() {
-                output.push_str(&format!("  @@ hunk {}\n", index + 1));
-                if let Some(lines) = hunk["lines"].as_array() {
-                    for line in lines {
-                        let kind = line["kind"].as_str().unwrap_or("context");
-                        let content = line["content"].as_str().unwrap_or_default();
-                        let prefix = match kind {
-                            "add" => '+',
-                            "remove" => '-',
-                            _ => ' ',
-                        };
-                        output.push_str(&format!("  {prefix} {content}\n"));
-                    }
-                }
-            }
-        }
-    }
-    Ok(output)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -5586,111 +5360,6 @@ fn session_decide(args: SessionDecisionArgs, action: SessionDecisionAction) -> R
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionValidateCandidatesReport {
-    session_dir: String,
-    promotion_type: String,
-    candidate: Option<String>,
-    candidate_count: usize,
-    valid_count: usize,
-    invalid_count: usize,
-    all_valid: bool,
-    candidates: Vec<SessionValidateCandidateEntry>,
-    note: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct SessionValidateCandidateEntry {
-    pub(crate) id: String,
-    pub(crate) candidate_type: Option<String>,
-    pub(crate) path: String,
-    pub(crate) valid: bool,
-    pub(crate) error: Option<String>,
-}
-
-fn session_validate_candidates(args: SessionValidateCandidatesArgs) -> Result<()> {
-    let report = validate_promotion_session_candidates(&args)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!("Validated promotion candidates: {}", report.session_dir);
-        println!("  type: {}", report.promotion_type);
-        if let Some(candidate) = &report.candidate {
-            println!("  candidate: {candidate}");
-        } else {
-            println!("  candidate: all");
-        }
-        println!(
-            "  result: {} valid, {} invalid",
-            report.valid_count, report.invalid_count
-        );
-        for candidate in &report.candidates {
-            let status = if candidate.valid { "valid" } else { "invalid" };
-            let candidate_type = candidate.candidate_type.as_deref().unwrap_or("unknown");
-            println!("    - {} ({candidate_type}): {status}", candidate.id);
-            println!("      path: {}", candidate.path);
-            if let Some(error) = &candidate.error {
-                println!("      error: {error}");
-            }
-        }
-        println!("  note: {}", report.note);
-    }
-    Ok(())
-}
-
-fn validate_promotion_session_candidates(
-    args: &SessionValidateCandidatesArgs,
-) -> Result<SessionValidateCandidatesReport> {
-    let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
-    let manifest = read_folder_session_manifest(&session_dir)?.with_context(|| {
-        format!(
-            "missing promotion session manifest: {}",
-            session_dir.display()
-        )
-    })?;
-    if manifest.kind.as_deref() != Some("promotion") {
-        bail!(
-            "session {} is not a promotion session; `djinn session validate-candidates` only applies to kind = \"promotion\"",
-            session_dir.display()
-        );
-    }
-    let promotion_type = manifest
-        .promotion_type
-        .clone()
-        .unwrap_or_else(|| "unknown".to_string());
-    let paths = promotion_candidate_paths(&session_dir, args.candidate.as_deref())?;
-    let candidates = paths
-        .iter()
-        .map(|path| validate_promotion_candidate_path(&session_dir, path))
-        .collect::<Vec<_>>();
-    let valid_count = candidates
-        .iter()
-        .filter(|candidate| candidate.valid)
-        .count();
-    let invalid_count = candidates.len().saturating_sub(valid_count);
-    let all_valid = invalid_count == 0;
-    let note = if candidates.is_empty() {
-        "No promotion candidate TOML files were found. Run `djinn session run <promotion-session>` or add candidate files under outputs/candidates/."
-    } else if all_valid {
-        "All checked promotion candidates are structurally valid. You can accept, deny, export, or continue editing them."
-    } else {
-        "One or more promotion candidates need repair. Edit the listed TOML files, then run validation again."
-    }
-    .to_string();
-
-    Ok(SessionValidateCandidatesReport {
-        session_dir: session_dir.display().to_string(),
-        promotion_type,
-        candidate: args.candidate.clone(),
-        candidate_count: candidates.len(),
-        valid_count,
-        invalid_count,
-        all_valid,
-        candidates,
-        note,
-    })
-}
-
 fn session_validate_events(args: SessionValidateEventsArgs) -> Result<()> {
     let report = validate_folder_session_events(&args.dir)?;
     if args.json {
@@ -6034,53 +5703,6 @@ fn expand_tilde_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionPromoteReport {
-    promotion_type: SessionPromoteType,
-    promotion_session_dir: String,
-    manifest_path: String,
-    request_path: String,
-    summary_path: String,
-    source_packet_path: String,
-    sources_path: String,
-    session_count: usize,
-    sessions: Vec<SessionPromoteSessionReport>,
-    packet: String,
-    created: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionPromoteSessionReport {
-    session_dir: String,
-    title: String,
-    artifact_count: usize,
-    turn_count: usize,
-    artifacts: Vec<SessionPromoteArtifactReport>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionPromoteArtifactReport {
-    kind: String,
-    path: String,
-    chars: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionPromoteArtifact {
-    kind: String,
-    path: PathBuf,
-    relative_path: String,
-    content: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionPromoteSession {
-    session_dir: PathBuf,
-    title: String,
-    artifacts: Vec<SessionPromoteArtifact>,
-    turn_count: usize,
-}
-
 fn session_promote(args: SessionPromoteArgs) -> Result<()> {
     let report = create_promotion_session(&args)?;
     if args.json {
@@ -6102,342 +5724,6 @@ fn session_promote(args: SessionPromoteArgs) -> Result<()> {
         println!("  run: djinn session run {}", report.promotion_session_dir);
     }
     Ok(())
-}
-
-fn create_promotion_session(args: &SessionPromoteArgs) -> Result<SessionPromoteReport> {
-    let material = build_session_promote_material(
-        &args.dirs,
-        args.promotion_type,
-        args.max_chars_per_artifact,
-    )?;
-    let promotion_session_dir = match &args.promotion_session_dir {
-        Some(dir) => resolve_session_dir(dir)?,
-        None => default_promotion_session_dir(args.promotion_type),
-    };
-    write_promotion_session(&promotion_session_dir, &material, args.force)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionPromoteMaterial {
-    promotion_type: SessionPromoteType,
-    sessions: Vec<SessionPromoteSession>,
-    packet: String,
-}
-
-fn build_session_promote_material(
-    dirs: &[PathBuf],
-    promotion_type: SessionPromoteType,
-    max_chars_per_artifact: usize,
-) -> Result<SessionPromoteMaterial> {
-    let sessions = dirs
-        .iter()
-        .map(|dir| collect_session_promote_artifacts(dir))
-        .collect::<Result<Vec<_>>>()?;
-    let packet = render_session_promote_packet(&sessions, promotion_type, max_chars_per_artifact);
-    Ok(SessionPromoteMaterial {
-        promotion_type,
-        sessions,
-        packet,
-    })
-}
-
-fn write_promotion_session(
-    promotion_session_dir: &Path,
-    material: &SessionPromoteMaterial,
-    force: bool,
-) -> Result<SessionPromoteReport> {
-    let context_dir = promotion_session_dir.join("context");
-    let turns_dir = promotion_session_dir.join("turns");
-    let outputs_dir = promotion_session_dir.join("outputs");
-    fs::create_dir_all(&context_dir)
-        .with_context(|| format!("creating context directory {}", context_dir.display()))?;
-    fs::create_dir_all(&turns_dir)
-        .with_context(|| format!("creating turns directory {}", turns_dir.display()))?;
-    fs::create_dir_all(&outputs_dir)
-        .with_context(|| format!("creating outputs directory {}", outputs_dir.display()))?;
-
-    let manifest_path = promotion_session_dir.join("djinn.toml");
-    let request_path = promotion_session_dir.join("request.md");
-    let summary_path = promotion_session_dir.join("summary.md");
-    let source_packet_path = context_dir.join("source-packet.md");
-    let sources_path = context_dir.join("sources.toml");
-    let context_readme_path = context_dir.join("djinn-context.md");
-
-    let mut created = Vec::new();
-    write_promotion_session_file(
-        &manifest_path,
-        &render_promotion_session_manifest(material)?,
-        force,
-        &mut created,
-    )?;
-    write_promotion_session_file(
-        &request_path,
-        &render_promotion_session_request(material.promotion_type),
-        force,
-        &mut created,
-    )?;
-    write_promotion_session_file(&summary_path, "", force, &mut created)?;
-    write_promotion_session_file(
-        &context_readme_path,
-        &promotion_session_context_readme(material.promotion_type),
-        force,
-        &mut created,
-    )?;
-    write_promotion_session_file(&source_packet_path, &material.packet, force, &mut created)?;
-    write_promotion_session_file(
-        &sources_path,
-        &render_promotion_sources_manifest(material)?,
-        force,
-        &mut created,
-    )?;
-
-    session_promote_report_from_material(
-        promotion_session_dir,
-        material,
-        created,
-        manifest_path,
-        request_path,
-        summary_path,
-        source_packet_path,
-        sources_path,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn session_promote_report_from_material(
-    promotion_session_dir: &Path,
-    material: &SessionPromoteMaterial,
-    created: Vec<String>,
-    manifest_path: PathBuf,
-    request_path: PathBuf,
-    summary_path: PathBuf,
-    source_packet_path: PathBuf,
-    sources_path: PathBuf,
-) -> Result<SessionPromoteReport> {
-    let sessions = &material.sessions;
-    Ok(SessionPromoteReport {
-        promotion_type: material.promotion_type,
-        promotion_session_dir: promotion_session_dir.display().to_string(),
-        manifest_path: manifest_path.display().to_string(),
-        request_path: request_path.display().to_string(),
-        summary_path: summary_path.display().to_string(),
-        source_packet_path: source_packet_path.display().to_string(),
-        sources_path: sources_path.display().to_string(),
-        session_count: sessions.len(),
-        sessions: sessions
-            .iter()
-            .map(|session| SessionPromoteSessionReport {
-                session_dir: session.session_dir.display().to_string(),
-                title: session.title.clone(),
-                artifact_count: session.artifacts.len(),
-                turn_count: session.turn_count,
-                artifacts: session
-                    .artifacts
-                    .iter()
-                    .map(|artifact| SessionPromoteArtifactReport {
-                        kind: artifact.kind.clone(),
-                        path: artifact.path.display().to_string(),
-                        chars: artifact.content.chars().count(),
-                    })
-                    .collect(),
-            })
-            .collect(),
-        packet: material.packet.clone(),
-        created,
-    })
-}
-
-fn write_promotion_session_file(
-    path: &Path,
-    content: &str,
-    force: bool,
-    created: &mut Vec<String>,
-) -> Result<()> {
-    if path.exists() && !force {
-        bail!(
-            "promotion session file already exists: {} (use --force to replace generated files)",
-            path.display()
-        );
-    }
-    fs::write(path, content).with_context(|| format!("writing {}", path.display()))?;
-    created.push(path.display().to_string());
-    Ok(())
-}
-
-fn default_promotion_session_dir(promotion_type: SessionPromoteType) -> PathBuf {
-    let now = chrono::Local::now();
-    default_folder_session_root().join(format!(
-        "promotion-{}-{}-{}",
-        session_promote_type_label(promotion_type),
-        now.format("%Y%m%dT%H%M%S"),
-        now.timestamp_nanos_opt().unwrap_or_default()
-    ))
-}
-
-fn render_promotion_session_manifest(material: &SessionPromoteMaterial) -> Result<String> {
-    let workspace = env::current_dir()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|_| String::new());
-    let mut output = String::new();
-    output.push_str("version = 1\n");
-    output.push_str("kind = \"promotion\"\n");
-    output.push_str(&format!(
-        "created_at = {}\n",
-        toml_string(&chrono::Local::now().to_rfc3339())?
-    ));
-    output.push_str(&format!(
-        "promotion_type = {}\n",
-        toml_string(session_promote_type_label(material.promotion_type))?
-    ));
-    if !workspace.is_empty() {
-        output.push_str(&format!("workspace = {}\n", toml_string(&workspace)?));
-    }
-    output.push_str("\n[context]\n");
-    output.push_str("path = \"context\"\n");
-    output.push_str("source_packet = \"context/source-packet.md\"\n");
-    output.push_str("sources = \"context/sources.toml\"\n");
-    output.push_str("\n[promotion]\n");
-    output.push_str(&format!(
-        "type = {}\n",
-        toml_string(session_promote_type_label(material.promotion_type))?
-    ));
-    output.push_str(&format!("source_count = {}\n", material.sessions.len()));
-    Ok(output)
-}
-
-fn render_promotion_session_request(promotion_type: SessionPromoteType) -> String {
-    format!(
-        "# Promotion request\n\nPromotion type: `{}`\n\nUse `context/source-packet.md` as the source material. Preserve evidence links to the source session files when proposing promoted outputs.\n",
-        session_promote_type_label(promotion_type)
-    )
-}
-
-fn promotion_session_context_readme(promotion_type: SessionPromoteType) -> String {
-    format!(
-        "# Djinn promotion session context\n\nThis folder contains source material for a `{}` promotion session.\n\n- `source-packet.md`: deterministic evidence packet assembled from source sessions.\n- `sources.toml`: source session refs and selected artifact refs.\n\nDo not delete source sessions by default; promoted outputs should keep file-native provenance.\n",
-        session_promote_type_label(promotion_type)
-    )
-}
-
-fn render_promotion_sources_manifest(material: &SessionPromoteMaterial) -> Result<String> {
-    let mut output = String::new();
-    output.push_str(&format!(
-        "promotion_type = {}\n",
-        toml_string(session_promote_type_label(material.promotion_type))?
-    ));
-    output.push_str(&format!("source_count = {}\n", material.sessions.len()));
-    for session in &material.sessions {
-        output.push_str("\n[[source_sessions]]\n");
-        output.push_str(&format!(
-            "session_dir = {}\n",
-            toml_string(&session.session_dir.display().to_string())?
-        ));
-        output.push_str(&format!("title = {}\n", toml_string(&session.title)?));
-        output.push_str(&format!("turn_count = {}\n", session.turn_count));
-        output.push_str(&format!("artifact_count = {}\n", session.artifacts.len()));
-        for artifact in &session.artifacts {
-            output.push_str("\n[[source_sessions.artifacts]]\n");
-            output.push_str(&format!("kind = {}\n", toml_string(&artifact.kind)?));
-            output.push_str(&format!(
-                "path = {}\n",
-                toml_string(&artifact.path.display().to_string())?
-            ));
-            output.push_str(&format!(
-                "relative_path = {}\n",
-                toml_string(&artifact.relative_path)?
-            ));
-            output.push_str(&format!("chars = {}\n", artifact.content.chars().count()));
-        }
-    }
-    Ok(output)
-}
-
-fn collect_session_promote_artifacts(dir: &Path) -> Result<SessionPromoteSession> {
-    let session_dir = resolve_existing_folder_session_dir(dir)?;
-    let title = session_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(folder_session_display_name)
-        .unwrap_or_else(|| session_dir.display().to_string());
-
-    let mut artifacts = Vec::new();
-    push_session_promote_artifact(
-        &mut artifacts,
-        &session_dir,
-        "request",
-        &session_dir.join("request.md"),
-    )?;
-    push_session_promote_artifact(
-        &mut artifacts,
-        &session_dir,
-        "summary",
-        &session_dir.join("summary.md"),
-    )?;
-    push_session_promote_artifact(
-        &mut artifacts,
-        &session_dir,
-        "compacted_context",
-        &session_dir.join("context").join("compacted.md"),
-    )?;
-    push_session_promote_artifact(
-        &mut artifacts,
-        &session_dir,
-        "events",
-        &session_dir.join("events.jsonl"),
-    )?;
-    push_session_promote_event_turn_artifacts(&mut artifacts, &session_dir)?;
-
-    let turns = read_folder_session_turns(&session_dir.join("turns"))?;
-    let event_turn_count = read_folder_session_event_turn_count(&session_dir)?;
-    for turn in &turns {
-        if let Some(path) = &turn.request_path {
-            push_session_promote_artifact(
-                &mut artifacts,
-                &session_dir,
-                &format!("turn:{}:request", turn.id),
-                path,
-            )?;
-        }
-        if let Some(path) = &turn.response_path {
-            push_session_promote_artifact(
-                &mut artifacts,
-                &session_dir,
-                &format!("turn:{}:response", turn.id),
-                path,
-            )?;
-        }
-    }
-
-    if artifacts.is_empty() {
-        bail!(
-            "session {} has no promotable artifacts; run `djinn ask --session {}` first or add summary/context files",
-            session_dir.display(),
-            session_dir.display()
-        );
-    }
-
-    Ok(SessionPromoteSession {
-        session_dir,
-        title,
-        artifacts,
-        turn_count: event_turn_count.unwrap_or(turns.len()),
-    })
-}
-
-fn read_folder_session_event_turn_count(session_dir: &Path) -> Result<Option<usize>> {
-    let events_path = session_dir.join("events.jsonl");
-    if !events_path.exists() || !events_path.is_file() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&events_path)
-        .with_context(|| format!("reading {}", events_path.display()))?;
-    let mut issues = Vec::new();
-    let pairs = read_event_turn_pairs(&events_path, &raw, &mut issues);
-    if issues.is_empty() {
-        Ok(Some(pairs.len()))
-    } else {
-        Ok(None)
-    }
 }
 
 pub(crate) fn read_folder_session_event_turns(
@@ -6467,108 +5753,7 @@ pub(crate) fn read_folder_session_event_turns(
         .collect())
 }
 
-fn push_session_promote_event_turn_artifacts(
-    artifacts: &mut Vec<SessionPromoteArtifact>,
-    session_dir: &Path,
-) -> Result<()> {
-    let events_path = session_dir.join("events.jsonl");
-    let turns = read_folder_session_event_turns(session_dir)?;
-    for turn in turns.into_iter().take(50) {
-        let mut content = String::new();
-        content.push_str(&format!("# Event turn {}\n\n", turn.id));
-        if let Some(request) = turn.request {
-            content.push_str("## Request\n\n");
-            content.push_str(&request);
-            content.push_str("\n\n");
-        }
-        if let Some(response) = turn.response {
-            content.push_str("## Response\n\n");
-            content.push_str(&response);
-            content.push('\n');
-        }
-        artifacts.push(SessionPromoteArtifact {
-            kind: format!("event_turn:{}", turn.id),
-            path: events_path.clone(),
-            relative_path: format!("events.jsonl#{}", turn.id),
-            content,
-        });
-    }
-    Ok(())
-}
-
-fn push_session_promote_artifact(
-    artifacts: &mut Vec<SessionPromoteArtifact>,
-    session_dir: &Path,
-    kind: &str,
-    path: &Path,
-) -> Result<()> {
-    let Some(content) = read_optional_markdown_file(path)? else {
-        return Ok(());
-    };
-    artifacts.push(SessionPromoteArtifact {
-        kind: kind.to_string(),
-        path: path.to_path_buf(),
-        relative_path: session_relative_path(session_dir, path),
-        content,
-    });
-    Ok(())
-}
-
-fn session_relative_path(session_dir: &Path, path: &Path) -> String {
-    path.strip_prefix(session_dir)
-        .unwrap_or(path)
-        .display()
-        .to_string()
-}
-
-fn render_session_promote_packet(
-    sessions: &[SessionPromoteSession],
-    promotion_type: SessionPromoteType,
-    max_chars_per_artifact: usize,
-) -> String {
-    let mut out = String::from("# Djinn Folder Session Promotion Packet\n\n");
-    out.push_str(&format!(
-        "Promotion type: `{}`\n",
-        session_promote_type_label(promotion_type)
-    ));
-    out.push_str(&format!("Sessions: `{}`\n\n", sessions.len()));
-    out.push_str("## Instructions\n\n");
-    out.push_str(session_promote_type_instructions(promotion_type));
-    out.push_str("\n\nUse only the evidence below. Preserve file-native provenance by citing `session_dir` plus artifact paths such as `summary.md`, `context/compacted.md`, and `turns/<id>/response.md`. Do not invent facts that are not supported by copied evidence.\n");
-
-    for (idx, session) in sessions.iter().enumerate() {
-        out.push_str(&format!(
-            "\n## Session {}: {}\n\n- session_dir: `{}`\n- turns: `{}`\n- artifacts: `{}`\n",
-            idx + 1,
-            session.title,
-            session.session_dir.display(),
-            session.turn_count,
-            session.artifacts.len()
-        ));
-        out.push_str("\n### Provenance\n\n");
-        for artifact in &session.artifacts {
-            out.push_str(&format!(
-                "- `{}`: `{}` ({} chars)\n",
-                artifact.kind,
-                artifact.relative_path,
-                artifact.content.chars().count()
-            ));
-        }
-        out.push_str("\n### Evidence excerpts\n");
-        for artifact in &session.artifacts {
-            out.push_str(&format!(
-                "\n#### {} — `{}`\n\n```text\n{}\n```\n",
-                artifact.kind,
-                artifact.relative_path,
-                truncate(&artifact.content, max_chars_per_artifact)
-            ));
-        }
-    }
-
-    out
-}
-
-fn session_promote_type_label(promotion_type: SessionPromoteType) -> &'static str {
+pub(crate) fn session_promote_type_label(promotion_type: SessionPromoteType) -> &'static str {
     match promotion_type {
         SessionPromoteType::Memory => "memory",
         SessionPromoteType::Todo => "todo",
@@ -6577,7 +5762,9 @@ fn session_promote_type_label(promotion_type: SessionPromoteType) -> &'static st
     }
 }
 
-fn session_promote_type_instructions(promotion_type: SessionPromoteType) -> &'static str {
+pub(crate) fn session_promote_type_instructions(
+    promotion_type: SessionPromoteType,
+) -> &'static str {
     match promotion_type {
         SessionPromoteType::Memory => {
             "Identify durable, reusable memories: nuggets of wisdom worth returning to. Return reviewed `djinn add memory ... --evidence ...` commands or say `No durable memories recommended.`"
@@ -7599,7 +6786,7 @@ fn folder_session_summary_order(
         .then_with(|| left.name.cmp(&right.name))
 }
 
-fn folder_session_display_name(name: &str) -> String {
+pub(crate) fn folder_session_display_name(name: &str) -> String {
     let stripped = name
         .split_once("-agt_")
         .map(|(prefix, _)| prefix)
@@ -8003,7 +7190,7 @@ pub(crate) fn read_folder_session_turns(turns_dir: &Path) -> Result<Vec<FolderSe
     Ok(turns)
 }
 
-fn read_optional_markdown_file(path: &Path) -> Result<Option<String>> {
+pub(crate) fn read_optional_markdown_file(path: &Path) -> Result<Option<String>> {
     if !path.exists() || !path.is_file() {
         return Ok(None);
     }
@@ -9025,7 +8212,7 @@ fn resolve_agent_request_prompt(
     Ok(prompt)
 }
 
-fn resolve_session_dir(path: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_session_dir(path: &Path) -> Result<PathBuf> {
     resolve_session_dir_in_root(path, &default_folder_session_root())
 }
 
@@ -9080,7 +8267,7 @@ fn resolve_folder_session_reference_name(root: &Path, path: &Path) -> Result<Opt
     }
 }
 
-fn default_folder_session_root() -> PathBuf {
+pub(crate) fn default_folder_session_root() -> PathBuf {
     djinn_core::default_cache_dir().join("sessions")
 }
 
@@ -14943,7 +14130,7 @@ fn suggestion_matches(record: &SuggestionRecord, query: &str) -> bool {
             .any(|evidence| evidence.to_lowercase().contains(query))
 }
 
-fn truncate(value: &str, max_chars: usize) -> String {
+pub(crate) fn truncate(value: &str, max_chars: usize) -> String {
     let mut chars = value.chars();
     let truncated = chars.by_ref().take(max_chars).collect::<String>();
     if chars.next().is_some() {
@@ -15219,116 +14406,6 @@ mod tests {
             evidence: Vec::new(),
             sources: Vec::new(),
         }
-    }
-
-    #[test]
-    fn format_permission_preview_renders_full_hunks() {
-        let rendered = format_permission_preview(&serde_json::json!({
-            "preview": [
-                {
-                    "operation": "update",
-                    "relative_path": "src/lib.rs",
-                    "lines_added": 1,
-                    "lines_removed": 1,
-                    "hunks": [
-                        {
-                            "lines": [
-                                {"kind": "context", "content": "fn answer() -> i32 {"},
-                                {"kind": "remove", "content": "    41"},
-                                {"kind": "add", "content": "    42"},
-                                {"kind": "context", "content": "}"}
-                            ]
-                        }
-                    ]
-                }
-            ]
-        }))
-        .unwrap();
-
-        assert!(rendered.contains("- update src/lib.rs (+1/-1)"));
-        assert!(rendered.contains("  @@ hunk 1"));
-        assert!(rendered.contains("    fn answer() -> i32 {"));
-        assert!(rendered.contains("  -     41"));
-        assert!(rendered.contains("  +     42"));
-    }
-
-    #[test]
-    fn terminal_permission_gate_reuses_session_path_scopes() {
-        let gate = TerminalPermissionGate::new();
-        let request = PermissionRequest {
-            action: "apply_patch".to_string(),
-            description: "patch".to_string(),
-            metadata: serde_json::json!({
-                "workspace": "/tmp/work",
-                "preview": [
-                    {"path": "/tmp/work/a.txt", "relative_path": "a.txt"},
-                    {"path": "/tmp/work/b.txt", "relative_path": "b.txt"}
-                ]
-            }),
-        };
-
-        assert!(gate.cached_decision(&request).is_none());
-        gate.remember_resources_for_session(
-            &request,
-            vec!["/tmp/work/a.txt".to_string(), "/tmp/work/b.txt".to_string()],
-        );
-
-        assert_eq!(
-            gate.cached_decision(&request),
-            Some(PermissionDecision::AllowPaths {
-                paths: vec!["/tmp/work/a.txt".to_string(), "/tmp/work/b.txt".to_string()]
-            })
-        );
-    }
-
-    #[test]
-    fn terminal_permission_gate_does_not_reuse_partial_or_cross_action_scopes() {
-        let gate = TerminalPermissionGate::new();
-        let request = PermissionRequest {
-            action: "apply_patch".to_string(),
-            description: "patch".to_string(),
-            metadata: serde_json::json!({
-                "workspace": "/tmp/work",
-                "preview": [
-                    {"path": "/tmp/work/a.txt", "relative_path": "a.txt"},
-                    {"path": "/tmp/work/b.txt", "relative_path": "b.txt"}
-                ]
-            }),
-        };
-        let other_action = PermissionRequest {
-            action: "write".to_string(),
-            ..request.clone()
-        };
-
-        gate.remember_resources_for_session(&request, vec!["/tmp/work/a.txt".to_string()]);
-
-        assert!(gate.cached_decision(&request).is_none());
-        assert!(gate.cached_decision(&other_action).is_none());
-    }
-
-    #[test]
-    fn terminal_permission_gate_reuses_session_resource_scopes() {
-        let gate = TerminalPermissionGate::new();
-        let request = PermissionRequest {
-            action: "shell".to_string(),
-            description: "shell".to_string(),
-            metadata: serde_json::json!({
-                "workspace": "/tmp/work",
-                "kind": "shell",
-                "resource": "printf hello",
-                "resources": ["printf hello"]
-            }),
-        };
-
-        assert!(gate.cached_decision(&request).is_none());
-        gate.remember_resources_for_session(&request, vec!["printf hello".to_string()]);
-
-        assert_eq!(
-            gate.cached_decision(&request),
-            Some(PermissionDecision::AllowResources {
-                resources: vec!["printf hello".to_string()]
-            })
-        );
     }
 
     #[test]
@@ -21179,101 +20256,6 @@ link = "context/repo"
             },
             SessionDecisionAction::Accept,
         )
-        .unwrap_err();
-        assert!(err.to_string().contains("is not a promotion session"));
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn session_validate_candidates_reports_valid_and_invalid_files_without_writeback() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-session-validate-candidates-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        let source = root.join("source-session");
-        fs::create_dir_all(source.join("context")).unwrap();
-        fs::write(source.join("summary.md"), "A useful promotion lesson.\n").unwrap();
-
-        let promotion_dir = root.join("promotion-memory");
-        create_promotion_session(&SessionPromoteArgs {
-            dirs: vec![source.clone()],
-            promotion_type: SessionPromoteType::Memory,
-            promotion_session_dir: Some(promotion_dir.clone()),
-            max_chars_per_artifact: 200,
-            force: false,
-            json: false,
-        })
-        .unwrap();
-        let candidates_dir = promotion_dir.join("outputs/candidates");
-        fs::create_dir_all(&candidates_dir).unwrap();
-        fs::write(
-            candidates_dir.join("memory-001.toml"),
-            format!(
-                "type = \"memory\"\nid = \"memory-001\"\ntext = \"Keep source sessions as promotion provenance.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"{}/summary.md\"]\n",
-                source.display()
-            ),
-        )
-        .unwrap();
-        fs::write(
-            candidates_dir.join("memory-002.toml"),
-            format!(
-                "type = \"memory\"\nid = \"memory-002\"\ntext = \"Missing confidence should be invalid.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nevidence = [\"{}/summary.md\"]\n",
-                source.display()
-            ),
-        )
-        .unwrap();
-
-        let report = validate_promotion_session_candidates(&SessionValidateCandidatesArgs {
-            dir: promotion_dir.clone(),
-            candidate: None,
-            json: false,
-        })
-        .unwrap();
-
-        assert_eq!(report.promotion_type, "memory");
-        assert_eq!(report.candidate_count, 2);
-        assert_eq!(report.valid_count, 1);
-        assert_eq!(report.invalid_count, 1);
-        assert!(!report.all_valid);
-        assert!(report
-            .candidates
-            .iter()
-            .any(|candidate| candidate.id == "memory-001" && candidate.valid));
-        let invalid = report
-            .candidates
-            .iter()
-            .find(|candidate| candidate.id == "memory-002")
-            .unwrap();
-        assert!(!invalid.valid);
-        assert_eq!(invalid.candidate_type.as_deref(), Some("memory"));
-        assert!(invalid
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("memory candidate"));
-        assert!(!promotion_dir.join("outputs/decisions").exists());
-        assert!(!promotion_dir.join("outputs/candidate-status.toml").exists());
-
-        let single = validate_promotion_session_candidates(&SessionValidateCandidatesArgs {
-            dir: promotion_dir.clone(),
-            candidate: Some("memory-001".to_string()),
-            json: false,
-        })
-        .unwrap();
-        assert!(single.all_valid);
-        assert_eq!(single.candidate_count, 1);
-
-        let normal = root.join("normal-session");
-        fs::create_dir_all(&normal).unwrap();
-        fs::write(normal.join("djinn.toml"), "version = 1\n").unwrap();
-        let err = validate_promotion_session_candidates(&SessionValidateCandidatesArgs {
-            dir: normal,
-            candidate: None,
-            json: false,
-        })
         .unwrap_err();
         assert!(err.to_string().contains("is not a promotion session"));
 
