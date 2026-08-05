@@ -183,11 +183,15 @@ use session_artifact::{resolve_folder_session_open_target, SessionOpenTarget};
 use session_compact::compact_folder_session;
 #[cfg(test)]
 use session_context::validate_context_entry_name;
+#[cfg(test)]
 use session_context::{
     add_folder_session_context_entry, discover_folder_session_context,
-    format_folder_session_context_discover, format_folder_session_context_ls,
-    inspect_folder_session_context_dir, list_folder_session_context,
-    remove_folder_session_context_entry, resolve_folder_session_context_instructions,
+    format_folder_session_context_ls, list_folder_session_context,
+    remove_folder_session_context_entry,
+};
+use session_context::{
+    inspect_folder_session_context_dir, resolve_folder_session_context_instructions,
+    session_context, session_context_discover,
 };
 use session_events::{
     ensure_event_health_strict, event_health_report_for_cache_sessions, format_event_health_report,
@@ -2418,15 +2422,6 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
     }
 }
 
-fn session_context(args: SessionContextArgs) -> Result<()> {
-    match args.command {
-        SessionContextCommand::Discover(args) => session_context_discover(args),
-        SessionContextCommand::Ls(args) => session_context_ls(args),
-        SessionContextCommand::Add(args) => session_context_add(args),
-        SessionContextCommand::Rm(args) => session_context_rm(args),
-    }
-}
-
 fn session_compact(args: SessionCompactArgs) -> Result<()> {
     let report = compact_folder_session(&args.session_dir, args.output.as_deref())?;
     if args.json {
@@ -2620,49 +2615,6 @@ fn session_status(args: SessionStatusArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", format_folder_session_status(&report));
-    }
-    Ok(())
-}
-
-fn session_context_discover(args: SessionContextDiscoverArgs) -> Result<()> {
-    let report = discover_folder_session_context(&args.session, args.dry_run)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_folder_session_context_discover(&report));
-    }
-    Ok(())
-}
-
-fn session_context_ls(args: SessionContextLsArgs) -> Result<()> {
-    let report = list_folder_session_context(&args.session)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_folder_session_context_ls(&report));
-    }
-    Ok(())
-}
-
-fn session_context_add(args: SessionContextAddArgs) -> Result<()> {
-    let report = add_folder_session_context_entry(&args)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!("Linked context: {} -> {}", report.path, report.target);
-        if report.replaced {
-            println!("Replaced existing context entry: {}", report.name);
-        }
-    }
-    Ok(())
-}
-
-fn session_context_rm(args: SessionContextRmArgs) -> Result<()> {
-    let report = remove_folder_session_context_entry(&args.session, &args.name)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!("Removed context entry: {}", report.path);
     }
     Ok(())
 }

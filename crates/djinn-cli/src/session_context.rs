@@ -8,12 +8,65 @@ use serde_json::Value;
 use crate::session_artifact::resolve_folder_session_repo_open_target;
 use crate::{
     folder_session_slug, resolve_existing_folder_session_dir, truncate_table_cell,
-    ResolvedAgentInstruction, SessionContextAddArgs,
+    ResolvedAgentInstruction, SessionContextAddArgs, SessionContextArgs, SessionContextCommand,
+    SessionContextDiscoverArgs, SessionContextLsArgs, SessionContextRmArgs,
 };
 
 const FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES: u64 = 32 * 1024;
 const FOLDER_SESSION_CONTEXT_MAX_TOTAL_BYTES: usize = 96 * 1024;
 const FOLDER_SESSION_CONTEXT_MAX_FILES: usize = 16;
+
+pub(crate) fn session_context(args: SessionContextArgs) -> Result<()> {
+    match args.command {
+        SessionContextCommand::Discover(args) => session_context_discover(args),
+        SessionContextCommand::Ls(args) => session_context_ls(args),
+        SessionContextCommand::Add(args) => session_context_add(args),
+        SessionContextCommand::Rm(args) => session_context_rm(args),
+    }
+}
+
+pub(crate) fn session_context_discover(args: SessionContextDiscoverArgs) -> Result<()> {
+    let report = discover_folder_session_context(&args.session, args.dry_run)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_folder_session_context_discover(&report));
+    }
+    Ok(())
+}
+
+fn session_context_ls(args: SessionContextLsArgs) -> Result<()> {
+    let report = list_folder_session_context(&args.session)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_folder_session_context_ls(&report));
+    }
+    Ok(())
+}
+
+fn session_context_add(args: SessionContextAddArgs) -> Result<()> {
+    let report = add_folder_session_context_entry(&args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Linked context: {} -> {}", report.path, report.target);
+        if report.replaced {
+            println!("Replaced existing context entry: {}", report.name);
+        }
+    }
+    Ok(())
+}
+
+fn session_context_rm(args: SessionContextRmArgs) -> Result<()> {
+    let report = remove_folder_session_context_entry(&args.session, &args.name)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Removed context entry: {}", report.path);
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionContextLsReport {
