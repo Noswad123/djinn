@@ -535,3 +535,121 @@ pub(crate) fn render_pattern_promotion_generation_summary(
     output.push_str("4. Optionally accept/deny candidates to record review status, then clean up sources explicitly when finished.\n");
     output
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_status::folder_session_status;
+
+    #[test]
+    fn promotion_generation_writes_model_toml_blocks_as_candidate_files() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-promotion-generation-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("promotion-memory");
+        let candidates_dir = session_dir.join("outputs/candidates");
+        fs::create_dir_all(&candidates_dir).unwrap();
+        fs::write(
+            session_dir.join("djinn.toml"),
+            "version = 1\nkind = \"promotion\"\npromotion_type = \"memory\"\n",
+        )
+        .unwrap();
+        fs::write(session_dir.join("request.md"), "promote memories\n").unwrap();
+        let model_output = "Here are candidates:\n\n```toml\ntype = \"memory\"\ntext = \"Promotion sessions should preserve source provenance.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\n  \"/tmp/source/summary.md\"\n]\n```\n";
+
+        let reports = write_generated_promotion_candidates(
+            &session_dir,
+            "memory",
+            model_output,
+            &candidates_dir,
+        )
+        .unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].id, "memory-001");
+        assert_eq!(reports[0].candidate_type, "memory");
+        assert_eq!(reports[0].evidence_count, 1);
+        let candidate = fs::read_to_string(&reports[0].path).unwrap();
+        assert!(candidate.contains("id = \"memory-001\""));
+        assert!(candidate.contains("type = \"memory\""));
+        let index_path = write_promotion_candidate_index(&session_dir, &reports).unwrap();
+        let index = fs::read_to_string(index_path).unwrap();
+        assert!(index.contains("candidate_count = 1"));
+        assert!(index.contains("status = \"candidate\""));
+        let summary_path =
+            write_promotion_generation_summary(&session_dir, "memory", &reports).unwrap();
+        let summary = fs::read_to_string(summary_path).unwrap();
+        assert!(summary.contains("# Promotion candidates"));
+        assert!(summary.contains("Promotion sessions should preserve source provenance."));
+        assert!(summary.contains("/tmp/source/summary.md"));
+        let status = folder_session_status(&session_dir).unwrap();
+        assert_eq!(status.lifecycle.state, "completed");
+        assert_eq!(status.lifecycle.mode.as_deref(), Some("promotion"));
+        assert_eq!(
+            status.lifecycle.reason.as_deref(),
+            Some("candidates_generated")
+        );
+        assert!(status
+            .next_action
+            .as_deref()
+            .unwrap_or_default()
+            .contains("djinn session accept"));
+
+        let prompt = render_promotion_candidate_generation_prompt("memory", "Packet evidence");
+        assert!(prompt.contains("Promotion type: `memory`"));
+        assert!(prompt.contains("Return one fenced `toml` block per candidate"));
+        assert!(prompt.contains("Packet evidence"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pattern_promotion_summary_is_standalone_synthesis() {
+        let candidates = vec![
+            PromotionGeneratedCandidateReport {
+                id: "pattern-001".to_string(),
+                candidate_type: "pattern".to_string(),
+                path: "/tmp/promotion/outputs/candidates/pattern-001.toml".to_string(),
+                text: "Keep pattern insights in notes after review.".to_string(),
+                rationale: Some(
+                    "Patterns are synthesis across sessions, not durable Djinn records."
+                        .to_string(),
+                ),
+                evidence: vec![
+                    "/tmp/source-a/summary.md".to_string(),
+                    "/tmp/source-b/turns/turn-1/response.md".to_string(),
+                ],
+                evidence_count: 2,
+            },
+            PromotionGeneratedCandidateReport {
+                id: "pattern-002".to_string(),
+                candidate_type: "pattern".to_string(),
+                path: "/tmp/promotion/outputs/candidates/pattern-002.toml".to_string(),
+                text: "Prefer explicit cleanup after exporting insights.".to_string(),
+                rationale: Some(
+                    "The workflow keeps provenance until the user intentionally deletes sources."
+                        .to_string(),
+                ),
+                evidence: vec!["/tmp/source-c/context/source-packet.md".to_string()],
+                evidence_count: 1,
+            },
+        ];
+
+        let summary = render_promotion_generation_summary("pattern", &candidates);
+
+        assert!(summary.starts_with("# Pattern synthesis"));
+        assert!(summary.contains("## Executive summary"));
+        assert!(summary.contains("## Patterns to evaluate"));
+        assert!(summary.contains("## Review checklist"));
+        assert!(summary.contains("**pattern-001** — Keep pattern insights in notes"));
+        assert!(summary.contains("**Why it matters:** Patterns are synthesis"));
+        assert!(summary.contains("/tmp/source-b/turns/turn-1/response.md"));
+        assert!(summary.contains(
+            "djinn session export-pattern <promotion-session> [candidate] --to <notes.md>"
+        ));
+        assert!(!summary.contains("# Promotion candidates"));
+    }
+}

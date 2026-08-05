@@ -492,3 +492,63 @@ fn is_file_native_promotion_evidence(evidence: &str) -> bool {
             || evidence.contains("context/")
             || evidence.contains("turns/"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn promotion_candidate_validation_requires_type_specific_fields() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-promotion-validation-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let candidates = root.join("outputs/candidates");
+        fs::create_dir_all(&candidates).unwrap();
+        let evidence = "/tmp/source/summary.md";
+
+        let memory_err = parse_promotion_candidate(
+            &root,
+            &candidates.join("memory.toml"),
+            &format!(
+                "type = \"memory\"\ntext = \"A lesson.\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"{evidence}\"]\n"
+            ),
+        )
+        .unwrap_err();
+        assert!(memory_err.to_string().contains("must include `scope`"));
+
+        let todo_err = parse_promotion_candidate(
+            &root,
+            &candidates.join("todo.toml"),
+            &format!(
+                "type = \"todo\"\ntext = \"Do the thing.\"\nconfidence = \"medium\"\nevidence = [\"{evidence}\"]\n"
+            ),
+        )
+        .unwrap_err();
+        assert!(todo_err.to_string().contains("must include `kind`"));
+
+        let skill_err = parse_promotion_candidate(
+            &root,
+            &candidates.join("skill.toml"),
+            &format!(
+                "type = \"skill\"\nname = \"workflow\"\nbody = \"# Skill: workflow\"\nevidence = [\"{evidence}\"]\n"
+            ),
+        )
+        .unwrap_err();
+        assert!(skill_err.to_string().contains("must include `description`"));
+
+        let pattern_err = parse_promotion_candidate(
+            &root,
+            &candidates.join("pattern.toml"),
+            &format!(
+                "type = \"pattern\"\ntext = \"A repeated theme.\"\nevidence = [\"{evidence}\"]\n"
+            ),
+        )
+        .unwrap_err();
+        assert!(pattern_err.to_string().contains("must include `rationale`"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}

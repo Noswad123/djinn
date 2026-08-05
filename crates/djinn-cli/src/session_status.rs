@@ -1550,4 +1550,58 @@ mod tests {
 
         let _ = fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn promotion_status_reports_failed_background_generation_without_candidates() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-promotion-bg-status-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("promotion-pattern");
+        let run_dir = session_dir.join(".djinn/runs");
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::write(
+            session_dir.join("djinn.toml"),
+            "version = 1\nkind = \"promotion\"\npromotion_type = \"pattern\"\n",
+        )
+        .unwrap();
+        fs::write(session_dir.join("request.md"), "promote patterns\n").unwrap();
+        let log_path = run_dir.join("session-run-test.log");
+        fs::write(&log_path, "candidate validation failed\n").unwrap();
+        fs::write(
+            run_dir.join("session-run-test.toml"),
+            format!(
+                "version = 1\nstarted_at = \"2026-07-30T12:00:00Z\"\nsession_dir = \"{}\"\npid = 4294967295\nlog_path = \"{}\"\n",
+                session_dir.display(),
+                log_path.display()
+            ),
+        )
+        .unwrap();
+
+        let status = folder_session_status(&session_dir).unwrap();
+
+        assert_eq!(status.lifecycle.state, "failed");
+        assert_eq!(status.lifecycle.mode.as_deref(), Some("promotion"));
+        assert_eq!(
+            status.lifecycle.reason.as_deref(),
+            Some("generation_failed")
+        );
+        assert!(status
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Inspect the model response or log"));
+        let run = latest_background_session_run_status(&session_dir).unwrap();
+        assert_eq!(run.log_tail.as_deref(), Some("candidate validation failed"));
+        assert!(run.log_bytes.unwrap_or_default() > 0);
+        let running_note =
+            format_background_promotion_run_note(&BackgroundRunStatus { alive: true, ..run });
+        assert!(running_note.contains("pid 4294967295"));
+        assert!(running_note.contains("Last log: candidate validation failed"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

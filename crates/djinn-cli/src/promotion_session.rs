@@ -550,3 +550,157 @@ pub(crate) fn render_session_promote_packet(
 
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_projection::project_agent_session_dir;
+    use djinn_memory::{
+        AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId, AgentSessionMeta,
+    };
+
+    #[test]
+    fn session_promote_renders_folder_artifacts_with_file_provenance() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-promote-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let turn = dir.join("turns/turn-1");
+        let context = dir.join("context");
+        fs::create_dir_all(&turn).unwrap();
+        fs::create_dir_all(&context).unwrap();
+        fs::write(dir.join("request.md"), "Find durable lessons\n").unwrap();
+        fs::write(
+            dir.join("summary.md"),
+            "Use folder sessions as source material.\n",
+        )
+        .unwrap();
+        fs::write(
+            context.join("compacted.md"),
+            "Compacted decision evidence.\n",
+        )
+        .unwrap();
+        fs::write(turn.join("request.md"), "What should promotion cite?\n").unwrap();
+        fs::write(
+            turn.join("response.md"),
+            "Cite summary.md and turns/turn-1/response.md.\n",
+        )
+        .unwrap();
+
+        let promotion_dir = root.join("promotion-memory");
+        let report = create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![dir.clone()],
+            promotion_type: SessionPromoteType::Memory,
+            promotion_session_dir: Some(promotion_dir.clone()),
+            max_chars_per_artifact: 200,
+            force: false,
+            json: false,
+        })
+        .unwrap();
+
+        assert_eq!(report.promotion_type, SessionPromoteType::Memory);
+        assert_eq!(
+            report.promotion_session_dir,
+            promotion_dir.display().to_string()
+        );
+        assert_eq!(report.session_count, 1);
+        assert_eq!(report.sessions[0].turn_count, 1);
+        assert_eq!(report.sessions[0].artifact_count, 5);
+        assert!(report
+            .packet
+            .starts_with("# Djinn Folder Session Promotion Packet"));
+        assert!(report.packet.contains("Promotion type: `memory`"));
+        assert!(report.packet.contains("`summary`: `summary.md`"));
+        assert!(report
+            .packet
+            .contains("`compacted_context`: `context/compacted.md`"));
+        assert!(report
+            .packet
+            .contains("`turn:turn-1:response`: `turns/turn-1/response.md`"));
+        assert!(report
+            .packet
+            .contains("Use folder sessions as source material."));
+        assert!(report
+            .packet
+            .contains("Cite summary.md and turns/turn-1/response.md."));
+
+        let source_packet = fs::read_to_string(promotion_dir.join("context/source-packet.md"))
+            .expect("source packet should be written");
+        assert_eq!(source_packet, report.packet);
+        let sources = fs::read_to_string(promotion_dir.join("context/sources.toml"))
+            .expect("sources manifest should be written");
+        assert!(sources.contains("promotion_type = \"memory\""));
+        assert!(sources.contains(&format!("session_dir = \"{}\"", dir.display())));
+        assert!(sources.contains("relative_path = \"summary.md\""));
+        let manifest = fs::read_to_string(promotion_dir.join("djinn.toml"))
+            .expect("promotion manifest should be written");
+        assert!(manifest.contains("kind = \"promotion\""));
+        assert!(manifest.contains("promotion_type = \"memory\""));
+        let request = fs::read_to_string(promotion_dir.join("request.md"))
+            .expect("promotion request should be written");
+        assert!(request.contains("Use `context/source-packet.md`"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_promote_includes_structured_event_turn_artifacts_without_turn_projection() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-promote-events-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_promote_events"),
+            meta: AgentSessionMeta {
+                title: "Promote events".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "What should promotion cite?".to_string(),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "Cite events.jsonl event turns.".to_string(),
+                }),
+            ],
+        };
+        project_agent_session_dir(
+            &dir,
+            &session,
+            "What should promotion cite?",
+            "Cite events.jsonl event turns.",
+        )
+        .unwrap();
+        let promotion_dir = root.join("promotion-memory");
+
+        let report = create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![dir.clone()],
+            promotion_type: SessionPromoteType::Memory,
+            promotion_session_dir: Some(promotion_dir),
+            max_chars_per_artifact: 400,
+            force: false,
+            json: false,
+        })
+        .unwrap();
+
+        assert_eq!(report.sessions[0].turn_count, 1);
+        assert!(report
+            .packet
+            .contains("`event_turn:event-turn-0001`: `events.jsonl#event-turn-0001`"));
+        assert!(report.packet.contains("## Request"));
+        assert!(report.packet.contains("What should promotion cite?"));
+        assert!(report.packet.contains("Cite events.jsonl event turns."));
+        assert!(!dir.join("turns").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}

@@ -1050,3 +1050,451 @@ fn render_session_decision_record(
     }
     Ok(output)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{create_promotion_session, SessionPromoteArgs, SessionPromoteType};
+
+    #[test]
+    fn session_accept_and_deny_record_promotion_decisions_with_dry_run() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-decision-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let source = root.join("source-session");
+        fs::create_dir_all(source.join("context")).unwrap();
+        fs::write(source.join("summary.md"), "A useful lesson.\n").unwrap();
+
+        let promotion_dir = root.join("promotion-memory");
+        create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![source.clone()],
+            promotion_type: SessionPromoteType::Memory,
+            promotion_session_dir: Some(promotion_dir.clone()),
+            max_chars_per_artifact: 200,
+            force: false,
+            json: false,
+        })
+        .unwrap();
+
+        let dry_run = decide_promotion_session(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: None,
+                dry_run: true,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+        )
+        .unwrap();
+        assert!(dry_run.dry_run);
+        assert!(!dry_run.wrote_decision);
+        assert!(!promotion_dir.join("outputs/decisions").exists());
+
+        let accepted = decide_promotion_session(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: None,
+                dry_run: false,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+        )
+        .unwrap();
+        assert_eq!(accepted.action, SessionDecisionAction::Accept);
+        assert_eq!(accepted.promotion_type, "memory");
+        assert!(accepted.wrote_decision);
+        assert!(!accepted.durable_writeback);
+        let accepted_record = fs::read_to_string(&accepted.decision_path).unwrap();
+        assert!(accepted_record.contains("action = \"accept\""));
+        assert!(accepted_record.contains("durable_writeback = false"));
+
+        let denied = decide_promotion_session(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: None,
+                dry_run: false,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Deny,
+        )
+        .unwrap();
+        let denied_record = fs::read_to_string(&denied.decision_path).unwrap();
+        assert!(denied_record.contains("action = \"deny\""));
+        assert!(!denied_record.contains("candidate ="));
+
+        let normal = root.join("normal-session");
+        fs::create_dir_all(&normal).unwrap();
+        fs::write(normal.join("djinn.toml"), "version = 1\n").unwrap();
+        let err = decide_promotion_session(
+            &SessionDecisionArgs {
+                dir: normal,
+                candidate: None,
+                dry_run: false,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("is not a promotion session"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn candidate_duplicate_similarity_matches_generated_candidate_variants() {
+        let duplicate_pairs = [
+            (
+                "Keep source sessions as durable promotion provenance.",
+                "Keep source sessions as durable provenance for promotion writeback.",
+            ),
+            (
+                "Wire promotion todos into the MindWeaver inbox capture.",
+                "Wire Djinn promotion todo candidates into MindWeaver inbox capture.",
+            ),
+            (
+                "Add direct promotion-candidate review actions in Sessions TUI.",
+                "Add direct review actions for promotion candidates in the Sessions TUI.",
+            ),
+            (
+                "Promotion candidate rows should show status, evidence, and destination previews.",
+                "Show promotion candidates with status, evidence links, and destination preview rows.",
+            ),
+        ];
+
+        for (existing, candidate) in duplicate_pairs {
+            assert!(
+                candidate_duplicate_similarity(candidate, existing).is_some(),
+                "expected duplicate match for generated variant: {candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_duplicate_similarity_allows_related_but_distinct_work() {
+        let distinct_pairs = [
+            (
+                "Add direct review actions for promotion candidates in Sessions TUI.",
+                "Tune fuzzy duplicate thresholds from generated promotion candidates.",
+            ),
+            (
+                "Wire Djinn promotion todo candidates into MindWeaver inbox capture.",
+                "Run mw todos sync after accepting MindWeaver inbox todos.",
+            ),
+            (
+                "Keep source sessions as durable promotion provenance.",
+                "Link high signal project files during session context discovery.",
+            ),
+        ];
+
+        for (existing, candidate) in distinct_pairs {
+            assert_eq!(
+                candidate_duplicate_similarity(candidate, existing),
+                None,
+                "expected related candidate to remain distinct: {candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_accept_writes_stable_memory_candidate_to_durable_store() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-writeback-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let data = root.join("data");
+        let source = root.join("source-session");
+        fs::create_dir_all(source.join("context")).unwrap();
+        fs::write(source.join("summary.md"), "A useful promotion lesson.\n").unwrap();
+
+        let promotion_dir = root.join("promotion-memory");
+        create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![source.clone()],
+            promotion_type: SessionPromoteType::Memory,
+            promotion_session_dir: Some(promotion_dir.clone()),
+            max_chars_per_artifact: 200,
+            force: false,
+            json: false,
+        })
+        .unwrap();
+        let candidates_dir = promotion_dir.join("outputs/candidates");
+        fs::create_dir_all(&candidates_dir).unwrap();
+        fs::write(
+            candidates_dir.join("memory-001.toml"),
+            format!(
+                "type = \"memory\"\ntext = \"Keep source sessions as promotion provenance.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"{}/summary.md\"]\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+
+        let stores = PromotionWritebackStores {
+            memory: djinn_memory::MemoryStore::default_in(&data),
+            action: ActionStore::default_in(&data),
+            skill: SkillStore::default_in(&data),
+            mindweaver_inbox: None,
+            mindweaver_sync_command: None,
+        };
+
+        let dry_run = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("memory-001".to_string()),
+                dry_run: true,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap();
+        assert_eq!(dry_run.candidate_count, 1);
+        assert_eq!(dry_run.writebacks.len(), 1);
+        assert!(!dry_run.durable_writeback);
+        assert!(stores.memory.list().unwrap().is_empty());
+
+        let accepted = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("memory-001".to_string()),
+                dry_run: false,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap();
+        assert!(accepted.durable_writeback);
+        assert_eq!(accepted.writebacks[0].destination, "memory");
+        let memories = stores.memory.list().unwrap();
+        assert_eq!(memories.len(), 1);
+        assert_eq!(
+            memories[0].text,
+            "Keep source sessions as promotion provenance."
+        );
+        assert_eq!(memories[0].scope, "project:djinn");
+        assert_eq!(memories[0].evidence.len(), 1);
+        let record = fs::read_to_string(&accepted.decision_path).unwrap();
+        assert!(record.contains("durable_writeback = true"));
+        assert!(record.contains("destination = \"memory\""));
+        let status = fs::read_to_string(&accepted.candidate_status_path).unwrap();
+        assert!(status.contains("status = \"accepted\""));
+        assert!(status.contains("durable_writeback = true"));
+
+        let duplicate = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("memory-001".to_string()),
+                dry_run: true,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap_err();
+        assert!(duplicate.to_string().contains("duplicate memory candidate"));
+
+        fs::write(
+            candidates_dir.join("memory-002.toml"),
+            format!(
+                "type = \"memory\"\nid = \"memory-002\"\ntext = \"Keep source sessions as durable promotion provenance.\"\nscope = \"project:djinn\"\nkind = \"product-decision\"\nconfidence = \"high\"\nevidence = [\"{}/summary.md\"]\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+        let near_duplicate = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("memory-002".to_string()),
+                dry_run: true,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap_err();
+        assert!(near_duplicate
+            .to_string()
+            .contains("near-duplicate memory candidate"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_accept_writes_mindweaver_todo_to_inbox() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-mw-todo-preview-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let data = root.join("data");
+        let inbox = root.join("notes/introspection/inbox.md");
+        let sync_marker = root.join("mindweaver-sync-ran");
+        let source = root.join("source-session");
+        fs::create_dir_all(source.join("turns/turn-1")).unwrap();
+        fs::write(
+            source.join("turns/turn-1/response.md"),
+            "A concrete follow-up exists.\n",
+        )
+        .unwrap();
+
+        let promotion_dir = root.join("promotion-todo");
+        create_promotion_session(&SessionPromoteArgs {
+            dirs: vec![source.clone()],
+            promotion_type: SessionPromoteType::Todo,
+            promotion_session_dir: Some(promotion_dir.clone()),
+            max_chars_per_artifact: 200,
+            force: false,
+            json: false,
+        })
+        .unwrap();
+        let candidates_dir = promotion_dir.join("outputs/candidates");
+        fs::create_dir_all(&candidates_dir).unwrap();
+        fs::write(
+            candidates_dir.join("todo-001.toml"),
+            format!(
+                "type = \"todo\"\nid = \"todo-001\"\ntext = \"Wire Djinn promotion todos into MindWeaver inbox capture.\"\nkind = \"follow-up\"\nconfidence = \"medium\"\ntodo_adapter = \"mindweaver\"\narea = \"Code\"\npriority = \"p2\"\nenergy = \"m\"\ndue = \"2026-08-01\"\nestimate = \"30\"\nevidence = [\"{}/turns/turn-1/response.md\"]\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+
+        let stores = PromotionWritebackStores {
+            memory: djinn_memory::MemoryStore::default_in(&data),
+            action: ActionStore::default_in(&data),
+            skill: SkillStore::default_in(&data),
+            mindweaver_inbox: Some(inbox.clone()),
+            mindweaver_sync_command: Some(vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf synced > \"$1\"".to_string(),
+                "sh".to_string(),
+                sync_marker.display().to_string(),
+            ]),
+        };
+
+        let dry_run = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("todo-001".to_string()),
+                dry_run: true,
+                sync_mindweaver: true,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap();
+        assert_eq!(dry_run.writebacks.len(), 1);
+        assert_eq!(
+            dry_run.writebacks[0].destination,
+            "mindweaver_inbox_preview"
+        );
+        assert_eq!(
+            dry_run.writebacks[0].preview.as_deref(),
+            Some(
+                "- [ ] Wire Djinn promotion todos into MindWeaver inbox capture.\n  - p2 e:m due:2026-08-01 est:30 area:Code"
+            )
+        );
+        assert!(!dry_run.durable_writeback);
+        assert_eq!(dry_run.post_writebacks.len(), 1);
+        assert_eq!(dry_run.post_writebacks[0].status, "dry_run");
+        assert!(stores.action.list().unwrap().is_empty());
+        assert!(!promotion_dir.join("outputs/decisions").exists());
+        assert!(!sync_marker.exists());
+
+        let accepted = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("todo-001".to_string()),
+                dry_run: false,
+                sync_mindweaver: true,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap();
+        assert!(accepted.durable_writeback);
+        assert_eq!(accepted.post_writebacks.len(), 1);
+        assert_eq!(accepted.post_writebacks[0].status, "completed");
+        assert_eq!(accepted.writebacks[0].destination, "mindweaver_inbox");
+        assert_eq!(
+            accepted.writebacks[0].path.as_deref(),
+            Some(inbox.to_str().unwrap())
+        );
+        let inbox_content = fs::read_to_string(&inbox).unwrap();
+        assert!(inbox_content.contains("domains: [task-index]"));
+        assert!(inbox_content.contains("### Inbox\n- [ ] Wire Djinn promotion todos into MindWeaver inbox capture.\n  - p2 e:m due:2026-08-01 est:30 area:Code\n### Next"));
+        let decision = fs::read_to_string(&accepted.decision_path).unwrap();
+        assert!(decision.contains("destination = \"mindweaver_inbox\""));
+        assert!(decision.contains("preview = "));
+        assert!(decision.contains("[[post_writebacks]]"));
+        assert_eq!(fs::read_to_string(&sync_marker).unwrap(), "synced");
+
+        fs::write(
+            candidates_dir.join("todo-002.toml"),
+            format!(
+                "type = \"todo\"\nid = \"todo-002\"\ntext = \"Polish explicit MindWeaver sync handoff UX.\"\nkind = \"follow-up\"\nconfidence = \"medium\"\ntodo_adapter = \"mindweaver\"\narea = \"Code\"\npriority = \"p3\"\nevidence = [\"{}/turns/turn-1/response.md\"]\n",
+                source.display()
+            ),
+        )
+        .unwrap();
+        let accepted_without_sync = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("todo-002".to_string()),
+                dry_run: false,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores.clone(),
+        )
+        .unwrap();
+        assert_eq!(accepted_without_sync.post_writebacks.len(), 1);
+        assert_eq!(accepted_without_sync.post_writebacks[0].status, "pending");
+        assert_eq!(
+            accepted_without_sync.post_writebacks[0].command,
+            stores.mindweaver_sync_command.clone().unwrap().join(" ")
+        );
+        assert!(accepted_without_sync
+            .note
+            .contains("run the listed follow-up command"));
+        let pending_decision = fs::read_to_string(&accepted_without_sync.decision_path).unwrap();
+        assert!(pending_decision.contains("status = \"pending\""));
+        assert!(fs::read_to_string(&inbox)
+            .unwrap()
+            .contains("Polish explicit MindWeaver sync handoff UX."));
+
+        let duplicate = decide_promotion_session_with_stores(
+            &SessionDecisionArgs {
+                dir: promotion_dir.clone(),
+                candidate: Some("todo-001".to_string()),
+                dry_run: true,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+            stores,
+        )
+        .unwrap_err();
+        assert!(duplicate
+            .to_string()
+            .contains("duplicate MindWeaver todo candidate"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
