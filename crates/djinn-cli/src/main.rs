@@ -68,6 +68,7 @@ mod session_tui;
 mod session_turns;
 mod session_watch;
 mod shell;
+mod text;
 #[cfg(test)]
 use background_run::BackgroundRunStatus;
 use background_run::{
@@ -194,6 +195,9 @@ use session_watch::session_watch;
 #[cfg(test)]
 use session_watch::{format_session_watch_snapshot, session_watch_snapshot_key};
 use shell::shell_quote;
+pub(crate) use text::{
+    ensure_trailing_newline, non_empty_string, plural_suffix, truncate, truncate_table_cell,
+};
 
 const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
 const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
@@ -5438,27 +5442,6 @@ fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
     Ok(())
 }
 
-fn non_empty_string(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
-    }
-}
-
-fn truncate_table_cell(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    if max_chars <= 1 {
-        return "…".to_string();
-    }
-    let mut truncated = value.chars().take(max_chars - 1).collect::<String>();
-    truncated.push('…');
-    truncated
-}
-
 fn run_agents(args: AgentsArgs) -> Result<()> {
     match args.command {
         AgentsCommand::List(args) => agents_list(args),
@@ -6266,14 +6249,6 @@ fn resolve_agent_request_prompt(
         bail!("request prompt is empty: {}", request_path.display());
     }
     Ok(prompt)
-}
-
-pub(crate) fn ensure_trailing_newline(value: &str) -> String {
-    if value.ends_with('\n') {
-        value.to_string()
-    } else {
-        format!("{value}\n")
-    }
 }
 
 fn load_djinn_config_for_workspace(workspace: &str) -> Result<DjinnConfigLoadReport> {
@@ -9947,14 +9922,6 @@ fn agent_model_messages(
     messages
 }
 
-pub(crate) fn plural_suffix(count: usize) -> &'static str {
-    if count == 1 {
-        ""
-    } else {
-        "s"
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TuiRunOutcome {
     Exit,
@@ -11436,16 +11403,6 @@ fn suggestion_matches(record: &SuggestionRecord, query: &str) -> bool {
             .evidence
             .iter()
             .any(|evidence| evidence.to_lowercase().contains(query))
-}
-
-pub(crate) fn truncate(value: &str, max_chars: usize) -> String {
-    let mut chars = value.chars();
-    let truncated = chars.by_ref().take(max_chars).collect::<String>();
-    if chars.next().is_some() {
-        format!("{truncated}…")
-    } else {
-        truncated
-    }
 }
 
 fn format_memory_source(source: &MemorySource) -> String {
