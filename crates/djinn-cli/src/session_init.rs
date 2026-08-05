@@ -513,4 +513,50 @@ mod tests {
 
         let _ = fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn session_init_scaffolds_folder_and_links_repo_without_duplicate_logs() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-init-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+
+        let args = SessionInitArgs {
+            dir: dir.clone(),
+            link_repo: Some(repo.clone()),
+            no_discover_context: false,
+            profile: "default".to_string(),
+            agent: None,
+            model: None,
+            force: false,
+            json: false,
+        };
+        let report = initialize_folder_session(&args).unwrap();
+
+        assert!(dir.join("djinn.toml").exists());
+        assert!(dir.join("request.md").exists());
+        assert!(dir.join("summary.md").exists());
+        assert!(dir.join("context/djinn-context.md").exists());
+        assert!(dir.join("context/repo-index.md").exists());
+        assert!(!dir.join("turns").exists());
+        assert!(!dir.join("logs/summary-history.md").exists());
+        assert!(!dir.join("logs/events.jsonl").exists());
+        assert!(!dir.join("logs/transcript.md").exists());
+
+        let link = dir.join("context/repo");
+        assert_eq!(fs::read_link(&link).unwrap(), repo.canonicalize().unwrap());
+        assert_eq!(
+            report.repo_link.as_ref().unwrap().path,
+            link.display().to_string()
+        );
+        assert!(report.discovered_context.is_some());
+        assert_eq!(fs::read_to_string(dir.join("request.md")).unwrap(), "");
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }
