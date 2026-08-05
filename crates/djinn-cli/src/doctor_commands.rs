@@ -8,7 +8,13 @@ use crate::buddy::{
     format_buddy_command_doctor_report, probe_buddy_bridge_doctor, read_buddy_runtime_state,
     BuddyCommandDoctorReport, DJINN_BUDDY_BIN_ENV,
 };
-use crate::{output_format, resolve_session_dir, DoctorBuddyArgs};
+use crate::{output_format, resolve_session_dir, DoctorArgs, DoctorBuddyArgs, DoctorCommand};
+
+pub(crate) fn run_doctor(args: DoctorArgs) -> Result<()> {
+    match args.command {
+        DoctorCommand::Buddy(args) => doctor_buddy(args),
+    }
+}
 
 pub(crate) fn doctor_buddy(args: DoctorBuddyArgs) -> Result<()> {
     let report = buddy_command_doctor_report(args.session.as_deref())?;

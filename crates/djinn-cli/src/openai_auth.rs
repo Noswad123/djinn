@@ -16,8 +16,8 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    effective_djinn_config, opencode_model_config_paths, AuthLoginArgs, AuthProvider,
-    OpenAiLoginMethod,
+    effective_djinn_config, opencode_model_config_paths, AuthArgs, AuthCommand, AuthLoginArgs,
+    AuthProvider, OpenAiLoginMethod,
 };
 
 #[allow(dead_code)]
@@ -28,6 +28,12 @@ pub(crate) const OPENCODE_OPENAI_OAUTH_ISSUER: &str = "https://auth.openai.com";
 pub(crate) const OPENCODE_OPENAI_CODEX_API_ENDPOINT: &str =
     "https://chatgpt.com/backend-api/codex/responses";
 const OPENCODE_OPENAI_OAUTH_PORT: u16 = 1455;
+
+pub(crate) fn run_auth(args: AuthArgs) -> Result<()> {
+    match args.command {
+        AuthCommand::Login(args) => auth_login(args),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OpenCodeOpenAiOAuthCredential {

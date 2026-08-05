@@ -17,10 +17,20 @@ use crate::config_preview::{
 use crate::config_write::{write_config_export_preview, write_config_import_preview};
 use crate::model_resolution::{default_copilot_config_path, default_opencode_config_path};
 use crate::{
-    output_format, ConfigDoctorArgs, ConfigExportArgs, ConfigExportCopilotArgs,
-    ConfigExportOpencodeArgs, ConfigExportTarget, ConfigImportArgs, ConfigImportCopilotArgs,
-    ConfigImportOpencodeArgs, ConfigImportSource, ConfigShowArgs, ConfigSource,
+    output_format, ConfigArgs, ConfigCommand, ConfigDoctorArgs, ConfigExportArgs,
+    ConfigExportCopilotArgs, ConfigExportOpencodeArgs, ConfigExportTarget, ConfigImportArgs,
+    ConfigImportCopilotArgs, ConfigImportOpencodeArgs, ConfigImportSource, ConfigShowArgs,
+    ConfigSource,
 };
+
+pub(crate) fn run_config(args: ConfigArgs) -> Result<()> {
+    match args.command {
+        ConfigCommand::Show(args) => config_show(args),
+        ConfigCommand::Doctor(args) => config_doctor(args),
+        ConfigCommand::Import(args) => config_import(args),
+        ConfigCommand::Export(args) => config_export(args),
+    }
+}
 
 pub(crate) fn config_show(args: ConfigShowArgs) -> Result<()> {
     let report = load_djinn_config(args.path)?;

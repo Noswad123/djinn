@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 #[cfg(test)]
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -70,6 +70,7 @@ mod promotion_session;
 mod promotion_validation;
 mod prompt;
 mod session_artifact;
+mod session_commands;
 mod session_compact;
 mod session_context;
 mod session_events;
@@ -138,10 +139,11 @@ use background_run::write_background_session_run_marker;
 #[cfg(test)]
 use background_run::BackgroundRunStatus;
 use buddy::*;
+#[cfg(test)]
 use buddy_consolidate::*;
+use config_commands::run_config;
 #[cfg(test)]
 use config_commands::validate_config_import_mode;
-use config_commands::{config_doctor, config_export, config_import, config_show};
 use config_doctor::*;
 #[cfg(test)]
 use config_format::{
@@ -163,7 +165,7 @@ use config_write::{
 pub(crate) use context_commands::context_store;
 use context_commands::{add_context, list_contexts, show_context, switch_context};
 use copilot_auth::*;
-use doctor_commands::doctor_buddy;
+use doctor_commands::run_doctor;
 use memory_commands::{
     accept_memory, add_action, add_idea, add_memory, add_suggestion, clear_memories,
     complete_suggestions, ingest_memories, list_actions, list_ideas, list_memories,
@@ -183,25 +185,21 @@ pub(crate) use path_util::expand_tilde_path;
 use policy_resolution::*;
 #[cfg(test)]
 use promotion_candidate::parse_promotion_candidate;
-use promotion_cleanup::session_cleanup;
 #[cfg(test)]
 use promotion_decision::decide_promotion_session;
+#[cfg(test)]
+use promotion_decision::SessionDecisionAction;
 #[cfg(test)]
 pub(crate) use promotion_decision::{
     candidate_duplicate_similarity, decide_promotion_session_with_stores, PromotionWritebackStores,
 };
-use promotion_decision::{session_decide, SessionDecisionAction};
-use promotion_export::session_export_pattern;
 #[cfg(test)]
 use promotion_generation::{
     render_promotion_candidate_generation_prompt, render_promotion_generation_summary,
     write_generated_promotion_candidates, write_promotion_candidate_index,
     write_promotion_generation_summary, PromotionGeneratedCandidateReport,
 };
-pub(crate) use promotion_session::{
-    create_promotion_session, session_promote, session_promote_type_label,
-};
-use promotion_validation::session_validate_candidates;
+pub(crate) use promotion_session::{create_promotion_session, session_promote_type_label};
 pub(crate) use promotion_validation::SessionValidateCandidateEntry;
 pub(crate) use prompt::prompt_title;
 #[cfg(test)]
@@ -210,11 +208,11 @@ use prompt::resolve_agent_request_prompt;
 use session_artifact::resolve_folder_session_open_target;
 #[cfg(test)]
 use session_artifact::resolve_folder_session_open_target_in_root;
-use session_artifact::session_open;
 use session_artifact::SessionOpenTarget;
+use session_commands::run_session;
 #[cfg(test)]
 use session_compact::compact_folder_session;
-use session_compact::session_compact;
+use session_context::inspect_folder_session_context_dir;
 #[cfg(test)]
 use session_context::resolve_folder_session_context_instructions;
 #[cfg(test)]
@@ -225,7 +223,6 @@ use session_context::{
     format_folder_session_context_ls, list_folder_session_context,
     remove_folder_session_context_entry,
 };
-use session_context::{inspect_folder_session_context_dir, session_context};
 #[cfg(test)]
 use session_events::{
     ensure_event_health_strict, event_health_report_for_folder_session_root,
@@ -236,9 +233,8 @@ use session_events::{
 };
 use session_events::{
     latest_event_rebuild_backup_path, projected_event_turn_id, read_event_turn_pairs,
-    session_events, session_validate_events, validate_folder_session_events,
+    validate_folder_session_events,
 };
-use session_init::session_init;
 #[cfg(test)]
 use session_init::{
     create_dir_symlink, initialize_folder_session, initialize_folder_session_with_buddy,
@@ -250,7 +246,7 @@ pub(crate) use session_list::list_folder_sessions_in_root;
 pub(crate) use session_list::FolderSessionSummary;
 #[cfg(test)]
 use session_list::{compact_session_list_datetime, parse_session_list_datetime_ms};
-use session_list::{folder_session_event_health_label, list_cache_folder_sessions, session_ls};
+use session_list::{folder_session_event_health_label, list_cache_folder_sessions};
 #[cfg(test)]
 use session_manifest::parse_folder_session_manifest;
 pub(crate) use session_manifest::{
@@ -285,8 +281,6 @@ use session_reference::{
 use session_registry::rename_folder_session_in_root;
 #[cfg(test)]
 use session_registry::shorten_folder_session_names_in_root;
-use session_registry::{session_rename, session_shorten_names};
-use session_remove::session_rm;
 #[cfg(test)]
 use session_run_support::background_progress_phase;
 #[cfg(test)]
@@ -299,15 +293,15 @@ use session_status::SessionStatusLifecycleReport;
 use session_status::SessionStatusTurnReport;
 use session_status::{
     folder_session_status, format_session_candidate_entry, format_session_candidate_status,
-    latest_promotion_generation_response_path, session_status, SessionStatusCandidateEntry,
+    latest_promotion_generation_response_path, SessionStatusCandidateEntry,
 };
 #[cfg(test)]
 use session_status::{format_agent_session_event_summary, format_background_promotion_run_note};
 #[cfg(test)]
 use session_status::{SessionStatusFileReport, SessionStatusReport};
+use session_transcript::SessionTranscriptFormat;
 #[cfg(test)]
 use session_transcript::{build_session_transcript, render_session_transcript_markdown};
-use session_transcript::{session_transcript, SessionTranscriptFormat};
 #[cfg(test)]
 use session_tui::{
     editor_open_command_hint, folder_session_action_message, folder_session_status_tui_view,
@@ -317,6 +311,7 @@ pub(crate) use session_turns::{
     compact_text_snippet, read_folder_session_event_turns, read_folder_session_turns,
     read_optional_markdown_file, FolderSessionTurnDigest,
 };
+#[cfg(test)]
 use session_watch::session_watch;
 #[cfg(test)]
 use session_watch::{format_session_watch_snapshot, session_watch_snapshot_key};
@@ -327,8 +322,8 @@ pub(crate) use stores::{
     suggestion_store,
 };
 pub(crate) use text::{
-    ensure_trailing_newline, non_empty_string, output_format, plural_suffix, truncate,
-    truncate_table_cell, yes_no,
+    ensure_trailing_newline, non_empty_string, output_format, plural_suffix, push_unique_string,
+    truncate, truncate_table_cell, yes_no,
 };
 pub(crate) use toml_util::upsert_toml_root_string;
 use tools_commands::{
@@ -2176,82 +2171,6 @@ fn run_switch(args: SwitchArgs) -> Result<()> {
 fn run_open(args: OpenArgs) -> Result<()> {
     match args.noun {
         OpenNoun::Tool(args) => open_tool(args),
-    }
-}
-
-fn run_config(args: ConfigArgs) -> Result<()> {
-    match args.command {
-        ConfigCommand::Show(args) => config_show(args),
-        ConfigCommand::Doctor(args) => config_doctor(args),
-        ConfigCommand::Import(args) => config_import(args),
-        ConfigCommand::Export(args) => config_export(args),
-    }
-}
-
-fn run_doctor(args: DoctorArgs) -> Result<()> {
-    match args.command {
-        DoctorCommand::Buddy(args) => doctor_buddy(args),
-    }
-}
-
-fn run_auth(args: AuthArgs) -> Result<()> {
-    match args.command {
-        AuthCommand::Login(args) => auth_login(args),
-    }
-}
-
-fn push_unique_string(values: &mut Vec<String>, value: &str) {
-    if !values.iter().any(|existing| existing == value) {
-        values.push(value.to_string());
-    }
-}
-
-fn run_session(args: SessionArgs) -> Result<()> {
-    match args.command {
-        Some(command) => run_session_command(command),
-        None if args.open => {
-            let dir = args
-                .dir
-                .ok_or_else(|| anyhow!("session name, path, or Buddy id is required for --open"))?;
-            session_open(SessionOpenArgs {
-                dir,
-                target: SessionOpenTarget::Summary,
-                editor: args.editor,
-            })
-        }
-        None if args.dir.is_some() => run_folder_session_tui(args.dir.unwrap(), args.editor),
-        None => run_tui_command(TuiArgs {
-            view: TuiView::Sessions,
-            roots: Vec::new(),
-            editor: args.editor,
-        }),
-    }
-}
-
-fn run_session_command(command: SessionCommand) -> Result<()> {
-    match command {
-        SessionCommand::Init(args) => session_init(args),
-        SessionCommand::Run(args) => session_run(args),
-        SessionCommand::Chat(args) => session_chat(args),
-        SessionCommand::Consolidate(args) => session_consolidate(args),
-        SessionCommand::Watch(args) => session_watch(args),
-        SessionCommand::Compact(args) => session_compact(args),
-        SessionCommand::Promote(args) => session_promote(args),
-        SessionCommand::Accept(args) => session_decide(args, SessionDecisionAction::Accept),
-        SessionCommand::Deny(args) => session_decide(args, SessionDecisionAction::Deny),
-        SessionCommand::ExportPattern(args) => session_export_pattern(args),
-        SessionCommand::ValidateCandidates(args) => session_validate_candidates(args),
-        SessionCommand::ValidateEvents(args) => session_validate_events(args),
-        SessionCommand::Transcript(args) => session_transcript(args),
-        SessionCommand::Events(args) => session_events(args),
-        SessionCommand::Cleanup(args) => session_cleanup(args),
-        SessionCommand::Context(args) => session_context(args),
-        SessionCommand::Status(args) => session_status(args),
-        SessionCommand::Ls(args) => session_ls(args),
-        SessionCommand::Open(args) => session_open(args),
-        SessionCommand::Rename(args) => session_rename(args),
-        SessionCommand::ShortenNames(args) => session_shorten_names(args),
-        SessionCommand::Rm(args) => session_rm(args),
     }
 }
 

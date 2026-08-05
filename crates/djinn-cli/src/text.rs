@@ -60,3 +60,9 @@ pub(crate) fn output_format(format: crate::OutputFormat, json: bool) -> crate::O
         format
     }
 }
+
+pub(crate) fn push_unique_string(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
+}
