@@ -11,6 +11,7 @@ use crate::DEFAULT_AGENT_MAX_TOOL_ROUNDS;
 
 mod agents;
 mod auth;
+mod clear;
 mod config;
 mod doctor;
 mod index;
@@ -21,6 +22,7 @@ mod switch;
 mod tui;
 pub(crate) use agents::*;
 pub(crate) use auth::*;
+pub(crate) use clear::*;
 pub(crate) use config::*;
 pub(crate) use doctor::*;
 pub(crate) use index::*;
@@ -807,22 +809,6 @@ pub(crate) enum RmNoun {
     Memory { keyword: String },
     /// Remove or archive a skill.
     Skill(RmSkillArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ClearArgs {
-    #[command(subcommand)]
-    pub(crate) noun: ClearNoun,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum ClearNoun {
-    /// Clear all memories after interactive confirmation.
-    Memories {
-        /// Skip creating memories.backup-*.jsonl before clearing.
-        #[arg(long)]
-        no_backup: bool,
-    },
 }
 
 #[derive(Debug, Args)]
