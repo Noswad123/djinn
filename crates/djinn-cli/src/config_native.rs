@@ -223,3 +223,125 @@ pub(crate) fn format_djinn_config_load_report(
     lines.push(String::new());
     Ok(lines.join("\n"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model_resolution::profile_model_from_config;
+    use crate::policy_resolution::{
+        extend_permission_rules_from_config, extend_read_access_rules_from_permissions,
+    };
+    use djinn_agent::{PermissionEffect, ReadAccessEffect};
+
+    #[test]
+    fn native_djinn_config_parses_merges_and_renders_without_raw_secrets() {
+        let base = parse_djinn_config(
+            r#"{
+              "version": 1,
+              "default_profile": "default",
+              "providers": {
+                "openai": {"type": "openai", "auth": "env:OPENAI_API_KEY"}
+              },
+              "profiles": {
+                "default": {"model": "openai/gpt-4.1-mini"}
+              }
+            }"#,
+        )
+        .unwrap();
+        let project = parse_djinn_config(
+            r#"{
+              "version": 1,
+              "default_profile": "work",
+              "providers": {
+                "copilot": {"type": "copilot", "auth": "auto"}
+              },
+              "profiles": {
+                "work": {
+                  "model": "copilot/gpt-4.1",
+                  "instructions": ["AGENTS.md"],
+                  "permissions": [{"action": "shell", "resource": "cargo test", "effect": "ask"}]
+                }
+              },
+              "permissions": [{"action": "read", "resource": "src/**", "effect": "allow"}]
+            }"#,
+        )
+        .unwrap();
+
+        let effective = merge_djinn_configs(vec![base, project]);
+
+        assert_eq!(effective.default_profile.as_deref(), Some("work"));
+        assert!(effective.providers.contains_key("openai"));
+        assert!(effective.providers.contains_key("copilot"));
+        assert_eq!(
+            effective
+                .profiles
+                .get("work")
+                .and_then(|profile| profile.model.as_deref()),
+            Some("copilot/gpt-4.1")
+        );
+
+        let rendered = format_djinn_config_load_report(
+            &DjinnConfigLoadReport {
+                checked_paths: vec![
+                    "/tmp/config.json".to_string(),
+                    "/tmp/.djinn.json".to_string(),
+                ],
+                files: Vec::new(),
+                effective,
+                warnings: Vec::new(),
+            },
+            OutputFormat::Text,
+        )
+        .unwrap();
+        assert!(rendered.contains("default_profile: work"));
+        assert!(rendered.contains("copilot/gpt-4.1"));
+        assert!(!rendered.contains("sk-"));
+    }
+
+    #[test]
+    fn native_djinn_config_supplies_profile_model_and_permission_rules() {
+        let config = parse_djinn_config(
+            r#"{
+              "version": 1,
+              "default_profile": "work",
+              "profiles": {
+                "work": {
+                  "model": "copilot/gpt-4.1",
+                  "permissions": [
+                    {"action": "shell", "resource": "cargo test", "effect": "ask"}
+                  ]
+                }
+              },
+              "permissions": [
+                {"action": "read", "resource": "src/**", "effect": "allow"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        let workspace = PathBuf::from("/tmp/djinn-native-config-test");
+        let mut read_rules = Vec::new();
+        let mut permission_rules = Vec::new();
+
+        assert_eq!(
+            profile_model_from_config(&config, "work").as_deref(),
+            Some("copilot/gpt-4.1")
+        );
+        extend_read_access_rules_from_permissions(&config.permissions, &workspace, &mut read_rules);
+        extend_permission_rules_from_config(
+            &config.profiles["work"].permissions,
+            &workspace,
+            &mut permission_rules,
+        );
+
+        assert_eq!(read_rules.len(), 1);
+        assert_eq!(
+            read_rules[0].pattern,
+            "/tmp/djinn-native-config-test/src/**"
+        );
+        assert_eq!(read_rules[0].effect, ReadAccessEffect::Allow);
+        assert_eq!(permission_rules.len(), 1);
+        assert_eq!(permission_rules[0].action, "shell");
+        assert_eq!(permission_rules[0].resource, "cargo test");
+        assert_eq!(permission_rules[0].effect, PermissionEffect::Ask);
+    }
+}

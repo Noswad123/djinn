@@ -752,3 +752,103 @@ pub(crate) fn format_config_doctor_report(
     lines.push(String::new());
     Ok(lines.join("\n"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_djinn_config_doctor_classifies_unknown_and_secret_like_fields() {
+        let value: Value = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "profiles": {},
+              "api_key": "sk-secret",
+              "surprise": true
+            }"#,
+        )
+        .unwrap();
+
+        let report = djinn_config_doctor_from_value(Path::new("/tmp/config.json"), &value);
+
+        assert!(report
+            .mapped
+            .iter()
+            .any(|finding| finding.pointer == "/version"));
+        assert!(report
+            .mapped
+            .iter()
+            .any(|finding| finding.pointer == "/profiles"));
+        assert!(report
+            .secrets
+            .iter()
+            .any(|finding| finding.pointer == "/api_key"));
+        assert!(report
+            .unknown
+            .iter()
+            .any(|finding| finding.pointer == "/surprise"));
+    }
+
+    #[test]
+    fn opencode_config_doctor_classifies_mapped_unsupported_unknown_and_secrets() {
+        let value: Value = serde_json::from_str(
+            r#"{
+              "model": "openai/gpt-4.1",
+              "default_agent": "coder",
+              "agent": {
+                "coder": {
+                  "model": "copilot/gpt-4.1",
+                  "permissions": [{"action": "read", "resource": "src/**", "effect": "allow"}]
+                }
+              },
+              "providers": {
+                "openai": {"apiKey": "sk-secret"}
+              },
+              "commands": {"test": "cargo test"},
+              "mcpServers": {},
+              "surprise": true
+            }"#,
+        )
+        .unwrap();
+
+        let report = opencode_config_doctor_from_value(Path::new("/tmp/opencode.json"), &value);
+
+        assert!(report
+            .mapped
+            .iter()
+            .any(|finding| finding.pointer == "/model"));
+        assert!(report
+            .mapped
+            .iter()
+            .any(|finding| finding.pointer == "/agent/coder/model"));
+        assert!(report
+            .unsupported
+            .iter()
+            .any(|finding| finding.pointer == "/commands"));
+        assert!(report
+            .unsupported
+            .iter()
+            .any(|finding| finding.pointer == "/mcpServers"));
+        assert!(report
+            .unknown
+            .iter()
+            .any(|finding| finding.pointer == "/surprise"));
+        assert!(report
+            .secrets
+            .iter()
+            .any(|finding| finding.pointer == "/providers/openai/apiKey"));
+
+        let rendered = format_config_doctor_report(
+            &ConfigDoctorReport {
+                source: "opencode".to_string(),
+                checked_paths: vec!["/tmp/opencode.json".to_string()],
+                summary: config_doctor_summary(&[report.clone()]),
+                files: vec![report],
+            },
+            OutputFormat::Text,
+        )
+        .unwrap();
+        assert!(rendered.contains("/providers/openai/apiKey"));
+        assert!(!rendered.contains("sk-secret"));
+    }
+}
