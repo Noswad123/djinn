@@ -93,3 +93,64 @@ pub(crate) fn format_session_watch_snapshot(report: &SessionStatusReport) -> Str
     lines.push(String::new());
     lines.join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_status::{
+        SessionStatusFileReport, SessionStatusLifecycleReport, SessionStatusTurnReport,
+    };
+
+    #[test]
+    fn session_watch_snapshot_renders_status_changes() {
+        let report = SessionStatusReport {
+            session_dir: "/tmp/session".to_string(),
+            manifest_exists: true,
+            session_id: Some("agt_watch".to_string()),
+            native_session_exists: true,
+            profile: Some("default".to_string()),
+            agent: None,
+            model: Some("openai/gpt-5.5".to_string()),
+            workspace: Some("/tmp/workspace".to_string()),
+            repo: None,
+            lifecycle: SessionStatusLifecycleReport {
+                state: "running".to_string(),
+                mode: Some("background".to_string()),
+                updated_at: Some("2026-07-28T12:00:00Z".to_string()),
+                reason: Some("started".to_string()),
+                note: None,
+            },
+            files: SessionStatusFileReport {
+                request_md: true,
+                summary_md: true,
+                context_dir: true,
+                compacted_md: false,
+                turns_dir: true,
+                events_jsonl: true,
+            },
+            turn_count: 1,
+            event_count: 3,
+            latest_turn: Some(SessionStatusTurnReport {
+                id: "turn-1".to_string(),
+                request_path: Some("/tmp/session/turns/turn-1/request.md".to_string()),
+                response_path: None,
+                has_response: false,
+            }),
+            candidates: None,
+            context_ingestible_count: 0,
+            context_skipped: Vec::new(),
+            next_action: Some("check again: djinn session status /tmp/session".to_string()),
+        };
+
+        let rendered = format_session_watch_snapshot(&report);
+        let key = session_watch_snapshot_key(&report).unwrap();
+
+        assert!(rendered.contains("Session: /tmp/session"));
+        assert!(rendered.contains("State: running (background)"));
+        assert!(rendered.contains("Latest turn: turn-1"));
+        assert!(rendered.contains("Request: /tmp/session/turns/turn-1/request.md"));
+        assert!(rendered.contains("Next: check again"));
+        assert!(key.contains("running"));
+        assert!(key.contains("turn-1"));
+    }
+}
