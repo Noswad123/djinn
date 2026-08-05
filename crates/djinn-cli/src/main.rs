@@ -73,7 +73,6 @@ use editor::{default_editor, open_editor_at, open_editor_path};
 use permission_gate::TerminalPermissionGate;
 #[cfg(test)]
 use promotion_candidate::parse_promotion_candidate;
-use promotion_candidate::{candidate_string_array_value, candidate_string_value};
 use promotion_cleanup::session_cleanup;
 #[cfg(test)]
 pub(crate) use promotion_decision::{
@@ -130,10 +129,10 @@ use session_status::SessionStatusLifecycleReport;
 use session_status::SessionStatusTurnReport;
 use session_status::{
     count_folder_session_events_jsonl, format_folder_session_status,
-    latest_promotion_generation_response_path, session_status_lifecycle,
+    format_session_candidate_entry, format_session_candidate_status,
+    latest_promotion_generation_response_path, session_status_candidates, session_status_lifecycle,
     session_status_next_action, session_status_repo, session_status_turn_report,
-    SessionStatusCandidateEntry, SessionStatusCandidateReport, SessionStatusFileReport,
-    SessionStatusReport,
+    SessionStatusCandidateEntry, SessionStatusFileReport, SessionStatusReport,
 };
 #[cfg(test)]
 use session_status::{format_agent_session_event_summary, format_background_promotion_run_note};
@@ -5514,13 +5513,6 @@ pub(crate) fn session_promote_type_instructions(
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct PromotionCandidateDecisionStatus {
-    status: String,
-    destination: Option<String>,
-    writeback_path: Option<String>,
-}
-
 fn session_status(args: SessionStatusArgs) -> Result<()> {
     let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
     let report = folder_session_status(&session_ref.session_dir)?;
@@ -6112,211 +6104,6 @@ fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
         context_skipped,
         next_action,
     })
-}
-
-fn session_status_candidates(session_dir: &Path) -> Result<Option<SessionStatusCandidateReport>> {
-    let outputs_dir = session_dir.join("outputs");
-    let candidates_dir = outputs_dir.join("candidates");
-    let candidate_index_path = outputs_dir.join("candidate-index.toml");
-    let candidate_status_path = outputs_dir.join("candidate-status.toml");
-    let decisions = read_promotion_candidate_statuses(&candidate_status_path)?;
-    let entries = read_session_status_candidate_entries(&candidates_dir, &decisions)?;
-    let candidate_count = entries.len();
-    if candidate_count == 0 && decisions.is_empty() && !candidate_index_path.exists() {
-        return Ok(None);
-    }
-    let accepted_count = entries
-        .iter()
-        .filter(|entry| entry.status == "accepted")
-        .count();
-    let denied_count = entries
-        .iter()
-        .filter(|entry| entry.status == "denied")
-        .count();
-    let pending_count = entries
-        .iter()
-        .filter(|entry| entry.status == "pending")
-        .count();
-    Ok(Some(SessionStatusCandidateReport {
-        candidate_count,
-        accepted_count,
-        denied_count,
-        pending_count,
-        candidates_dir: candidates_dir.display().to_string(),
-        candidate_index_path: candidate_index_path
-            .exists()
-            .then(|| candidate_index_path.display().to_string()),
-        candidate_status_path: candidate_status_path
-            .exists()
-            .then(|| candidate_status_path.display().to_string()),
-        entries,
-    }))
-}
-
-fn read_session_status_candidate_entries(
-    candidates_dir: &Path,
-    decisions: &BTreeMap<String, PromotionCandidateDecisionStatus>,
-) -> Result<Vec<SessionStatusCandidateEntry>> {
-    if !candidates_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut paths = fs::read_dir(candidates_dir)
-        .with_context(|| format!("reading promotion candidates {}", candidates_dir.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .into_iter()
-        .map(|entry| entry.path())
-        .filter(|entry| {
-            entry.is_file() && entry.extension().and_then(|ext| ext.to_str()) == Some("toml")
-        })
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths
-        .iter()
-        .map(|path| read_session_status_candidate_entry(path, decisions))
-        .collect()
-}
-
-fn read_session_status_candidate_entry(
-    path: &Path,
-    decisions: &BTreeMap<String, PromotionCandidateDecisionStatus>,
-) -> Result<SessionStatusCandidateEntry> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("reading promotion candidate {}", path.display()))?;
-    let id = candidate_string_value(&content, "id").unwrap_or_else(|| {
-        path.file_stem()
-            .and_then(|name| name.to_str())
-            .unwrap_or("candidate")
-            .to_string()
-    });
-    let decision = decisions.get(&id);
-    Ok(SessionStatusCandidateEntry {
-        id,
-        candidate_type: candidate_string_value(&content, "type"),
-        status: decision
-            .map(|decision| decision.status.clone())
-            .filter(|status| !status.trim().is_empty())
-            .unwrap_or_else(|| "pending".to_string()),
-        path: path.display().to_string(),
-        text: candidate_string_value(&content, "text"),
-        rationale: candidate_string_value(&content, "rationale"),
-        evidence: candidate_string_array_value(&content, "evidence"),
-        destination: decision.and_then(|decision| decision.destination.clone()),
-        writeback_path: decision.and_then(|decision| decision.writeback_path.clone()),
-    })
-}
-
-fn read_promotion_candidate_statuses(
-    status_path: &Path,
-) -> Result<BTreeMap<String, PromotionCandidateDecisionStatus>> {
-    if !status_path.exists() {
-        return Ok(BTreeMap::new());
-    }
-    let content = fs::read_to_string(status_path)
-        .with_context(|| format!("reading {}", status_path.display()))?;
-    let mut statuses = BTreeMap::new();
-    let mut event = PromotionCandidateStatusEvent::default();
-    for line in content.lines().map(str::trim) {
-        if line.starts_with("[[") {
-            record_promotion_candidate_status_event(&mut statuses, &event);
-            event = PromotionCandidateStatusEvent::default();
-            continue;
-        }
-        if let Some(value) = line
-            .strip_prefix("candidate =")
-            .and_then(|value| parse_manifest_string_value(value.trim()))
-        {
-            event.candidate = Some(value);
-            continue;
-        }
-        if let Some(status) = line
-            .strip_prefix("status =")
-            .and_then(|value| parse_manifest_string_value(value.trim()))
-        {
-            event.status = Some(status);
-            continue;
-        }
-        if let Some(destination) = line
-            .strip_prefix("destination =")
-            .and_then(|value| parse_manifest_string_value(value.trim()))
-        {
-            event.destination = Some(destination);
-            continue;
-        }
-        if let Some(writeback_path) = line
-            .strip_prefix("writeback_path =")
-            .and_then(|value| parse_manifest_string_value(value.trim()))
-        {
-            event.writeback_path = Some(writeback_path);
-        }
-    }
-    record_promotion_candidate_status_event(&mut statuses, &event);
-    Ok(statuses)
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct PromotionCandidateStatusEvent {
-    candidate: Option<String>,
-    status: Option<String>,
-    destination: Option<String>,
-    writeback_path: Option<String>,
-}
-
-fn record_promotion_candidate_status_event(
-    statuses: &mut BTreeMap<String, PromotionCandidateDecisionStatus>,
-    event: &PromotionCandidateStatusEvent,
-) {
-    let Some(candidate) = event
-        .candidate
-        .as_deref()
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-    else {
-        return;
-    };
-    let Some(status) = event
-        .status
-        .as_deref()
-        .map(str::trim)
-        .filter(|status| !status.is_empty())
-    else {
-        return;
-    };
-    statuses.insert(
-        candidate.to_string(),
-        PromotionCandidateDecisionStatus {
-            status: status.to_string(),
-            destination: event.destination.clone(),
-            writeback_path: event.writeback_path.clone(),
-        },
-    );
-}
-
-pub(crate) fn format_session_candidate_status(candidates: &SessionStatusCandidateReport) -> String {
-    format!(
-        "{} total, {} accepted, {} denied, {} pending",
-        candidates.candidate_count,
-        candidates.accepted_count,
-        candidates.denied_count,
-        candidates.pending_count
-    )
-}
-
-pub(crate) fn format_session_candidate_entry(entry: &SessionStatusCandidateEntry) -> String {
-    let candidate_type = entry.candidate_type.as_deref().unwrap_or("unknown");
-    let mut detail = format!("{} [{}] {}", entry.id, candidate_type, entry.status);
-    if let Some(destination) = &entry.destination {
-        detail.push_str(&format!(" -> {destination}"));
-    }
-    if let Some(evidence) = entry.evidence.first() {
-        detail.push_str(&format!(" · evidence {evidence}"));
-        if entry.evidence.len() > 1 {
-            detail.push_str(&format!(" (+{})", entry.evidence.len() - 1));
-        }
-    }
-    if let Some(path) = &entry.writeback_path {
-        detail.push_str(&format!(" ({path})"));
-    }
-    detail
 }
 
 fn list_cache_folder_sessions(limit: Option<usize>) -> Result<SessionLsReport> {
