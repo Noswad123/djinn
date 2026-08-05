@@ -379,3 +379,110 @@ pub(crate) fn format_session_consolidate_report(report: &SessionConsolidateRepor
     lines.push(String::new());
     lines.join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_consolidate_reconciles_djinn_and_buddy_sessions() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "djinn-consolidate-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        fs::create_dir_all(&alpha).unwrap();
+        fs::create_dir_all(&beta).unwrap();
+        fs::write(
+            alpha.join("djinn.toml"),
+            "title = \"Alpha\"\nworkspace = \"/tmp/repo-a\"\n\n[context.repo]\npath = \"/tmp/repo-a\"\n",
+        )
+        .unwrap();
+        fs::write(alpha.join("summary.md"), "alpha summary\n").unwrap();
+        fs::write(
+            beta.join("djinn.toml"),
+            "title = \"Beta\"\nworkspace = \"/tmp/repo-c\"\n\n[context.repo]\npath = \"/tmp/repo-c\"\n",
+        )
+        .unwrap();
+        fs::write(beta.join("summary.md"), "beta summary\n").unwrap();
+
+        let create_log = root.join("create-log.txt");
+        let buddy_bin = root.join("buddy-json.sh");
+        fs::write(
+            &buddy_bin,
+            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"--format\" ] && [ \"$4\" = \"json\" ]; then\n  cat <<'JSON'\n[{\"id\":\"bud_alpha\",\"title\":\"Alpha\",\"updated\":1785599577905,\"created\":1785081429401,\"projectId\":\"project-a\",\"directory\":\"/tmp/repo-a\"},{\"id\":\"bud_orphan\",\"title\":\"Orphan Buddy\",\"updated\":1785595306273,\"created\":1785595040658,\"projectId\":\"project-b\",\"directory\":\"/tmp/repo-b\"}]\nJSON\n  exit 0\nfi\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"bud_created_beta\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected buddy args: \"$@\" >&2\nexit 2\n"
+                .replace("__CREATE_LOG__", &create_log.display().to_string()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&buddy_bin, permissions).unwrap();
+        }
+
+        let dry_run = consolidate_sessions_in_root(
+            &root,
+            &SessionConsolidateArgs {
+                dry_run: true,
+                buddy_bin: Some(buddy_bin.display().to_string()),
+                json: false,
+            },
+        )
+        .unwrap();
+
+        assert!(dry_run.dry_run);
+        assert_eq!(dry_run.total_djinn_sessions, 2);
+        assert_eq!(dry_run.total_buddy_sessions, 2);
+        assert_eq!(dry_run.matched_existing, 1);
+        assert_eq!(dry_run.created_buddy_sessions, 1);
+        assert_eq!(dry_run.adopted_buddy_sessions, 1);
+        assert!(dry_run
+            .entries
+            .iter()
+            .any(|entry| entry.action == "would_match_existing_buddy"
+                && entry.buddy_session.as_deref() == Some("bud_alpha")));
+        assert!(!alpha.join("runtime/buddy.json").exists());
+        assert!(!create_log.exists());
+
+        let report = consolidate_sessions_in_root(
+            &root,
+            &SessionConsolidateArgs {
+                dry_run: false,
+                buddy_bin: Some(buddy_bin.display().to_string()),
+                json: false,
+            },
+        )
+        .unwrap();
+
+        assert!(!report.dry_run);
+        assert_eq!(report.matched_existing, 1);
+        assert_eq!(report.created_buddy_sessions, 1);
+        assert_eq!(report.adopted_buddy_sessions, 1);
+        assert!(fs::read_to_string(alpha.join("runtime/buddy.json"))
+            .unwrap()
+            .contains("bud_alpha"));
+        assert!(fs::read_to_string(beta.join("runtime/buddy.json"))
+            .unwrap()
+            .contains("bud_created_beta"));
+        assert_eq!(
+            fs::read_to_string(&create_log).unwrap(),
+            "beta|/tmp/repo-c\n"
+        );
+        let orphan = root.join("orphan_buddy-bud_orphan");
+        assert!(orphan.join("djinn.toml").exists());
+        assert!(orphan.join("summary.md").exists());
+        assert!(fs::read_to_string(orphan.join("runtime/buddy.json"))
+            .unwrap()
+            .contains("bud_orphan"));
+        assert!(format_session_consolidate_report(&report).contains("created_buddy_for_folder"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
