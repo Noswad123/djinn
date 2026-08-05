@@ -15,7 +15,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{effective_djinn_config, opencode_model_config_paths, AuthProvider, OpenAiLoginMethod};
+use crate::{
+    effective_djinn_config, opencode_model_config_paths, AuthLoginArgs, AuthProvider,
+    OpenAiLoginMethod,
+};
 
 #[allow(dead_code)]
 pub(crate) const OPENCODE_OPENAI_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -463,6 +466,15 @@ pub(crate) fn run_openai_login_method(method: OpenAiLoginMethod) -> Result<()> {
         OpenAiLoginMethod::Browser => run_djinn_openai_browser_login(),
         OpenAiLoginMethod::Headless => run_djinn_openai_device_login(),
         OpenAiLoginMethod::ApiKey => run_djinn_openai_api_key_login(),
+    }
+}
+
+pub(crate) fn auth_login(args: AuthLoginArgs) -> Result<()> {
+    let provider = args.provider.unwrap_or_else(prompt_auth_provider);
+    match provider {
+        AuthProvider::Openai => {
+            run_openai_login_method(args.method.unwrap_or_else(prompt_openai_login_method))
+        }
     }
 }
 

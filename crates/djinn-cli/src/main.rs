@@ -53,6 +53,7 @@ mod config_native;
 mod config_preview;
 mod config_write;
 mod copilot_auth;
+mod doctor_commands;
 mod editor;
 mod model_completion;
 mod model_resolution;
@@ -153,6 +154,7 @@ use config_write::{
     write_json_config_file,
 };
 use copilot_auth::*;
+use doctor_commands::doctor_buddy;
 use editor::{open_editor_at, open_editor_path};
 use model_completion::{complete_openai_messages_with_progress, resolve_openai_client};
 use model_resolution::*;
@@ -2171,27 +2173,9 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
     }
 }
 
-fn doctor_buddy(args: DoctorBuddyArgs) -> Result<()> {
-    let report = buddy_command_doctor_report(args.session.as_deref())?;
-    print!(
-        "{}",
-        format_buddy_command_doctor_report(&report, output_format(args.format, args.json))?
-    );
-    Ok(())
-}
-
 fn run_auth(args: AuthArgs) -> Result<()> {
     match args.command {
         AuthCommand::Login(args) => auth_login(args),
-    }
-}
-
-fn auth_login(args: AuthLoginArgs) -> Result<()> {
-    let provider = args.provider.unwrap_or_else(prompt_auth_provider);
-    match provider {
-        AuthProvider::Openai => {
-            run_openai_login_method(args.method.unwrap_or_else(prompt_openai_login_method))
-        }
     }
 }
 
@@ -2769,30 +2753,6 @@ fn resolve_top_level_buddy_session_arg(session: PathBuf) -> Result<(PathBuf, Opt
     }
 
     Ok(resolve_existing_folder_session_reference_in_root(&session, &root)?.map_buddy_for_launch())
-}
-
-fn buddy_command_doctor_report(session: Option<&Path>) -> Result<BuddyCommandDoctorReport> {
-    let session_dir = session.map(resolve_session_dir).transpose()?;
-    let runtime_path = session_dir
-        .as_ref()
-        .map(|session_dir| session_dir.join("runtime/buddy.json"));
-    let runtime = runtime_path
-        .as_ref()
-        .map(|path| read_buddy_runtime_state(path))
-        .transpose()?
-        .flatten();
-    let mut report = buddy_command_doctor_report_from(
-        env::var(DJINN_BUDDY_BIN_ENV).ok(),
-        runtime.as_ref().and_then(|state| state.command.clone()),
-        Some(&djinn_source_workspace_root()),
-        session_dir.as_deref(),
-        runtime_path.as_deref(),
-    );
-    report.bridge = Some(probe_buddy_bridge_doctor(
-        &report.command,
-        report.exists && report.executable,
-    ));
-    Ok(report)
 }
 
 fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
