@@ -14,6 +14,7 @@ mod auth;
 mod config;
 mod doctor;
 mod open;
+mod search;
 mod switch;
 mod tui;
 pub(crate) use agents::*;
@@ -21,6 +22,7 @@ pub(crate) use auth::*;
 pub(crate) use config::*;
 pub(crate) use doctor::*;
 pub(crate) use open::*;
+pub(crate) use search::*;
 pub(crate) use switch::*;
 pub(crate) use tui::{TuiArgs, TuiView};
 
@@ -844,22 +846,6 @@ pub(crate) enum IndexNoun {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct SearchArgs {
-    #[command(subcommand)]
-    pub(crate) noun: SearchNoun,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum SearchNoun {
-    /// Search local tools.
-    Tools(SearchToolsArgs),
-    /// Search memories.
-    Memories { query: String },
-    /// Search suggestions.
-    Suggestions { query: String },
-}
-
-#[derive(Debug, Args)]
 pub(crate) struct AgentArgs {
     #[command(subcommand)]
     pub(crate) command: AgentCommand,
@@ -1102,20 +1088,6 @@ pub(crate) struct IndexToolsArgs {
 pub(crate) struct ToolLookupArgs {
     /// Tool name, case-insensitive. Falls back to substring matching.
     pub(crate) name: String,
-    /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
-    #[arg(long = "root")]
-    pub(crate) roots: Vec<PathBuf>,
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-    pub(crate) format: OutputFormat,
-    /// Shortcut for --format json.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct SearchToolsArgs {
-    pub(crate) query: String,
     /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
     #[arg(long = "root")]
     pub(crate) roots: Vec<PathBuf>,
