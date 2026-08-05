@@ -12,24 +12,22 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use djinn_agent::{
-    tools_with_policies_file_history_and_gate, AgentProgressEvent, CopilotClient, ModelClient,
-    ModelMessage, ModelRequest, ModelRole, ToolSpec,
+    AgentProgressEvent, CopilotClient, ModelClient, ModelMessage, ModelRequest, ModelRole,
 };
 #[cfg(test)]
 use djinn_agent::{
     PermissionEffect, PermissionPolicy, PermissionRule, ReadAccessEffect, ReadAccessPolicy,
-    ReadAccessRule,
+    ReadAccessRule, ToolSpec,
 };
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 #[cfg(test)]
 use djinn_memory::AgentSession;
 use djinn_memory::{
     ActionRecord, ActionStore, AgentSessionEvent, AgentSessionEventKind, AgentSessionExecutionMode,
-    AgentSessionId, AgentSessionLifecycleState, AgentSessionMeta, AgentSessionPolicyRule,
-    AgentSessionPolicySnapshot, AgentSessionRuntimeConfig, AgentSessionStore, FileHistoryEntryId,
-    FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
-    JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource, SuggestionInput,
-    SuggestionRecord, SuggestionStore,
+    AgentSessionId, AgentSessionLifecycleState, AgentSessionMeta, AgentSessionStore,
+    FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore,
+    JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource,
+    SuggestionInput, SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -44,6 +42,7 @@ mod agent_config;
 mod agent_instructions;
 mod agent_messages;
 mod agent_roles;
+mod agent_runtime_config;
 mod agent_session_meta;
 mod background_run;
 mod buddy;
@@ -89,12 +88,13 @@ mod session_turns;
 mod session_watch;
 mod shell;
 mod text;
+#[cfg(test)]
+use agent_config::AgentEffectivePolicyRule;
 use agent_config::{
     agent_policy_audit_report, agent_policy_report, format_agent_config_options,
     format_agent_effective_config, format_agent_policy_audit_report, format_agent_policy_report,
     format_agent_policy_revoke_report, format_agent_tool_spec, format_agent_tool_specs,
-    resolve_agent_tool_spec, AgentEffectiveConfig, AgentEffectivePolicyRule,
-    AgentPolicyRevokeReport,
+    resolve_agent_tool_spec, AgentEffectiveConfig, AgentPolicyRevokeReport,
 };
 #[cfg(test)]
 use agent_instructions::read_agent_instruction_file;
@@ -105,6 +105,9 @@ use agent_messages::agent_system_message;
 use agent_roles::{
     configured_agent_roles, format_agent_role, format_agent_role_list, resolve_agent_role,
     resolve_agent_role_selection_from_config, AgentRoleSelection,
+};
+use agent_runtime_config::{
+    agent_effective_config_from_parts, agent_session_runtime_config, agent_tool_specs,
 };
 use agent_session_meta::{
     format_session_run_completion, latest_session_model, maybe_auto_title_agent_session,
@@ -3072,73 +3075,6 @@ fn resolve_agent_effective_config(
     )
 }
 
-fn agent_effective_config_from_parts(
-    workspace: String,
-    profile: String,
-    model: String,
-    agent_name: Option<String>,
-    agent_instructions: Vec<String>,
-    agent_tools: Vec<String>,
-) -> Result<AgentEffectiveConfig> {
-    let workspace_path = Path::new(&workspace);
-    Ok(AgentEffectiveConfig {
-        model,
-        read_access: resolve_agent_read_access_policy(&profile, workspace_path)?,
-        permissions: resolve_agent_permission_policy(&profile, workspace_path)?,
-        read_access_rules: effective_read_access_rules_with_sources(&profile, workspace_path)?,
-        permission_rules: effective_permission_rules_with_sources(&profile, workspace_path)?,
-        guardrails: agent_policy_guardrails(),
-        agent_name,
-        agent_instructions,
-        agent_tools,
-        workspace,
-        profile,
-    })
-}
-
-fn agent_session_runtime_config(config: &AgentEffectiveConfig) -> AgentSessionRuntimeConfig {
-    AgentSessionRuntimeConfig {
-        model: config.model.clone(),
-        agent_instructions: config.agent_instructions.clone(),
-        agent_tools: config.agent_tools.clone(),
-        read_access: AgentSessionPolicySnapshot {
-            default_effect: if config.read_access.allow_roots.is_empty() {
-                "allow".to_string()
-            } else {
-                "allow configured roots".to_string()
-            },
-            rules: config
-                .read_access_rules
-                .iter()
-                .map(agent_session_policy_rule_from_effective)
-                .collect(),
-            guardrails: vec![
-                "secret-read guardrails block known credential/token/key/auth paths".to_string(),
-            ],
-        },
-        permissions: AgentSessionPolicySnapshot {
-            default_effect: "allow with guardrails".to_string(),
-            rules: config
-                .permission_rules
-                .iter()
-                .map(agent_session_policy_rule_from_effective)
-                .collect(),
-            guardrails: config.guardrails.clone(),
-        },
-    }
-}
-
-fn agent_session_policy_rule_from_effective(
-    rule: &AgentEffectivePolicyRule,
-) -> AgentSessionPolicyRule {
-    AgentSessionPolicyRule {
-        source: rule.source.clone(),
-        action: rule.action.clone(),
-        resource: rule.resource.clone(),
-        effect: rule.effect.clone(),
-    }
-}
-
 fn agent_tools_list(args: AgentToolsListArgs) -> Result<()> {
     let selection = resolve_agent_role_selection(args.agent, &args.profile, None)?;
     let specs = agent_tool_specs(args.workspace, &selection.profile, &selection.tools)?;
@@ -3195,26 +3131,6 @@ fn agent_policy_revoke(args: AgentPolicyRevokeArgs) -> Result<()> {
         format_agent_policy_revoke_report(&report, output_format(args.format, args.json))?
     );
     Ok(())
-}
-
-fn agent_tool_specs(
-    workspace: Option<PathBuf>,
-    profile: &str,
-    allowed_tools: &[String],
-) -> Result<Vec<ToolSpec>> {
-    let workspace = resolve_agent_workspace(workspace)?;
-    let workspace_path = Path::new(&workspace);
-    let read_access = resolve_agent_read_access_policy(profile, workspace_path)?;
-    let permissions = resolve_agent_permission_policy(profile, workspace_path)?;
-    let mut registry = tools_with_policies_file_history_and_gate(
-        workspace_path,
-        read_access,
-        permissions,
-        None,
-        None,
-    )?;
-    registry.retain_names(allowed_tools)?;
-    Ok(registry.specs())
 }
 
 fn agent_file_history_list(args: AgentFileHistoryListArgs) -> Result<()> {
