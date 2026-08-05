@@ -151,8 +151,6 @@ use top_level_commands::{
     run_accept, run_add, run_clear, run_index, run_ingest, run_list, run_open, run_reject,
     run_review, run_rm, run_scan, run_search, run_show, run_switch,
 };
-#[cfg(test)]
-use tui_dashboard::dashboard_tab;
 use tui_dashboard::{default_dashboard_tui_args, run_tui};
 
 const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
@@ -3200,15 +3198,6 @@ mod tests {
     }
 
     #[test]
-    fn default_no_args_tui_opens_sessions_dashboard() {
-        let args = default_dashboard_tui_args();
-
-        assert_eq!(args.view, TuiView::Sessions);
-        assert!(args.roots.is_empty());
-        assert!(args.editor.is_none());
-    }
-
-    #[test]
     fn parses_top_level_buddy_mode_flags() {
         let cli = Cli::try_parse_from(["djinn", "-b"]).unwrap();
         assert!(cli.buddy);
@@ -3249,7 +3238,6 @@ mod tests {
         };
 
         assert_eq!(args.view, TuiView::Sessions);
-        assert_eq!(dashboard_tab(args.view), djinn_tui::DashboardTab::Sessions);
     }
 
     #[test]

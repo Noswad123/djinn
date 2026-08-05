@@ -191,3 +191,41 @@ pub(crate) fn default_dashboard_tui_args() -> TuiArgs {
         editor: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_no_args_tui_opens_sessions_dashboard() {
+        let args = default_dashboard_tui_args();
+
+        assert_eq!(args.view, TuiView::Sessions);
+        assert!(args.roots.is_empty());
+        assert!(args.editor.is_none());
+    }
+
+    #[test]
+    fn dashboard_tab_maps_tui_views_to_dashboard_tabs() {
+        assert_eq!(
+            dashboard_tab(TuiView::Tools),
+            djinn_tui::DashboardTab::Tools
+        );
+        assert_eq!(
+            dashboard_tab(TuiView::Sessions),
+            djinn_tui::DashboardTab::Sessions
+        );
+        assert_eq!(
+            dashboard_tab(TuiView::Memories),
+            djinn_tui::DashboardTab::Memories
+        );
+        assert_eq!(
+            dashboard_tab(TuiView::Suggestions),
+            djinn_tui::DashboardTab::Suggestions
+        );
+        assert_eq!(
+            dashboard_tab(TuiView::Skills),
+            djinn_tui::DashboardTab::Skills
+        );
+    }
+}
