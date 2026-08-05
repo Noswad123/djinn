@@ -3,14 +3,33 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use djinn_memory::{
-    AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId, AgentSessionStore,
-    JsonlAgentSessionStore,
+    AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionExecutionMode,
+    AgentSessionId, AgentSessionLifecycleState, AgentSessionStore, JsonlAgentSessionStore,
 };
 
 use crate::prompt::prompt_title;
 use crate::session_projection::AgentSessionDirProjection;
 
 const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
+
+pub(crate) fn append_agent_session_lifecycle_event(
+    store: &JsonlAgentSessionStore,
+    id: &AgentSessionId,
+    state: AgentSessionLifecycleState,
+    mode: AgentSessionExecutionMode,
+    reason: impl Into<String>,
+    note: Option<String>,
+) -> Result<()> {
+    store.append_event(
+        id,
+        AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
+            state,
+            mode: Some(mode),
+            reason: Some(reason.into()),
+            note,
+        }),
+    )
+}
 
 pub(crate) fn format_session_run_completion(
     id: &AgentSessionId,

@@ -11,14 +11,12 @@ use anyhow::{anyhow, bail, Context, Result};
 #[cfg(test)]
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
-use djinn_agent::{
-    AgentProgressEvent, CopilotClient, ModelClient, ModelMessage, ModelRequest, ModelRole,
-};
 #[cfg(test)]
 use djinn_agent::{
-    PermissionEffect, PermissionPolicy, PermissionRule, ReadAccessEffect, ReadAccessPolicy,
-    ReadAccessRule, ToolSpec,
+    AgentProgressEvent, PermissionEffect, PermissionPolicy, PermissionRule, ReadAccessEffect,
+    ReadAccessPolicy, ReadAccessRule, ToolSpec,
 };
+use djinn_agent::{CopilotClient, ModelClient, ModelMessage, ModelRequest, ModelRole};
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 #[cfg(test)]
 use djinn_memory::AgentSession;
@@ -81,6 +79,7 @@ mod session_projection;
 mod session_reference;
 mod session_registry;
 mod session_remove;
+mod session_run_support;
 mod session_status;
 mod session_transcript;
 mod session_tui;
@@ -110,14 +109,16 @@ use agent_runtime_config::{
     agent_effective_config_from_parts, agent_session_runtime_config, agent_tool_specs,
 };
 use agent_session_meta::{
-    format_session_run_completion, latest_session_model, maybe_auto_title_agent_session,
-    validate_agent_child_session_depth,
+    append_agent_session_lifecycle_event, format_session_run_completion, latest_session_model,
+    maybe_auto_title_agent_session, validate_agent_child_session_depth,
 };
+#[cfg(test)]
+use background_run::touch_background_run_marker;
 #[cfg(test)]
 use background_run::BackgroundRunStatus;
 use background_run::{
     background_session_run_log_path, latest_background_session_run_status,
-    touch_background_run_marker, write_background_session_run_marker,
+    write_background_session_run_marker,
 };
 use buddy::*;
 use buddy_consolidate::*;
@@ -235,6 +236,10 @@ use session_registry::{
     rename_folder_session_in_root, shorten_cache_folder_session_names,
 };
 use session_remove::session_rm;
+use session_run_support::{
+    background_progress_phase, format_session_run_background_started,
+    touch_background_run_marker_from_env, SessionRunBackgroundReport,
+};
 #[cfg(test)]
 use session_status::SessionStatusLifecycleReport;
 #[cfg(test)]
@@ -3001,25 +3006,6 @@ fn run_agent_policy(args: AgentPolicyArgs) -> Result<()> {
     }
 }
 
-fn append_agent_session_lifecycle_event(
-    store: &JsonlAgentSessionStore,
-    id: &AgentSessionId,
-    state: AgentSessionLifecycleState,
-    mode: AgentSessionExecutionMode,
-    reason: impl Into<String>,
-    note: Option<String>,
-) -> Result<()> {
-    store.append_event(
-        id,
-        AgentSessionEvent::new(AgentSessionEventKind::SessionLifecycleUpdated {
-            state,
-            mode: Some(mode),
-            reason: Some(reason.into()),
-            note,
-        }),
-    )
-}
-
 fn run_agent_file_history(args: AgentFileHistoryArgs) -> Result<()> {
     match args.command {
         AgentFileHistoryCommand::List(args) => agent_file_history_list(args),
@@ -3288,15 +3274,6 @@ fn session_run(mut args: SessionRunArgs) -> Result<()> {
             background_worker,
         },
     )
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionRunBackgroundReport {
-    status: String,
-    session_dir: String,
-    pid: u32,
-    log_path: String,
-    watch_command: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -3638,22 +3615,6 @@ fn background_session_run_command_hint(
     }
 }
 
-fn touch_background_run_marker_from_env(phase: &str) {
-    let Some(path) = env::var_os("DJINN_BACKGROUND_RUN_MARKER").map(PathBuf::from) else {
-        return;
-    };
-    let _ = touch_background_run_marker(&path, phase);
-}
-
-fn background_progress_phase(event: &AgentProgressEvent) -> &'static str {
-    match event {
-        AgentProgressEvent::ModelRequestStarted { .. } => "model_request_started",
-        AgentProgressEvent::ModelResponseCompleted { .. } => "model_response_completed",
-        AgentProgressEvent::ToolCallStarted { .. } => "tool_call_started",
-        AgentProgressEvent::ToolCallCompleted { .. } => "tool_call_completed",
-    }
-}
-
 pub(crate) fn upsert_toml_root_string(content: &str, key: &str, value: &str) -> Result<String> {
     let rendered = format!("{key} = {}", toml_string(value)?);
     let mut replaced = false;
@@ -3673,16 +3634,6 @@ pub(crate) fn upsert_toml_root_string(content: &str, key: &str, value: &str) -> 
         output.push('\n');
     }
     Ok(output)
-}
-
-fn format_session_run_background_started(report: &SessionRunBackgroundReport) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("Started Djinn session run: {}", report.session_dir));
-    lines.push(format!("  pid: {}", report.pid));
-    lines.push(format!("  log: {}", report.log_path));
-    lines.push(format!("  watch: {}", report.watch_command));
-    lines.push(String::new());
-    lines.join("\n")
 }
 
 fn agent_ask(
