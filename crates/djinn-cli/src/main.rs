@@ -16,15 +16,15 @@ use djinn_agent::{
     AgentProgressEvent, ModelRole, PermissionEffect, PermissionPolicy, PermissionRule,
     ReadAccessEffect, ReadAccessPolicy, ReadAccessRule, ToolSpec,
 };
-use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 #[cfg(test)]
 use djinn_memory::AgentSession;
 use djinn_memory::{
-    ActionRecord, ActionStore, AgentSessionEvent, AgentSessionEventKind, AgentSessionExecutionMode,
+    ActionRecord, AgentSessionEvent, AgentSessionEventKind, AgentSessionExecutionMode,
     AgentSessionId, AgentSessionLifecycleState, AgentSessionMeta, AgentSessionStore, IdeaRecord,
-    IdeaStore, JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryInput, MemoryRecord,
-    MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
+    MemoryInput, MemoryRecord, MemorySource, SuggestionInput, SuggestionRecord,
 };
+#[cfg(test)]
+use djinn_memory::{ActionStore, JsonlAgentSessionStore};
 #[cfg(test)]
 use djinn_skills::SkillStore;
 use serde::Serialize;
@@ -49,6 +49,7 @@ mod config_model;
 mod config_native;
 mod config_preview;
 mod config_write;
+mod context_commands;
 mod copilot_auth;
 mod doctor_commands;
 mod editor;
@@ -86,6 +87,7 @@ mod session_turns;
 mod session_watch;
 mod shell;
 mod skills_commands;
+mod stores;
 mod text;
 mod tools_commands;
 mod tui_dashboard;
@@ -152,6 +154,8 @@ use config_write::{
     write_config_export_preview, write_config_import_preview, write_djinn_config_file,
     write_json_config_file,
 };
+pub(crate) use context_commands::context_store;
+use context_commands::{add_context, list_contexts, show_context, switch_context};
 use copilot_auth::*;
 use doctor_commands::doctor_buddy;
 use editor::open_editor_path;
@@ -297,6 +301,10 @@ use session_watch::{format_session_watch_snapshot, session_watch_snapshot_key};
 use shell::shell_quote;
 use skills_commands::{add_skill, list_skills, rm_skill, show_skill};
 pub(crate) use skills_commands::{open_skill_entry, skill_records, skill_store};
+pub(crate) use stores::{
+    action_store, agent_session_store, file_history_store, idea_store, memory_store,
+    suggestion_store,
+};
 pub(crate) use text::{
     ensure_trailing_newline, non_empty_string, plural_suffix, truncate, truncate_table_cell,
 };
@@ -2893,124 +2901,6 @@ fn list_suggestions() -> Result<()> {
     Ok(())
 }
 
-fn list_contexts(args: ListCtxArgs) -> Result<()> {
-    let store = context_store();
-    let records = store.list()?;
-    let active = store.active_name()?.unwrap_or_default();
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "active": active,
-                "contexts": records,
-            }))?
-        );
-    } else if records.is_empty() {
-        println!("No contexts configured.");
-        println!("Add one with `djinn add ctx <name> --root <path>`.");
-    } else {
-        for record in &records {
-            let marker = if record.name.eq_ignore_ascii_case(&active) {
-                "*"
-            } else {
-                " "
-            };
-            println!(
-                "{marker} [{}] {}{}",
-                record.name,
-                if record.description.is_empty() {
-                    "No description".to_string()
-                } else {
-                    record.description.clone()
-                },
-                format_context_suffix(record)
-            );
-        }
-        println!("\nTotal: {} contexts", records.len());
-    }
-    Ok(())
-}
-
-fn show_context(args: ShowCtxArgs) -> Result<()> {
-    let store = context_store();
-    let records = store.list()?;
-    let active = store.active_name()?.unwrap_or_default();
-    let record = if let Some(name) = args.name.as_deref() {
-        resolve_context(&records, name)?.clone()
-    } else {
-        store.active()?.ok_or_else(|| {
-            anyhow::anyhow!("no active context; add one with `djinn add ctx <name> --root <path>`")
-        })?
-    };
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "active": record.name.eq_ignore_ascii_case(&active),
-                "context": record,
-            }))?
-        );
-        return Ok(());
-    }
-    println!("# {}\n", record.name);
-    if !record.description.is_empty() {
-        println!("{}\n", record.description);
-    }
-    println!(
-        "Active: {}",
-        if record.name.eq_ignore_ascii_case(&active) {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    if !record.memory_scope.is_empty() {
-        println!("Memory scope: {}", record.memory_scope);
-    }
-    println!("\nTool roots:");
-    if record.roots.is_empty() {
-        println!("  - (none configured; Djinn falls back to default roots)");
-    } else {
-        for root in &record.roots {
-            println!("  - {}", root.display());
-        }
-    }
-    println!("\nSkill roots:");
-    if record.skill_roots.is_empty() {
-        println!("  - (none configured; Djinn uses default skill roots)");
-    } else {
-        for root in &record.skill_roots {
-            println!("  - {}", root.display());
-        }
-    }
-    Ok(())
-}
-
-fn add_context(args: AddCtxArgs) -> Result<()> {
-    let record = context_store().add_or_update(
-        ContextInput {
-            name: args.name,
-            description: args.description,
-            roots: args.roots,
-            skill_roots: args.skill_roots,
-            memory_scope: args.memory_scope,
-        },
-        args.switch,
-    )?;
-    println!(
-        "Context saved [{}]{}",
-        record.name,
-        format_context_suffix(&record)
-    );
-    Ok(())
-}
-
-fn switch_context(name: &str) -> Result<()> {
-    let record = context_store().switch(name)?;
-    println!("Active context: {}", record.name);
-    Ok(())
-}
-
 fn add_memory(args: AddMemoryArgs) -> Result<MemoryRecord> {
     memory_store().add_input(memory_input_from_args(args)?)
 }
@@ -4022,58 +3912,12 @@ fn format_suggestion_suffix(record: &SuggestionRecord) -> String {
     }
 }
 
-fn format_context_suffix(record: &ContextRecord) -> String {
-    let mut parts = Vec::new();
-    if !record.memory_scope.trim().is_empty() {
-        parts.push(format!("scope: {}", record.memory_scope));
-    }
-    if !record.roots.is_empty() {
-        parts.push(format!("roots: {}", record.roots.len()));
-    }
-    if !record.skill_roots.is_empty() {
-        parts.push(format!("skill-roots: {}", record.skill_roots.len()));
-    }
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", parts.join(", "))
-    }
-}
-
 fn output_format(format: OutputFormat, json: bool) -> OutputFormat {
     if json {
         OutputFormat::Json
     } else {
         format
     }
-}
-
-pub(crate) fn memory_store() -> djinn_memory::MemoryStore {
-    djinn_memory::MemoryStore::default_in(&djinn_core::default_data_dir())
-}
-
-fn idea_store() -> IdeaStore {
-    IdeaStore::default_in(&djinn_core::default_data_dir())
-}
-
-pub(crate) fn action_store() -> ActionStore {
-    ActionStore::default_in(&djinn_core::default_data_dir())
-}
-
-fn suggestion_store() -> SuggestionStore {
-    SuggestionStore::default_in(&djinn_core::default_data_dir())
-}
-
-fn context_store() -> ContextStore {
-    ContextStore::default_in(&djinn_core::default_data_dir())
-}
-
-fn agent_session_store() -> JsonlAgentSessionStore {
-    JsonlAgentSessionStore::default_in(&djinn_core::default_data_dir())
-}
-
-fn file_history_store() -> JsonlFileHistoryStore {
-    JsonlFileHistoryStore::default_in(&djinn_core::default_data_dir())
 }
 
 #[cfg(test)]
