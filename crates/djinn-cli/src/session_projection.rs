@@ -218,3 +218,143 @@ pub(crate) fn write_agent_session_native_jsonl(
     fs::write(&path, output).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_messages::agent_model_messages;
+    use crate::read_folder_session_manifest;
+    use djinn_memory::{AgentSessionId, AgentSessionMeta};
+
+    #[test]
+    fn folder_backed_session_projection_writes_events_and_context_without_duplicate_logs() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-folder-session-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("summary.md"), "old summary\n").unwrap();
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_folder"),
+            meta: AgentSessionMeta {
+                title: "Folder session".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "new request".to_string(),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "new summary".to_string(),
+                }),
+            ],
+        };
+
+        let projection =
+            project_agent_session_dir(&dir, &session, "new request", "new summary").unwrap();
+
+        assert_eq!(fs::read_to_string(dir.join("request.md")).unwrap(), "");
+        assert_eq!(
+            fs::read_to_string(dir.join("summary.md")).unwrap(),
+            "new summary\n"
+        );
+        assert!(projection.context_dir.exists());
+        assert!(projection.turn_dir.is_none());
+        assert!(!dir.join("turns").exists());
+        assert!(dir.join("djinn.toml").exists());
+        let events_jsonl = fs::read_to_string(dir.join("events.jsonl")).unwrap();
+        assert_eq!(events_jsonl.lines().count(), 2);
+        assert!(events_jsonl.contains("\"type\":\"user_message\""));
+        assert!(events_jsonl.contains("\"type\":\"assistant_message\""));
+        write_folder_session_events_jsonl(&dir, &session).unwrap();
+        let events_jsonl_after_second_shadow =
+            fs::read_to_string(dir.join("events.jsonl")).unwrap();
+        assert_eq!(events_jsonl_after_second_shadow.lines().count(), 2);
+        assert!(!dir.join("logs/summary-history.md").exists());
+        assert!(!dir.join("logs/events.jsonl").exists());
+        assert!(!dir.join("logs/transcript.md").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_session_events_jsonl_hydrates_native_history_for_continuation() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-events-first-session-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let id = AgentSessionId::new("agt_events_first");
+        fs::write(
+            dir.join("djinn.toml"),
+            "session_id = \"agt_events_first\"\ntitle = \"Events First\"\nworkspace = \"/tmp/workspace\"\nprofile = \"default\"\n",
+        )
+        .unwrap();
+        let events = vec![
+            AgentSessionEvent::with_session(
+                id.clone(),
+                AgentSessionEventKind::UserMessage {
+                    content: "event request".to_string(),
+                },
+            ),
+            AgentSessionEvent::with_session(
+                id.clone(),
+                AgentSessionEventKind::AssistantMessage {
+                    content: "event response".to_string(),
+                },
+            ),
+        ];
+        let events_jsonl = events
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n")
+            + "\n";
+        fs::write(dir.join("events.jsonl"), events_jsonl).unwrap();
+
+        let stale = AgentSession {
+            id: id.clone(),
+            meta: AgentSessionMeta {
+                title: "stale".to_string(),
+                source: "djinn".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![AgentSessionEvent::with_session(
+                id.clone(),
+                AgentSessionEventKind::UserMessage {
+                    content: "stale native request".to_string(),
+                },
+            )],
+        };
+        write_agent_session_native_jsonl(&dir, &stale).unwrap();
+
+        let manifest = read_folder_session_manifest(&dir).unwrap();
+        assert!(
+            hydrate_folder_agent_session_from_events_jsonl(&dir, &id, manifest.as_ref()).unwrap()
+        );
+        let loaded = folder_agent_session_store(&dir).load_session(&id).unwrap();
+        let messages = agent_model_messages(&loaded, "/tmp/workspace", &[]);
+
+        assert_eq!(loaded.events.len(), 2);
+        assert_eq!(loaded.meta.workspace, "/tmp/workspace");
+        assert!(messages
+            .iter()
+            .any(|message| message.content == "event request"));
+        assert!(messages
+            .iter()
+            .any(|message| message.content == "event response"));
+        assert!(!messages
+            .iter()
+            .any(|message| message.content.contains("stale native")));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

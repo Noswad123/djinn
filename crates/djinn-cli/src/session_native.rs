@@ -77,3 +77,58 @@ pub(crate) fn relocate_agent_session_into_folder(
     })?;
     Ok(folder_store)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use djinn_memory::{AgentSessionMeta, AgentSessionStore};
+
+    fn temp_agent_store(name: &str) -> JsonlAgentSessionStore {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-cli-agent-chat-{name}-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        JsonlAgentSessionStore::default_in(&dir)
+    }
+
+    #[test]
+    fn relocates_native_jsonl_into_folder_session() {
+        let store = temp_agent_store("folder-native-relocate");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Move me".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "test".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        let source_path = store.session_file_path(&id);
+        let root = std::env::temp_dir().join(format!(
+            "djinn-folder-native-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("session");
+
+        let folder_store = relocate_agent_session_into_folder(&store, &session_dir, &id).unwrap();
+        let target_path = folder_store.session_file_path(&id);
+
+        assert!(!source_path.exists());
+        assert_eq!(
+            target_path,
+            session_dir.join(".djinn").join(format!("{id}.jsonl"))
+        );
+        assert!(target_path.exists());
+        assert_eq!(
+            folder_store.load_session(&id).unwrap().meta.title,
+            "Move me"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
