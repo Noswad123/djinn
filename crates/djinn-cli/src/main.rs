@@ -90,7 +90,7 @@ mod text;
 mod tui_dashboard;
 use agent_commands::{
     agent_config_list, agent_config_show, agent_policy_audit, agent_policy_list,
-    agent_policy_revoke, agent_tools_list, agent_tools_show,
+    agent_policy_revoke, agent_tools_list, agent_tools_show, agents_list, agents_show,
 };
 #[cfg(test)]
 use agent_config::AgentEffectivePolicyRule;
@@ -108,10 +108,11 @@ use agent_instructions::{resolve_agent_instruction_contents, ResolvedAgentInstru
 use agent_messages::agent_model_messages;
 #[cfg(test)]
 use agent_messages::agent_system_message;
+use agent_roles::resolve_agent_role_selection_from_config;
 pub(crate) use agent_roles::AgentRoleSelection;
+#[cfg(test)]
 use agent_roles::{
     configured_agent_roles, format_agent_role, format_agent_role_list, resolve_agent_role,
-    resolve_agent_role_selection_from_config,
 };
 #[cfg(test)]
 use agent_runtime_config::agent_tool_specs;
@@ -2957,27 +2958,6 @@ fn run_agents(args: AgentsArgs) -> Result<()> {
         AgentsCommand::List(args) => agents_list(args),
         AgentsCommand::Show(args) => agents_show(args),
     }
-}
-
-fn agents_list(args: AgentsListArgs) -> Result<()> {
-    let config = effective_djinn_config()?;
-    let roles = configured_agent_roles(&config);
-    print!(
-        "{}",
-        format_agent_role_list(&roles, output_format(args.format, args.json))?
-    );
-    Ok(())
-}
-
-fn agents_show(args: AgentsShowArgs) -> Result<()> {
-    let config = effective_djinn_config()?;
-    let roles = configured_agent_roles(&config);
-    let role = resolve_agent_role(&roles, &args.name)?;
-    print!(
-        "{}",
-        format_agent_role(role, output_format(args.format, args.json))?
-    );
-    Ok(())
 }
 
 fn parent_session_id_from_arg(parent_session: Option<String>) -> Option<AgentSessionId> {

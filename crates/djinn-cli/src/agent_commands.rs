@@ -8,7 +8,10 @@ use crate::agent_config::{
     format_agent_policy_revoke_report, format_agent_tool_spec, format_agent_tool_specs,
     resolve_agent_tool_spec, AgentEffectiveConfig, AgentPolicyRevokeReport,
 };
-use crate::agent_roles::resolve_agent_role_selection_from_config;
+use crate::agent_roles::{
+    configured_agent_roles, format_agent_role, format_agent_role_list, resolve_agent_role,
+    resolve_agent_role_selection_from_config,
+};
 use crate::agent_runtime_config::{agent_effective_config_from_parts, agent_tool_specs};
 use crate::model_resolution::{
     agent_model_options, agent_profile_options, resolve_agent_model,
@@ -17,8 +20,29 @@ use crate::model_resolution::{
 use crate::{
     effective_djinn_config, output_format, resolve_agent_workspace, AgentConfigListArgs,
     AgentConfigShowArgs, AgentPolicyAuditArgs, AgentPolicyListArgs, AgentPolicyRevokeArgs,
-    AgentToolsListArgs, AgentToolsShowArgs,
+    AgentToolsListArgs, AgentToolsShowArgs, AgentsListArgs, AgentsShowArgs,
 };
+
+pub(crate) fn agents_list(args: AgentsListArgs) -> Result<()> {
+    let config = effective_djinn_config()?;
+    let roles = configured_agent_roles(&config);
+    print!(
+        "{}",
+        format_agent_role_list(&roles, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
+
+pub(crate) fn agents_show(args: AgentsShowArgs) -> Result<()> {
+    let config = effective_djinn_config()?;
+    let roles = configured_agent_roles(&config);
+    let role = resolve_agent_role(&roles, &args.name)?;
+    print!(
+        "{}",
+        format_agent_role(role, output_format(args.format, args.json))?
+    );
+    Ok(())
+}
 
 pub(crate) fn agent_config_list(args: AgentConfigListArgs) -> Result<()> {
     let current_profile = resolve_agent_profile(&args.profile)?;
