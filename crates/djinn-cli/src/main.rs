@@ -112,14 +112,13 @@ use agent_session_meta::{
     append_agent_session_lifecycle_event, format_session_run_completion, latest_session_model,
     maybe_auto_title_agent_session, validate_agent_child_session_depth,
 };
+use background_run::latest_background_session_run_status;
 #[cfg(test)]
 use background_run::touch_background_run_marker;
 #[cfg(test)]
+use background_run::write_background_session_run_marker;
+#[cfg(test)]
 use background_run::BackgroundRunStatus;
-use background_run::{
-    background_session_run_log_path, latest_background_session_run_status,
-    write_background_session_run_marker,
-};
 use buddy::*;
 use buddy_consolidate::*;
 use config_doctor::*;
@@ -236,9 +235,11 @@ use session_registry::{
     rename_folder_session_in_root, shorten_cache_folder_session_names,
 };
 use session_remove::session_rm;
+#[cfg(test)]
+use session_run_support::SessionRunBackgroundReport;
 use session_run_support::{
-    background_progress_phase, format_session_run_background_started,
-    touch_background_run_marker_from_env, SessionRunBackgroundReport,
+    background_progress_phase, format_session_run_background_started, spawn_background_session_run,
+    touch_background_run_marker_from_env, SessionRunBackgroundSpawnOptions,
 };
 #[cfg(test)]
 use session_status::SessionStatusLifecycleReport;
@@ -3499,120 +3500,23 @@ fn session_run_background(args: SessionRunArgs) -> Result<()> {
     }
     let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
     resolve_agent_request_prompt(None, Some(&session_dir))?;
-    let report = spawn_background_session_run(&session_dir, &args)?;
+    let report = spawn_background_session_run(
+        &session_dir,
+        &SessionRunBackgroundSpawnOptions {
+            profile: args.profile.clone(),
+            agent: args.agent.clone(),
+            model: args.model.clone(),
+            api_key: args.api_key.clone(),
+            base_url: args.base_url.clone(),
+            max_tool_rounds: args.max_tool_rounds,
+        },
+    )?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", format_session_run_background_started(&report));
     }
     Ok(())
-}
-
-fn spawn_background_session_run(
-    session_dir: &Path,
-    args: &SessionRunArgs,
-) -> Result<SessionRunBackgroundReport> {
-    let log_path = background_session_run_log_path(session_dir)?;
-    let marker_path = log_path.with_extension("toml");
-    let log_file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| format!("opening background run log {}", log_path.display()))?;
-    let err_file = log_file
-        .try_clone()
-        .with_context(|| format!("cloning background run log {}", log_path.display()))?;
-    let exe = env::current_exe().context("resolving current djinn executable")?;
-    let command_hint = background_session_run_command_hint(&exe, session_dir, args);
-    let native_session_id = read_folder_session_manifest(session_dir)?
-        .and_then(|manifest| manifest.session_id.map(|id| id.to_string()));
-    let mut command = ProcessCommand::new(exe);
-    command
-        .arg("session")
-        .arg("run")
-        .arg(session_dir)
-        .arg("--background-worker")
-        .env("DJINN_BACKGROUND_RUN_MARKER", &marker_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(err_file));
-    if let Some(profile) = &args.profile {
-        command.arg("--profile").arg(profile);
-    }
-    if let Some(agent) = &args.agent {
-        command.arg("--agent").arg(agent);
-    }
-    if let Some(model) = &args.model {
-        command.arg("--model").arg(model);
-    }
-    if let Some(api_key) = &args.api_key {
-        command.env("DJINN_SESSION_RUN_API_KEY", api_key);
-    }
-    if let Some(base_url) = &args.base_url {
-        command.arg("--base-url").arg(base_url);
-    }
-    command
-        .arg("--max-tool-rounds")
-        .arg(args.max_tool_rounds.to_string());
-    let child = command.spawn().with_context(|| {
-        format!(
-            "spawning background session run for {}",
-            session_dir.display()
-        )
-    })?;
-    let pid = child.id();
-    write_background_session_run_marker(
-        session_dir,
-        &log_path,
-        pid,
-        &command_hint,
-        native_session_id.as_deref(),
-    )?;
-    Ok(SessionRunBackgroundReport {
-        status: "started".to_string(),
-        session_dir: session_dir.display().to_string(),
-        pid,
-        log_path: log_path.display().to_string(),
-        watch_command: format!("djinn session watch {}", session_dir.display()),
-    })
-}
-
-fn background_session_run_command_hint(
-    exe: &Path,
-    session_dir: &Path,
-    args: &SessionRunArgs,
-) -> String {
-    let mut parts = vec![
-        shell_quote(&exe.display().to_string()),
-        "session".to_string(),
-        "run".to_string(),
-        shell_quote(&session_dir.display().to_string()),
-        "--background-worker".to_string(),
-    ];
-    if let Some(profile) = &args.profile {
-        parts.push("--profile".to_string());
-        parts.push(shell_quote(profile));
-    }
-    if let Some(agent) = &args.agent {
-        parts.push("--agent".to_string());
-        parts.push(shell_quote(agent));
-    }
-    if let Some(model) = &args.model {
-        parts.push("--model".to_string());
-        parts.push(shell_quote(model));
-    }
-    if let Some(base_url) = &args.base_url {
-        parts.push("--base-url".to_string());
-        parts.push(shell_quote(base_url));
-    }
-    parts.push("--max-tool-rounds".to_string());
-    parts.push(args.max_tool_rounds.to_string());
-    let command = parts.join(" ");
-    if args.api_key.is_some() {
-        format!("DJINN_SESSION_RUN_API_KEY=<redacted> {command}")
-    } else {
-        command
-    }
 }
 
 pub(crate) fn upsert_toml_root_string(content: &str, key: &str, value: &str) -> Result<String> {
