@@ -21,13 +21,15 @@ use djinn_agent::{
     ReadAccessRule,
 };
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
+#[cfg(test)]
+use djinn_memory::AgentSession;
 use djinn_memory::{
-    ActionRecord, ActionStore, AgentSession, AgentSessionEvent, AgentSessionEventKind,
-    AgentSessionExecutionMode, AgentSessionId, AgentSessionLifecycleState, AgentSessionMeta,
-    AgentSessionPolicyRule, AgentSessionPolicySnapshot, AgentSessionRuntimeConfig,
-    AgentSessionStore, FileHistoryEntryId, FileHistoryFilter, FileHistoryRestoreOptions,
-    IdeaRecord, IdeaStore, JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryInput,
-    MemoryRecord, MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
+    ActionRecord, ActionStore, AgentSessionEvent, AgentSessionEventKind, AgentSessionExecutionMode,
+    AgentSessionId, AgentSessionLifecycleState, AgentSessionMeta, AgentSessionPolicyRule,
+    AgentSessionPolicySnapshot, AgentSessionRuntimeConfig, AgentSessionStore, FileHistoryEntryId,
+    FileHistoryFilter, FileHistoryRestoreOptions, IdeaRecord, IdeaStore, JsonlAgentSessionStore,
+    JsonlFileHistoryStore, MemoryInput, MemoryRecord, MemorySource, SuggestionInput,
+    SuggestionRecord, SuggestionStore,
 };
 use djinn_skills::{
     list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
@@ -42,6 +44,7 @@ mod agent_config;
 mod agent_instructions;
 mod agent_messages;
 mod agent_roles;
+mod agent_session_meta;
 mod background_run;
 mod buddy;
 mod buddy_consolidate;
@@ -102,6 +105,10 @@ use agent_messages::agent_system_message;
 use agent_roles::{
     configured_agent_roles, format_agent_role, format_agent_role_list, resolve_agent_role,
     resolve_agent_role_selection_from_config, AgentRoleSelection,
+};
+use agent_session_meta::{
+    format_session_run_completion, latest_session_model, maybe_auto_title_agent_session,
+    validate_agent_child_session_depth,
 };
 #[cfg(test)]
 use background_run::BackgroundRunStatus;
@@ -199,13 +206,13 @@ pub(crate) use session_native::{
     agent_session_store_for_folder_session, folder_agent_session_store,
     load_folder_native_agent_session, relocate_agent_session_into_folder,
 };
-#[cfg(test)]
-use session_projection::write_agent_session_native_jsonl;
 pub(crate) use session_projection::{
     ensure_folder_session_readme, hydrate_folder_agent_session_from_events_jsonl,
     project_agent_session_dir, sync_folder_session_events_jsonl_from_store,
-    write_folder_session_events_jsonl, AgentSessionDirProjection,
+    write_folder_session_events_jsonl,
 };
+#[cfg(test)]
+use session_projection::{write_agent_session_native_jsonl, AgentSessionDirProjection};
 pub(crate) use session_reference::{
     auto_folder_session_dir, default_folder_session_root, folder_session_display_name,
     folder_session_reference_name, folder_session_slug, is_named_folder_session_reference,
@@ -258,7 +265,6 @@ pub(crate) use text::{
     ensure_trailing_newline, non_empty_string, plural_suffix, truncate, truncate_table_cell,
 };
 
-const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
 const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
 const BACKGROUND_RUN_UNRESPONSIVE_SECONDS: i64 = 30 * 60;
 pub(crate) const FOLDER_SESSION_COMPACT_SNIPPET_CHARS: usize = 1_200;
@@ -4144,137 +4150,6 @@ fn agent_ask(
         }
     }
     Ok(())
-}
-
-fn format_session_run_completion(
-    id: &AgentSessionId,
-    projection: Option<&AgentSessionDirProjection>,
-    session_dir: Option<&Path>,
-) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("Completed Djinn session run: {id}"));
-    if let Some(projection) = projection {
-        lines.push(format!("  session: {}", projection.session_dir.display()));
-        lines.push(format!("  summary: {}", projection.summary_path.display()));
-        if let Some(turn_dir) = &projection.turn_dir {
-            lines.push(format!(
-                "  response: {}",
-                turn_dir.join("response.md").display()
-            ));
-        } else {
-            lines.push("  response: summary.md (turns/ projection not written)".to_string());
-        }
-        lines.push(format!("  request: {}", projection.request_path.display()));
-    } else if let Some(session_dir) = session_dir {
-        lines.push(format!("  session: {}", session_dir.display()));
-    }
-    lines.push(String::new());
-    lines.join("\n")
-}
-
-fn validate_agent_child_session_depth(
-    store: &JsonlAgentSessionStore,
-    parent_session_id: Option<&AgentSessionId>,
-) -> Result<()> {
-    let Some(parent_session_id) = parent_session_id else {
-        return Ok(());
-    };
-
-    let parent_depth = agent_session_depth(store, parent_session_id)?;
-    if parent_depth >= AGENT_CHILD_SESSION_MAX_DEPTH {
-        bail!(
-            "child session depth limit exceeded: parent session {parent_session_id} is at depth \
-             {parent_depth}; maximum child-session depth is {AGENT_CHILD_SESSION_MAX_DEPTH} \
-             levels below the root"
-        );
-    }
-
-    Ok(())
-}
-
-fn agent_session_depth(
-    store: &JsonlAgentSessionStore,
-    session_id: &AgentSessionId,
-) -> Result<usize> {
-    let mut depth = 0;
-    let mut current = session_id.clone();
-    let mut seen = HashSet::new();
-
-    loop {
-        if !seen.insert(current.clone()) {
-            bail!("cycle detected in agent session parent chain at {current}");
-        }
-
-        let session = store
-            .load_session(&current)
-            .with_context(|| format!("loading parent agent session {current}"))?;
-        let Some(parent) = session.meta.parent_session_id else {
-            return Ok(depth);
-        };
-
-        depth += 1;
-        current = parent;
-    }
-}
-
-fn maybe_auto_title_agent_session(
-    store: &JsonlAgentSessionStore,
-    id: &AgentSessionId,
-    prompt: &str,
-) -> Result<()> {
-    let session = store.load_session(id)?;
-    if !should_auto_title_agent_session(&session) {
-        return Ok(());
-    }
-    let title = infer_agent_session_title(prompt);
-    if title.trim().is_empty() || title == session.meta.title {
-        return Ok(());
-    }
-    store.append_event(
-        id,
-        AgentSessionEvent::new(AgentSessionEventKind::SessionTitleUpdated { title }),
-    )
-}
-
-fn should_auto_title_agent_session(session: &AgentSession) -> bool {
-    let title = session.meta.title.trim();
-    let default_title =
-        title.is_empty() || title == "Agent chat" || title == "Untitled agent session";
-    default_title
-        && session
-            .events
-            .iter()
-            .filter(|event| matches!(event.kind, AgentSessionEventKind::UserMessage { .. }))
-            .count()
-            == 1
-}
-
-fn infer_agent_session_title(prompt: &str) -> String {
-    let title = prompt_title(prompt, "Djinn session")
-        .trim_matches(|ch: char| ch.is_ascii_punctuation() || ch.is_whitespace())
-        .trim()
-        .to_string();
-    if title.is_empty() {
-        "Djinn session".to_string()
-    } else {
-        title
-    }
-}
-
-fn latest_session_model(session: &AgentSession) -> Option<String> {
-    for event in session.events.iter().rev() {
-        match &event.kind {
-            AgentSessionEventKind::SessionModelUpdated { model } => {
-                let model = model.trim();
-                if !model.is_empty() {
-                    return Some(model.to_string());
-                }
-            }
-            AgentSessionEventKind::SessionProfileUpdated { .. } => return None,
-            _ => {}
-        }
-    }
-    None
 }
 
 fn prompt_auth_provider() -> AuthProvider {
