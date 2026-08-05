@@ -9,10 +9,12 @@ use crate::session_artifact::SessionOpenTarget;
 use crate::session_transcript::SessionTranscriptFormat;
 use crate::DEFAULT_AGENT_MAX_TOOL_ROUNDS;
 
+mod agents;
 mod auth;
 mod config;
 mod doctor;
 mod tui;
+pub(crate) use agents::*;
 pub(crate) use auth::*;
 pub(crate) use config::*;
 pub(crate) use doctor::*;
@@ -884,42 +886,6 @@ pub(crate) enum OpenNoun {
 pub(crate) struct AgentArgs {
     #[command(subcommand)]
     pub(crate) command: AgentCommand,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct AgentsArgs {
-    #[command(subcommand)]
-    pub(crate) command: AgentsCommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum AgentsCommand {
-    /// List configured Djinn agent roles.
-    List(AgentsListArgs),
-    /// Show one configured Djinn agent role.
-    Show(AgentsShowArgs),
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct AgentsListArgs {
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-    pub(crate) format: OutputFormat,
-    /// Shortcut for --format json.
-    #[arg(long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct AgentsShowArgs {
-    /// Agent role name, case-insensitive. Falls back to substring matching.
-    pub(crate) name: String,
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-    pub(crate) format: OutputFormat,
-    /// Shortcut for --format json.
-    #[arg(long)]
-    pub(crate) json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1942,28 +1908,6 @@ mod tests {
         assert_eq!(args.to, PathBuf::from("/tmp/notes/pattern.md"));
         assert!(args.append);
         assert!(args.dry_run);
-    }
-
-    #[test]
-    fn parses_agents_list_and_show_commands() {
-        let cli = Cli::try_parse_from(["djinn", "agents", "list", "--json"]).unwrap();
-        let Some(Command::Agents(args)) = cli.command else {
-            panic!("expected agents command");
-        };
-        let AgentsCommand::List(args) = args.command else {
-            panic!("expected agents list command");
-        };
-        assert!(args.json);
-
-        let cli = Cli::try_parse_from(["djinn", "agents", "show", "reviewer", "--json"]).unwrap();
-        let Some(Command::Agents(args)) = cli.command else {
-            panic!("expected agents command");
-        };
-        let AgentsCommand::Show(args) = args.command else {
-            panic!("expected agents show command");
-        };
-        assert_eq!(args.name, "reviewer");
-        assert!(args.json);
     }
 
     #[test]
