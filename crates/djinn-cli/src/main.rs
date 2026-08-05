@@ -10,8 +10,6 @@ use std::sync::{Arc, Mutex};
 use anyhow::{bail, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 #[cfg(test)]
-use djinn_agent::AgentProgressEvent;
-#[cfg(test)]
 use djinn_memory::AgentSession;
 #[cfg(test)]
 use djinn_memory::{
@@ -104,8 +102,6 @@ pub(crate) use agent_workspace::{
     clean_unique_paths, load_djinn_config_for_workspace, resolve_agent_workspace,
 };
 use background_run::latest_background_session_run_status;
-#[cfg(test)]
-use background_run::touch_background_run_marker;
 #[cfg(test)]
 use background_run::write_background_session_run_marker;
 #[cfg(test)]
@@ -218,8 +214,6 @@ pub(crate) use session_reference::{
 use session_registry::rename_folder_session_in_root;
 #[cfg(test)]
 use session_registry::shorten_folder_session_names_in_root;
-#[cfg(test)]
-use session_run_support::background_progress_phase;
 #[cfg(test)]
 use session_status::format_folder_session_status;
 use session_status::{
@@ -5573,64 +5567,6 @@ link = "context/repo"
         assert!(marker.contains("recovery_reason = \"background_worker_unresponsive\""));
         assert!(marker.contains("recovery_observed_at ="));
         assert!(marker.contains("last_observed_event ="));
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn background_progress_updates_heartbeat_marker_phase() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-background-progress-marker-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let marker_path = root.join("session-run-test.toml");
-        fs::write(
-            &marker_path,
-            "version = 1\nrun_id = \"session-run-test\"\nheartbeat_at = \"2000-01-01T00:00:00Z\"\nheartbeat_phase = \"spawned\"\n",
-        )
-        .unwrap();
-
-        let started = AgentProgressEvent::ModelRequestStarted { round: 2 };
-        assert_eq!(background_progress_phase(&started), "model_request_started");
-        touch_background_run_marker(&marker_path, background_progress_phase(&started)).unwrap();
-        let marker = fs::read_to_string(&marker_path).unwrap();
-        assert!(marker.contains("heartbeat_phase = \"model_request_started\""));
-        assert!(!marker.contains("2000-01-01T00:00:00Z"));
-
-        let tool_call = djinn_agent::ModelToolCall {
-            id: "call-1".to_string(),
-            name: "read".to_string(),
-            input: serde_json::json!({"path": "summary.md"}),
-        };
-        let tool_started = AgentProgressEvent::ToolCallStarted {
-            round: 2,
-            call: tool_call.clone(),
-        };
-        assert_eq!(
-            background_progress_phase(&tool_started),
-            "tool_call_started"
-        );
-        touch_background_run_marker(&marker_path, background_progress_phase(&tool_started))
-            .unwrap();
-        let marker = fs::read_to_string(&marker_path).unwrap();
-        assert!(marker.contains("heartbeat_phase = \"tool_call_started\""));
-
-        let tool_completed = AgentProgressEvent::ToolCallCompleted {
-            round: 2,
-            call: tool_call,
-            result: djinn_agent::ToolResult {
-                output: serde_json::json!({"ok": true}),
-                success: true,
-            },
-            elapsed_ms: 42,
-        };
-        assert_eq!(
-            background_progress_phase(&tool_completed),
-            "tool_call_completed"
-        );
 
         let _ = fs::remove_dir_all(&root);
     }

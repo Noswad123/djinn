@@ -242,4 +242,62 @@ mod tests {
         assert!(rendered.contains("log: /tmp/djinn/session/.djinn/runs/session-run.log"));
         assert!(rendered.contains("watch: djinn session watch /tmp/djinn/session"));
     }
+
+    #[test]
+    fn background_progress_updates_heartbeat_marker_phase() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-background-progress-marker-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let marker_path = root.join("session-run-test.toml");
+        std::fs::write(
+            &marker_path,
+            "version = 1\nrun_id = \"session-run-test\"\nheartbeat_at = \"2000-01-01T00:00:00Z\"\nheartbeat_phase = \"spawned\"\n",
+        )
+        .unwrap();
+
+        let started = AgentProgressEvent::ModelRequestStarted { round: 2 };
+        assert_eq!(background_progress_phase(&started), "model_request_started");
+        touch_background_run_marker(&marker_path, background_progress_phase(&started)).unwrap();
+        let marker = std::fs::read_to_string(&marker_path).unwrap();
+        assert!(marker.contains("heartbeat_phase = \"model_request_started\""));
+        assert!(!marker.contains("2000-01-01T00:00:00Z"));
+
+        let tool_call = djinn_agent::ModelToolCall {
+            id: "call-1".to_string(),
+            name: "read".to_string(),
+            input: serde_json::json!({"path": "summary.md"}),
+        };
+        let tool_started = AgentProgressEvent::ToolCallStarted {
+            round: 2,
+            call: tool_call.clone(),
+        };
+        assert_eq!(
+            background_progress_phase(&tool_started),
+            "tool_call_started"
+        );
+        touch_background_run_marker(&marker_path, background_progress_phase(&tool_started))
+            .unwrap();
+        let marker = std::fs::read_to_string(&marker_path).unwrap();
+        assert!(marker.contains("heartbeat_phase = \"tool_call_started\""));
+
+        let tool_completed = AgentProgressEvent::ToolCallCompleted {
+            round: 2,
+            call: tool_call,
+            result: djinn_agent::ToolResult {
+                output: serde_json::json!({"ok": true}),
+                success: true,
+            },
+            elapsed_ms: 42,
+        };
+        assert_eq!(
+            background_progress_phase(&tool_completed),
+            "tool_call_completed"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
