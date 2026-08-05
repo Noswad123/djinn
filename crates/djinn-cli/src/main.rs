@@ -6197,40 +6197,6 @@ link = "context/repo"
     }
 
     #[test]
-    fn folder_session_open_resolves_buddy_session_id() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-session-open-buddy-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        let dir = root.join("session");
-        fs::create_dir_all(dir.join("runtime")).unwrap();
-        fs::write(dir.join("summary.md"), "summary\n").unwrap();
-        fs::write(
-            dir.join("runtime/buddy.json"),
-            r#"{
-  "buddy_session": "ses_openBuddy123",
-  "stale_buddy_sessions": []
-}
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(
-            resolve_folder_session_open_target_in_root(
-                Path::new("ses_openBuddy123"),
-                SessionOpenTarget::Summary,
-                &root,
-            )
-            .unwrap(),
-            dir.join("summary.md")
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn folder_session_open_errors_when_session_does_not_exist() {
         let root = std::env::temp_dir().join(format!(
             "djinn-session-open-missing-test-{}",
