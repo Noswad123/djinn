@@ -224,4 +224,22 @@ mod tests {
         assert!(rendered.contains("--max-tool-rounds 7"));
         assert!(!rendered.contains("secret"));
     }
+
+    #[test]
+    fn format_session_run_background_started_reports_watch_and_log() {
+        let report = SessionRunBackgroundReport {
+            status: "started".to_string(),
+            session_dir: "/tmp/djinn/session".to_string(),
+            pid: 4242,
+            log_path: "/tmp/djinn/session/.djinn/runs/session-run.log".to_string(),
+            watch_command: "djinn session watch /tmp/djinn/session".to_string(),
+        };
+
+        let rendered = format_session_run_background_started(&report);
+
+        assert!(rendered.contains("Started Djinn session run: /tmp/djinn/session"));
+        assert!(rendered.contains("pid: 4242"));
+        assert!(rendered.contains("log: /tmp/djinn/session/.djinn/runs/session-run.log"));
+        assert!(rendered.contains("watch: djinn session watch /tmp/djinn/session"));
+    }
 }

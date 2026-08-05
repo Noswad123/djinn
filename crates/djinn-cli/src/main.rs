@@ -223,8 +223,6 @@ use session_registry::shorten_folder_session_names_in_root;
 #[cfg(test)]
 use session_run_support::background_progress_phase;
 #[cfg(test)]
-use session_run_support::{format_session_run_background_started, SessionRunBackgroundReport};
-#[cfg(test)]
 use session_status::format_folder_session_status;
 use session_status::{
     folder_session_status, format_session_candidate_entry, format_session_candidate_status,
@@ -7632,24 +7630,6 @@ link = "context/repo"
 
         assert_eq!(prompt, "from request file");
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn format_session_run_background_started_reports_watch_and_log() {
-        let report = SessionRunBackgroundReport {
-            status: "started".to_string(),
-            session_dir: "/tmp/djinn/session".to_string(),
-            pid: 4242,
-            log_path: "/tmp/djinn/session/.djinn/runs/session-run.log".to_string(),
-            watch_command: "djinn session watch /tmp/djinn/session".to_string(),
-        };
-
-        let rendered = format_session_run_background_started(&report);
-
-        assert!(rendered.contains("Started Djinn session run: /tmp/djinn/session"));
-        assert!(rendered.contains("pid: 4242"));
-        assert!(rendered.contains("log: /tmp/djinn/session/.djinn/runs/session-run.log"));
-        assert!(rendered.contains("watch: djinn session watch /tmp/djinn/session"));
     }
 
     #[test]
