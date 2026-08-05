@@ -220,4 +220,29 @@ mod tests {
 
         let _ = fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn folder_session_open_errors_when_session_does_not_exist() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-open-missing-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        let err = resolve_folder_session_open_target_in_root(
+            Path::new("missing-session"),
+            SessionOpenTarget::Summary,
+            &root,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("folder session does not exist"));
+        assert!(err.contains("missing-session"));
+        assert!(err.contains("run: djinn session init missing-session"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

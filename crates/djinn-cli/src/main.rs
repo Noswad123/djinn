@@ -144,8 +144,6 @@ use promotion_generation::{
 pub(crate) use promotion_session::{create_promotion_session, session_promote_type_label};
 pub(crate) use promotion_validation::SessionValidateCandidateEntry;
 pub(crate) use prompt::prompt_title;
-#[cfg(test)]
-use session_artifact::resolve_folder_session_open_target_in_root;
 use session_artifact::SessionOpenTarget;
 use session_commands::run_session;
 #[cfg(test)]
@@ -6192,31 +6190,6 @@ link = "context/repo"
         assert_eq!(report.renamed.len(), 1);
         assert!(!legacy.exists());
         assert!(root.join(&short_name).exists());
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn folder_session_open_errors_when_session_does_not_exist() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-session-open-missing-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        fs::create_dir_all(&root).unwrap();
-
-        let err = resolve_folder_session_open_target_in_root(
-            Path::new("missing-session"),
-            SessionOpenTarget::Summary,
-            &root,
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert!(err.contains("folder session does not exist"));
-        assert!(err.contains("missing-session"));
-        assert!(err.contains("run: djinn session init missing-session"));
 
         let _ = fs::remove_dir_all(&root);
     }
