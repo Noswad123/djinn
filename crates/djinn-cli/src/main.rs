@@ -54,6 +54,7 @@ mod session_artifact;
 mod session_compact;
 mod session_context;
 mod session_events;
+mod session_init;
 mod session_list;
 mod session_registry;
 mod session_remove;
@@ -98,7 +99,7 @@ use session_context::{
     add_folder_session_context_entry, discover_folder_session_context,
     format_folder_session_context_discover, format_folder_session_context_ls,
     inspect_folder_session_context_dir, list_folder_session_context,
-    remove_folder_session_context_entry, SessionContextDiscoverReport,
+    remove_folder_session_context_entry,
 };
 use session_events::{
     ensure_event_health_strict, event_health_report_for_cache_sessions, format_event_health_report,
@@ -109,6 +110,12 @@ use session_events::{
 };
 #[cfg(test)]
 use session_events::{event_health_report_for_folder_session_root, SessionEventsHealthReport};
+#[cfg(test)]
+use session_init::{
+    create_dir_symlink, initialize_folder_session, initialize_folder_session_with_buddy,
+    SessionInitBuddyReport,
+};
+use session_init::{session_context_readme, session_init};
 pub(crate) use session_list::list_folder_sessions_in_root;
 pub(crate) use session_list::FolderSessionSummary;
 #[cfg(test)]
@@ -5749,279 +5756,6 @@ fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionInitReport {
-    session_dir: String,
-    manifest_path: String,
-    request_path: String,
-    summary_path: String,
-    context_dir: String,
-    turns_dir: String,
-    profile: String,
-    agent: Option<String>,
-    model: String,
-    workspace: String,
-    repo_link: Option<SessionRepoLinkReport>,
-    buddy: Option<SessionInitBuddyReport>,
-    discovered_context: Option<SessionContextDiscoverReport>,
-    config_sources: Vec<String>,
-    precedence: Vec<String>,
-    created: Vec<String>,
-    skipped: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionInitBuddyReport {
-    buddy_session: String,
-    repo_path: String,
-    runtime_path: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SessionRepoLinkReport {
-    path: String,
-    target: String,
-}
-
-fn session_init(args: SessionInitArgs) -> Result<()> {
-    let buddy_backend = BuddyBridgeBackend::resolved(None)?;
-    let report = initialize_folder_session_with_buddy(&args, Some(&buddy_backend))?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!("Initialized Djinn session: {}", report.session_dir);
-        println!("  profile: {}", report.profile);
-        if let Some(agent) = &report.agent {
-            println!("  agent: {agent}");
-        }
-        println!("  model: {}", report.model);
-        println!("  workspace: {}", report.workspace);
-        if let Some(repo_link) = &report.repo_link {
-            println!("  repo link: {} -> {}", repo_link.path, repo_link.target);
-        }
-        if let Some(buddy) = &report.buddy {
-            println!("  buddy session: {}", buddy.buddy_session);
-            println!("  buddy repo: {}", buddy.repo_path);
-        }
-        if let Some(discovered) = &report.discovered_context {
-            let created = discovered.links.iter().filter(|link| link.created).count();
-            let existing = discovered.links.iter().filter(|link| link.existed).count();
-            println!(
-                "  discovered context: {created} linked, {existing} existing, index {}",
-                discovered.repo_index_path
-            );
-        }
-        println!("  request: {}", report.request_path);
-        println!("  summary: {}", report.summary_path);
-        println!("  run: djinn ask --session {}", args.dir.display());
-        println!("  done: command exits; answer is written to summary.md and events.jsonl");
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport> {
-    initialize_folder_session_with_buddy(args, None)
-}
-
-fn initialize_folder_session_with_buddy(
-    args: &SessionInitArgs,
-    buddy_backend: Option<&dyn BuddySessionBackend>,
-) -> Result<SessionInitReport> {
-    let session_dir = resolve_session_dir(&args.dir)?;
-    fs::create_dir_all(&session_dir)
-        .with_context(|| format!("creating session directory {}", session_dir.display()))?;
-    let context_dir = session_dir.join("context");
-    let turns_dir = session_dir.join("turns");
-    fs::create_dir_all(&context_dir)
-        .with_context(|| format!("creating context directory {}", context_dir.display()))?;
-
-    let workspace = match &args.link_repo {
-        Some(path) => canonical_existing_dir(path, "linked repository")?,
-        None => env::current_dir().context("resolving current workspace")?,
-    };
-    let config_report = load_djinn_config_from_paths(clean_unique_paths(vec![
-        default_djinn_config_path(),
-        workspace.join(".djinn.json"),
-    ]))?;
-    let selection = resolve_agent_role_selection_from_config(
-        &config_report.effective,
-        args.agent.clone(),
-        &args.profile,
-        args.model.clone(),
-    )?;
-    let model = resolve_agent_model_from_config(
-        selection.model.clone(),
-        &config_report.effective,
-        &selection.profile,
-    );
-    validate_session_init_identity(&session_dir, args, &workspace, &selection, &model)?;
-
-    let mut created = Vec::new();
-    let mut skipped = Vec::new();
-    let request_path = session_dir.join("request.md");
-    write_scaffold_file(&request_path, "", args.force, &mut created, &mut skipped)?;
-    let summary_path = session_dir.join("summary.md");
-    write_scaffold_file(&summary_path, "", args.force, &mut created, &mut skipped)?;
-    let readme_path = context_dir.join("djinn-context.md");
-    write_scaffold_file(
-        &readme_path,
-        &session_context_readme(args.link_repo.as_ref(), &workspace),
-        args.force,
-        &mut created,
-        &mut skipped,
-    )?;
-
-    let repo_link = if args.link_repo.is_some() {
-        Some(link_repo_into_session_context(
-            &context_dir,
-            &workspace,
-            args.force,
-            &mut created,
-            &mut skipped,
-        )?)
-    } else {
-        None
-    };
-
-    let manifest_path = session_dir.join("djinn.toml");
-    let manifest = render_session_manifest(
-        &selection,
-        &model,
-        &workspace,
-        repo_link.as_ref(),
-        &config_report.checked_paths,
-    )?;
-    write_scaffold_file(
-        &manifest_path,
-        &manifest,
-        args.force,
-        &mut created,
-        &mut skipped,
-    )?;
-    let discovered_context = if args.link_repo.is_some() && !args.no_discover_context {
-        Some(discover_folder_session_context(&session_dir, false)?)
-    } else {
-        None
-    };
-    let buddy = if let Some(buddy_backend) = buddy_backend {
-        let runtime_path = session_dir.join("runtime/buddy.json");
-        let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-        let binding = ensure_buddy_session_binding(
-            buddy_backend,
-            BuddyBindingInput {
-                session_dir: session_dir.clone(),
-                title: None,
-                requested_workspace: Some(workspace.clone()),
-                previous_runtime,
-            },
-        )?;
-        Some(SessionInitBuddyReport {
-            buddy_session: binding.buddy_session,
-            repo_path: binding.repo_path.display().to_string(),
-            runtime_path: runtime_path.display().to_string(),
-        })
-    } else {
-        None
-    };
-
-    Ok(SessionInitReport {
-        session_dir: session_dir.display().to_string(),
-        manifest_path: manifest_path.display().to_string(),
-        request_path: request_path.display().to_string(),
-        summary_path: summary_path.display().to_string(),
-        context_dir: context_dir.display().to_string(),
-        turns_dir: turns_dir.display().to_string(),
-        profile: selection.profile,
-        agent: selection.agent_name,
-        model,
-        workspace: workspace.display().to_string(),
-        repo_link,
-        buddy,
-        discovered_context,
-        config_sources: config_report.checked_paths,
-        precedence: vec![
-            "global profile/config".to_string(),
-            "repo-local config/context".to_string(),
-            "session-local files".to_string(),
-        ],
-        created,
-        skipped,
-    })
-}
-
-fn validate_session_init_identity(
-    session_dir: &Path,
-    args: &SessionInitArgs,
-    workspace: &Path,
-    selection: &AgentRoleSelection,
-    model: &str,
-) -> Result<()> {
-    if args.force {
-        return Ok(());
-    }
-    let Some(existing) = read_folder_session_manifest(session_dir)? else {
-        return Ok(());
-    };
-    let mut conflicts = Vec::new();
-    push_session_init_conflict(
-        &mut conflicts,
-        "profile",
-        existing.profile.as_deref(),
-        Some(&selection.profile),
-    );
-    push_session_init_conflict(
-        &mut conflicts,
-        "agent",
-        existing.agent.as_deref(),
-        selection.agent_name.as_deref(),
-    );
-    push_session_init_conflict(
-        &mut conflicts,
-        "model",
-        existing.model.as_deref(),
-        Some(model),
-    );
-    push_session_init_conflict(
-        &mut conflicts,
-        "workspace",
-        existing.workspace.as_deref(),
-        Some(&workspace.display().to_string()),
-    );
-    if let Some(repo_path) = &existing.repo_path {
-        if args.link_repo.is_some() && repo_path != &workspace.display().to_string() {
-            conflicts.push(format!(
-                "repo path existing={} requested={}",
-                repo_path,
-                workspace.display()
-            ));
-        }
-    }
-    if conflicts.is_empty() {
-        return Ok(());
-    }
-    bail!(
-        "session folder already exists with different identity: {} ({}) (use --force to replace scaffolded metadata)",
-        session_dir.display(),
-        conflicts.join(", ")
-    )
-}
-
-fn push_session_init_conflict(
-    conflicts: &mut Vec<String>,
-    field: &str,
-    existing: Option<&str>,
-    requested: Option<&str>,
-) {
-    let existing = existing.map(str::trim).filter(|value| !value.is_empty());
-    let requested = requested.map(str::trim).filter(|value| !value.is_empty());
-    if let (Some(existing), Some(requested)) = (existing, requested) {
-        if existing != requested {
-            conflicts.push(format!("{field} existing={existing} requested={requested}"));
-        }
-    }
-}
-
 pub(crate) fn folder_session_display_name(name: &str) -> String {
     let stripped = name
         .split_once("-agt_")
@@ -6292,134 +6026,6 @@ pub(crate) fn compact_text_snippet(value: &str, max_chars: usize) -> String {
     truncate(&normalized, max_chars)
 }
 
-fn canonical_existing_dir(path: &Path, label: &str) -> Result<PathBuf> {
-    let canonical = path
-        .canonicalize()
-        .with_context(|| format!("resolving {label} {}", path.display()))?;
-    if !canonical.is_dir() {
-        bail!("{label} is not a directory: {}", canonical.display());
-    }
-    Ok(canonical)
-}
-
-fn write_scaffold_file(
-    path: &Path,
-    content: &str,
-    force: bool,
-    created: &mut Vec<String>,
-    skipped: &mut Vec<String>,
-) -> Result<()> {
-    if path.exists() && !force {
-        skipped.push(path.display().to_string());
-        return Ok(());
-    }
-    fs::write(path, content).with_context(|| format!("writing {}", path.display()))?;
-    created.push(path.display().to_string());
-    Ok(())
-}
-
-fn session_context_readme(link_repo: Option<&PathBuf>, workspace: &Path) -> String {
-    let mut output = String::new();
-    output.push_str("# Djinn session context\n\n");
-    output.push_str("Put durable working notes, decisions, and compacted evidence here. ");
-    output.push_str("Djinn treats this folder as session-local context and does not blindly ingest linked folders.\n\n");
-    output.push_str(
-        "Precedence: global profile/config < repo-local config/context < session-local files.\n",
-    );
-    if let Some(repo) = link_repo {
-        output.push_str(&format!(
-            "\nLinked repo requested: `{}`\nResolved workspace: `{}`\n",
-            repo.display(),
-            workspace.display()
-        ));
-    }
-    output
-}
-
-fn link_repo_into_session_context(
-    context_dir: &Path,
-    repo: &Path,
-    force: bool,
-    created: &mut Vec<String>,
-    skipped: &mut Vec<String>,
-) -> Result<SessionRepoLinkReport> {
-    let repo_name = repo
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .unwrap_or("repo");
-    let link_path = context_dir.join(repo_name);
-    if let Ok(metadata) = fs::symlink_metadata(&link_path) {
-        if metadata.file_type().is_symlink() {
-            if let Ok(existing_target) = fs::read_link(&link_path) {
-                let existing_target = if existing_target.is_absolute() {
-                    existing_target
-                } else {
-                    link_path
-                        .parent()
-                        .unwrap_or_else(|| Path::new("."))
-                        .join(existing_target)
-                };
-                if existing_target.canonicalize().ok().as_deref() == Some(repo) && !force {
-                    skipped.push(link_path.display().to_string());
-                    return Ok(SessionRepoLinkReport {
-                        path: link_path.display().to_string(),
-                        target: repo.display().to_string(),
-                    });
-                }
-            }
-            if force {
-                fs::remove_file(&link_path)
-                    .with_context(|| format!("removing symlink {}", link_path.display()))?;
-            } else {
-                bail!(
-                    "context link already exists and points elsewhere: {} (use --force to replace)",
-                    link_path.display()
-                );
-            }
-        } else if metadata.is_file() {
-            if force {
-                fs::remove_file(&link_path)
-                    .with_context(|| format!("removing file {}", link_path.display()))?;
-            } else {
-                bail!(
-                    "context path already exists: {} (use --force to replace files/symlinks)",
-                    link_path.display()
-                );
-            }
-        } else {
-            bail!(
-                "context path already exists and is not a symlink: {}",
-                link_path.display()
-            );
-        }
-    }
-    create_dir_symlink(repo, &link_path)?;
-    created.push(link_path.display().to_string());
-    Ok(SessionRepoLinkReport {
-        path: link_path.display().to_string(),
-        target: repo.display().to_string(),
-    })
-}
-
-#[cfg(unix)]
-fn create_dir_symlink(target: &Path, link: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(target, link)
-        .with_context(|| format!("linking {} -> {}", link.display(), target.display()))
-}
-
-#[cfg(windows)]
-fn create_dir_symlink(target: &Path, link: &Path) -> Result<()> {
-    std::os::windows::fs::symlink_dir(target, link)
-        .with_context(|| format!("linking {} -> {}", link.display(), target.display()))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn create_dir_symlink(_target: &Path, _link: &Path) -> Result<()> {
-    bail!("directory symlinks are not supported on this platform")
-}
-
 #[cfg(unix)]
 fn create_context_symlink(target: &Path, link: &Path) -> Result<()> {
     std::os::unix::fs::symlink(target, link)
@@ -6439,49 +6045,6 @@ fn create_context_symlink(target: &Path, link: &Path) -> Result<()> {
 #[cfg(not(any(unix, windows)))]
 fn create_context_symlink(_target: &Path, _link: &Path) -> Result<()> {
     bail!("context symlinks are not supported on this platform")
-}
-
-fn render_session_manifest(
-    selection: &AgentRoleSelection,
-    model: &str,
-    workspace: &Path,
-    repo_link: Option<&SessionRepoLinkReport>,
-    config_sources: &[String],
-) -> Result<String> {
-    let mut output = String::new();
-    output.push_str("version = 1\n");
-    output.push_str(&format!(
-        "created_at = {}\n",
-        toml_string(&chrono::Local::now().to_rfc3339())?
-    ));
-    output.push_str(&format!("profile = {}\n", toml_string(&selection.profile)?));
-    if let Some(agent_name) = &selection.agent_name {
-        output.push_str(&format!("agent = {}\n", toml_string(agent_name)?));
-    }
-    output.push_str(&format!("model = {}\n", toml_string(model)?));
-    output.push_str(&format!(
-        "workspace = {}\n\n",
-        toml_string(&workspace.display().to_string())?
-    ));
-    output.push_str("[context]\n");
-    output.push_str("path = \"context\"\n");
-    output.push_str(
-        "precedence = [\"global profile/config\", \"repo-local config/context\", \"session-local files\"]\n",
-    );
-    output.push_str(&format!(
-        "config_sources = [{}]\n",
-        config_sources
-            .iter()
-            .map(|source| toml_string(source))
-            .collect::<Result<Vec<_>>>()?
-            .join(", ")
-    ));
-    if let Some(repo_link) = repo_link {
-        output.push_str("\n[context.repo]\n");
-        output.push_str(&format!("path = {}\n", toml_string(&repo_link.target)?));
-        output.push_str(&format!("link = {}\n", toml_string(&repo_link.path)?));
-    }
-    Ok(output)
 }
 
 fn run_agents(args: AgentsArgs) -> Result<()> {
