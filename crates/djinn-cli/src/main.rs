@@ -25,11 +25,8 @@ use djinn_memory::{
     IdeaStore, JsonlAgentSessionStore, JsonlFileHistoryStore, MemoryInput, MemoryRecord,
     MemorySource, SuggestionInput, SuggestionRecord, SuggestionStore,
 };
-use djinn_skills::{
-    list_skills as discover_skills, read_skill_content, resolve_skill, SkillRecord, SkillRoot,
-    SkillStore,
-};
-use djinn_tools::ToolEntry;
+#[cfg(test)]
+use djinn_skills::SkillStore;
 use serde::Serialize;
 #[cfg(test)]
 use serde_json::Value;
@@ -88,7 +85,9 @@ mod session_tui;
 mod session_turns;
 mod session_watch;
 mod shell;
+mod skills_commands;
 mod text;
+mod tools_commands;
 mod tui_dashboard;
 use agent_commands::{
     agent_config_list, agent_config_show, agent_policy_audit, agent_policy_list,
@@ -155,7 +154,7 @@ use config_write::{
 };
 use copilot_auth::*;
 use doctor_commands::doctor_buddy;
-use editor::{open_editor_at, open_editor_path};
+use editor::open_editor_path;
 use model_completion::{complete_openai_messages_with_progress, resolve_openai_client};
 use model_resolution::*;
 use openai_auth::*;
@@ -296,9 +295,15 @@ use session_watch::session_watch;
 #[cfg(test)]
 use session_watch::{format_session_watch_snapshot, session_watch_snapshot_key};
 use shell::shell_quote;
+use skills_commands::{add_skill, list_skills, rm_skill, show_skill};
+pub(crate) use skills_commands::{open_skill_entry, skill_records, skill_store};
 pub(crate) use text::{
     ensure_trailing_newline, non_empty_string, plural_suffix, truncate, truncate_table_cell,
 };
+use tools_commands::{
+    index_tools, list_tools, open_tool, scan_tools_command, search_tools, show_tool,
+};
+pub(crate) use tools_commands::{open_tool_entry, scan_tools, tool_roots};
 #[cfg(test)]
 use tui_dashboard::dashboard_tab;
 use tui_dashboard::{default_dashboard_tui_args, run_tui};
@@ -2113,40 +2118,13 @@ fn run_clear(args: ClearArgs) -> Result<()> {
 
 fn run_scan(args: ScanArgs) -> Result<()> {
     match args.noun {
-        ScanNoun::Tools(scope) => {
-            let roots = tool_roots(scope.roots);
-            let entries = scan_tools(&roots)?;
-            println!(
-                "Scanned {} tools under {}",
-                entries.len(),
-                format_roots(&roots)
-            );
-            Ok(())
-        }
+        ScanNoun::Tools(scope) => scan_tools_command(scope),
     }
 }
 
 fn run_index(args: IndexArgs) -> Result<()> {
     match args.noun {
-        IndexNoun::Tools(args) => {
-            let roots = tool_roots(args.roots);
-            let root = roots
-                .first()
-                .cloned()
-                .unwrap_or_else(djinn_core::default_dotfiles_root);
-            let index_path = args
-                .index
-                .unwrap_or_else(|| djinn_core::default_index_path(&root));
-            let entries = scan_tools(&roots)?;
-            let changed = write_tools_index(&roots, &entries, &index_path)?;
-            let count = entries.len();
-            let status = if changed { "updated" } else { "unchanged" };
-            eprintln!(
-                "djinn index tools: {status} {} ({count} entries)",
-                index_path.display()
-            );
-            Ok(())
-        }
+        IndexNoun::Tools(args) => index_tools(args),
     }
 }
 
@@ -2839,29 +2817,6 @@ fn resolve_agent_workspace(path: Option<PathBuf>) -> Result<String> {
         .to_string())
 }
 
-fn list_tools(scope: ToolsScope) -> Result<()> {
-    let roots = tool_roots(scope.roots);
-    let entries = scan_tools(&roots)?;
-    if entries.is_empty() {
-        println!("Djinn found 0 tools under {}", format_roots(&roots));
-        return Ok(());
-    }
-    if output_format(scope.format, scope.json) == OutputFormat::Json {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
-    } else {
-        for entry in entries {
-            println!(
-                "{}\t{}:{}\t{}",
-                entry.name,
-                entry.path.display(),
-                entry.line,
-                entry.description
-            );
-        }
-    }
-    Ok(())
-}
-
 fn list_memories() -> Result<()> {
     let records = memory_store().list()?;
     if records.is_empty() {
@@ -2935,73 +2890,6 @@ fn list_suggestions() -> Result<()> {
         }
         println!("\nTotal: {} suggestions", records.len());
     }
-    Ok(())
-}
-
-fn list_skills(args: ListSkillsArgs) -> Result<()> {
-    let records = skill_records()?;
-    if output_format(args.format, args.json) == OutputFormat::Json {
-        println!("{}", serde_json::to_string_pretty(&records)?);
-    } else if records.is_empty() {
-        println!("No skills found.");
-        println!(
-            "Djinn-managed skills live under {}",
-            skill_store().managed_root().display()
-        );
-    } else {
-        for (idx, record) in records.iter().enumerate() {
-            println!(
-                "  {}. [{}] {}{}",
-                idx + 1,
-                record.name,
-                if record.description.is_empty() {
-                    "No description".to_string()
-                } else {
-                    record.description.clone()
-                },
-                format_skill_suffix(record)
-            );
-        }
-        println!("\nTotal: {} skills", records.len());
-    }
-    Ok(())
-}
-
-fn show_skill(args: ShowSkillArgs) -> Result<()> {
-    let records = skill_records()?;
-    let record = resolve_skill(&records, &args.name)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(record)?);
-        return Ok(());
-    }
-    println!("# {}\n", record.name);
-    if !record.description.is_empty() {
-        println!("{}\n", record.description);
-    }
-    println!("Source: {}", record.source);
-    println!("Managed: {}", if record.managed { "yes" } else { "no" });
-    println!("Path: {}", record.path.display());
-    println!("Root: {}", record.root.display());
-    println!("\n## SKILL.md\n");
-    println!("{}", read_skill_content(record)?);
-    Ok(())
-}
-
-fn add_skill(args: AddSkillArgs) -> Result<()> {
-    let record = skill_store().add(&args.name, args.description.as_deref(), args.force)?;
-    println!("Skill added [{}]: {}", record.name, record.path.display());
-    Ok(())
-}
-
-fn rm_skill(args: RmSkillArgs) -> Result<()> {
-    let store = skill_store();
-    let records = store.list()?;
-    let removed = store.remove(&records, &args.name)?;
-    println!(
-        "Skill removed [{}]: {}",
-        removed.name,
-        removed.path.display()
-    );
     Ok(())
 }
 
@@ -3550,50 +3438,6 @@ fn show_suggestion(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn show_tool(args: ToolLookupArgs) -> Result<()> {
-    let roots = tool_roots(args.roots);
-    let entries = scan_tools(&roots)?;
-    let entry = resolve_tool(&entries, &args.name)?;
-    if output_format(args.format, args.json) == OutputFormat::Json {
-        println!("{}", serde_json::to_string_pretty(entry)?);
-    } else {
-        println!("# {}\n", entry.name);
-        println!("{}\n", entry.description);
-        println!("Source: {}:{}\n", entry.path.display(), entry.line);
-        println!("## Preview\n");
-        println!("```text\n{}\n```", entry.preview);
-    }
-    Ok(())
-}
-
-fn search_tools(args: SearchToolsArgs) -> Result<()> {
-    let query = args.query.to_lowercase();
-    let roots = tool_roots(args.roots);
-    let matches = scan_tools(&roots)?
-        .into_iter()
-        .filter(|entry| {
-            entry.name.to_lowercase().contains(&query)
-                || entry.description.to_lowercase().contains(&query)
-                || entry.preview.to_lowercase().contains(&query)
-        })
-        .collect::<Vec<_>>();
-    if output_format(args.format, args.json) == OutputFormat::Json {
-        println!("{}", serde_json::to_string_pretty(&matches)?);
-    } else {
-        for entry in &matches {
-            println!(
-                "{}\t{}:{}\t{}",
-                entry.name,
-                entry.path.display(),
-                entry.line,
-                entry.description
-            );
-        }
-        println!("\nTotal: {} matching tools", matches.len());
-    }
-    Ok(())
-}
-
 fn search_memories(query: &str) -> Result<()> {
     let query = query.to_lowercase();
     let matches = memory_store()
@@ -3793,21 +3637,6 @@ exit "$REVIEW_STATUS"
     )
 }
 
-fn open_tool(args: OpenToolArgs) -> Result<()> {
-    let roots = tool_roots(args.roots);
-    let entries = scan_tools(&roots)?;
-    let entry = resolve_tool(&entries, &args.name)?;
-    open_tool_entry(entry, args.editor)
-}
-
-fn open_tool_entry(entry: &ToolEntry, editor: Option<String>) -> Result<()> {
-    open_editor_at(&entry.path, entry.line, editor)
-}
-
-fn open_skill_entry(entry: &SkillRecord, editor: Option<String>) -> Result<()> {
-    open_editor_at(&entry.path, 1, editor)
-}
-
 fn format_memory_review_prompt(
     memories: &[MemoryRecord],
     suggestions: &[SuggestionRecord],
@@ -3894,67 +3723,6 @@ fn format_memory_review_prompt(
         "## Required output format\n\nIf useful, create one or more suggestions with commands like:\n\n```bash\ndjinn add suggestion \"Create a skill to ...\" --target skill --rationale \"Based on memories X and Y ...\" --evidence \"...\" --source-memory MEMORY_ID\n```\n\nTargets may include: skill, action, idea, config, code, docs, cleanup, or other. If no suggestion is warranted, say `No suggestion warranted.`\n",
     );
     out
-}
-
-fn tool_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
-    if !roots.is_empty() {
-        return roots;
-    }
-    if let Ok(raw) = env::var("DJINN_TOOL_ROOTS") {
-        let parsed = env::split_paths(&raw).collect::<Vec<_>>();
-        if !parsed.is_empty() {
-            return parsed;
-        }
-    }
-    if let Ok(Some(ctx)) = context_store().active() {
-        if !ctx.roots.is_empty() {
-            return ctx.roots;
-        }
-    }
-    vec![djinn_core::default_dotfiles_root()]
-}
-
-fn scan_tools(roots: &[PathBuf]) -> Result<Vec<ToolEntry>> {
-    let mut all = Vec::new();
-    for root in roots {
-        all.extend(djinn_tools::scan(root, &djinn_tools::default_extensions())?);
-    }
-    all.sort_by(|left, right| {
-        left.name
-            .to_lowercase()
-            .cmp(&right.name.to_lowercase())
-            .then(left.path.cmp(&right.path))
-            .then(left.line.cmp(&right.line))
-    });
-    Ok(all)
-}
-
-fn resolve_tool<'a>(entries: &'a [ToolEntry], name: &str) -> Result<&'a ToolEntry> {
-    if let Some(entry) = entries.iter().find(|entry| entry.name == name) {
-        return Ok(entry);
-    }
-    if let Some(entry) = entries
-        .iter()
-        .find(|entry| entry.name.eq_ignore_ascii_case(name))
-    {
-        return Ok(entry);
-    }
-    let needle = name.to_lowercase();
-    let matches = entries
-        .iter()
-        .filter(|entry| entry.name.to_lowercase().contains(&needle))
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [entry] => Ok(entry),
-        [] => bail!("no tool named {name:?} found"),
-        many => {
-            eprintln!("multiple tools match {name:?}:");
-            for entry in many {
-                eprintln!("  - {} ({})", entry.name, entry.path.display());
-            }
-            bail!("tool name is ambiguous")
-        }
-    }
 }
 
 fn resolve_memory<'a>(records: &'a [MemoryRecord], id: &str) -> Result<&'a MemoryRecord> {
@@ -4254,14 +4022,6 @@ fn format_suggestion_suffix(record: &SuggestionRecord) -> String {
     }
 }
 
-fn format_skill_suffix(record: &SkillRecord) -> String {
-    let mut parts = vec![record.source.as_str()];
-    if record.managed {
-        parts.push("managed");
-    }
-    format!(" ({})", parts.join(", "))
-}
-
 fn format_context_suffix(record: &ContextRecord) -> String {
     let mut parts = Vec::new();
     if !record.memory_scope.trim().is_empty() {
@@ -4288,36 +4048,6 @@ fn output_format(format: OutputFormat, json: bool) -> OutputFormat {
     }
 }
 
-fn format_roots(roots: &[PathBuf]) -> String {
-    roots
-        .iter()
-        .map(|root| root.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn write_tools_index(roots: &[PathBuf], entries: &[ToolEntry], index_path: &Path) -> Result<bool> {
-    let index_entries = entries
-        .iter()
-        .map(|entry| djinn_core::IndexEntry {
-            name: entry.name.clone(),
-            description: entry.description.clone(),
-            path: entry.path.to_string_lossy().replace('\\', "/"),
-            line: entry.line,
-        })
-        .collect::<Vec<_>>();
-    let payload = djinn_core::IndexPayload {
-        schema_version: 1,
-        source: "djinn-rust-tool-scan".to_string(),
-        root: format_roots(roots),
-        count: index_entries.len(),
-        entries: index_entries,
-    };
-    let mut rendered = serde_json::to_vec_pretty(&payload)?;
-    rendered.push(b'\n');
-    djinn_core::write_if_changed(index_path, &rendered)
-}
-
 pub(crate) fn memory_store() -> djinn_memory::MemoryStore {
     djinn_memory::MemoryStore::default_in(&djinn_core::default_data_dir())
 }
@@ -4334,10 +4064,6 @@ fn suggestion_store() -> SuggestionStore {
     SuggestionStore::default_in(&djinn_core::default_data_dir())
 }
 
-pub(crate) fn skill_store() -> SkillStore {
-    SkillStore::default_in(&djinn_core::default_data_dir())
-}
-
 fn context_store() -> ContextStore {
     ContextStore::default_in(&djinn_core::default_data_dir())
 }
@@ -4348,23 +4074,6 @@ fn agent_session_store() -> JsonlAgentSessionStore {
 
 fn file_history_store() -> JsonlFileHistoryStore {
     JsonlFileHistoryStore::default_in(&djinn_core::default_data_dir())
-}
-
-fn skill_records() -> Result<Vec<SkillRecord>> {
-    let store = skill_store();
-    let mut roots = store.default_roots();
-    if let Some(ctx) = context_store().active()? {
-        for root in ctx.skill_roots {
-            if !roots.iter().any(|existing| existing.path == root) {
-                roots.push(SkillRoot {
-                    path: root,
-                    source: format!("ctx:{}", ctx.name),
-                    managed: false,
-                });
-            }
-        }
-    }
-    Ok(discover_skills(&roots)?)
 }
 
 #[cfg(test)]
