@@ -45,6 +45,7 @@ mod agent_session_meta;
 mod background_run;
 mod buddy;
 mod buddy_consolidate;
+mod config_commands;
 mod config_doctor;
 mod config_format;
 mod config_model;
@@ -130,25 +131,27 @@ use background_run::write_background_session_run_marker;
 use background_run::BackgroundRunStatus;
 use buddy::*;
 use buddy_consolidate::*;
+#[cfg(test)]
+use config_commands::validate_config_import_mode;
+use config_commands::{config_doctor, config_export, config_import, config_show};
 use config_doctor::*;
+#[cfg(test)]
 use config_format::{
     format_config_export_preview, format_config_export_write_report, format_config_import_preview,
     format_config_import_write_report,
 };
 use config_model::*;
 use config_native::*;
-use config_preview::{
-    copilot_config_export_preview, copilot_config_import_preview, opencode_config_export_preview,
-    opencode_config_import_preview,
-};
 #[cfg(test)]
 use config_preview::{
     copilot_config_export_preview_from_load_report, copilot_config_import_preview_from_values,
     opencode_config_export_preview_from_load_report, opencode_config_import_preview_from_values,
 };
-use config_write::{write_config_export_preview, write_config_import_preview};
 #[cfg(test)]
-use config_write::{write_djinn_config_file, write_json_config_file};
+use config_write::{
+    write_config_export_preview, write_config_import_preview, write_djinn_config_file,
+    write_json_config_file,
+};
 use copilot_auth::*;
 use editor::{open_editor_at, open_editor_path};
 use model_completion::{complete_openai_messages_with_progress, resolve_openai_client};
@@ -2190,156 +2193,6 @@ fn auth_login(args: AuthLoginArgs) -> Result<()> {
             run_openai_login_method(args.method.unwrap_or_else(prompt_openai_login_method))
         }
     }
-}
-
-fn config_show(args: ConfigShowArgs) -> Result<()> {
-    let report = load_djinn_config(args.path)?;
-    print!(
-        "{}",
-        format_djinn_config_load_report(&report, output_format(args.format, args.json))?
-    );
-    Ok(())
-}
-
-fn config_import(args: ConfigImportArgs) -> Result<()> {
-    match args.source {
-        ConfigImportSource::Copilot(args) => config_import_copilot(args),
-        ConfigImportSource::Opencode(args) => config_import_opencode(args),
-    }
-}
-
-fn config_export(args: ConfigExportArgs) -> Result<()> {
-    match args.target {
-        ConfigExportTarget::Copilot(args) => config_export_copilot(args),
-        ConfigExportTarget::Opencode(args) => config_export_opencode(args),
-    }
-}
-
-fn config_export_copilot(args: ConfigExportCopilotArgs) -> Result<()> {
-    match (args.dry_run, args.write) {
-        (true, true) => bail!("choose either --dry-run or --write, not both"),
-        (false, false) => bail!("config export is safe by default; pass --dry-run to preview or --write to create a Copilot config file"),
-        (true, false) => {
-            let preview = copilot_config_export_preview(args.path)?;
-            print!(
-                "{}",
-                format_config_export_preview(&preview, output_format(args.format, args.json))?
-            );
-        }
-        (false, true) => {
-            let preview = copilot_config_export_preview(args.path)?;
-            let output = args.output.unwrap_or_else(default_copilot_config_path);
-            let report = write_config_export_preview(&preview, &output, args.force)?;
-            print!(
-                "{}",
-                format_config_export_write_report(&report, output_format(args.format, args.json))?
-            );
-        }
-    }
-    Ok(())
-}
-
-fn config_export_opencode(args: ConfigExportOpencodeArgs) -> Result<()> {
-    match (args.dry_run, args.write) {
-        (true, true) => bail!("choose either --dry-run or --write, not both"),
-        (false, false) => bail!("config export is safe by default; pass --dry-run to preview or --write to create an OpenCode config file"),
-        (true, false) => {
-            let preview = opencode_config_export_preview(args.path)?;
-            print!(
-                "{}",
-                format_config_export_preview(&preview, output_format(args.format, args.json))?
-            );
-        }
-        (false, true) => {
-            let preview = opencode_config_export_preview(args.path)?;
-            let output = args.output.unwrap_or_else(default_opencode_config_path);
-            let report = write_config_export_preview(&preview, &output, args.force)?;
-            print!(
-                "{}",
-                format_config_export_write_report(&report, output_format(args.format, args.json))?
-            );
-        }
-    }
-    Ok(())
-}
-
-fn config_import_opencode(args: ConfigImportOpencodeArgs) -> Result<()> {
-    validate_config_import_mode(args.dry_run, args.write, args.merge, args.force)?;
-    match (args.dry_run, args.write) {
-        (true, true) => bail!("choose either --dry-run or --write, not both"),
-        (false, false) => bail!("config import is safe by default; pass --dry-run to preview or --write to create a Djinn config file"),
-        (true, false) => {
-            let preview = opencode_config_import_preview(args.path)?;
-            print!(
-                "{}",
-                format_config_import_preview(&preview, output_format(args.format, args.json))?
-            );
-        }
-        (false, true) => {
-            let preview = opencode_config_import_preview(args.path)?;
-            let output = args.output.unwrap_or_else(default_djinn_config_path);
-            let report = write_config_import_preview(&preview, &output, args.force)?;
-            print!(
-                "{}",
-                format_config_import_write_report(&report, output_format(args.format, args.json))?
-            );
-        }
-    }
-    Ok(())
-}
-
-fn config_import_copilot(args: ConfigImportCopilotArgs) -> Result<()> {
-    validate_config_import_mode(args.dry_run, args.write, args.merge, args.force)?;
-    match (args.dry_run, args.write) {
-        (true, true) => bail!("choose either --dry-run or --write, not both"),
-        (false, false) => bail!("config import is safe by default; pass --dry-run to preview or --write to create a Djinn config file"),
-        (true, false) => {
-            let preview = copilot_config_import_preview(args.path)?;
-            print!(
-                "{}",
-                format_config_import_preview(&preview, output_format(args.format, args.json))?
-            );
-        }
-        (false, true) => {
-            let preview = copilot_config_import_preview(args.path)?;
-            let output = args.output.unwrap_or_else(default_djinn_config_path);
-            let report = write_config_import_preview(&preview, &output, args.force)?;
-            print!(
-                "{}",
-                format_config_import_write_report(&report, output_format(args.format, args.json))?
-            );
-        }
-    }
-    Ok(())
-}
-
-fn validate_config_import_mode(dry_run: bool, write: bool, merge: bool, force: bool) -> Result<()> {
-    if dry_run && write {
-        bail!("choose either --dry-run or --write, not both");
-    }
-    if merge && !write {
-        bail!("--merge is only meaningful with --write");
-    }
-    if merge && force {
-        bail!("choose either --merge or --force, not both");
-    }
-    if !dry_run && !write {
-        bail!("config import is safe by default; pass --dry-run to preview or --write to create a Djinn config file");
-    }
-    Ok(())
-}
-
-fn config_doctor(args: ConfigDoctorArgs) -> Result<()> {
-    let report = match args.source {
-        ConfigSource::Copilot => copilot_config_doctor(args.path)?,
-        ConfigSource::Djinn => djinn_config_doctor(args.path)?,
-        ConfigSource::Opencode => opencode_config_doctor(args.path)?,
-    };
-    print!(
-        "{}",
-        format_config_doctor_report(&report, output_format(args.format, args.json))?
-    );
-    Ok(())
 }
 
 fn push_unique_string(values: &mut Vec<String>, value: &str) {
