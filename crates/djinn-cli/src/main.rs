@@ -57,6 +57,7 @@ mod session_events;
 mod session_init;
 mod session_list;
 mod session_manifest;
+mod session_native;
 mod session_projection;
 mod session_reference;
 mod session_registry;
@@ -134,6 +135,10 @@ pub(crate) use session_manifest::{
     read_folder_session_manifest, session_id_from_session_dir, session_manifest_workspace_path,
     toml_string, write_agent_session_toml, FolderSessionManifest,
 };
+pub(crate) use session_native::{
+    agent_session_store_for_folder_session, folder_agent_session_store,
+    load_folder_native_agent_session, relocate_agent_session_into_folder,
+};
 #[cfg(test)]
 use session_projection::write_agent_session_native_jsonl;
 pub(crate) use session_projection::{
@@ -194,7 +199,6 @@ const FOLDER_SESSION_CONTEXT_MAX_FILES: usize = 16;
 pub(crate) const FOLDER_SESSION_COMPACT_SNIPPET_CHARS: usize = 1_200;
 pub(crate) const FOLDER_SESSION_COMPACT_START_MARKER: &str = "<!-- djinn:generated:start -->";
 pub(crate) const FOLDER_SESSION_COMPACT_END_MARKER: &str = "<!-- djinn:generated:end -->";
-const FOLDER_NATIVE_SESSION_DIR: &str = ".djinn";
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -5702,74 +5706,6 @@ fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
         print!("{}", format_session_consolidate_report(&report));
     }
     Ok(())
-}
-
-pub(crate) fn load_folder_native_agent_session(
-    session_dir: &Path,
-    id: &AgentSessionId,
-) -> Option<AgentSession> {
-    folder_agent_session_store(session_dir)
-        .load_session(id)
-        .ok()
-        .or_else(|| agent_session_store().load_session(id).ok())
-}
-
-fn agent_session_store_for_folder_session(
-    session_dir: &Path,
-    id: &AgentSessionId,
-) -> JsonlAgentSessionStore {
-    let folder_store = folder_agent_session_store(session_dir);
-    if folder_store.load_session(id).is_ok() {
-        folder_store
-    } else {
-        agent_session_store()
-    }
-}
-
-fn relocate_agent_session_into_folder(
-    source_store: &JsonlAgentSessionStore,
-    session_dir: &Path,
-    id: &AgentSessionId,
-) -> Result<JsonlAgentSessionStore> {
-    let folder_store = folder_agent_session_store(session_dir);
-    let target_path = folder_store.session_file_path(id);
-    if target_path.exists() {
-        return Ok(folder_store);
-    }
-
-    let source_path = source_store.session_file_path(id);
-    if !source_path.exists() {
-        source_store
-            .load_session(id)
-            .with_context(|| format!("loading agent session {id} before moving into folder"))?;
-        bail!(
-            "agent session {id} exists but its JSONL path is missing: {}",
-            source_path.display()
-        );
-    }
-
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating native session directory {}", parent.display()))?;
-    }
-    fs::rename(&source_path, &target_path).or_else(|rename_error| {
-        fs::copy(&source_path, &target_path).with_context(|| {
-            format!(
-                "copying agent session {} to {} after rename failed: {rename_error}",
-                source_path.display(),
-                target_path.display()
-            )
-        })?;
-        fs::remove_file(&source_path).with_context(|| {
-            format!(
-                "removing original agent session {} after copying to {}",
-                source_path.display(),
-                target_path.display()
-            )
-        })?;
-        Ok::<(), anyhow::Error>(())
-    })?;
-    Ok(folder_store)
 }
 
 fn non_empty_string(value: &str) -> Option<String> {
@@ -12174,10 +12110,6 @@ fn context_store() -> ContextStore {
 
 fn agent_session_store() -> JsonlAgentSessionStore {
     JsonlAgentSessionStore::default_in(&djinn_core::default_data_dir())
-}
-
-fn folder_agent_session_store(session_dir: &Path) -> JsonlAgentSessionStore {
-    JsonlAgentSessionStore::new(session_dir.join(FOLDER_NATIVE_SESSION_DIR))
 }
 
 fn file_history_store() -> JsonlFileHistoryStore {
