@@ -192,3 +192,142 @@ fn markdown_quote_block(value: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_projection::project_agent_session_dir;
+    use djinn_memory::{
+        AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId, AgentSessionMeta,
+    };
+
+    #[test]
+    fn session_compact_writes_deterministic_turn_digest_with_evidence_links() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-compact-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let turn = dir.join("turns/20260727T120000-1");
+        fs::create_dir_all(&turn).unwrap();
+        fs::write(turn.join("request.md"), "Decide storage shape\n\nDetails").unwrap();
+        fs::write(
+            turn.join("response.md"),
+            "Use context for durable notes and turns for evidence.\n",
+        )
+        .unwrap();
+
+        let report = compact_folder_session(&dir, None).unwrap();
+        let compacted = fs::read_to_string(dir.join("context/compacted.md")).unwrap();
+
+        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.turns[0].id, "20260727T120000-1");
+        assert!(compacted.contains("# Compacted session context"));
+        assert!(compacted.contains("## User notes"));
+        assert!(compacted.contains(FOLDER_SESSION_COMPACT_START_MARKER));
+        assert!(compacted.contains(FOLDER_SESSION_COMPACT_END_MARKER));
+        assert!(compacted.contains("### 20260727T120000-1"));
+        assert!(compacted.contains("> Decide storage shape"));
+        assert!(compacted.contains("> Use context for durable notes"));
+        assert!(compacted.contains("[request](../turns/20260727T120000-1/request.md)"));
+        assert!(compacted.contains("[response](../turns/20260727T120000-1/response.md)"));
+        assert!(!dir.join("logs/transcript.md").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_compact_reads_event_turns_when_turn_projection_is_absent() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-compact-events-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_compact_events"),
+            meta: AgentSessionMeta {
+                title: "Compact events".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "Use events for history".to_string(),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "Keep turns as projection only".to_string(),
+                }),
+            ],
+        };
+        project_agent_session_dir(
+            &dir,
+            &session,
+            "Use events for history",
+            "Keep turns as projection only",
+        )
+        .unwrap();
+
+        let report = compact_folder_session(&dir, None).unwrap();
+        let compacted = fs::read_to_string(dir.join("context/compacted.md")).unwrap();
+
+        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.turns[0].id, "event-turn-0001");
+        assert!(compacted.contains("### event-turn-0001"));
+        assert!(compacted.contains("> Use events for history"));
+        assert!(compacted.contains("> Keep turns as projection only"));
+        assert!(compacted.contains("[request](../events.jsonl)"));
+        assert!(!dir.join("turns").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_compact_replaces_generated_block_and_preserves_user_notes() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-compact-preserve-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let turn = dir.join("turns/20260727T120000-1");
+        let context = dir.join("context");
+        fs::create_dir_all(&turn).unwrap();
+        fs::create_dir_all(&context).unwrap();
+        fs::write(turn.join("request.md"), "Initial request\n").unwrap();
+        fs::write(turn.join("response.md"), "Fresh response\n").unwrap();
+        fs::write(
+            context.join("compacted.md"),
+            format!(
+                "# Compacted session context\n\n## User notes\n\nKeep this decision.\n\n## Generated digest\n\n{FOLDER_SESSION_COMPACT_START_MARKER}\nOld generated response\n{FOLDER_SESSION_COMPACT_END_MARKER}\n\n## User appendix\n\nKeep appendix.\n"
+            ),
+        )
+        .unwrap();
+
+        compact_folder_session(&dir, None).unwrap();
+        let compacted = fs::read_to_string(context.join("compacted.md")).unwrap();
+
+        assert!(compacted.contains("Keep this decision."));
+        assert!(compacted.contains("Keep appendix."));
+        assert!(compacted.contains("> Fresh response"));
+        assert!(!compacted.contains("Old generated response"));
+        assert_eq!(
+            compacted
+                .matches(FOLDER_SESSION_COMPACT_START_MARKER)
+                .count(),
+            1
+        );
+        assert_eq!(
+            compacted.matches(FOLDER_SESSION_COMPACT_END_MARKER).count(),
+            1
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}

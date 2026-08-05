@@ -462,6 +462,11 @@ pub(crate) fn compact_session_list_datetime(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_session_meta::append_agent_session_lifecycle_event;
+    use crate::session_native::folder_agent_session_store;
+    use djinn_memory::{
+        AgentSessionExecutionMode, AgentSessionLifecycleState, AgentSessionMeta, AgentSessionStore,
+    };
 
     #[test]
     fn session_list_datetime_compaction_removes_fractional_seconds() {
@@ -477,5 +482,239 @@ mod tests {
             parse_session_list_datetime_ms("2026-07-27T16:34:56.123Z"),
             Some(1_785_170_096_123)
         );
+    }
+
+    #[test]
+    fn folder_session_ls_scans_cache_root_without_external_index() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-ls-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        let gamma = root.join("gamma");
+        let delta = root.join("delta");
+        let long = root.join("session-agt_1785201896467199000_123_0");
+        fs::create_dir_all(alpha.join("turns/turn-a")).unwrap();
+        fs::create_dir_all(beta.join("turns")).unwrap();
+        fs::create_dir_all(gamma.join("turns/turn-g")).unwrap();
+        fs::create_dir_all(delta.join("turns/turn-d")).unwrap();
+        fs::create_dir_all(long.join("turns/turn-long")).unwrap();
+        fs::write(
+            alpha.join("djinn.toml"),
+            "session_id = \"agt_alpha\"\ncreated_at = \"2026-07-27T12:34:56.123-04:00\"\nworkspace = \"/tmp/workspace\"\n\n[context.repo]\npath = \"/tmp/repo-b\"\n",
+        )
+        .unwrap();
+        fs::write(alpha.join("request.md"), "request\n").unwrap();
+        fs::write(alpha.join("summary.md"), "summary\n").unwrap();
+        fs::write(alpha.join("turns/turn-a/response.md"), "response\n").unwrap();
+        fs::create_dir_all(alpha.join("runtime")).unwrap();
+        fs::write(
+            alpha.join("runtime/buddy.json"),
+            r#"{
+  "buddy_session": "bud_alpha",
+  "command": "buddy-dev",
+  "last_run_at": "2026-08-01T12:00:00Z",
+  "last_prompt_chars": 7,
+  "last_response_chars": 8
+}
+"#,
+        )
+        .unwrap();
+        let alpha_store = folder_agent_session_store(&alpha);
+        let alpha_id = alpha_store
+            .create_session(AgentSessionMeta {
+                title: "Alpha".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "test".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        fs::write(
+            alpha.join("djinn.toml"),
+            format!(
+                "session_id = \"{}\"\ncreated_at = \"2026-07-27T12:34:56.123-04:00\"\nworkspace = \"/tmp/workspace\"\n\n[context.repo]\npath = \"/tmp/repo-b\"\n",
+                alpha_id
+            ),
+        )
+        .unwrap();
+        append_agent_session_lifecycle_event(
+            &alpha_store,
+            &alpha_id,
+            AgentSessionLifecycleState::Running,
+            AgentSessionExecutionMode::Background,
+            "test running",
+            None,
+        )
+        .unwrap();
+        fs::write(
+            gamma.join("djinn.toml"),
+            "created_at = \"2026-07-28T12:34:56.123-04:00\"\n\n[context.repo]\npath = \"/tmp/repo-a\"\n",
+        )
+        .unwrap();
+        fs::write(gamma.join("summary.md"), "newer repo-a summary\n").unwrap();
+        fs::write(gamma.join("turns/turn-g/request.md"), "gamma request\n").unwrap();
+        fs::write(
+            gamma.join("turns/turn-g/response.md"),
+            "newer repo-a summary\n",
+        )
+        .unwrap();
+        fs::write(
+            gamma.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"gamma request\"}\n{\"type\":\"assistant_message\",\"content\":\"newer repo-a summary\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            delta.join("djinn.toml"),
+            "created_at = \"2026-07-27T12:34:56.123-04:00\"\n\n[context.repo]\npath = \"/tmp/repo-a\"\n",
+        )
+        .unwrap();
+        fs::write(delta.join("summary.md"), "older repo-a summary\n").unwrap();
+        fs::write(
+            long.join("djinn.toml"),
+            "created_at = \"2026-07-27T11:34:56.123-04:00\"\n\n[context.repo]\npath = \"/tmp/repo-a\"\n",
+        )
+        .unwrap();
+        fs::write(long.join("summary.md"), "long folder summary\n").unwrap();
+
+        let report = list_folder_sessions_in_root(&root, None).unwrap();
+        let text = format_folder_session_ls(&report);
+
+        assert_eq!(report.sessions.len(), 5);
+        assert_eq!(
+            report
+                .sessions
+                .iter()
+                .map(|session| session.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "gamma",
+                "delta",
+                "session-agt_1785201896467199000_123_0",
+                "alpha",
+                "beta"
+            ]
+        );
+        assert_eq!(report.sessions[2].display_name, "session");
+        assert_eq!(
+            report.sessions[2].reference_name,
+            folder_session_reference_name("session-agt_1785201896467199000_123_0")
+        );
+        assert_eq!(
+            report.sessions[3].session_id.as_deref(),
+            Some(alpha_id.as_str())
+        );
+        assert!(report.sessions[3].native_session_exists);
+        assert_eq!(report.sessions[3].lifecycle.state, "running");
+        assert_eq!(
+            report.sessions[3].lifecycle.mode.as_deref(),
+            Some("background")
+        );
+        assert_eq!(
+            report.sessions[3].latest_turn.as_ref().unwrap().id,
+            "turn-a"
+        );
+        assert_eq!(
+            report.sessions[3].created_at.as_deref(),
+            non_empty_string(&alpha_store.load_session(&alpha_id).unwrap().meta.created_at)
+                .as_deref()
+        );
+        assert_eq!(report.sessions[3].turn_count, 1);
+        assert_eq!(
+            report.sessions[3]
+                .buddy
+                .as_ref()
+                .and_then(|buddy| buddy.buddy_session.as_deref()),
+            Some("bud_alpha")
+        );
+        assert_eq!(
+            report.sessions[3]
+                .buddy
+                .as_ref()
+                .and_then(|buddy| buddy.command.as_deref()),
+            Some("buddy-dev")
+        );
+        assert!(report.sessions[0].event_health.ready);
+        assert_eq!(report.sessions[0].event_health.event_turn_count, 1);
+        assert!(!report.sessions[3].event_health.ready);
+        assert!(report.sessions[3].request_md);
+        assert!(report.sessions[3].summary_md);
+        assert_eq!(
+            report.sessions[0].summary_preview.as_deref(),
+            Some("newer repo-a summary")
+        );
+        assert_eq!(report.groups.len(), 3);
+        assert_eq!(report.groups[0].repo, "repo-a");
+        assert_eq!(
+            report.groups[0]
+                .sessions
+                .iter()
+                .map(|session| session.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gamma", "delta", "session-agt_1785201896467199000_123_0"]
+        );
+        assert_eq!(report.groups[1].repo, "repo-b");
+        assert_eq!(report.groups[2].repo, "-");
+        assert!(!report.sessions[4].manifest_exists);
+        assert!(text.contains("Cache folder sessions:"));
+        assert!(text.contains("Repo: repo-a"));
+        assert!(text.contains("Repo: repo-b"));
+        assert!(text.contains("Repo: -"));
+        assert!(text.contains("UPDATED"));
+        assert!(text.contains("STATE"));
+        assert!(text.contains("BUDDY"));
+        assert!(!text.contains("TURNS"));
+        assert!(!text.contains("EVENTS"));
+        assert!(text.contains("bud_alpha"));
+        assert!(!text.contains("ready:1/2"));
+        assert!(text.contains("running/bac…"));
+        assert!(text.contains("alpha"));
+        assert!(text.contains("2026-07-27T11:34:56…"));
+        assert!(text.contains(&folder_session_reference_name(
+            "session-agt_1785201896467199000_123_0"
+        )));
+        assert!(text.contains("long folder summary"));
+        assert!(!text.contains("session-agt_1785201896467199000"));
+        assert!(text.contains("2026-07-27T12:34:56…"));
+        assert!(text.contains("beta (no manifest)"));
+        assert!(text.contains("newer repo-a summary"));
+        assert!(!text.contains("native: agt_alpha"));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["sessions"][3]["lifecycle"]["state"], "running");
+        assert_eq!(json["sessions"][0]["event_health"]["event_turn_count"], 1);
+        assert_eq!(json["sessions"][3]["turn_count"], 1);
+        assert_eq!(json["sessions"][3]["buddy"]["buddy_session"], "bud_alpha");
+        assert_eq!(json["sessions"][3]["buddy"]["command"], "buddy-dev");
+        assert_eq!(json["sessions"][3]["latest_turn"]["id"], "turn-a");
+        assert_eq!(json["groups"][0]["repo"], "repo-a");
+        assert_eq!(json["groups"][0]["sessions"][0]["name"], "gamma");
+        assert_eq!(
+            json["groups"][1]["sessions"][0]["lifecycle"]["state"],
+            "running"
+        );
+        assert_eq!(
+            json["groups"][1]["sessions"][0]["lifecycle"]["mode"],
+            "background"
+        );
+        assert_eq!(
+            json["groups"][1]["sessions"][0]["buddy"]["buddy_session"],
+            "bud_alpha"
+        );
+        assert_eq!(json["groups"][0]["sessions"][2]["display_name"], "session");
+        assert_eq!(
+            json["groups"][0]["sessions"][2]["reference_name"],
+            folder_session_reference_name("session-agt_1785201896467199000_123_0")
+        );
+
+        let limited = list_folder_sessions_in_root(&root, Some(1)).unwrap();
+        assert_eq!(limited.sessions.len(), 1);
+        assert_eq!(limited.sessions[0].name, "gamma");
+        assert_eq!(limited.groups.len(), 1);
+        assert_eq!(limited.groups[0].repo, "repo-a");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

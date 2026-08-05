@@ -1230,3 +1230,400 @@ pub(crate) fn format_session_project_events_report(report: &SessionProjectEvents
     lines.push(String::new());
     lines.join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use djinn_memory::{
+        AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId, AgentSessionMeta,
+    };
+
+    #[test]
+    fn session_validate_events_reports_event_turn_summary_agreement() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-validate-events-ok-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_validate_events_ok"),
+            meta: AgentSessionMeta {
+                title: "Validate events".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "djinn-agent".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "question".to_string(),
+                }),
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "answer".to_string(),
+                }),
+            ],
+        };
+        crate::session_projection::project_agent_session_dir(&dir, &session, "question", "answer")
+            .unwrap();
+
+        let report = validate_folder_session_events(&dir).unwrap();
+        let text = format_session_validate_events_report(&report);
+
+        assert!(report.all_valid);
+        assert_eq!(report.event_count, 2);
+        assert_eq!(report.event_turn_count, 1);
+        assert_eq!(report.turn_count, 0);
+        assert_eq!(report.root_summary_matches_latest_turn, Some(true));
+        assert!(text.contains("status: valid"));
+        assert!(text.contains("issues: none"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_validate_events_reports_mismatched_turn_and_summary() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-validate-events-mismatch-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let turn_dir = dir.join("turns/turn-1");
+        fs::create_dir_all(&turn_dir).unwrap();
+        fs::write(turn_dir.join("request.md"), "question\n").unwrap();
+        fs::write(turn_dir.join("response.md"), "different answer\n").unwrap();
+        fs::write(dir.join("summary.md"), "stale summary\n").unwrap();
+        fs::write(
+            dir.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"question\"}\n{\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+        )
+        .unwrap();
+
+        let report = validate_folder_session_events(&dir).unwrap();
+        let codes = report
+            .issues
+            .iter()
+            .map(|issue| issue.code.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(!report.all_valid);
+        assert_eq!(report.event_turn_count, 1);
+        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.root_summary_matches_latest_turn, Some(false));
+        assert!(codes.contains(&"turn_response_mismatch"));
+        assert!(codes.contains(&"root_summary_mismatch"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_validate_events_reports_duplicate_event_ids() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-validate-events-duplicate-id-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            dir.join("events.jsonl"),
+            concat!(
+                "{\"event_id\":\"buddy:user_message:msg_1\",\"type\":\"user_message\",\"content\":\"question\"}\n",
+                "{\"event_id\":\"buddy:assistant_message:msg_2\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+                "{\"event_id\":\"buddy:user_message:msg_1\",\"type\":\"checkpoint\",\"label\":\"duplicate envelope\"}\n",
+            ),
+        )
+        .unwrap();
+
+        let report = validate_folder_session_events(&dir).unwrap();
+
+        assert!(!report.all_valid);
+        assert_eq!(report.event_turn_count, 1);
+        assert_eq!(report.root_summary_matches_latest_turn, Some(true));
+        let duplicate = report
+            .issues
+            .iter()
+            .find(|issue| issue.code == "duplicate_event_id")
+            .expect("expected duplicate_event_id issue");
+        assert_eq!(duplicate.line, Some(3));
+        assert!(duplicate.message.contains("duplicates line 1"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_events_health_filters_duplicate_event_ids() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-events-health-duplicate-id-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let ok = root.join("ok-session");
+        let duplicate = root.join("duplicate-session");
+        fs::create_dir_all(&ok).unwrap();
+        fs::create_dir_all(&duplicate).unwrap();
+        fs::write(ok.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            ok.join("events.jsonl"),
+            concat!(
+                "{\"event_id\":\"buddy:user_message:msg_ok_1\",\"type\":\"user_message\",\"content\":\"question\"}\n",
+                "{\"event_id\":\"buddy:assistant_message:msg_ok_2\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+            ),
+        )
+        .unwrap();
+        fs::write(duplicate.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            duplicate.join("events.jsonl"),
+            concat!(
+                "{\"event_id\":\"buddy:user_message:msg_dup\",\"type\":\"user_message\",\"content\":\"question\"}\n",
+                "{\"event_id\":\"buddy:assistant_message:msg_dup_reply\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+                "{\"event_id\":\"buddy:user_message:msg_dup\",\"type\":\"checkpoint\",\"label\":\"duplicate\"}\n",
+            ),
+        )
+        .unwrap();
+
+        let report =
+            event_health_report_for_folder_session_root(&root, None, Some("duplicate_event_id"))
+                .unwrap();
+        let text = format_event_health_report(&report);
+
+        assert_eq!(report.total, 1);
+        assert_eq!(report.not_ready, 1);
+        assert_eq!(report.sessions[0].name, "duplicate-session");
+        assert!(report.sessions[0]
+            .issue_codes
+            .contains(&"duplicate_event_id".to_string()));
+        assert!(text.contains("filter: duplicate_event_id"));
+        assert!(text.contains("duplicate_event_id"));
+        assert!(!text.contains("ok-session"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_project_events_renders_dry_run_turn_tree() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-project-events-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let turn_dir = dir.join("turns/existing-turn");
+        fs::create_dir_all(&turn_dir).unwrap();
+        fs::write(turn_dir.join("request.md"), "question\n").unwrap();
+        fs::write(turn_dir.join("response.md"), "old answer\n").unwrap();
+        fs::write(dir.join("summary.md"), "old answer\n").unwrap();
+        fs::write(
+            dir.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"question\"}\n{\"type\":\"assistant_message\",\"content\":\"new answer\"}\n{\"type\":\"user_message\",\"content\":\"follow-up\"}\n{\"type\":\"assistant_message\",\"content\":\"follow-up answer\"}\n",
+        )
+        .unwrap();
+
+        let report = project_folder_session_events(&dir).unwrap();
+        let text = format_session_project_events_report(&report);
+
+        assert!(!report.writes);
+        assert_eq!(report.projected_turn_count, 2);
+        assert_eq!(report.existing_turn_count, 1);
+        assert_eq!(report.turns[0].id, "existing-turn");
+        assert_eq!(report.turns[0].request_state, "matches");
+        assert_eq!(report.turns[0].response_state, "would_update");
+        assert_eq!(report.turns[1].id, "event-turn-0002");
+        assert_eq!(report.turns[1].request_state, "would_create");
+        assert_eq!(report.summary.as_ref().unwrap().state, "would_update");
+        assert!(text.contains("writes: no"));
+        assert!(text.contains("event-turn-0002"));
+        assert!(text.contains("summary.md:"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_events_write_rebuilds_turns_and_preserves_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-events-write-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let turn_dir = dir.join("turns/existing-turn");
+        fs::create_dir_all(&turn_dir).unwrap();
+        fs::write(turn_dir.join("request.md"), "old question\n").unwrap();
+        fs::write(turn_dir.join("response.md"), "old answer\n").unwrap();
+        fs::write(dir.join("summary.md"), "old answer\n").unwrap();
+        fs::write(
+            dir.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"new question\"}\n{\"type\":\"assistant_message\",\"content\":\"new answer\"}\n",
+        )
+        .unwrap();
+
+        let report = rebuild_folder_session_from_events(&dir).unwrap();
+        let backup_dir = PathBuf::from(report.backup_dir.as_ref().unwrap());
+
+        assert!(report.writes);
+        assert_eq!(report.projected_turn_count, 1);
+        assert_eq!(report.turns[0].request_state, "matches");
+        assert_eq!(report.turns[0].response_state, "matches");
+        assert_eq!(
+            fs::read_to_string(dir.join("turns/existing-turn/request.md")).unwrap(),
+            "new question\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("turns/existing-turn/response.md")).unwrap(),
+            "new answer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("summary.md")).unwrap(),
+            "new answer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(backup_dir.join("turns/existing-turn/response.md")).unwrap(),
+            "old answer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(backup_dir.join("summary.md")).unwrap(),
+            "old answer\n"
+        );
+        assert!(backup_dir.join("backup.toml").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_events_restore_rebuild_backup_round_trips_previous_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-events-restore-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let turn_dir = dir.join("turns/original-turn");
+        fs::create_dir_all(&turn_dir).unwrap();
+        fs::write(turn_dir.join("request.md"), "original question\n").unwrap();
+        fs::write(turn_dir.join("response.md"), "original answer\n").unwrap();
+        fs::write(dir.join("summary.md"), "original answer\n").unwrap();
+        fs::write(
+            dir.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"new question\"}\n{\"type\":\"assistant_message\",\"content\":\"new answer\"}\n",
+        )
+        .unwrap();
+
+        let rebuild = rebuild_folder_session_from_events(&dir).unwrap();
+        let backup_dir = PathBuf::from(rebuild.backup_dir.unwrap());
+        let backup_name = backup_dir.file_name().unwrap().to_os_string();
+
+        let preview = restore_folder_session_event_backup(&dir, Path::new(&backup_name), false)
+            .expect("preview restore backup");
+        assert!(!preview.writes);
+        assert_eq!(preview.restored_turn_count, 1);
+        assert!(preview.safety_backup_dir.is_none());
+        assert_eq!(
+            fs::read_to_string(dir.join("summary.md")).unwrap(),
+            "new answer\n"
+        );
+
+        let restored = restore_folder_session_event_backup(&dir, Path::new(&backup_name), true)
+            .expect("restore backup");
+        assert!(restored.writes);
+        assert!(restored.safety_backup_dir.is_some());
+        assert_eq!(
+            fs::read_to_string(dir.join("turns/original-turn/request.md")).unwrap(),
+            "original question\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("turns/original-turn/response.md")).unwrap(),
+            "original answer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("summary.md")).unwrap(),
+            "original answer\n"
+        );
+        let safety_backup = PathBuf::from(restored.safety_backup_dir.unwrap());
+        assert_eq!(
+            fs::read_to_string(safety_backup.join("turns/original-turn/response.md")).unwrap(),
+            "new answer\n"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_events_all_reports_cache_health() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-events-health-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let ready = root.join("ready-session");
+        let ready_turn = ready.join("turns/turn-1");
+        fs::create_dir_all(&ready_turn).unwrap();
+        fs::write(ready_turn.join("request.md"), "question\n").unwrap();
+        fs::write(ready_turn.join("response.md"), "answer\n").unwrap();
+        fs::write(ready.join("summary.md"), "answer\n").unwrap();
+        fs::write(
+            ready.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"question\"}\n{\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+        )
+        .unwrap();
+
+        let not_ready = root.join("not-ready-session");
+        fs::create_dir_all(&not_ready).unwrap();
+        fs::write(not_ready.join("summary.md"), "orphan summary\n").unwrap();
+
+        let report = event_health_report_for_folder_session_root(&root, None, None).unwrap();
+        let text = format_event_health_report(&report);
+
+        assert_eq!(report.total, 2);
+        assert_eq!(report.ready, 1);
+        assert_eq!(report.not_ready, 1);
+        assert!(report.sessions.iter().any(|session| {
+            session.name == "ready-session" && session.ready && session.event_turn_count == 1
+        }));
+        assert!(report.sessions.iter().any(|session| {
+            session.name == "not-ready-session"
+                && !session.ready
+                && session
+                    .issue_codes
+                    .contains(&"missing_events_jsonl".to_string())
+        }));
+        assert!(text.contains("Event ledger health"));
+        assert!(text.contains("ready: 1"));
+        assert!(text.contains("not ready: 1"));
+        assert!(ensure_event_health_strict(&report)
+            .unwrap_err()
+            .to_string()
+            .contains("strict check failed"));
+
+        let strict_ok = SessionEventsHealthReport {
+            root: root.display().to_string(),
+            filter: None,
+            total: 1,
+            ready: 1,
+            not_ready: 0,
+            sessions: Vec::new(),
+            note: "ok".to_string(),
+        };
+        ensure_event_health_strict(&strict_ok).unwrap();
+        let not_ready =
+            event_health_report_for_folder_session_root(&root, None, Some("not-ready")).unwrap();
+        assert_eq!(not_ready.filter.as_deref(), Some("not-ready"));
+        assert_eq!(not_ready.total, 1);
+        assert_eq!(not_ready.not_ready, 1);
+        assert_eq!(not_ready.sessions[0].name, "not-ready-session");
+        let missing =
+            event_health_report_for_folder_session_root(&root, None, Some("missing")).unwrap();
+        assert_eq!(missing.total, 1);
+        assert_eq!(missing.sessions[0].name, "not-ready-session");
+        let ready_only =
+            event_health_report_for_folder_session_root(&root, None, Some("ready")).unwrap();
+        assert_eq!(ready_only.total, 1);
+        assert_eq!(ready_only.sessions[0].name, "ready-session");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}

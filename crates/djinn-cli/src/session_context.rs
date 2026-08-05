@@ -1180,3 +1180,255 @@ pub(crate) fn format_folder_session_context_discover(
     lines.push(String::new());
     lines.join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_init::create_dir_symlink;
+
+    #[test]
+    fn folder_session_context_ingestion_is_shallow_bounded_and_textual() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-context-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let context = dir.join("context");
+        let repo = root.join("repo");
+        fs::create_dir_all(&context).unwrap();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(dir.join("request.md"), "current request\n").unwrap();
+        fs::write(dir.join("summary.md"), "previous summary\n").unwrap();
+        fs::write(context.join("notes.md"), "curated note\n").unwrap();
+        fs::write(context.join("large.md"), "x".repeat(40 * 1024)).unwrap();
+        fs::write(context.join("data.bin"), "not text\n").unwrap();
+        fs::write(
+            repo.join("secret.md"),
+            "do not ingest through repo symlink\n",
+        )
+        .unwrap();
+        create_dir_symlink(&repo, &context.join("repo")).unwrap();
+
+        let instructions = resolve_folder_session_context_instructions(Some(&dir)).unwrap();
+        let rendered = instructions
+            .iter()
+            .map(|instruction| format!("{}\n{}", instruction.source, instruction.content))
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+
+        assert!(rendered.contains("session-context:request.md"));
+        assert!(rendered.contains("current request"));
+        assert!(rendered.contains("session-context:summary.md"));
+        assert!(rendered.contains("previous summary"));
+        assert!(rendered.contains("session-context:context/notes.md"));
+        assert!(rendered.contains("curated note"));
+        assert!(!rendered.contains("do not ingest through repo symlink"));
+        assert!(rendered.contains("context/repo: symlink directory not ingested"));
+        assert!(rendered.contains("context/large.md: 40960 bytes exceeds 32768 byte limit"));
+        assert!(rendered.contains("context/data.bin: unsupported file type"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_context_commands_link_list_and_remove_entries() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-context-cmd-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session = root.join("session");
+        let source = root.join("source");
+        let repo = root.join("repo");
+        fs::create_dir_all(&session).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&repo).unwrap();
+        let notes = source.join("notes.md");
+        let updated_notes = source.join("updated-notes.md");
+        fs::write(&notes, "durable note\n").unwrap();
+        fs::write(&updated_notes, "updated durable note\n").unwrap();
+        fs::write(source.join("data.bin"), "binary-ish\n").unwrap();
+
+        let add = add_folder_session_context_entry(&SessionContextAddArgs {
+            session: session.clone(),
+            path: notes.clone(),
+            name: Some("notes.md".to_string()),
+            force: false,
+            json: false,
+        })
+        .unwrap();
+
+        assert_eq!(add.name, "notes.md");
+        assert!(!add.replaced);
+        assert_eq!(
+            fs::read_link(session.join("context/notes.md")).unwrap(),
+            notes.canonicalize().unwrap()
+        );
+        assert!(add_folder_session_context_entry(&SessionContextAddArgs {
+            session: session.clone(),
+            path: source.join("data.bin"),
+            name: Some("notes.md".to_string()),
+            force: false,
+            json: false,
+        })
+        .is_err());
+
+        let replaced = add_folder_session_context_entry(&SessionContextAddArgs {
+            session: session.clone(),
+            path: repo.clone(),
+            name: Some("repo".to_string()),
+            force: true,
+            json: false,
+        })
+        .unwrap();
+        assert!(!replaced.replaced);
+        let replaced_notes = add_folder_session_context_entry(&SessionContextAddArgs {
+            session: session.clone(),
+            path: updated_notes,
+            name: Some("notes.md".to_string()),
+            force: true,
+            json: false,
+        })
+        .unwrap();
+        assert!(replaced_notes.replaced);
+        let binary = add_folder_session_context_entry(&SessionContextAddArgs {
+            session: session.clone(),
+            path: source.join("data.bin"),
+            name: Some("data.bin".to_string()),
+            force: false,
+            json: false,
+        })
+        .unwrap();
+        assert_eq!(binary.name, "data.bin");
+
+        let report = list_folder_session_context(&session).unwrap();
+        let rendered = format_folder_session_context_ls(&report);
+        let notes_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "notes.md")
+            .unwrap();
+        assert_eq!(notes_entry.kind, "symlink_file");
+        assert!(notes_entry.ingestible);
+        let binary_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "data.bin")
+            .unwrap();
+        assert_eq!(binary_entry.kind, "symlink_file");
+        assert!(!binary_entry.ingestible);
+        assert!(binary_entry
+            .skip_reason
+            .as_deref()
+            .unwrap()
+            .contains("unsupported file type"));
+        let repo_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.name == "repo")
+            .unwrap();
+        assert_eq!(repo_entry.kind, "symlink_dir");
+        assert!(!repo_entry.ingestible);
+        assert!(rendered.contains("Session context:"));
+        assert!(rendered.contains("notes.md"));
+        assert!(rendered.contains("data.bin"));
+        assert!(rendered.contains("repo"));
+
+        assert!(validate_context_entry_name("nested/name").is_err());
+        assert!(remove_folder_session_context_entry(&session, "../notes.md").is_err());
+        let removed = remove_folder_session_context_entry(&session, "notes.md").unwrap();
+        assert!(removed.removed);
+        assert!(!session.join("context/notes.md").exists());
+        assert!(repo.exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_context_discover_links_high_signal_files_and_indexes_docs() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-context-discover-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session = root.join("session");
+        let repo = root.join("repo");
+        fs::create_dir_all(repo.join(".github/instructions")).unwrap();
+        fs::create_dir_all(repo.join(".opencode/commands")).unwrap();
+        fs::create_dir_all(repo.join(".opencode/skills/demo")).unwrap();
+        fs::create_dir_all(repo.join("docs/node_modules/pkg")).unwrap();
+        fs::create_dir_all(&session).unwrap();
+        fs::write(
+            session.join("djinn.toml"),
+            format!(
+                "session_id = \"test\"\n[context.repo]\npath = \"{}\"\n",
+                repo.display()
+            ),
+        )
+        .unwrap();
+        fs::write(repo.join("README.md"), "# Demo Repo\n").unwrap();
+        fs::write(repo.join("AGENTS.md"), "# Agents\n").unwrap();
+        fs::write(
+            repo.join("opencode.json"),
+            r#"{"instructions":["./docs/opencode.md"],"skills":{"paths":[".opencode/skills"]}}"#,
+        )
+        .unwrap();
+        fs::write(repo.join("docs/opencode.md"), "# OpenCode Notes\n").unwrap();
+        fs::write(repo.join("docs/guide.md"), "# Guide\n").unwrap();
+        fs::write(repo.join("docs/node_modules/pkg/ignored.md"), "# Ignored\n").unwrap();
+        fs::write(
+            repo.join(".github/instructions/go.md"),
+            "# Go Instructions\n",
+        )
+        .unwrap();
+        fs::write(repo.join(".opencode/commands/build.md"), "# Build\n").unwrap();
+        fs::write(
+            repo.join(".opencode/skills/demo/SKILL.md"),
+            "# Demo Skill\n",
+        )
+        .unwrap();
+
+        let dry_run = discover_folder_session_context(&session, true).unwrap();
+        assert!(dry_run.dry_run);
+        assert!(!dry_run.repo_index_written);
+        assert!(!session.join("context").exists());
+        assert!(dry_run
+            .links
+            .iter()
+            .any(|link| link.name == "opencode-command-build.md"));
+
+        let report = discover_folder_session_context(&session, false).unwrap();
+        assert!(report.repo_index_written);
+        assert!(session.join("context/repo-index.md").is_file());
+        for name in [
+            "AGENTS.md",
+            "README.md",
+            "opencode.md",
+            "opencode-command-build.md",
+            "opencode-skill-demo.md",
+            "copilot-instruction-go.md",
+        ] {
+            let path = session.join("context").join(name);
+            assert!(path.exists(), "expected discovered context link {name}");
+            assert!(fs::symlink_metadata(path).unwrap().file_type().is_symlink());
+        }
+        let context = list_folder_session_context(&session).unwrap();
+        assert!(context
+            .entries
+            .iter()
+            .any(|entry| { entry.name == "opencode-command-build.md" && entry.ingestible }));
+        let repo_index = fs::read_to_string(session.join("context/repo-index.md")).unwrap();
+        assert!(repo_index.contains("docs/guide.md"));
+        assert!(repo_index.contains("docs/opencode.md"));
+        assert!(report
+            .ignored
+            .iter()
+            .any(|path| path.contains("node_modules")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
