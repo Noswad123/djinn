@@ -13,11 +13,13 @@ mod agents;
 mod auth;
 mod config;
 mod doctor;
+mod open;
 mod tui;
 pub(crate) use agents::*;
 pub(crate) use auth::*;
 pub(crate) use config::*;
 pub(crate) use doctor::*;
+pub(crate) use open::*;
 pub(crate) use tui::{TuiArgs, TuiView};
 
 #[derive(Debug, Parser)]
@@ -868,18 +870,6 @@ pub(crate) enum SwitchNoun {
         /// Context name, case-insensitive. Falls back to substring matching.
         name: String,
     },
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct OpenArgs {
-    #[command(subcommand)]
-    pub(crate) noun: OpenNoun,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum OpenNoun {
-    /// Open a local tool source by name.
-    Tool(OpenToolArgs),
 }
 
 #[derive(Debug, Args)]
