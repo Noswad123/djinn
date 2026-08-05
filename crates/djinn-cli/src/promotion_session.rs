@@ -8,8 +8,8 @@ use serde::Serialize;
 use crate::{
     default_folder_session_root, folder_session_display_name, read_event_turn_pairs,
     read_folder_session_event_turns, read_folder_session_turns, read_optional_markdown_file,
-    resolve_existing_folder_session_dir, resolve_session_dir, session_promote_type_instructions,
-    session_promote_type_label, toml_string, truncate, SessionPromoteArgs, SessionPromoteType,
+    resolve_existing_folder_session_dir, resolve_session_dir, toml_string, truncate,
+    SessionPromoteArgs, SessionPromoteType,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -70,6 +70,57 @@ pub(crate) fn create_promotion_session(args: &SessionPromoteArgs) -> Result<Sess
         None => default_promotion_session_dir(args.promotion_type),
     };
     write_promotion_session(&promotion_session_dir, &material, args.force)
+}
+
+pub(crate) fn session_promote(args: SessionPromoteArgs) -> Result<()> {
+    let report = create_promotion_session(&args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "Created Djinn promotion session: {}",
+            report.promotion_session_dir
+        );
+        println!(
+            "  type: {}",
+            session_promote_type_label(report.promotion_type)
+        );
+        println!("  sources: {}", report.session_count);
+        println!("  source packet: {}", report.source_packet_path);
+        println!("  source refs: {}", report.sources_path);
+        println!("  request: {}", report.request_path);
+        println!("  summary: {}", report.summary_path);
+        println!("  run: djinn session run {}", report.promotion_session_dir);
+    }
+    Ok(())
+}
+
+pub(crate) fn session_promote_type_label(promotion_type: SessionPromoteType) -> &'static str {
+    match promotion_type {
+        SessionPromoteType::Memory => "memory",
+        SessionPromoteType::Todo => "todo",
+        SessionPromoteType::Skill => "skill",
+        SessionPromoteType::Pattern => "pattern",
+    }
+}
+
+pub(crate) fn session_promote_type_instructions(
+    promotion_type: SessionPromoteType,
+) -> &'static str {
+    match promotion_type {
+        SessionPromoteType::Memory => {
+            "Identify durable, reusable memories: nuggets of wisdom worth returning to. Return reviewed `djinn add memory ... --evidence ...` commands or say `No durable memories recommended.`"
+        }
+        SessionPromoteType::Todo => {
+            "Identify concrete follow-up todos the user can take action on soon. Return reviewed todo candidates with evidence links or say `No actionable todos recommended.`"
+        }
+        SessionPromoteType::Skill => {
+            "Identify reusable workflow knowledge that should become or update a skill. Return a short skill proposal with evidence links."
+        }
+        SessionPromoteType::Pattern => {
+            "Synthesize common threads, themes, suggestions, conventions, gotchas, and workflow decisions across the source sessions. Separate high-confidence patterns from one-off observations."
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

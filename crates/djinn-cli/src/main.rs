@@ -165,15 +165,17 @@ use policy_resolution::*;
 use promotion_candidate::parse_promotion_candidate;
 use promotion_cleanup::session_cleanup;
 #[cfg(test)]
+use promotion_decision::decide_promotion_session;
+#[cfg(test)]
 pub(crate) use promotion_decision::{
     candidate_duplicate_similarity, decide_promotion_session_with_stores, PromotionWritebackStores,
 };
-use promotion_decision::{
-    decide_promotion_session, session_decision_action_label, SessionDecisionAction,
-};
+use promotion_decision::{session_decide, SessionDecisionAction};
 use promotion_export::session_export_pattern;
 use promotion_generation::*;
-pub(crate) use promotion_session::create_promotion_session;
+pub(crate) use promotion_session::{
+    create_promotion_session, session_promote, session_promote_type_label,
+};
 use promotion_validation::session_validate_candidates;
 pub(crate) use promotion_validation::SessionValidateCandidateEntry;
 pub(crate) use prompt::{prompt_title, resolve_agent_request_prompt};
@@ -196,7 +198,7 @@ use session_context::{
 };
 use session_context::{
     inspect_folder_session_context_dir, resolve_folder_session_context_instructions,
-    session_context, session_context_discover,
+    session_context,
 };
 #[cfg(test)]
 use session_events::{
@@ -246,7 +248,7 @@ pub(crate) use session_reference::{
     folder_session_reference_name, folder_session_slug, is_named_folder_session_reference,
     resolve_existing_folder_session_dir, resolve_existing_folder_session_reference,
     resolve_existing_folder_session_reference_in_root, resolve_session_dir,
-    resolve_session_dir_in_root, safe_folder_session_slug,
+    safe_folder_session_slug,
 };
 #[cfg(test)]
 use session_reference::{
@@ -259,12 +261,11 @@ use session_registry::rename_folder_session_in_root;
 use session_registry::shorten_folder_session_names_in_root;
 use session_registry::{session_rename, session_shorten_names};
 use session_remove::session_rm;
-#[cfg(test)]
-use session_run_support::SessionRunBackgroundReport;
 use session_run_support::{
-    background_progress_phase, format_session_run_background_started, spawn_background_session_run,
-    touch_background_run_marker_from_env, SessionRunBackgroundSpawnOptions,
+    background_progress_phase, session_run_background, touch_background_run_marker_from_env,
 };
+#[cfg(test)]
+use session_run_support::{format_session_run_background_started, SessionRunBackgroundReport};
 #[cfg(test)]
 use session_status::format_folder_session_status;
 #[cfg(test)]
@@ -283,10 +284,10 @@ use session_status::{SessionStatusFileReport, SessionStatusReport};
 use session_transcript::{build_session_transcript, render_session_transcript_markdown};
 use session_transcript::{session_transcript, SessionTranscriptFormat};
 #[cfg(test)]
-use session_tui::editor_open_command_hint;
 use session_tui::{
-    folder_session_action_message, folder_session_status_tui_view, tui_candidate_row,
+    editor_open_command_hint, folder_session_action_message, folder_session_status_tui_view,
 };
+pub(crate) use session_tui::{run_folder_session_tui, tui_candidate_row};
 pub(crate) use session_turns::{
     compact_text_snippet, read_folder_session_event_turns, read_folder_session_turns,
     read_optional_markdown_file, FolderSessionTurnDigest,
@@ -2256,152 +2257,6 @@ fn run_session(args: SessionArgs) -> Result<()> {
     }
 }
 
-fn run_folder_session_tui(dir: PathBuf, editor: Option<String>) -> Result<()> {
-    let session_dir = resolve_existing_folder_session_reference(&dir)?.session_dir;
-    let mut tui = djinn_tui::TuiSession::enter()?;
-    let mut message = None::<String>;
-    loop {
-        let action = tui.run_folder_session_status(|| {
-            let mut view = folder_session_status_tui_view(&session_dir)?;
-            view.message = message.clone();
-            Ok(view)
-        })?;
-        let Some(action) = action else {
-            tui.finish()?;
-            return Ok(());
-        };
-        let action_message =
-            folder_session_action_message(&action, &session_dir, editor.as_deref());
-        tui.suspend()?;
-        println!("{action_message}");
-        io::stdout().flush()?;
-        let action_result =
-            handle_folder_session_tui_action(action, session_dir.clone(), editor.as_deref());
-        tui.resume()?;
-        message = Some(match action_result {
-            Ok(()) => action_message,
-            Err(err) => format!("Error: {err:#}"),
-        });
-    }
-}
-
-fn handle_folder_session_tui_action(
-    action: djinn_tui::FolderSessionAction,
-    session_dir: PathBuf,
-    editor: Option<&str>,
-) -> Result<()> {
-    match action {
-        djinn_tui::FolderSessionAction::Run => session_run(SessionRunArgs {
-            dir: session_dir,
-            foreground: false,
-            background_worker: false,
-            profile: None,
-            agent: None,
-            model: None,
-            api_key: None,
-            base_url: None,
-            max_tool_rounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
-            dry_run: false,
-            json: false,
-            print: false,
-            open: false,
-        }),
-        djinn_tui::FolderSessionAction::Buddy => session_chat(SessionChatArgs {
-            dir: session_dir,
-            buddy_bin: None,
-            buddy_args: Vec::new(),
-            capture_request: false,
-            dry_run: false,
-            json: false,
-        }),
-        djinn_tui::FolderSessionAction::Watch => session_watch(SessionWatchArgs {
-            dir: session_dir,
-            interval_ms: 1000,
-            timeout_seconds: None,
-            json: false,
-        }),
-        djinn_tui::FolderSessionAction::OpenSummary => session_open(SessionOpenArgs {
-            dir: session_dir,
-            target: SessionOpenTarget::Summary,
-            editor: editor.map(str::to_string),
-        }),
-        djinn_tui::FolderSessionAction::EditRequest => session_open(SessionOpenArgs {
-            dir: session_dir,
-            target: SessionOpenTarget::Request,
-            editor: editor.map(str::to_string),
-        }),
-        djinn_tui::FolderSessionAction::OpenContext => session_open(SessionOpenArgs {
-            dir: session_dir,
-            target: SessionOpenTarget::Context,
-            editor: editor.map(str::to_string),
-        }),
-        djinn_tui::FolderSessionAction::DiscoverContext => {
-            session_context_discover(SessionContextDiscoverArgs {
-                session: session_dir,
-                dry_run: false,
-                json: false,
-            })
-        }
-        djinn_tui::FolderSessionAction::ValidateCandidates => {
-            session_validate_candidates(SessionValidateCandidatesArgs {
-                dir: session_dir,
-                candidate: None,
-                json: false,
-            })
-        }
-        djinn_tui::FolderSessionAction::ValidateCandidate(candidate) => {
-            session_validate_candidates(SessionValidateCandidatesArgs {
-                dir: session_dir,
-                candidate: Some(candidate),
-                json: false,
-            })
-        }
-        djinn_tui::FolderSessionAction::ShowPatternExportCommand(_) => Ok(()),
-        djinn_tui::FolderSessionAction::ShowValidateEventsCommand
-        | djinn_tui::FolderSessionAction::ShowEventsCommand
-        | djinn_tui::FolderSessionAction::ShowEventsWriteCommand
-        | djinn_tui::FolderSessionAction::ShowEventsRestoreCommand(_) => Ok(()),
-        djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => session_decide(
-            SessionDecisionArgs {
-                dir: session_dir,
-                candidate: Some(candidate),
-                dry_run: false,
-                sync_mindweaver: false,
-                json: false,
-            },
-            SessionDecisionAction::Accept,
-        ),
-        djinn_tui::FolderSessionAction::AcceptCandidateAndSyncMindweaver(candidate) => {
-            session_decide(
-                SessionDecisionArgs {
-                    dir: session_dir,
-                    candidate: Some(candidate),
-                    dry_run: false,
-                    sync_mindweaver: true,
-                    json: false,
-                },
-                SessionDecisionAction::Accept,
-            )
-        }
-        djinn_tui::FolderSessionAction::DenyCandidate(candidate) => session_decide(
-            SessionDecisionArgs {
-                dir: session_dir,
-                candidate: Some(candidate),
-                dry_run: false,
-                sync_mindweaver: false,
-                json: false,
-            },
-            SessionDecisionAction::Deny,
-        ),
-        djinn_tui::FolderSessionAction::OpenCandidate(path) => {
-            open_editor_path(Path::new(&path), editor.map(str::to_string))
-        }
-        djinn_tui::FolderSessionAction::OpenPath(path) => {
-            open_editor_path(Path::new(&path), editor.map(str::to_string))
-        }
-    }
-}
-
 fn run_session_command(command: SessionCommand) -> Result<()> {
     match command {
         SessionCommand::Init(args) => session_init(args),
@@ -2427,182 +2282,6 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::ShortenNames(args) => session_shorten_names(args),
         SessionCommand::Rm(args) => session_rm(args),
     }
-}
-
-fn session_decide(args: SessionDecisionArgs, action: SessionDecisionAction) -> Result<()> {
-    let report = decide_promotion_session(&args, action)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        let verb = if args.dry_run {
-            "Would record"
-        } else {
-            "Recorded"
-        };
-        println!(
-            "{verb} {} decision for promotion session: {}",
-            session_decision_action_label(action),
-            report.session_dir
-        );
-        println!("  type: {}", report.promotion_type);
-        if let Some(candidate) = &report.candidate {
-            println!("  candidate: {candidate}");
-        } else {
-            println!("  candidate: all");
-        }
-        println!("  decision: {}", report.decision_path);
-        if report.writebacks.is_empty() {
-            println!("  durable writeback: none");
-        } else if report.dry_run {
-            println!("  durable writeback: dry-run preview");
-        } else {
-            println!("  durable writeback: yes");
-        }
-        for writeback in &report.writebacks {
-            if let Some(path) = &writeback.path {
-                println!(
-                    "    - {} {} -> {} ({path})",
-                    writeback.candidate_type, writeback.candidate, writeback.destination
-                );
-            } else {
-                println!(
-                    "    - {} {} -> {} [{}]",
-                    writeback.candidate_type,
-                    writeback.candidate,
-                    writeback.destination,
-                    writeback.id
-                );
-            }
-            if let Some(preview) = &writeback.preview {
-                println!("      preview: {}", preview.replace('\n', "\\n"));
-            }
-        }
-        for post in &report.post_writebacks {
-            let label = if post.status == "pending" {
-                "follow-up"
-            } else {
-                "post-writeback"
-            };
-            println!("  {label}: {} -> {}", post.name, post.status);
-            println!("    command: {}", post.command);
-        }
-        println!("  note: {}", report.note);
-    }
-    Ok(())
-}
-
-fn session_promote(args: SessionPromoteArgs) -> Result<()> {
-    let report = create_promotion_session(&args)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!(
-            "Created Djinn promotion session: {}",
-            report.promotion_session_dir
-        );
-        println!(
-            "  type: {}",
-            session_promote_type_label(report.promotion_type)
-        );
-        println!("  sources: {}", report.session_count);
-        println!("  source packet: {}", report.source_packet_path);
-        println!("  source refs: {}", report.sources_path);
-        println!("  request: {}", report.request_path);
-        println!("  summary: {}", report.summary_path);
-        println!("  run: djinn session run {}", report.promotion_session_dir);
-    }
-    Ok(())
-}
-
-pub(crate) fn session_promote_type_label(promotion_type: SessionPromoteType) -> &'static str {
-    match promotion_type {
-        SessionPromoteType::Memory => "memory",
-        SessionPromoteType::Todo => "todo",
-        SessionPromoteType::Skill => "skill",
-        SessionPromoteType::Pattern => "pattern",
-    }
-}
-
-pub(crate) fn session_promote_type_instructions(
-    promotion_type: SessionPromoteType,
-) -> &'static str {
-    match promotion_type {
-        SessionPromoteType::Memory => {
-            "Identify durable, reusable memories: nuggets of wisdom worth returning to. Return reviewed `djinn add memory ... --evidence ...` commands or say `No durable memories recommended.`"
-        }
-        SessionPromoteType::Todo => {
-            "Identify concrete follow-up todos the user can take action on soon. Return reviewed todo candidates with evidence links or say `No actionable todos recommended.`"
-        }
-        SessionPromoteType::Skill => {
-            "Identify reusable workflow knowledge that should become or update a skill. Return a short skill proposal with evidence links."
-        }
-        SessionPromoteType::Pattern => {
-            "Synthesize common threads, themes, suggestions, conventions, gotchas, and workflow decisions across the source sessions. Separate high-confidence patterns from one-off observations."
-        }
-    }
-}
-
-fn session_chat(args: SessionChatArgs) -> Result<()> {
-    if !args.capture_request && args.dry_run {
-        bail!("--dry-run is only supported with --capture-request");
-    }
-    if !args.capture_request && args.json {
-        bail!("--json is only supported with --capture-request");
-    }
-
-    if args.capture_request {
-        let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
-        let report = run_session_buddy(&SessionBuddyRunArgs {
-            dir: session_ref.session_dir,
-            buddy_bin: args.buddy_bin.clone(),
-            buddy_session: session_ref.buddy_session,
-            buddy_args: args.buddy_args.clone(),
-            dry_run: args.dry_run,
-        })?;
-        if args.json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            print!("{}", format_session_buddy_report(&report));
-        }
-        return Ok(());
-    }
-
-    let (session_dir, resolved_buddy_session) = resolve_top_level_buddy_session_arg(args.dir)?;
-    run_top_level_folder_buddy_session_with_options(
-        &session_dir,
-        resolved_buddy_session,
-        args.buddy_bin,
-        &args.buddy_args,
-    )
-}
-
-fn run_top_level_buddy_mode(session: Option<PathBuf>) -> Result<()> {
-    if let Some(session) = session {
-        let (session_dir, buddy_session) = resolve_top_level_buddy_session_arg(session)?;
-        return run_top_level_folder_buddy_session(&session_dir, buddy_session);
-    }
-    run_plain_buddy_mode()
-}
-
-fn resolve_top_level_buddy_session_arg(session: PathBuf) -> Result<(PathBuf, Option<String>)> {
-    let root = default_folder_session_root();
-    let session_dir = resolve_session_dir_in_root(&session, &root)?;
-    if session_dir.exists() {
-        return Ok((session_dir, None));
-    }
-
-    Ok(resolve_existing_folder_session_reference_in_root(&session, &root)?.map_buddy_for_launch())
-}
-
-fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
-    let root = default_folder_session_root();
-    let report = consolidate_sessions_in_root(&root, &args)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_session_consolidate_report(&report));
-    }
-    Ok(())
 }
 
 fn run_agents(args: AgentsArgs) -> Result<()> {
@@ -2676,7 +2355,7 @@ enum AgentAskOutputMode {
     SessionRun { open: bool, background_worker: bool },
 }
 
-fn session_run(mut args: SessionRunArgs) -> Result<()> {
+pub(crate) fn session_run(mut args: SessionRunArgs) -> Result<()> {
     if args.background_worker && args.foreground {
         bail!("--background-worker cannot be combined with --fg");
     }
@@ -2734,92 +2413,6 @@ fn session_run(mut args: SessionRunArgs) -> Result<()> {
             background_worker,
         },
     )
-}
-
-fn session_run_promotion(
-    args: SessionRunArgs,
-    session_dir: PathBuf,
-    manifest: FolderSessionManifest,
-) -> Result<()> {
-    if args.print || args.open {
-        bail!("--print and --open are not supported for promotion candidate generation");
-    }
-    let report = generate_promotion_candidates(
-        &PromotionCandidateGenerationOptions {
-            dry_run: args.dry_run,
-            profile: args.profile.clone(),
-            agent: args.agent.clone(),
-            model: args.model.clone(),
-            api_key: args.api_key.clone(),
-            base_url: args.base_url.clone(),
-        },
-        &session_dir,
-        &manifest,
-    )?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else if args.dry_run {
-        println!(
-            "Promotion candidate generation dry run: {}",
-            report.session_dir
-        );
-        println!("  type: {}", report.promotion_type);
-        if let Some(model) = &report.model {
-            println!("  model: {model}");
-        }
-        println!("  source packet: {}", report.source_packet_path);
-        println!("  candidates dir: {}", report.candidates_dir);
-        if let Some(prompt_path) = &report.prompt_path {
-            println!("  prompt preview: {prompt_path}");
-        }
-    } else {
-        println!("Generated promotion candidates: {}", report.session_dir);
-        println!("  type: {}", report.promotion_type);
-        if let Some(model) = &report.model {
-            println!("  model: {model}");
-        }
-        println!(
-            "  response: {}",
-            report.response_path.as_deref().unwrap_or("none")
-        );
-        println!("  candidates: {}", report.candidate_count);
-        for candidate in &report.candidates {
-            println!(
-                "    - {} {} -> {}",
-                candidate.candidate_type, candidate.id, candidate.path
-            );
-        }
-        println!(
-            "  accept: djinn session accept {} --dry-run",
-            report.session_dir
-        );
-    }
-    Ok(())
-}
-
-fn session_run_background(args: SessionRunArgs) -> Result<()> {
-    if args.print || args.open {
-        bail!("--print and --open require --fg because background runs return before an answer exists");
-    }
-    let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
-    resolve_agent_request_prompt(None, Some(&session_dir))?;
-    let report = spawn_background_session_run(
-        &session_dir,
-        &SessionRunBackgroundSpawnOptions {
-            profile: args.profile.clone(),
-            agent: args.agent.clone(),
-            model: args.model.clone(),
-            api_key: args.api_key.clone(),
-            base_url: args.base_url.clone(),
-            max_tool_rounds: args.max_tool_rounds,
-        },
-    )?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_session_run_background_started(&report));
-    }
-    Ok(())
 }
 
 pub(crate) fn upsert_toml_root_string(content: &str, key: &str, value: &str) -> Result<String> {

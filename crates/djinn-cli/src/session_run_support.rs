@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use djinn_agent::AgentProgressEvent;
 use serde::Serialize;
 
@@ -11,8 +11,11 @@ use crate::background_run::{
     background_session_run_log_path, touch_background_run_marker,
     write_background_session_run_marker,
 };
+use crate::prompt::resolve_agent_request_prompt;
 use crate::session_manifest::read_folder_session_manifest;
+use crate::session_reference::resolve_existing_folder_session_dir;
 use crate::shell::shell_quote;
+use crate::SessionRunArgs;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SessionRunBackgroundSpawnOptions {
@@ -116,6 +119,31 @@ pub(crate) fn spawn_background_session_run(
         log_path: log_path.display().to_string(),
         watch_command: format!("djinn session watch {}", session_dir.display()),
     })
+}
+
+pub(crate) fn session_run_background(args: SessionRunArgs) -> Result<()> {
+    if args.print || args.open {
+        bail!("--print and --open require --fg because background runs return before an answer exists");
+    }
+    let session_dir = resolve_existing_folder_session_dir(&args.dir)?;
+    resolve_agent_request_prompt(None, Some(&session_dir))?;
+    let report = spawn_background_session_run(
+        &session_dir,
+        &SessionRunBackgroundSpawnOptions {
+            profile: args.profile.clone(),
+            agent: args.agent.clone(),
+            model: args.model.clone(),
+            api_key: args.api_key.clone(),
+            base_url: args.base_url.clone(),
+            max_tool_rounds: args.max_tool_rounds,
+        },
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_run_background_started(&report));
+    }
+    Ok(())
 }
 
 fn background_session_run_command_hint(

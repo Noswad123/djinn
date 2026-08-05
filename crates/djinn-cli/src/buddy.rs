@@ -9,11 +9,16 @@ use serde::{Deserialize, Serialize};
 
 use djinn_memory::{AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId};
 
+use crate::session_reference::{
+    resolve_existing_folder_session_reference, resolve_existing_folder_session_reference_in_root,
+    resolve_session_dir_in_root,
+};
 use crate::{
-    ensure_trailing_newline, folder_session_manifest_meta, read_event_turn_pairs,
-    read_folder_session_manifest, resolve_session_dir, safe_folder_session_slug,
-    session_manifest_workspace_path, shell::shell_quote_if_needed as shell_quote,
-    write_folder_session_events_jsonl, yes_no, OutputFormat,
+    default_folder_session_root, ensure_trailing_newline, folder_session_manifest_meta,
+    read_event_turn_pairs, read_folder_session_manifest, resolve_session_dir,
+    safe_folder_session_slug, session_manifest_workspace_path,
+    shell::shell_quote_if_needed as shell_quote, write_folder_session_events_jsonl, yes_no,
+    OutputFormat, SessionChatArgs,
 };
 
 pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
@@ -981,6 +986,60 @@ pub(crate) fn write_buddy_runtime_state(path: &Path, state: &BuddyRuntimeState) 
 
 pub(crate) fn run_plain_buddy_mode() -> Result<()> {
     BuddyBridgeBackend::resolved(None)?.launch_plain()
+}
+
+pub(crate) fn run_top_level_buddy_mode(session: Option<PathBuf>) -> Result<()> {
+    if let Some(session) = session {
+        let (session_dir, buddy_session) = resolve_top_level_buddy_session_arg(session)?;
+        return run_top_level_folder_buddy_session(&session_dir, buddy_session);
+    }
+    run_plain_buddy_mode()
+}
+
+pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
+    if !args.capture_request && args.dry_run {
+        bail!("--dry-run is only supported with --capture-request");
+    }
+    if !args.capture_request && args.json {
+        bail!("--json is only supported with --capture-request");
+    }
+
+    if args.capture_request {
+        let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
+        let report = run_session_buddy(&SessionBuddyRunArgs {
+            dir: session_ref.session_dir,
+            buddy_bin: args.buddy_bin.clone(),
+            buddy_session: session_ref.buddy_session,
+            buddy_args: args.buddy_args.clone(),
+            dry_run: args.dry_run,
+        })?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", format_session_buddy_report(&report));
+        }
+        return Ok(());
+    }
+
+    let (session_dir, resolved_buddy_session) = resolve_top_level_buddy_session_arg(args.dir)?;
+    run_top_level_folder_buddy_session_with_options(
+        &session_dir,
+        resolved_buddy_session,
+        args.buddy_bin,
+        &args.buddy_args,
+    )
+}
+
+pub(crate) fn resolve_top_level_buddy_session_arg(
+    session: PathBuf,
+) -> Result<(PathBuf, Option<String>)> {
+    let root = default_folder_session_root();
+    let session_dir = resolve_session_dir_in_root(&session, &root)?;
+    if session_dir.exists() {
+        return Ok((session_dir, None));
+    }
+
+    Ok(resolve_existing_folder_session_reference_in_root(&session, &root)?.map_buddy_for_launch())
 }
 
 pub(crate) fn run_top_level_folder_buddy_session(

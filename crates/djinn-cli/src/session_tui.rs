@@ -1,18 +1,175 @@
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::buddy::session_chat;
 use crate::editor::default_editor;
+use crate::editor::open_editor_path;
+use crate::promotion_decision::{session_decide, SessionDecisionAction};
+use crate::promotion_validation::session_validate_candidates;
+use crate::session_artifact::session_open;
 use crate::session_artifact::{
     fallback_folder_session_open_target, resolve_folder_session_open_target, SessionOpenTarget,
 };
+use crate::session_context::session_context_discover;
+use crate::session_reference::resolve_existing_folder_session_reference;
+use crate::session_watch::session_watch;
 use crate::shell::shell_quote;
 use crate::{
     folder_session_display_name, folder_session_status, format_session_candidate_entry,
     format_session_candidate_status, latest_background_session_run_status,
     latest_event_rebuild_backup_path, latest_promotion_generation_response_path,
-    read_folder_session_manifest, SessionStatusCandidateEntry,
+    read_folder_session_manifest, session_run, SessionChatArgs, SessionContextDiscoverArgs,
+    SessionDecisionArgs, SessionOpenArgs, SessionRunArgs, SessionStatusCandidateEntry,
+    SessionValidateCandidatesArgs, SessionWatchArgs, DEFAULT_AGENT_MAX_TOOL_ROUNDS,
 };
+
+pub(crate) fn run_folder_session_tui(dir: PathBuf, editor: Option<String>) -> Result<()> {
+    let session_dir = resolve_existing_folder_session_reference(&dir)?.session_dir;
+    let mut tui = djinn_tui::TuiSession::enter()?;
+    let mut message = None::<String>;
+    loop {
+        let action = tui.run_folder_session_status(|| {
+            let mut view = folder_session_status_tui_view(&session_dir)?;
+            view.message = message.clone();
+            Ok(view)
+        })?;
+        let Some(action) = action else {
+            tui.finish()?;
+            return Ok(());
+        };
+        let action_message =
+            folder_session_action_message(&action, &session_dir, editor.as_deref());
+        tui.suspend()?;
+        println!("{action_message}");
+        io::stdout().flush()?;
+        let action_result =
+            handle_folder_session_tui_action(action, session_dir.clone(), editor.as_deref());
+        tui.resume()?;
+        message = Some(match action_result {
+            Ok(()) => action_message,
+            Err(err) => format!("Error: {err:#}"),
+        });
+    }
+}
+
+fn handle_folder_session_tui_action(
+    action: djinn_tui::FolderSessionAction,
+    session_dir: PathBuf,
+    editor: Option<&str>,
+) -> Result<()> {
+    match action {
+        djinn_tui::FolderSessionAction::Run => session_run(SessionRunArgs {
+            dir: session_dir,
+            foreground: false,
+            background_worker: false,
+            profile: None,
+            agent: None,
+            model: None,
+            api_key: None,
+            base_url: None,
+            max_tool_rounds: DEFAULT_AGENT_MAX_TOOL_ROUNDS,
+            dry_run: false,
+            json: false,
+            print: false,
+            open: false,
+        }),
+        djinn_tui::FolderSessionAction::Buddy => session_chat(SessionChatArgs {
+            dir: session_dir,
+            buddy_bin: None,
+            buddy_args: Vec::new(),
+            capture_request: false,
+            dry_run: false,
+            json: false,
+        }),
+        djinn_tui::FolderSessionAction::Watch => session_watch(SessionWatchArgs {
+            dir: session_dir,
+            interval_ms: 1000,
+            timeout_seconds: None,
+            json: false,
+        }),
+        djinn_tui::FolderSessionAction::OpenSummary => session_open(SessionOpenArgs {
+            dir: session_dir,
+            target: SessionOpenTarget::Summary,
+            editor: editor.map(str::to_string),
+        }),
+        djinn_tui::FolderSessionAction::EditRequest => session_open(SessionOpenArgs {
+            dir: session_dir,
+            target: SessionOpenTarget::Request,
+            editor: editor.map(str::to_string),
+        }),
+        djinn_tui::FolderSessionAction::OpenContext => session_open(SessionOpenArgs {
+            dir: session_dir,
+            target: SessionOpenTarget::Context,
+            editor: editor.map(str::to_string),
+        }),
+        djinn_tui::FolderSessionAction::DiscoverContext => {
+            session_context_discover(SessionContextDiscoverArgs {
+                session: session_dir,
+                dry_run: false,
+                json: false,
+            })
+        }
+        djinn_tui::FolderSessionAction::ValidateCandidates => {
+            session_validate_candidates(SessionValidateCandidatesArgs {
+                dir: session_dir,
+                candidate: None,
+                json: false,
+            })
+        }
+        djinn_tui::FolderSessionAction::ValidateCandidate(candidate) => {
+            session_validate_candidates(SessionValidateCandidatesArgs {
+                dir: session_dir,
+                candidate: Some(candidate),
+                json: false,
+            })
+        }
+        djinn_tui::FolderSessionAction::ShowPatternExportCommand(_) => Ok(()),
+        djinn_tui::FolderSessionAction::ShowValidateEventsCommand
+        | djinn_tui::FolderSessionAction::ShowEventsCommand
+        | djinn_tui::FolderSessionAction::ShowEventsWriteCommand
+        | djinn_tui::FolderSessionAction::ShowEventsRestoreCommand(_) => Ok(()),
+        djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => session_decide(
+            SessionDecisionArgs {
+                dir: session_dir,
+                candidate: Some(candidate),
+                dry_run: false,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Accept,
+        ),
+        djinn_tui::FolderSessionAction::AcceptCandidateAndSyncMindweaver(candidate) => {
+            session_decide(
+                SessionDecisionArgs {
+                    dir: session_dir,
+                    candidate: Some(candidate),
+                    dry_run: false,
+                    sync_mindweaver: true,
+                    json: false,
+                },
+                SessionDecisionAction::Accept,
+            )
+        }
+        djinn_tui::FolderSessionAction::DenyCandidate(candidate) => session_decide(
+            SessionDecisionArgs {
+                dir: session_dir,
+                candidate: Some(candidate),
+                dry_run: false,
+                sync_mindweaver: false,
+                json: false,
+            },
+            SessionDecisionAction::Deny,
+        ),
+        djinn_tui::FolderSessionAction::OpenCandidate(path) => {
+            open_editor_path(Path::new(&path), editor.map(str::to_string))
+        }
+        djinn_tui::FolderSessionAction::OpenPath(path) => {
+            open_editor_path(Path::new(&path), editor.map(str::to_string))
+        }
+    }
+}
 
 pub(crate) fn folder_session_action_message(
     action: &djinn_tui::FolderSessionAction,

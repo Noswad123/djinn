@@ -11,9 +11,9 @@ use crate::buddy::{
     BuddySessionListRecord,
 };
 use crate::{
-    ensure_trailing_newline, folder_session_reference_name, list_folder_sessions_in_root,
-    non_empty_string, safe_folder_session_slug, toml_string, yes_no, FolderSessionSummary,
-    SessionConsolidateArgs,
+    default_folder_session_root, ensure_trailing_newline, folder_session_reference_name,
+    list_folder_sessions_in_root, non_empty_string, safe_folder_session_slug, toml_string, yes_no,
+    FolderSessionSummary, SessionConsolidateArgs,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -203,6 +203,17 @@ pub(crate) fn consolidate_sessions_in_root(
         adopted_buddy_sessions,
         entries,
     })
+}
+
+pub(crate) fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
+    let root = default_folder_session_root();
+    let report = consolidate_sessions_in_root(&root, &args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_consolidate_report(&report));
+    }
+    Ok(())
 }
 
 fn deterministic_buddy_match<'a>(

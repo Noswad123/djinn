@@ -12,6 +12,7 @@ use crate::{
     load_djinn_config_for_workspace, plural_suffix, resolve_agent_model_from_config,
     resolve_agent_role_selection_from_config, resolve_agent_workspace, resolve_copilot_token,
     resolve_openai_client, session_manifest_workspace_path, toml_string, FolderSessionManifest,
+    SessionRunArgs,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -203,6 +204,67 @@ pub(crate) fn generate_promotion_candidates(
         candidate_count: candidates.len(),
         candidates,
     })
+}
+
+pub(crate) fn session_run_promotion(
+    args: SessionRunArgs,
+    session_dir: PathBuf,
+    manifest: FolderSessionManifest,
+) -> Result<()> {
+    if args.print || args.open {
+        bail!("--print and --open are not supported for promotion candidate generation");
+    }
+    let report = generate_promotion_candidates(
+        &PromotionCandidateGenerationOptions {
+            dry_run: args.dry_run,
+            profile: args.profile.clone(),
+            agent: args.agent.clone(),
+            model: args.model.clone(),
+            api_key: args.api_key.clone(),
+            base_url: args.base_url.clone(),
+        },
+        &session_dir,
+        &manifest,
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if args.dry_run {
+        println!(
+            "Promotion candidate generation dry run: {}",
+            report.session_dir
+        );
+        println!("  type: {}", report.promotion_type);
+        if let Some(model) = &report.model {
+            println!("  model: {model}");
+        }
+        println!("  source packet: {}", report.source_packet_path);
+        println!("  candidates dir: {}", report.candidates_dir);
+        if let Some(prompt_path) = &report.prompt_path {
+            println!("  prompt preview: {prompt_path}");
+        }
+    } else {
+        println!("Generated promotion candidates: {}", report.session_dir);
+        println!("  type: {}", report.promotion_type);
+        if let Some(model) = &report.model {
+            println!("  model: {model}");
+        }
+        println!(
+            "  response: {}",
+            report.response_path.as_deref().unwrap_or("none")
+        );
+        println!("  candidates: {}", report.candidate_count);
+        for candidate in &report.candidates {
+            println!(
+                "    - {} {} -> {}",
+                candidate.candidate_type, candidate.id, candidate.path
+            );
+        }
+        println!(
+            "  accept: djinn session accept {} --dry-run",
+            report.session_dir
+        );
+    }
+    Ok(())
 }
 
 fn resolve_promotion_generation_profile_model(

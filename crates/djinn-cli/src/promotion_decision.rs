@@ -76,6 +76,71 @@ pub(crate) fn decide_promotion_session(
     decide_promotion_session_with_stores(args, action, PromotionWritebackStores::default())
 }
 
+pub(crate) fn session_decide(
+    args: SessionDecisionArgs,
+    action: SessionDecisionAction,
+) -> Result<()> {
+    let report = decide_promotion_session(&args, action)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        let verb = if args.dry_run {
+            "Would record"
+        } else {
+            "Recorded"
+        };
+        println!(
+            "{verb} {} decision for promotion session: {}",
+            session_decision_action_label(action),
+            report.session_dir
+        );
+        println!("  type: {}", report.promotion_type);
+        if let Some(candidate) = &report.candidate {
+            println!("  candidate: {candidate}");
+        } else {
+            println!("  candidate: all");
+        }
+        println!("  decision: {}", report.decision_path);
+        if report.writebacks.is_empty() {
+            println!("  durable writeback: none");
+        } else if report.dry_run {
+            println!("  durable writeback: dry-run preview");
+        } else {
+            println!("  durable writeback: yes");
+        }
+        for writeback in &report.writebacks {
+            if let Some(path) = &writeback.path {
+                println!(
+                    "    - {} {} -> {} ({path})",
+                    writeback.candidate_type, writeback.candidate, writeback.destination
+                );
+            } else {
+                println!(
+                    "    - {} {} -> {} [{}]",
+                    writeback.candidate_type,
+                    writeback.candidate,
+                    writeback.destination,
+                    writeback.id
+                );
+            }
+            if let Some(preview) = &writeback.preview {
+                println!("      preview: {}", preview.replace('\n', "\\n"));
+            }
+        }
+        for post in &report.post_writebacks {
+            let label = if post.status == "pending" {
+                "follow-up"
+            } else {
+                "post-writeback"
+            };
+            println!("  {label}: {} -> {}", post.name, post.status);
+            println!("    command: {}", post.command);
+        }
+        println!("  note: {}", report.note);
+    }
+    Ok(())
+}
+
 pub(crate) fn decide_promotion_session_with_stores(
     args: &SessionDecisionArgs,
     action: SessionDecisionAction,
