@@ -175,3 +175,59 @@ fn write_text_output(path: &Path, content: &str) -> Result<()> {
     fs::write(path, ensure_trailing_newline(content))
         .with_context(|| format!("writing {}", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use djinn_memory::{
+        AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId, AgentSessionMeta,
+    };
+
+    #[test]
+    fn session_transcript_renders_markdown_from_events_jsonl() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-session-transcript-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let session = AgentSession {
+            id: AgentSessionId::new("transcript-session"),
+            meta: AgentSessionMeta {
+                title: "Transcript Session".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: vec![
+                AgentSessionEvent::with_session(
+                    AgentSessionId::new("transcript-session"),
+                    AgentSessionEventKind::UserMessage {
+                        content: "What is structured programming?".to_string(),
+                    },
+                ),
+                AgentSessionEvent::with_session(
+                    AgentSessionId::new("transcript-session"),
+                    AgentSessionEventKind::AssistantMessage {
+                        content: "It emphasizes clear control flow.".to_string(),
+                    },
+                ),
+            ],
+        };
+        crate::write_folder_session_events_jsonl(&dir, &session).unwrap();
+
+        let report = build_session_transcript(&dir, SessionTranscriptFormat::Markdown).unwrap();
+        let rendered = render_session_transcript_markdown(&report);
+
+        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.turns[0].request_line, 1);
+        assert_eq!(report.turns[0].response_line, 2);
+        assert!(rendered.contains("# Session Transcript"));
+        assert!(rendered.contains("## Turn 1"));
+        assert!(rendered.contains("### User"));
+        assert!(rendered.contains("What is structured programming?"));
+        assert!(rendered.contains("### Assistant"));
+        assert!(rendered.contains("It emphasizes clear control flow."));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
