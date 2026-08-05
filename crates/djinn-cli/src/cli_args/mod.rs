@@ -13,6 +13,7 @@ mod agents;
 mod auth;
 mod config;
 mod doctor;
+mod index;
 mod open;
 mod search;
 mod switch;
@@ -21,6 +22,7 @@ pub(crate) use agents::*;
 pub(crate) use auth::*;
 pub(crate) use config::*;
 pub(crate) use doctor::*;
+pub(crate) use index::*;
 pub(crate) use open::*;
 pub(crate) use search::*;
 pub(crate) use switch::*;
@@ -834,18 +836,6 @@ pub(crate) enum ScanNoun {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct IndexArgs {
-    #[command(subcommand)]
-    pub(crate) noun: IndexNoun,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum IndexNoun {
-    /// Write the local tools JSON index.
-    Tools(IndexToolsArgs),
-}
-
-#[derive(Debug, Args)]
 pub(crate) struct AgentArgs {
     #[command(subcommand)]
     pub(crate) command: AgentCommand,
@@ -1072,16 +1062,6 @@ pub(crate) struct ToolsScope {
     /// Shortcut for --format json.
     #[arg(long)]
     pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct IndexToolsArgs {
-    /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
-    #[arg(long = "root")]
-    pub(crate) roots: Vec<PathBuf>,
-    /// Index JSON path. Defaults under the scanned root.
-    #[arg(long)]
-    pub(crate) index: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
