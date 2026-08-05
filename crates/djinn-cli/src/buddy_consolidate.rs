@@ -7,12 +7,13 @@ use djinn_memory::AgentSessionId;
 use serde::Serialize;
 
 use crate::buddy::{
-    safe_folder_session_slug, write_buddy_runtime_state, BuddyBridgeBackend, BuddyRuntimeState,
-    BuddySessionBackend, BuddySessionListRecord,
+    write_buddy_runtime_state, BuddyBridgeBackend, BuddyRuntimeState, BuddySessionBackend,
+    BuddySessionListRecord,
 };
 use crate::{
     ensure_trailing_newline, folder_session_reference_name, list_folder_sessions_in_root,
-    non_empty_string, toml_string, yes_no, FolderSessionSummary, SessionConsolidateArgs,
+    non_empty_string, safe_folder_session_slug, toml_string, yes_no, FolderSessionSummary,
+    SessionConsolidateArgs,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

@@ -11,9 +11,9 @@ use djinn_memory::{AgentSession, AgentSessionEvent, AgentSessionEventKind, Agent
 
 use crate::{
     ensure_trailing_newline, folder_session_manifest_meta, read_event_turn_pairs,
-    read_folder_session_manifest, resolve_session_dir, session_manifest_workspace_path,
-    shell::shell_quote_if_needed as shell_quote, write_folder_session_events_jsonl, yes_no,
-    OutputFormat,
+    read_folder_session_manifest, resolve_session_dir, safe_folder_session_slug,
+    session_manifest_workspace_path, shell::shell_quote_if_needed as shell_quote,
+    write_folder_session_events_jsonl, yes_no, OutputFormat,
 };
 
 pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
@@ -1404,28 +1404,6 @@ fn fallback_buddy_session_id(session_dir: &Path) -> AgentSessionId {
         .and_then(|name| name.to_str())
         .unwrap_or("folder-session");
     AgentSessionId::new(format!("buddy_{}", safe_folder_session_slug(name)))
-}
-
-pub(crate) fn safe_folder_session_slug(value: &str) -> String {
-    let mut slug = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    while slug.contains("__") {
-        slug = slug.replace("__", "_");
-    }
-    let slug = slug.trim_matches('_').to_string();
-    if slug.is_empty() {
-        "session".to_string()
-    } else {
-        slug
-    }
 }
 
 pub(crate) fn ensure_buddy_session_binding(

@@ -3,7 +3,7 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
 use std::net::TcpListener;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
 #[cfg(test)]
@@ -56,6 +56,7 @@ mod session_context;
 mod session_events;
 mod session_init;
 mod session_list;
+mod session_reference;
 mod session_registry;
 mod session_remove;
 mod session_status;
@@ -122,6 +123,18 @@ pub(crate) use session_list::FolderSessionSummary;
 use session_list::{compact_session_list_datetime, parse_session_list_datetime_ms};
 use session_list::{
     folder_session_event_health_label, format_folder_session_ls, list_cache_folder_sessions,
+};
+pub(crate) use session_reference::{
+    auto_folder_session_dir, default_folder_session_root, folder_session_display_name,
+    folder_session_reference_name, folder_session_slug, is_named_folder_session_reference,
+    resolve_existing_folder_session_dir, resolve_existing_folder_session_reference,
+    resolve_existing_folder_session_reference_in_root, resolve_session_dir,
+    resolve_session_dir_in_root, safe_folder_session_slug,
+};
+#[cfg(test)]
+use session_reference::{
+    resolve_buddy_session_reference_in_root, resolve_folder_session_reference_name,
+    short_agent_session_suffix, short_agent_session_suffix_from_str,
 };
 #[cfg(test)]
 use session_registry::shorten_folder_session_names_in_root;
@@ -5686,65 +5699,6 @@ fn buddy_command_doctor_report(session: Option<&Path>) -> Result<BuddyCommandDoc
     Ok(report)
 }
 
-fn resolve_buddy_session_reference_in_root(
-    root: &Path,
-    reference: &Path,
-) -> Result<Option<(PathBuf, String)>> {
-    if !is_named_folder_session_reference(reference) {
-        return Ok(None);
-    }
-    let Some(reference) = reference
-        .to_str()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-    if !root.is_dir() {
-        return Ok(None);
-    }
-
-    let entries = fs::read_dir(root)
-        .with_context(|| format!("reading folder session root {}", root.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut matches = Vec::new();
-    for entry in entries {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let runtime_path = path.join("runtime/buddy.json");
-        let Some(runtime) = read_buddy_runtime_state(&runtime_path)? else {
-            continue;
-        };
-        let Some(buddy_session) = runtime
-            .buddy_session
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        let matches_current = buddy_session == reference;
-        let matches_stale = runtime
-            .stale_buddy_sessions
-            .iter()
-            .any(|id| id.trim() == reference);
-        if matches_current || matches_stale {
-            matches.push((path, buddy_session.to_string()));
-        }
-    }
-    matches.sort_by(|a, b| a.0.cmp(&b.0));
-    match matches.len() {
-        0 => Ok(None),
-        1 => Ok(matches.pop()),
-        _ => bail!(
-            "ambiguous Buddy session reference `{reference}` matched {} folder sessions; run `djinn session consolidate --dry-run` and remove duplicate bindings",
-            matches.len()
-        ),
-    }
-}
-
 fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
     let root = default_folder_session_root();
     let report = consolidate_sessions_in_root(&root, &args)?;
@@ -5754,61 +5708,6 @@ fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
         print!("{}", format_session_consolidate_report(&report));
     }
     Ok(())
-}
-
-pub(crate) fn folder_session_display_name(name: &str) -> String {
-    let stripped = name
-        .split_once("-agt_")
-        .map(|(prefix, _)| prefix)
-        .unwrap_or(name)
-        .trim_matches('-')
-        .trim();
-    if stripped.is_empty() {
-        "session".to_string()
-    } else {
-        stripped.to_string()
-    }
-}
-
-fn folder_session_reference_name(name: &str) -> String {
-    let display = folder_session_display_name(name);
-    let Some((_, suffix)) = name.split_once("-agt_") else {
-        return display;
-    };
-    format!(
-        "{display}-{}",
-        short_agent_session_suffix_from_str(&format!("agt_{suffix}"))
-    )
-}
-
-fn short_agent_session_suffix(id: &AgentSessionId) -> String {
-    short_agent_session_suffix_from_str(&id.to_string())
-}
-
-fn short_agent_session_suffix_from_str(value: &str) -> String {
-    let raw = value.strip_prefix("agt_").unwrap_or(value);
-    let token = raw.split('_').next().unwrap_or(raw);
-    let prefix = token
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .take(10)
-        .collect::<String>();
-    let prefix = if prefix.is_empty() {
-        folder_session_slug(token)
-            .chars()
-            .take(10)
-            .collect::<String>()
-    } else {
-        prefix
-    };
-    let prefix = if prefix.is_empty() {
-        "session".to_string()
-    } else {
-        prefix
-    };
-    let digest = Sha256::digest(value.as_bytes());
-    let digest = format!("{digest:x}");
-    format!("{}-{}", prefix, &digest[..4])
 }
 
 pub(crate) fn load_folder_native_agent_session(
@@ -5898,61 +5797,6 @@ fn truncate_table_cell(value: &str, max_chars: usize) -> String {
     let mut truncated = value.chars().take(max_chars - 1).collect::<String>();
     truncated.push('…');
     truncated
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FolderSessionReferenceResolution {
-    session_dir: PathBuf,
-    buddy_session: Option<String>,
-}
-
-impl FolderSessionReferenceResolution {
-    fn map_buddy_for_launch(self) -> (PathBuf, Option<String>) {
-        (self.session_dir, self.buddy_session)
-    }
-}
-
-fn resolve_existing_folder_session_reference(
-    dir: &Path,
-) -> Result<FolderSessionReferenceResolution> {
-    resolve_existing_folder_session_reference_in_root(dir, &default_folder_session_root())
-}
-
-fn resolve_existing_folder_session_reference_in_root(
-    dir: &Path,
-    root: &Path,
-) -> Result<FolderSessionReferenceResolution> {
-    let session_dir = resolve_session_dir_in_root(dir, root)?;
-    if session_dir.exists() {
-        if !session_dir.is_dir() {
-            bail!(
-                "folder session path is not a directory: {}",
-                session_dir.display()
-            );
-        }
-        return Ok(FolderSessionReferenceResolution {
-            session_dir,
-            buddy_session: None,
-        });
-    }
-
-    if let Some((session_dir, buddy_session)) = resolve_buddy_session_reference_in_root(root, dir)?
-    {
-        return Ok(FolderSessionReferenceResolution {
-            session_dir,
-            buddy_session: Some(buddy_session),
-        });
-    }
-
-    bail!(
-        "folder session does not exist: {}\nrun: djinn session init {}",
-        session_dir.display(),
-        dir.display()
-    )
-}
-
-pub(crate) fn resolve_existing_folder_session_dir(dir: &Path) -> Result<PathBuf> {
-    Ok(resolve_existing_folder_session_reference(dir)?.session_dir)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6856,97 +6700,6 @@ fn resolve_agent_request_prompt(
     Ok(prompt)
 }
 
-pub(crate) fn resolve_session_dir(path: &Path) -> Result<PathBuf> {
-    resolve_session_dir_in_root(path, &default_folder_session_root())
-}
-
-fn resolve_session_dir_in_root(path: &Path, root: &Path) -> Result<PathBuf> {
-    if path.as_os_str().is_empty() {
-        bail!("session name or directory path cannot be empty");
-    }
-    if is_named_folder_session_reference(path) {
-        let direct = root.join(path);
-        if direct.exists() {
-            return Ok(direct);
-        }
-        if let Some(resolved) = resolve_folder_session_reference_name(&root, path)? {
-            return Ok(resolved);
-        }
-        return Ok(direct);
-    }
-    Ok(path.to_path_buf())
-}
-
-fn resolve_folder_session_reference_name(root: &Path, path: &Path) -> Result<Option<PathBuf>> {
-    let Some(reference) = path.to_str() else {
-        return Ok(None);
-    };
-    if !root.is_dir() {
-        return Ok(None);
-    }
-    let mut matches = Vec::new();
-    let entries = fs::read_dir(root)
-        .with_context(|| format!("reading folder session root {}", root.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    for entry in entries {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if folder_session_reference_name(name) == reference {
-            matches.push(path);
-        }
-    }
-    matches.sort();
-    match matches.len() {
-        0 => Ok(None),
-        1 => Ok(matches.pop()),
-        _ => bail!(
-            "ambiguous folder session reference `{reference}` matched {} sessions; use the full folder name or path",
-            matches.len()
-        ),
-    }
-}
-
-pub(crate) fn default_folder_session_root() -> PathBuf {
-    djinn_core::default_cache_dir().join("sessions")
-}
-
-fn auto_folder_session_dir(prompt: &str, id: &AgentSessionId) -> PathBuf {
-    let title = prompt_title(prompt, "session");
-    default_folder_session_root().join(format!(
-        "{}-{}",
-        folder_session_slug(&title),
-        short_agent_session_suffix(id)
-    ))
-}
-
-pub(crate) fn folder_session_slug(value: &str) -> String {
-    let mut slug = String::new();
-    let mut last_dash = false;
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-            last_dash = false;
-        } else if !last_dash && !slug.is_empty() {
-            slug.push('-');
-            last_dash = true;
-        }
-        if slug.len() >= 48 {
-            break;
-        }
-    }
-    let slug = slug.trim_matches('-').to_string();
-    if slug.is_empty() {
-        "session".to_string()
-    } else {
-        slug
-    }
-}
-
 fn ensure_folder_session_readme(session_dir: &Path) -> Result<()> {
     let context_dir = session_dir.join("context");
     let readme_path = context_dir.join("djinn-context.md");
@@ -6957,14 +6710,6 @@ fn ensure_folder_session_readme(session_dir: &Path) -> Result<()> {
         .with_context(|| format!("creating context directory {}", context_dir.display()))?;
     fs::write(&readme_path, session_context_readme(None, Path::new("")))
         .with_context(|| format!("writing {}", readme_path.display()))
-}
-
-fn is_named_folder_session_reference(path: &Path) -> bool {
-    if path.is_absolute() {
-        return false;
-    }
-    let mut components = path.components();
-    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
