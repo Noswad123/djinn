@@ -219,7 +219,7 @@ pub(crate) use session_reference::{
 #[cfg(test)]
 use session_reference::{
     resolve_buddy_session_reference_in_root, resolve_folder_session_reference_name,
-    short_agent_session_suffix, short_agent_session_suffix_from_str,
+    short_agent_session_suffix,
 };
 #[cfg(test)]
 use session_registry::rename_folder_session_in_root;
@@ -6208,37 +6208,6 @@ link = "context/repo"
         assert_eq!(limited.groups[0].repo, "repo-a");
 
         let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn folder_session_display_name_hides_native_id_suffix() {
-        assert_eq!(
-            folder_session_display_name("write-plan-agt_1785201896467199000_123_0"),
-            "write-plan"
-        );
-        assert_eq!(
-            folder_session_reference_name("write-plan-agt_1785201896467199000_123_0"),
-            format!(
-                "write-plan-{}",
-                short_agent_session_suffix_from_str("agt_1785201896467199000_123_0")
-            )
-        );
-        assert_eq!(
-            folder_session_display_name("session-agt_1785201896467199000_123_0"),
-            "session"
-        );
-        assert_eq!(
-            folder_session_reference_name("session-agt_1785201896467199000_123_0"),
-            format!(
-                "session-{}",
-                short_agent_session_suffix_from_str("agt_1785201896467199000_123_0")
-            )
-        );
-        assert_eq!(folder_session_display_name("manual-notes"), "manual-notes");
-        assert_eq!(
-            folder_session_reference_name("manual-notes"),
-            "manual-notes"
-        );
     }
 
     #[test]

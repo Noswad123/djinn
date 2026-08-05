@@ -300,3 +300,39 @@ pub(crate) fn is_named_folder_session_reference(path: &Path) -> bool {
     let mut components = path.components();
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_session_display_name_hides_native_id_suffix() {
+        assert_eq!(
+            folder_session_display_name("write-plan-agt_1785201896467199000_123_0"),
+            "write-plan"
+        );
+        assert_eq!(
+            folder_session_reference_name("write-plan-agt_1785201896467199000_123_0"),
+            format!(
+                "write-plan-{}",
+                short_agent_session_suffix_from_str("agt_1785201896467199000_123_0")
+            )
+        );
+        assert_eq!(
+            folder_session_display_name("session-agt_1785201896467199000_123_0"),
+            "session"
+        );
+        assert_eq!(
+            folder_session_reference_name("session-agt_1785201896467199000_123_0"),
+            format!(
+                "session-{}",
+                short_agent_session_suffix_from_str("agt_1785201896467199000_123_0")
+            )
+        );
+        assert_eq!(folder_session_display_name("manual-notes"), "manual-notes");
+        assert_eq!(
+            folder_session_reference_name("manual-notes"),
+            "manual-notes"
+        );
+    }
+}
