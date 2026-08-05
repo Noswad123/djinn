@@ -786,3 +786,299 @@ fn format_pointer(base: &str, child: &str) -> String {
         format!("{}/{}", base, json_pointer_escape(child))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::config_doctor::copilot_config_doctor_from_value;
+    use crate::config_format::{format_config_export_preview, format_config_import_preview};
+    use crate::config_model::{
+        DjinnConfigCommandTemplate, DjinnConfigFileReport, DjinnConfigLoadReport,
+        DjinnConfigPermission, DjinnConfigProfile, DjinnConfigProvider,
+    };
+    use crate::OutputFormat;
+
+    #[test]
+    fn opencode_config_import_preview_maps_patch_without_secret_values() {
+        let value: Value = serde_json::from_str(
+            r#"{
+              "model": "openai/gpt-4.1-mini",
+              "default_agent": "coder",
+              "enabled_providers": ["openai", "github-copilot"],
+              "agent": {
+                "coder": {
+                  "model": "copilot/gpt-4.1",
+                  "permissions": [
+                    {"action": "bash", "resource": "cargo test", "effect": "ask"}
+                  ]
+                }
+              },
+              "permission": {
+                "read": {"src/**": "allow"}
+              },
+              "providers": {
+                "openai": {"apiKey": "sk-secret"}
+              },
+              "commands": {"test": "cargo test"}
+            }"#,
+        )
+        .unwrap();
+
+        let preview = opencode_config_import_preview_from_values(
+            vec!["/tmp/opencode.json".to_string()],
+            vec![(PathBuf::from("/tmp/opencode.json"), value)],
+            Vec::new(),
+        );
+
+        assert_eq!(preview.patch.default_profile.as_deref(), Some("coder"));
+        assert_eq!(
+            preview
+                .patch
+                .profiles
+                .get("coder")
+                .and_then(|profile| profile.model.as_deref()),
+            Some("copilot/gpt-4.1")
+        );
+        assert!(preview.patch.providers.contains_key("openai"));
+        assert!(preview.patch.providers.contains_key("github-copilot"));
+        assert!(preview.patch.providers.contains_key("copilot"));
+        assert_eq!(
+            preview
+                .patch
+                .providers
+                .get("openai")
+                .and_then(|provider| provider.auth.as_deref()),
+            Some("opencode:/providers/openai/apiKey")
+        );
+        assert!(preview
+            .patch
+            .permissions
+            .iter()
+            .any(|permission| permission.action == "read"
+                && permission.resource == "src/**"
+                && permission.effect == "allow"));
+        assert!(preview
+            .patch
+            .profiles
+            .get("coder")
+            .unwrap()
+            .permissions
+            .iter()
+            .any(|permission| permission.action == "shell"
+                && permission.resource == "cargo test"
+                && permission.effect == "ask"));
+        assert!(preview
+            .unsupported
+            .iter()
+            .any(|finding| finding.pointer == "/commands"));
+        assert!(preview
+            .secrets
+            .iter()
+            .any(|finding| finding.pointer == "/providers/openai/apiKey"));
+
+        let rendered = format_config_import_preview(&preview, OutputFormat::Text).unwrap();
+        assert!(rendered.contains("default_profile: coder"));
+        assert!(rendered.contains("model: copilot/gpt-4.1"));
+        assert!(rendered.contains("opencode:/providers/openai/apiKey"));
+        assert!(!rendered.contains("sk-secret"));
+    }
+
+    #[test]
+    fn opencode_config_export_preview_projects_native_config_without_secret_values() {
+        let mut config = DjinnConfig::default();
+        config.default_profile = Some("coder".to_string());
+        config.providers.insert(
+            "openai".to_string(),
+            DjinnConfigProvider {
+                provider_type: "openai".to_string(),
+                auth: Some("sk-secret".to_string()),
+                endpoint: None,
+            },
+        );
+        config.profiles.insert(
+            "coder".to_string(),
+            DjinnConfigProfile {
+                model: Some("openai/gpt-4.1".to_string()),
+                instructions: vec!["AGENTS.md".to_string()],
+                permissions: vec![DjinnConfigPermission {
+                    action: "shell".to_string(),
+                    resource: "cargo test".to_string(),
+                    effect: "ask".to_string(),
+                }],
+                tools: Vec::new(),
+                agent: None,
+            },
+        );
+        config.permissions.push(DjinnConfigPermission {
+            action: "read".to_string(),
+            resource: "src/**".to_string(),
+            effect: "allow".to_string(),
+        });
+        config.commands.insert(
+            "test".to_string(),
+            DjinnConfigCommandTemplate {
+                prompt: "Run tests".to_string(),
+                description: None,
+            },
+        );
+
+        let preview = opencode_config_export_preview_from_load_report(DjinnConfigLoadReport {
+            checked_paths: vec!["/tmp/djinn.json".to_string()],
+            files: vec![DjinnConfigFileReport {
+                path: "/tmp/djinn.json".to_string(),
+                exists: true,
+                readable: true,
+                errors: Vec::new(),
+            }],
+            effective: config,
+            warnings: Vec::new(),
+        });
+
+        assert_eq!(preview.target, "opencode");
+        assert_eq!(preview.config["default_agent"], "coder");
+        assert_eq!(preview.config["model"], "openai/gpt-4.1");
+        assert_eq!(preview.config["agent"]["coder"]["model"], "openai/gpt-4.1");
+        assert_eq!(
+            preview.config["agent"]["coder"]["permissions"][0]["action"],
+            "bash"
+        );
+        assert_eq!(preview.config["permissions"][0]["action"], "read");
+        assert!(preview
+            .unsupported
+            .iter()
+            .any(|finding| finding.pointer == "/commands"));
+        assert!(preview
+            .unsupported
+            .iter()
+            .any(|finding| finding.pointer == "/profiles/coder/instructions"));
+        assert!(preview
+            .secrets
+            .iter()
+            .any(|finding| finding.pointer == "/providers/openai/auth"));
+
+        let rendered = format_config_export_preview(&preview, OutputFormat::Json).unwrap();
+        assert!(rendered.contains("openai/gpt-4.1"));
+        assert!(!rendered.contains("sk-secret"));
+    }
+
+    #[test]
+    fn copilot_config_doctor_and_import_preview_map_models_without_tokens() {
+        let value: Value = serde_json::from_str(
+            r#"{
+              "oauth_token": "ghu-secret-token",
+              "models": ["gpt-4.1", {"id": "claude-sonnet-4"}],
+              "unknownFlag": true
+            }"#,
+        )
+        .unwrap();
+
+        let doctor = copilot_config_doctor_from_value(Path::new("/tmp/copilot.json"), &value);
+        assert!(doctor.mapped.iter().any(|finding| finding.pointer == "/"));
+        assert!(doctor
+            .secrets
+            .iter()
+            .any(|finding| finding.pointer == "/oauth_token"));
+        assert!(doctor
+            .unknown
+            .iter()
+            .any(|finding| finding.pointer == "/unknownFlag"));
+
+        let preview = copilot_config_import_preview_from_values(
+            vec!["/tmp/copilot.json".to_string()],
+            vec![(PathBuf::from("/tmp/copilot.json"), value)],
+            Vec::new(),
+        );
+        assert_eq!(preview.source, "copilot");
+        assert_eq!(
+            preview
+                .patch
+                .providers
+                .get("copilot")
+                .and_then(|provider| provider.auth.as_deref()),
+            Some("auto")
+        );
+        assert_eq!(
+            preview
+                .patch
+                .profiles
+                .get("default")
+                .and_then(|profile| profile.model.as_deref()),
+            Some("copilot/gpt-4.1")
+        );
+        let rendered = format_config_import_preview(&preview, OutputFormat::Json).unwrap();
+        assert!(rendered.contains("copilot/gpt-4.1"));
+        assert!(!rendered.contains("ghu-secret-token"));
+    }
+
+    #[test]
+    fn copilot_config_import_preview_without_sources_does_not_invent_provider() {
+        let preview = copilot_config_import_preview_from_values(Vec::new(), Vec::new(), Vec::new());
+
+        assert!(preview.readable_files.is_empty());
+        assert!(preview.patch.providers.is_empty());
+        assert!(preview.patch.profiles.is_empty());
+        assert!(preview
+            .warnings
+            .iter()
+            .any(|warning| warning == "no readable Copilot config files found"));
+    }
+
+    #[test]
+    fn copilot_config_export_preview_projects_native_config_without_secret_values() {
+        let mut config = DjinnConfig::default();
+        config.default_profile = Some("default".to_string());
+        config.providers.insert(
+            "copilot".to_string(),
+            DjinnConfigProvider {
+                provider_type: "copilot".to_string(),
+                auth: Some("ghu-secret-token".to_string()),
+                endpoint: None,
+            },
+        );
+        config.profiles.insert(
+            "default".to_string(),
+            DjinnConfigProfile {
+                model: Some("copilot/gpt-4.1".to_string()),
+                instructions: Vec::new(),
+                permissions: vec![DjinnConfigPermission {
+                    action: "shell".to_string(),
+                    resource: "*".to_string(),
+                    effect: "ask".to_string(),
+                }],
+                tools: Vec::new(),
+                agent: None,
+            },
+        );
+
+        let preview = copilot_config_export_preview_from_load_report(DjinnConfigLoadReport {
+            checked_paths: vec!["/tmp/djinn.json".to_string()],
+            files: vec![DjinnConfigFileReport {
+                path: "/tmp/djinn.json".to_string(),
+                exists: true,
+                readable: true,
+                errors: Vec::new(),
+            }],
+            effective: config,
+            warnings: Vec::new(),
+        });
+
+        assert_eq!(preview.target, "copilot");
+        assert_eq!(preview.config["provider"], "github-copilot");
+        assert_eq!(preview.config["model"], "gpt-4.1");
+        assert_eq!(preview.config["models"][0], "gpt-4.1");
+        assert!(preview
+            .unsupported
+            .iter()
+            .any(|finding| finding.pointer == "/profiles"));
+        assert!(preview
+            .secrets
+            .iter()
+            .any(|finding| finding.pointer == "/providers/copilot/auth"));
+
+        let rendered = format_config_export_preview(&preview, OutputFormat::Json).unwrap();
+        assert!(rendered.contains("gpt-4.1"));
+        assert!(!rendered.contains("ghu-secret-token"));
+    }
+}
