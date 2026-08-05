@@ -9,9 +9,8 @@ use serde::Serialize;
 use crate::shell::shell_quote;
 use crate::{
     compact_text_snippet, default_folder_session_root, ensure_trailing_newline,
-    folder_session_display_name, latest_event_rebuild_backup_path, read_folder_session_turns,
-    read_optional_markdown_file, resolve_existing_folder_session_dir, toml_string, yes_no,
-    FolderSessionTurnDigest,
+    folder_session_display_name, read_folder_session_turns, read_optional_markdown_file,
+    resolve_existing_folder_session_dir, toml_string, yes_no, FolderSessionTurnDigest,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -43,6 +42,25 @@ pub(crate) struct SessionEventTurnPair {
     pub(crate) response: String,
     pub(crate) request_line: usize,
     pub(crate) response_line: usize,
+}
+
+pub(crate) fn latest_event_rebuild_backup_path(session_dir: &Path) -> Option<PathBuf> {
+    let backup_root = session_dir.join(".djinn/backups");
+    let mut entries = fs::read_dir(&backup_root)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.starts_with("events-rebuild-"))
+                    .unwrap_or(false)
+                && path.join("backup.toml").is_file()
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.pop()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

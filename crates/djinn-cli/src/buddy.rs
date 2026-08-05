@@ -1463,6 +1463,30 @@ pub(crate) fn ensure_buddy_session_binding(
     })
 }
 
+pub(crate) fn ensure_folder_session_buddy_binding_for_ask(
+    session_dir: &Path,
+    session: &AgentSession,
+    workspace: &Path,
+    buddy_backend: &dyn BuddySessionBackend,
+) -> Result<BuddySessionBinding> {
+    let runtime_path = session_dir.join("runtime/buddy.json");
+    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
+    ensure_buddy_session_binding(
+        buddy_backend,
+        BuddyBindingInput {
+            session_dir: session_dir.to_path_buf(),
+            title: Some(session.meta.title.clone()).and_then(nonempty_owned_string),
+            requested_workspace: Some(workspace.to_path_buf()),
+            previous_runtime,
+        },
+    )
+}
+
+fn nonempty_owned_string(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
 pub(crate) fn promote_stale_buddy_workspace(
     session_dir: &Path,
     buddy_backend: &dyn BuddySessionBackend,

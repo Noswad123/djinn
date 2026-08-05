@@ -108,8 +108,9 @@ use session_context::{
 use session_events::{
     ensure_event_health_strict, event_health_report_for_cache_sessions, format_event_health_report,
     format_session_project_events_report, format_session_restore_events_report,
-    format_session_validate_events_report, project_folder_session_events, projected_event_turn_id,
-    read_event_turn_pairs, rebuild_folder_session_from_events, restore_folder_session_event_backup,
+    format_session_validate_events_report, latest_event_rebuild_backup_path,
+    project_folder_session_events, projected_event_turn_id, read_event_turn_pairs,
+    rebuild_folder_session_from_events, restore_folder_session_event_backup,
     validate_folder_session_events,
 };
 #[cfg(test)]
@@ -5031,25 +5032,6 @@ fn handle_folder_session_tui_action(
     }
 }
 
-fn latest_event_rebuild_backup_path(session_dir: &Path) -> Option<PathBuf> {
-    let backup_root = session_dir.join(".djinn/backups");
-    let mut entries = fs::read_dir(&backup_root)
-        .ok()?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.is_dir()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(|name| name.starts_with("events-rebuild-"))
-                    .unwrap_or(false)
-                && path.join("backup.toml").is_file()
-        })
-        .collect::<Vec<_>>();
-    entries.sort();
-    entries.pop()
-}
-
 fn run_session_command(command: SessionCommand) -> Result<()> {
     match command {
         SessionCommand::Init(args) => session_init(args),
@@ -6284,25 +6266,6 @@ fn resolve_agent_request_prompt(
         bail!("request prompt is empty: {}", request_path.display());
     }
     Ok(prompt)
-}
-
-fn ensure_folder_session_buddy_binding_for_ask(
-    session_dir: &Path,
-    session: &AgentSession,
-    workspace: &Path,
-    buddy_backend: &dyn BuddySessionBackend,
-) -> Result<BuddySessionBinding> {
-    let runtime_path = session_dir.join("runtime/buddy.json");
-    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    ensure_buddy_session_binding(
-        buddy_backend,
-        BuddyBindingInput {
-            session_dir: session_dir.to_path_buf(),
-            title: nonempty_owned_string(Some(session.meta.title.clone())),
-            requested_workspace: Some(workspace.to_path_buf()),
-            previous_runtime,
-        },
-    )
 }
 
 pub(crate) fn ensure_trailing_newline(value: &str) -> String {
