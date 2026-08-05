@@ -98,6 +98,7 @@ use session_artifact::{
     fallback_folder_session_open_target, resolve_folder_session_open_target, SessionOpenTarget,
 };
 use session_compact::compact_folder_session;
+pub(crate) use session_context::read_folder_session_context_file;
 #[cfg(test)]
 use session_context::validate_context_entry_name;
 use session_context::{
@@ -5729,27 +5730,6 @@ fn truncate_table_cell(value: &str, max_chars: usize) -> String {
     truncated
 }
 
-#[cfg(unix)]
-fn create_context_symlink(target: &Path, link: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(target, link)
-        .with_context(|| format!("linking {} -> {}", link.display(), target.display()))
-}
-
-#[cfg(windows)]
-fn create_context_symlink(target: &Path, link: &Path) -> Result<()> {
-    if target.is_dir() {
-        std::os::windows::fs::symlink_dir(target, link)
-    } else {
-        std::os::windows::fs::symlink_file(target, link)
-    }
-    .with_context(|| format!("linking {} -> {}", link.display(), target.display()))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn create_context_symlink(_target: &Path, _link: &Path) -> Result<()> {
-    bail!("context symlinks are not supported on this platform")
-}
-
 fn run_agents(args: AgentsArgs) -> Result<()> {
     match args.command {
         AgentsCommand::List(args) => agents_list(args),
@@ -6663,68 +6643,6 @@ fn resolve_folder_session_context_instructions(
         });
     }
     Ok(resolved)
-}
-
-fn read_folder_session_context_file(
-    path: &Path,
-    label: &str,
-    skipped: &mut Vec<String>,
-) -> Result<Option<String>> {
-    let Ok(symlink_metadata) = fs::symlink_metadata(path) else {
-        return Ok(None);
-    };
-    if symlink_metadata.is_dir() {
-        skipped.push(format!("{label}: directory not ingested"));
-        return Ok(None);
-    }
-    if symlink_metadata.file_type().is_symlink() {
-        let target_metadata = fs::metadata(path)
-            .with_context(|| format!("reading symlink target metadata {}", path.display()))?;
-        if target_metadata.is_dir() {
-            skipped.push(format!("{label}: symlink directory not ingested"));
-            return Ok(None);
-        }
-    } else if !symlink_metadata.is_file() {
-        skipped.push(format!("{label}: not a regular file"));
-        return Ok(None);
-    }
-    if !is_folder_session_context_text_file(path) {
-        skipped.push(format!("{label}: unsupported file type"));
-        return Ok(None);
-    }
-    let metadata =
-        fs::metadata(path).with_context(|| format!("reading metadata {}", path.display()))?;
-    if metadata.len() > FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES {
-        skipped.push(format!(
-            "{label}: {} bytes exceeds {} byte limit",
-            metadata.len(),
-            FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES
-        ));
-        return Ok(None);
-    }
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("reading session context file {}", path.display()))?;
-    let content = content.trim_end().to_string();
-    if content.trim().is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(content))
-}
-
-fn is_folder_session_context_text_file(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    if matches!(name, "README" | "NOTES" | "TODO") {
-        return true;
-    }
-    matches!(
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .map(|extension| extension.to_ascii_lowercase())
-            .as_deref(),
-        Some("md" | "markdown" | "txt" | "text")
-    )
 }
 
 fn top_level_ask(args: AgentAskArgs) -> Result<()> {
