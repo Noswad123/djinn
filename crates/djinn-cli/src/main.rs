@@ -91,14 +91,13 @@ mod shell;
 mod skills_commands;
 mod stores;
 mod text;
+mod toml_util;
 mod tools_commands;
 mod tui_dashboard;
 pub(crate) use agent_ask_command::session_run;
-use agent_ask_command::{legacy_agent_ask, top_level_ask};
-use agent_commands::{
-    agent_config_list, agent_config_show, agent_policy_audit, agent_policy_list,
-    agent_policy_revoke, agent_tools_list, agent_tools_show, agents_list, agents_show,
-};
+use agent_ask_command::top_level_ask;
+pub(crate) use agent_commands::warn_legacy_agent_command;
+use agent_commands::{run_agent, run_agents};
 #[cfg(test)]
 use agent_config::AgentEffectivePolicyRule;
 #[cfg(test)]
@@ -108,7 +107,6 @@ use agent_config::{
     format_agent_policy_revoke_report, format_agent_tool_spec, format_agent_tool_specs,
     resolve_agent_tool_spec, AgentEffectiveConfig, AgentPolicyRevokeReport,
 };
-use agent_file_history::{agent_file_history_list, agent_file_history_restore};
 #[cfg(test)]
 use agent_instructions::read_agent_instruction_file;
 use agent_instructions::ResolvedAgentInstruction;
@@ -332,6 +330,7 @@ pub(crate) use text::{
     ensure_trailing_newline, non_empty_string, output_format, plural_suffix, truncate,
     truncate_table_cell, yes_no,
 };
+pub(crate) use toml_util::upsert_toml_root_string;
 use tools_commands::{
     index_tools, list_tools, open_tool, scan_tools_command, search_tools, show_tool,
 };
@@ -2207,44 +2206,6 @@ fn push_unique_string(values: &mut Vec<String>, value: &str) {
     }
 }
 
-fn run_agent(args: AgentArgs) -> Result<()> {
-    match args.command {
-        AgentCommand::Config(args) => {
-            warn_legacy_agent_command(
-                "agent config",
-                Some("prefer `djinn agents ...`, `djinn ask`, and `djinn session ...`"),
-            );
-            run_agent_config(args)
-        }
-        AgentCommand::Tools(args) => {
-            warn_legacy_agent_command(
-                "agent tools",
-                Some("prefer top-level tool inspection commands"),
-            );
-            run_agent_tools(args)
-        }
-        AgentCommand::Policy(args) => {
-            warn_legacy_agent_command("agent policy", Some("policy remains legacy-only for now"));
-            run_agent_policy(args)
-        }
-        AgentCommand::FileHistory(args) => {
-            warn_legacy_agent_command(
-                "agent file-history",
-                Some("file history remains legacy-only for now"),
-            );
-            run_agent_file_history(args)
-        }
-        AgentCommand::Ask(args) => legacy_agent_ask(args),
-    }
-}
-
-fn warn_legacy_agent_command(command: &str, replacement: Option<&str>) {
-    let replacement = replacement
-        .map(|replacement| format!("; {replacement}"))
-        .unwrap_or_default();
-    eprintln!("warning: `djinn {command}` is deprecated compatibility surface{replacement}");
-}
-
 fn run_session(args: SessionArgs) -> Result<()> {
     match args.command {
         Some(command) => run_session_command(command),
@@ -2292,63 +2253,6 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::ShortenNames(args) => session_shorten_names(args),
         SessionCommand::Rm(args) => session_rm(args),
     }
-}
-
-fn run_agents(args: AgentsArgs) -> Result<()> {
-    match args.command {
-        AgentsCommand::List(args) => agents_list(args),
-        AgentsCommand::Show(args) => agents_show(args),
-    }
-}
-
-fn run_agent_config(args: AgentConfigArgs) -> Result<()> {
-    match args.command {
-        AgentConfigCommand::List(args) => agent_config_list(args),
-        AgentConfigCommand::Show(args) => agent_config_show(args),
-    }
-}
-
-fn run_agent_tools(args: AgentToolsArgs) -> Result<()> {
-    match args.command {
-        AgentToolsCommand::List(args) => agent_tools_list(args),
-        AgentToolsCommand::Show(args) => agent_tools_show(args),
-    }
-}
-
-fn run_agent_policy(args: AgentPolicyArgs) -> Result<()> {
-    match args.command {
-        AgentPolicyCommand::List(args) => agent_policy_list(args),
-        AgentPolicyCommand::Audit(args) => agent_policy_audit(args),
-        AgentPolicyCommand::Revoke(args) => agent_policy_revoke(args),
-    }
-}
-
-fn run_agent_file_history(args: AgentFileHistoryArgs) -> Result<()> {
-    match args.command {
-        AgentFileHistoryCommand::List(args) => agent_file_history_list(args),
-        AgentFileHistoryCommand::Restore(args) => agent_file_history_restore(args),
-    }
-}
-
-pub(crate) fn upsert_toml_root_string(content: &str, key: &str, value: &str) -> Result<String> {
-    let rendered = format!("{key} = {}", toml_string(value)?);
-    let mut replaced = false;
-    let mut output = String::new();
-    for line in content.lines() {
-        if !replaced && line.trim_start().starts_with(&format!("{key} =")) {
-            output.push_str(&rendered);
-            output.push('\n');
-            replaced = true;
-        } else {
-            output.push_str(line);
-            output.push('\n');
-        }
-    }
-    if !replaced {
-        output.push_str(&rendered);
-        output.push('\n');
-    }
-    Ok(output)
 }
 
 #[cfg(test)]

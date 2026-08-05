@@ -2,12 +2,14 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
+use crate::agent_ask_command::legacy_agent_ask;
 use crate::agent_config::{
     agent_policy_audit_report, agent_policy_report, format_agent_config_options,
     format_agent_effective_config, format_agent_policy_audit_report, format_agent_policy_report,
     format_agent_policy_revoke_report, format_agent_tool_spec, format_agent_tool_specs,
     resolve_agent_tool_spec, AgentEffectiveConfig, AgentPolicyRevokeReport,
 };
+use crate::agent_file_history::{agent_file_history_list, agent_file_history_restore};
 use crate::agent_roles::{
     configured_agent_roles, format_agent_role, format_agent_role_list, resolve_agent_role,
     resolve_agent_role_selection_from_config,
@@ -18,10 +20,87 @@ use crate::model_resolution::{
     resolve_agent_model_from_config, resolve_agent_profile,
 };
 use crate::{
-    effective_djinn_config, output_format, resolve_agent_workspace, AgentConfigListArgs,
-    AgentConfigShowArgs, AgentPolicyAuditArgs, AgentPolicyListArgs, AgentPolicyRevokeArgs,
-    AgentToolsListArgs, AgentToolsShowArgs, AgentsListArgs, AgentsShowArgs,
+    effective_djinn_config, output_format, resolve_agent_workspace, AgentArgs, AgentCommand,
+    AgentConfigArgs, AgentConfigCommand, AgentConfigListArgs, AgentConfigShowArgs,
+    AgentFileHistoryArgs, AgentFileHistoryCommand, AgentPolicyArgs, AgentPolicyAuditArgs,
+    AgentPolicyCommand, AgentPolicyListArgs, AgentPolicyRevokeArgs, AgentToolsArgs,
+    AgentToolsCommand, AgentToolsListArgs, AgentToolsShowArgs, AgentsArgs, AgentsCommand,
+    AgentsListArgs, AgentsShowArgs,
 };
+
+pub(crate) fn run_agent(args: AgentArgs) -> Result<()> {
+    match args.command {
+        AgentCommand::Config(args) => {
+            warn_legacy_agent_command(
+                "agent config",
+                Some("prefer `djinn agents ...`, `djinn ask`, and `djinn session ...`"),
+            );
+            run_agent_config(args)
+        }
+        AgentCommand::Tools(args) => {
+            warn_legacy_agent_command(
+                "agent tools",
+                Some("prefer top-level tool inspection commands"),
+            );
+            run_agent_tools(args)
+        }
+        AgentCommand::Policy(args) => {
+            warn_legacy_agent_command("agent policy", Some("policy remains legacy-only for now"));
+            run_agent_policy(args)
+        }
+        AgentCommand::FileHistory(args) => {
+            warn_legacy_agent_command(
+                "agent file-history",
+                Some("file history remains legacy-only for now"),
+            );
+            run_agent_file_history(args)
+        }
+        AgentCommand::Ask(args) => legacy_agent_ask(args),
+    }
+}
+
+pub(crate) fn warn_legacy_agent_command(command: &str, replacement: Option<&str>) {
+    let replacement = replacement
+        .map(|replacement| format!("; {replacement}"))
+        .unwrap_or_default();
+    eprintln!("warning: `djinn {command}` is deprecated compatibility surface{replacement}");
+}
+
+pub(crate) fn run_agents(args: AgentsArgs) -> Result<()> {
+    match args.command {
+        AgentsCommand::List(args) => agents_list(args),
+        AgentsCommand::Show(args) => agents_show(args),
+    }
+}
+
+fn run_agent_config(args: AgentConfigArgs) -> Result<()> {
+    match args.command {
+        AgentConfigCommand::List(args) => agent_config_list(args),
+        AgentConfigCommand::Show(args) => agent_config_show(args),
+    }
+}
+
+fn run_agent_tools(args: AgentToolsArgs) -> Result<()> {
+    match args.command {
+        AgentToolsCommand::List(args) => agent_tools_list(args),
+        AgentToolsCommand::Show(args) => agent_tools_show(args),
+    }
+}
+
+fn run_agent_policy(args: AgentPolicyArgs) -> Result<()> {
+    match args.command {
+        AgentPolicyCommand::List(args) => agent_policy_list(args),
+        AgentPolicyCommand::Audit(args) => agent_policy_audit(args),
+        AgentPolicyCommand::Revoke(args) => agent_policy_revoke(args),
+    }
+}
+
+fn run_agent_file_history(args: AgentFileHistoryArgs) -> Result<()> {
+    match args.command {
+        AgentFileHistoryCommand::List(args) => agent_file_history_list(args),
+        AgentFileHistoryCommand::Restore(args) => agent_file_history_restore(args),
+    }
+}
 
 pub(crate) fn agents_list(args: AgentsListArgs) -> Result<()> {
     let config = effective_djinn_config()?;
