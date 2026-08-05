@@ -364,4 +364,33 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn session_dir_resolution_uses_cache_root_for_bare_names_only() {
+        assert_eq!(
+            resolve_session_dir(Path::new("small-question")).unwrap(),
+            default_folder_session_root().join("small-question")
+        );
+        assert_eq!(
+            resolve_session_dir(Path::new("./small-question")).unwrap(),
+            PathBuf::from("./small-question")
+        );
+        assert_eq!(
+            resolve_session_dir(Path::new("nested/small-question")).unwrap(),
+            PathBuf::from("nested/small-question")
+        );
+    }
+
+    #[test]
+    fn auto_folder_session_dir_uses_prompt_slug_and_session_id_under_cache_root() {
+        let id = AgentSessionId::new("agt_auto_123");
+        assert_eq!(
+            auto_folder_session_dir("Small question: explain Rust?", &id),
+            default_folder_session_root().join(format!(
+                "small-question-explain-rust-{}",
+                short_agent_session_suffix(&id)
+            ))
+        );
+        assert_eq!(folder_session_slug("🧠"), "session");
+    }
 }

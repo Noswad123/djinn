@@ -209,15 +209,13 @@ use session_projection::{
     hydrate_folder_agent_session_from_events_jsonl, project_agent_session_dir,
 };
 #[cfg(test)]
-use session_reference::auto_folder_session_dir;
+use session_reference::resolve_buddy_session_reference_in_root;
 pub(crate) use session_reference::{
     default_folder_session_root, folder_session_display_name, folder_session_reference_name,
     folder_session_slug, is_named_folder_session_reference, resolve_existing_folder_session_dir,
     resolve_existing_folder_session_reference, resolve_existing_folder_session_reference_in_root,
     resolve_session_dir, safe_folder_session_slug,
 };
-#[cfg(test)]
-use session_reference::{resolve_buddy_session_reference_in_root, short_agent_session_suffix};
 #[cfg(test)]
 use session_registry::rename_folder_session_in_root;
 #[cfg(test)]
@@ -7617,35 +7615,6 @@ link = "context/repo"
             .any(|path| path.contains("node_modules")));
 
         let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn session_dir_resolution_uses_cache_root_for_bare_names_only() {
-        assert_eq!(
-            resolve_session_dir(Path::new("small-question")).unwrap(),
-            default_folder_session_root().join("small-question")
-        );
-        assert_eq!(
-            resolve_session_dir(Path::new("./small-question")).unwrap(),
-            PathBuf::from("./small-question")
-        );
-        assert_eq!(
-            resolve_session_dir(Path::new("nested/small-question")).unwrap(),
-            PathBuf::from("nested/small-question")
-        );
-    }
-
-    #[test]
-    fn auto_folder_session_dir_uses_prompt_slug_and_session_id_under_cache_root() {
-        let id = AgentSessionId::new("agt_auto_123");
-        assert_eq!(
-            auto_folder_session_dir("Small question: explain Rust?", &id),
-            default_folder_session_root().join(format!(
-                "small-question-explain-rust-{}",
-                short_agent_session_suffix(&id)
-            ))
-        );
-        assert_eq!(folder_session_slug("🧠"), "session");
     }
 
     #[test]
