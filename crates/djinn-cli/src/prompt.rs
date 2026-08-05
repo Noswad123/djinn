@@ -34,3 +34,25 @@ pub(crate) fn prompt_title(prompt: &str, fallback: &str) -> String {
         .unwrap_or(fallback);
     title.chars().take(80).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_request_prompt_can_read_session_dir_request_md() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-request-md-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("request.md"), "from request file\n").unwrap();
+
+        let prompt = resolve_agent_request_prompt(None, Some(&dir)).unwrap();
+
+        assert_eq!(prompt, "from request file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

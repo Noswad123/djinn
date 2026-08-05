@@ -149,8 +149,6 @@ pub(crate) use promotion_session::{create_promotion_session, session_promote_typ
 pub(crate) use promotion_validation::SessionValidateCandidateEntry;
 pub(crate) use prompt::prompt_title;
 #[cfg(test)]
-use prompt::resolve_agent_request_prompt;
-#[cfg(test)]
 use session_artifact::resolve_folder_session_open_target;
 #[cfg(test)]
 use session_artifact::resolve_folder_session_open_target_in_root;
@@ -7613,23 +7611,6 @@ link = "context/repo"
             .any(|path| path.contains("node_modules")));
 
         let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn agent_request_prompt_can_read_session_dir_request_md() {
-        let dir = std::env::temp_dir().join(format!(
-            "djinn-request-md-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("request.md"), "from request file\n").unwrap();
-
-        let prompt = resolve_agent_request_prompt(None, Some(&dir)).unwrap();
-
-        assert_eq!(prompt, "from request file");
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
