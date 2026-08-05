@@ -460,3 +460,57 @@ fn render_session_manifest(
     }
     Ok(output)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_init_is_idempotent_for_same_identity_but_rejects_conflicts() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-init-identity-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+
+        let args = SessionInitArgs {
+            dir: dir.clone(),
+            link_repo: Some(repo.clone()),
+            no_discover_context: false,
+            profile: "default".to_string(),
+            agent: None,
+            model: Some("same-model".to_string()),
+            force: false,
+            json: false,
+        };
+        initialize_folder_session(&args).unwrap();
+        initialize_folder_session(&args).unwrap();
+
+        let conflicting = SessionInitArgs {
+            model: Some("different-model".to_string()),
+            ..args
+        };
+        let error = initialize_folder_session(&conflicting).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("session folder already exists with different identity"));
+        assert!(error
+            .to_string()
+            .contains("model existing=same-model requested=different-model"));
+
+        let forced = SessionInitArgs {
+            force: true,
+            ..conflicting
+        };
+        initialize_folder_session(&forced).unwrap();
+        assert!(fs::read_to_string(dir.join("djinn.toml"))
+            .unwrap()
+            .contains("model = \"different-model\""));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
