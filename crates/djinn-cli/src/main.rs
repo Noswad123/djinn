@@ -34,6 +34,7 @@ use serde::Serialize;
 #[cfg(test)]
 use serde_json::Value;
 
+mod agent_commands;
 mod agent_config;
 mod agent_file_history;
 mod agent_instructions;
@@ -87,8 +88,13 @@ mod session_watch;
 mod shell;
 mod text;
 mod tui_dashboard;
+use agent_commands::{
+    agent_config_list, agent_config_show, agent_policy_audit, agent_policy_list,
+    agent_policy_revoke, agent_tools_list, agent_tools_show,
+};
 #[cfg(test)]
 use agent_config::AgentEffectivePolicyRule;
+#[cfg(test)]
 use agent_config::{
     agent_policy_audit_report, agent_policy_report, format_agent_config_options,
     format_agent_effective_config, format_agent_policy_audit_report, format_agent_policy_report,
@@ -102,13 +108,14 @@ use agent_instructions::{resolve_agent_instruction_contents, ResolvedAgentInstru
 use agent_messages::agent_model_messages;
 #[cfg(test)]
 use agent_messages::agent_system_message;
+pub(crate) use agent_roles::AgentRoleSelection;
 use agent_roles::{
     configured_agent_roles, format_agent_role, format_agent_role_list, resolve_agent_role,
-    resolve_agent_role_selection_from_config, AgentRoleSelection,
+    resolve_agent_role_selection_from_config,
 };
-use agent_runtime_config::{
-    agent_effective_config_from_parts, agent_session_runtime_config, agent_tool_specs,
-};
+#[cfg(test)]
+use agent_runtime_config::agent_tool_specs;
+use agent_runtime_config::{agent_effective_config_from_parts, agent_session_runtime_config};
 use agent_session_meta::{
     append_agent_session_lifecycle_event, format_session_run_completion, latest_session_model,
     maybe_auto_title_agent_session, validate_agent_child_session_depth,
@@ -2973,15 +2980,6 @@ fn agents_show(args: AgentsShowArgs) -> Result<()> {
     Ok(())
 }
 
-fn resolve_agent_role_selection(
-    agent: Option<String>,
-    requested_profile: &str,
-    requested_model: Option<String>,
-) -> Result<AgentRoleSelection> {
-    let config = effective_djinn_config()?;
-    resolve_agent_role_selection_from_config(&config, agent, requested_profile, requested_model)
-}
-
 fn parent_session_id_from_arg(parent_session: Option<String>) -> Option<AgentSessionId> {
     parent_session
         .map(|id| id.trim().to_string())
@@ -3016,112 +3014,6 @@ fn run_agent_file_history(args: AgentFileHistoryArgs) -> Result<()> {
         AgentFileHistoryCommand::List(args) => agent_file_history_list(args),
         AgentFileHistoryCommand::Restore(args) => agent_file_history_restore(args),
     }
-}
-
-fn agent_config_list(args: AgentConfigListArgs) -> Result<()> {
-    let current_profile = resolve_agent_profile(&args.profile)?;
-    let current_model = resolve_agent_model(args.model, &current_profile)?;
-    let profiles = agent_profile_options(&current_profile)?;
-    let models = agent_model_options(&current_model)?;
-    print!(
-        "{}",
-        format_agent_config_options(
-            &current_profile,
-            &current_model,
-            &profiles,
-            &models,
-            output_format(args.format, args.json),
-        )?
-    );
-    Ok(())
-}
-
-fn agent_config_show(args: AgentConfigShowArgs) -> Result<()> {
-    let config =
-        resolve_agent_effective_config(args.workspace, args.profile, args.agent, args.model)?;
-    print!(
-        "{}",
-        format_agent_effective_config(&config, output_format(args.format, args.json))?
-    );
-    Ok(())
-}
-
-fn resolve_agent_effective_config(
-    workspace: Option<PathBuf>,
-    profile: String,
-    agent: Option<String>,
-    model: Option<String>,
-) -> Result<AgentEffectiveConfig> {
-    let selection = resolve_agent_role_selection(agent, &profile, model)?;
-    let profile = selection.profile;
-    let workspace = resolve_agent_workspace(workspace)?;
-    let model = resolve_agent_model(selection.model, &profile)?;
-    agent_effective_config_from_parts(
-        workspace,
-        profile,
-        model,
-        selection.agent_name,
-        selection.instructions,
-        selection.tools,
-    )
-}
-
-fn agent_tools_list(args: AgentToolsListArgs) -> Result<()> {
-    let selection = resolve_agent_role_selection(args.agent, &args.profile, None)?;
-    let specs = agent_tool_specs(args.workspace, &selection.profile, &selection.tools)?;
-    print!(
-        "{}",
-        format_agent_tool_specs(&specs, output_format(args.format, args.json))?
-    );
-    Ok(())
-}
-
-fn agent_tools_show(args: AgentToolsShowArgs) -> Result<()> {
-    let selection = resolve_agent_role_selection(args.agent, &args.profile, None)?;
-    let specs = agent_tool_specs(args.workspace, &selection.profile, &selection.tools)?;
-    let spec = resolve_agent_tool_spec(&specs, &args.name)?;
-    print!(
-        "{}",
-        format_agent_tool_spec(spec, output_format(args.format, args.json))?
-    );
-    Ok(())
-}
-
-fn agent_policy_list(args: AgentPolicyListArgs) -> Result<()> {
-    let config =
-        resolve_agent_effective_config(args.workspace, args.profile, args.agent, args.model)?;
-    let report = agent_policy_report(&config);
-    print!(
-        "{}",
-        format_agent_policy_report(&report, output_format(args.format, args.json))?
-    );
-    Ok(())
-}
-
-fn agent_policy_audit(args: AgentPolicyAuditArgs) -> Result<()> {
-    let config =
-        resolve_agent_effective_config(args.workspace, args.profile, args.agent, args.model)?;
-    let report = agent_policy_audit_report(&config);
-    print!(
-        "{}",
-        format_agent_policy_audit_report(&report, output_format(args.format, args.json))?
-    );
-    Ok(())
-}
-
-fn agent_policy_revoke(args: AgentPolicyRevokeArgs) -> Result<()> {
-    let report = AgentPolicyRevokeReport {
-        action: args.action,
-        resource: args.resource,
-        durable_approvals_found: 0,
-        revoked: 0,
-        message: "No durable approval store exists yet; session approvals are process-local and expire with the agent process.".to_string(),
-    };
-    print!(
-        "{}",
-        format_agent_policy_revoke_report(&report, output_format(args.format, args.json))?
-    );
-    Ok(())
 }
 
 fn load_djinn_config_for_workspace(workspace: &str) -> Result<DjinnConfigLoadReport> {
