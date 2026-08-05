@@ -14,12 +14,14 @@ mod auth;
 mod config;
 mod doctor;
 mod open;
+mod switch;
 mod tui;
 pub(crate) use agents::*;
 pub(crate) use auth::*;
 pub(crate) use config::*;
 pub(crate) use doctor::*;
 pub(crate) use open::*;
+pub(crate) use switch::*;
 pub(crate) use tui::{TuiArgs, TuiView};
 
 #[derive(Debug, Parser)]
@@ -855,21 +857,6 @@ pub(crate) enum SearchNoun {
     Memories { query: String },
     /// Search suggestions.
     Suggestions { query: String },
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct SwitchArgs {
-    #[command(subcommand)]
-    pub(crate) noun: SwitchNoun,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum SwitchNoun {
-    /// Switch the active context.
-    Ctx {
-        /// Context name, case-insensitive. Falls back to substring matching.
-        name: String,
-    },
 }
 
 #[derive(Debug, Args)]
