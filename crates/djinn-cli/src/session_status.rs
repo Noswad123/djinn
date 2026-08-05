@@ -1067,3 +1067,487 @@ pub(crate) fn session_status_repo(
         link_broken,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_session_meta::append_agent_session_lifecycle_event;
+    use crate::background_run::{
+        latest_background_session_run_status, write_background_session_run_marker,
+    };
+    use crate::session_init::create_dir_symlink;
+    use crate::session_list::list_folder_sessions_in_root;
+    use crate::session_native::relocate_agent_session_into_folder;
+    use crate::session_projection::project_agent_session_dir;
+    use crate::session_watch::{format_session_watch_snapshot, session_watch};
+    use crate::{upsert_toml_root_string, SessionWatchArgs};
+    use djinn_memory::{
+        AgentSessionEvent, AgentSessionEventKind, AgentSessionExecutionMode,
+        AgentSessionLifecycleState, AgentSessionMeta, AgentSessionStore, JsonlAgentSessionStore,
+    };
+
+    fn temp_agent_store(name: &str) -> JsonlAgentSessionStore {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-cli-agent-chat-{name}-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        JsonlAgentSessionStore::default_in(&dir)
+    }
+
+    #[test]
+    fn folder_session_status_reports_manifest_files_turns_and_context_skips() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-status-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let context = dir.join("context");
+        let repo = root.join("repo");
+        fs::create_dir_all(&context).unwrap();
+        fs::create_dir_all(dir.join("turns/turn-1")).unwrap();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(
+            dir.join("djinn.toml"),
+            format!(
+                "session_id = \"agt_missing\"\nprofile = \"work\"\nmodel = \"repo-model\"\nworkspace = \"{}\"\n\n[context.repo]\npath = \"{}\"\nlink = \"context/repo\"\n",
+                repo.display(),
+                repo.display()
+            ),
+        )
+        .unwrap();
+        fs::write(dir.join("request.md"), "request\n").unwrap();
+        fs::write(dir.join("summary.md"), "summary\n").unwrap();
+        fs::write(context.join("notes.md"), "note\n").unwrap();
+        fs::write(context.join("data.bin"), "binary-ish\n").unwrap();
+        fs::write(dir.join("turns/turn-1/request.md"), "turn request\n").unwrap();
+        fs::create_dir_all(dir.join("outputs/candidates")).unwrap();
+        fs::write(
+            dir.join("outputs/candidates/memory-001.toml"),
+            "type = \"memory\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("outputs/candidates/memory-002.toml"),
+            "type = \"memory\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("outputs/candidate-index.toml"),
+            "candidate_count = 2\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("outputs/candidate-status.toml"),
+            "[[events]]\ncandidate = \"memory-001\"\nstatus = \"accepted\"\n",
+        )
+        .unwrap();
+        create_dir_symlink(&repo, &context.join("repo")).unwrap();
+
+        let report = folder_session_status(&dir).unwrap();
+        let text = format_folder_session_status(&report);
+
+        assert!(report.manifest_exists);
+        assert_eq!(report.session_id.as_deref(), Some("agt_missing"));
+        assert!(!report.native_session_exists);
+        assert_eq!(report.profile.as_deref(), Some("work"));
+        assert_eq!(report.model.as_deref(), Some("repo-model"));
+        assert!(report.files.request_md);
+        assert!(report.files.summary_md);
+        assert!(report.files.context_dir);
+        assert!(report.files.turns_dir);
+        assert!(!report.files.events_jsonl);
+        assert_eq!(report.turn_count, 1);
+        assert_eq!(report.event_count, 0);
+        assert_eq!(report.lifecycle.state, "not_started");
+        assert_eq!(report.latest_turn.as_ref().unwrap().id, "turn-1");
+        assert!(!report.latest_turn.as_ref().unwrap().has_response);
+        assert_eq!(report.candidates.as_ref().unwrap().candidate_count, 2);
+        assert_eq!(report.candidates.as_ref().unwrap().accepted_count, 1);
+        assert_eq!(report.candidates.as_ref().unwrap().pending_count, 1);
+        assert_eq!(report.candidates.as_ref().unwrap().entries.len(), 2);
+        assert_eq!(
+            report.candidates.as_ref().unwrap().entries[0].id,
+            "memory-001"
+        );
+        assert_eq!(
+            report.candidates.as_ref().unwrap().entries[0].status,
+            "accepted"
+        );
+        assert_eq!(report.context_ingestible_count, 1);
+        let repo_status = report.repo.as_ref().unwrap();
+        assert!(repo_status.link_exists);
+        assert!(repo_status.link_is_symlink);
+        assert!(!repo_status.link_broken);
+        assert!(text.contains("Skipped context:"));
+        assert!(text.contains("State: not_started"));
+        assert!(text.contains("events.jsonl: no"));
+        assert!(text.contains("Events: 0"));
+        assert!(text.contains("Latest turn:"));
+        assert!(text.contains("Candidates:"));
+        assert!(text.contains("2 total, 1 accepted, 0 denied, 1 pending"));
+        assert!(text.contains("memory-001 [memory] accepted"));
+        assert!(text.contains("memory-002 [memory] pending"));
+        assert!(text.contains("context/data.bin: unsupported file type"));
+        assert!(text.contains("context/repo: symlink directory not ingested"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_status_reports_lifecycle_and_latest_response() {
+        let store = temp_agent_store("folder-status-lifecycle");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Lifecycle session".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "test".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        append_agent_session_lifecycle_event(
+            &store,
+            &id,
+            AgentSessionLifecycleState::Completed,
+            AgentSessionExecutionMode::Foreground,
+            "test completed",
+            Some("all done".to_string()),
+        )
+        .unwrap();
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
+                    content: "request".to_string(),
+                }),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
+                    content: "response".to_string(),
+                }),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &id,
+                AgentSessionEvent::new(AgentSessionEventKind::ToolCall {
+                    id: "tool-1".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({"path": "summary.md"}),
+                }),
+            )
+            .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-status-lifecycle-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("session");
+        let session = store.load_session(&id).unwrap();
+        project_agent_session_dir(&session_dir, &session, "request", "response").unwrap();
+        relocate_agent_session_into_folder(&store, &session_dir, &id).unwrap();
+
+        let report = folder_session_status(&session_dir).unwrap();
+        let text = format_folder_session_status(&report);
+
+        assert!(report.native_session_exists);
+        assert_eq!(report.lifecycle.state, "completed");
+        assert_eq!(report.lifecycle.mode.as_deref(), Some("foreground"));
+        assert_eq!(report.lifecycle.reason.as_deref(), Some("test completed"));
+        assert_eq!(report.lifecycle.note.as_deref(), Some("all done"));
+        assert!(report.files.events_jsonl);
+        assert_eq!(report.event_count, 4);
+        let latest = report.latest_turn.as_ref().unwrap();
+        assert!(latest.has_response);
+        assert!(latest
+            .response_path
+            .as_deref()
+            .unwrap()
+            .ends_with("events.jsonl"));
+        assert!(report
+            .next_action
+            .as_deref()
+            .unwrap()
+            .contains("open latest summary"));
+        assert!(text.contains("State: completed"));
+        assert!(text.contains("Mode: foreground"));
+        assert!(text.contains("State note: all done"));
+        assert!(text.contains("events.jsonl: yes"));
+        assert!(text.contains("Events: 4"));
+        assert!(text.contains("summary.md"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_status_and_list_prefer_events_jsonl_without_turns() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-event-native-status-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("event-native");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("djinn.toml"),
+            "title = \"Event Native\"\ncreated_at = \"2026-08-01T12:00:00Z\"\n",
+        )
+        .unwrap();
+        fs::write(session_dir.join("summary.md"), "stale summary\n").unwrap();
+        fs::write(
+            session_dir.join("events.jsonl"),
+            "{\"type\":\"user_message\",\"content\":\"first question\"}\n{\"type\":\"assistant_message\",\"content\":\"first answer\"}\n{\"type\":\"user_message\",\"content\":\"latest question\"}\n{\"type\":\"assistant_message\",\"content\":\"latest event answer\"}\n",
+        )
+        .unwrap();
+
+        let status = folder_session_status(&session_dir).unwrap();
+        assert!(status.files.events_jsonl);
+        assert!(!status.files.turns_dir);
+        assert_eq!(status.event_count, 4);
+        assert_eq!(status.turn_count, 2);
+        let latest = status.latest_turn.as_ref().unwrap();
+        assert_eq!(latest.id, "event-turn-0002");
+        assert!(latest
+            .request_path
+            .as_deref()
+            .unwrap()
+            .ends_with("events.jsonl"));
+        assert!(latest
+            .response_path
+            .as_deref()
+            .unwrap()
+            .ends_with("events.jsonl"));
+
+        let list = list_folder_sessions_in_root(&root, None).unwrap();
+        assert_eq!(list.sessions.len(), 1);
+        assert_eq!(list.sessions[0].turn_count, 2);
+        assert_eq!(
+            list.sessions[0].summary_preview.as_deref(),
+            Some("latest event answer")
+        );
+        assert_eq!(
+            list.sessions[0].latest_turn.as_ref().unwrap().id,
+            "event-turn-0002"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_status_marks_dead_background_worker_as_failed() {
+        let store = temp_agent_store("folder-status-stale-background");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Stale background session".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "test".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        append_agent_session_lifecycle_event(
+            &store,
+            &id,
+            AgentSessionLifecycleState::Running,
+            AgentSessionExecutionMode::Background,
+            "djinn session run started",
+            None,
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-status-stale-background-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("session");
+        let session = store.load_session(&id).unwrap();
+        project_agent_session_dir(&session_dir, &session, "request", "in progress").unwrap();
+        relocate_agent_session_into_folder(&store, &session_dir, &id).unwrap();
+        let log_path = session_dir.join(".djinn/runs/session-run-stale.log");
+        fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        fs::write(&log_path, "worker started\n").unwrap();
+        write_background_session_run_marker(
+            &session_dir,
+            &log_path,
+            4_294_967_295,
+            "djinn session run /tmp/session --background-worker",
+            Some(id.as_str()),
+        )
+        .unwrap();
+
+        let report = folder_session_status(&session_dir).unwrap();
+        let rendered = format_session_watch_snapshot(&report);
+        let run = latest_background_session_run_status(&session_dir).unwrap();
+
+        assert_eq!(run.run_id, "session-run-stale");
+        assert_eq!(run.native_session_id.as_deref(), Some(id.as_str()));
+        assert_eq!(
+            run.command.as_deref(),
+            Some("djinn session run /tmp/session --background-worker")
+        );
+        assert_eq!(report.lifecycle.state, "failed");
+        assert_eq!(report.lifecycle.mode.as_deref(), Some("background"));
+        assert_eq!(
+            report.lifecycle.reason.as_deref(),
+            Some("background_worker_stale")
+        );
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("no live process found"));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("worker started"));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("session-run-stale"));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains(id.as_str()));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("Last transcript event"));
+        assert!(format_agent_session_event_summary(&AgentSessionEvent::new(
+            AgentSessionEventKind::ToolCall {
+                id: "tool-1".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"path": "summary.md"}),
+            }
+        ))
+        .contains("tool_call id=tool-1 name=read"));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("lifecycle state=running"));
+        let marker = fs::read_to_string(log_path.with_extension("toml")).unwrap();
+        assert!(marker.contains("recovery_reason = \"background_worker_stale\""));
+        assert!(marker.contains("recovery_observed_at ="));
+        assert!(marker.contains("last_observed_event ="));
+        assert!(marker.contains("lifecycle state=running"));
+        assert!(report
+            .next_action
+            .as_deref()
+            .unwrap()
+            .contains("djinn session run"));
+        assert!(report.next_action.as_deref().unwrap().contains("--fg"));
+        assert!(rendered.contains("State: failed (background)"));
+        assert!(rendered.contains("Reason: background_worker_stale"));
+        assert!(rendered.contains("Next:"));
+        session_watch(SessionWatchArgs {
+            dir: session_dir.clone(),
+            interval_ms: 1,
+            timeout_seconds: Some(1),
+            json: false,
+        })
+        .unwrap();
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folder_session_status_marks_stale_heartbeat_worker_as_unresponsive() {
+        let store = temp_agent_store("folder-status-unresponsive-background");
+        let id = store
+            .create_session(AgentSessionMeta {
+                title: "Unresponsive background session".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "default".to_string(),
+                source: "test".to_string(),
+                ..AgentSessionMeta::default()
+            })
+            .unwrap();
+        append_agent_session_lifecycle_event(
+            &store,
+            &id,
+            AgentSessionLifecycleState::Running,
+            AgentSessionExecutionMode::Background,
+            "djinn session run started",
+            None,
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-status-unresponsive-background-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("session");
+        let session = store.load_session(&id).unwrap();
+        project_agent_session_dir(&session_dir, &session, "request", "in progress").unwrap();
+        relocate_agent_session_into_folder(&store, &session_dir, &id).unwrap();
+        let log_path = session_dir.join(".djinn/runs/session-run-unresponsive.log");
+        fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        fs::write(&log_path, "waiting for model\n").unwrap();
+        write_background_session_run_marker(
+            &session_dir,
+            &log_path,
+            std::process::id(),
+            "djinn session run /tmp/session --background-worker",
+            Some(id.as_str()),
+        )
+        .unwrap();
+        let marker_path = log_path.with_extension("toml");
+        let marker = fs::read_to_string(&marker_path).unwrap();
+        let marker =
+            upsert_toml_root_string(&marker, "heartbeat_at", "2000-01-01T00:00:00Z").unwrap();
+        let marker = upsert_toml_root_string(&marker, "heartbeat_phase", "model_call").unwrap();
+        fs::write(&marker_path, marker).unwrap();
+
+        let report = folder_session_status(&session_dir).unwrap();
+        let run = latest_background_session_run_status(&session_dir).unwrap();
+
+        assert!(run.alive);
+        assert!(run.heartbeat_age_seconds.unwrap() >= crate::BACKGROUND_RUN_UNRESPONSIVE_SECONDS);
+        assert_eq!(report.lifecycle.state, "failed");
+        assert_eq!(
+            report.lifecycle.reason.as_deref(),
+            Some("background_worker_unresponsive")
+        );
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("still alive but appears unresponsive"));
+        assert!(report
+            .lifecycle
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("Phase: model_call"));
+        assert!(report.next_action.as_deref().unwrap().contains("--fg"));
+        let marker = fs::read_to_string(marker_path).unwrap();
+        assert!(marker.contains("recovery_reason = \"background_worker_unresponsive\""));
+        assert!(marker.contains("recovery_observed_at ="));
+        assert!(marker.contains("last_observed_event ="));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}

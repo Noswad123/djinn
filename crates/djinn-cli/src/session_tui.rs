@@ -439,3 +439,245 @@ pub(crate) fn tui_candidate_row(
         writeback_path: entry.writeback_path.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn folder_session_status_tui_view_projects_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-tui-view-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session_dir = root.join("bap-questions");
+        let turn = session_dir.join("turns/turn-1");
+        fs::create_dir_all(&turn).unwrap();
+        fs::write(session_dir.join("djinn.toml"), "title = \"BAP\"\n").unwrap();
+        fs::write(session_dir.join("request.md"), "question\n").unwrap();
+        fs::write(session_dir.join("summary.md"), "answer\n").unwrap();
+        fs::write(turn.join("request.md"), "question\n").unwrap();
+        fs::write(turn.join("response.md"), "answer\n").unwrap();
+        fs::write(
+            session_dir.join("events.jsonl"),
+            "{\"type\":\"user_message\"}\n{\"type\":\"assistant_message\"}\n",
+        )
+        .unwrap();
+        fs::create_dir_all(session_dir.join("outputs/candidates")).unwrap();
+        fs::create_dir_all(session_dir.join("outputs/generation")).unwrap();
+        fs::create_dir_all(session_dir.join("context")).unwrap();
+        fs::create_dir_all(session_dir.join(".djinn/runs")).unwrap();
+        fs::write(
+            session_dir.join("outputs/generation/1-response.md"),
+            "model response\n",
+        )
+        .unwrap();
+        fs::write(session_dir.join("context/source-packet.md"), "packet\n").unwrap();
+        fs::write(
+            session_dir.join("context/sources.toml"),
+            "source_count = 0\n",
+        )
+        .unwrap();
+        fs::write(
+            session_dir.join(".djinn/runs/session-run-test.log"),
+            "log\n",
+        )
+        .unwrap();
+        fs::write(
+            session_dir.join(".djinn/runs/session-run-test.toml"),
+            format!(
+                "version = 1\nstarted_at = \"2026-07-30T12:00:00Z\"\npid = 4294967295\nlog_path = \"{}\"\n",
+                session_dir.join(".djinn/runs/session-run-test.log").display()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            session_dir.join("outputs/candidates/todo-001.toml"),
+            "type = \"todo\"\n",
+        )
+        .unwrap();
+        let event_backup = session_dir.join(".djinn/backups/events-rebuild-test");
+        fs::create_dir_all(&event_backup).unwrap();
+        fs::write(event_backup.join("backup.toml"), "source = \"test\"\n").unwrap();
+
+        let view = folder_session_status_tui_view(&session_dir).unwrap();
+
+        assert_eq!(view.title, "bap-questions");
+        assert_eq!(view.state, "not_started");
+        assert_eq!(view.turn_count, 1);
+        assert_eq!(view.event_count, 2);
+        assert_eq!(
+            view.candidate_status.as_deref(),
+            Some("1 total, 0 accepted, 0 denied, 1 pending")
+        );
+        assert_eq!(view.candidate_details, vec!["todo-001 [todo] pending"]);
+        assert_eq!(view.candidate_entries.len(), 1);
+        assert_eq!(view.candidate_entries[0].id, "todo-001");
+        assert!(view.candidate_entries[0].path.ends_with("todo-001.toml"));
+        assert!(view.message.is_none());
+        assert!(view
+            .latest_generation_response_path
+            .as_deref()
+            .unwrap()
+            .ends_with("1-response.md"));
+        assert!(view
+            .latest_run_log_path
+            .as_deref()
+            .unwrap()
+            .ends_with("session-run-test.log"));
+        assert!(view
+            .events_path
+            .as_deref()
+            .unwrap()
+            .ends_with("events.jsonl"));
+        assert!(view
+            .latest_event_rebuild_backup_path
+            .as_deref()
+            .unwrap()
+            .ends_with("events-rebuild-test"));
+        assert!(view
+            .candidates_dir
+            .as_deref()
+            .unwrap()
+            .ends_with("candidates"));
+        assert!(view
+            .source_packet_path
+            .as_deref()
+            .unwrap()
+            .ends_with("source-packet.md"));
+        assert!(view
+            .sources_manifest_path
+            .as_deref()
+            .unwrap()
+            .ends_with("sources.toml"));
+        assert!(view
+            .request_path
+            .as_deref()
+            .unwrap()
+            .ends_with("request.md"));
+        assert!(view
+            .summary_path
+            .as_deref()
+            .unwrap()
+            .ends_with("summary.md"));
+        assert!(view
+            .response_path
+            .as_deref()
+            .unwrap()
+            .ends_with("response.md"));
+        assert_eq!(
+            folder_session_action_message(&djinn_tui::FolderSessionAction::Run, &session_dir, None),
+            format!("Run command: djinn session run '{}'", session_dir.display())
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::Buddy,
+                &session_dir,
+                None
+            ),
+            format!(
+                "Buddy chat command: djinn session chat '{}'",
+                session_dir.display()
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::OpenSummary,
+                &session_dir,
+                None,
+            ),
+            format!(
+                "Open summary command: {}",
+                editor_open_command_hint(&session_dir.join("summary.md"), None)
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::EditRequest,
+                &session_dir,
+                Some("code --wait"),
+            ),
+            format!(
+                "Edit request command: code --wait '{}'",
+                session_dir.join("request.md").display()
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::AcceptCandidate("todo-001".to_string()),
+                &session_dir,
+                None,
+            ),
+            format!(
+                "Accept candidate command: djinn session accept '{}' 'todo-001'",
+                session_dir.display()
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::OpenCandidate(
+                    view.candidate_entries[0].path.clone()
+                ),
+                &session_dir,
+                None,
+            ),
+            format!(
+                "Open candidate command: {}",
+                editor_open_command_hint(Path::new(&view.candidate_entries[0].path), None)
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::ShowPatternExportCommand(Some(
+                    "pattern-001".to_string(),
+                )),
+                &session_dir,
+                None,
+            ),
+            format!(
+                "Pattern export command: djinn session export-pattern '{}' 'pattern-001' --to <notes.md>",
+                session_dir.display()
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::ShowValidateEventsCommand,
+                &session_dir,
+                None,
+            ),
+            format!(
+                "Event validation command: djinn session validate-events '{}'",
+                session_dir.display()
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::ShowEventsWriteCommand,
+                &session_dir,
+                None,
+            ),
+            format!(
+                "Event rebuild command: djinn session events '{}' --write",
+                session_dir.display()
+            )
+        );
+        assert_eq!(
+            folder_session_action_message(
+                &djinn_tui::FolderSessionAction::ShowEventsRestoreCommand(
+                    "events-rebuild-test".to_string(),
+                ),
+                &session_dir,
+                None,
+            ),
+            format!(
+                "Event restore command: djinn session events '{}' --restore 'events-rebuild-test' --write",
+                session_dir.display()
+            )
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}

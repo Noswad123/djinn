@@ -206,3 +206,81 @@ pub(crate) fn session_manifest_workspace_path(
 pub(crate) fn toml_string(value: &str) -> Result<String> {
     serde_json::to_string(value).map_err(Into::into)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_projection::project_agent_session_dir;
+
+    #[test]
+    fn folder_backed_session_projection_preserves_context_manifest_sections() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-folder-manifest-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("djinn.toml"),
+            "version = 1\nprofile = \"work\"\n\n[context]\npath = \"context\"\n\n[context.repo]\npath = \"/tmp/repo\"\nlink = \"context/repo\"\n",
+        )
+        .unwrap();
+        let session = AgentSession {
+            id: AgentSessionId::new("agt_manifest"),
+            meta: AgentSessionMeta {
+                title: "Folder session".to_string(),
+                workspace: "/tmp/workspace".to_string(),
+                profile: "work".to_string(),
+                source: "djinn".to_string(),
+                ..AgentSessionMeta::default()
+            },
+            events: Vec::new(),
+        };
+
+        project_agent_session_dir(&dir, &session, "request", "summary").unwrap();
+        let manifest = fs::read_to_string(dir.join("djinn.toml")).unwrap();
+
+        assert!(manifest.contains("session_id = \"agt_manifest\""));
+        assert!(manifest.contains("[context]\npath = \"context\""));
+        assert!(manifest.contains("[context.repo]\npath = \"/tmp/repo\""));
+        assert_eq!(
+            session_id_from_session_dir(&dir).unwrap(),
+            Some(AgentSessionId::new("agt_manifest"))
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_session_manifest_parses_defaults_and_repo_path() {
+        let manifest = r#"version = 1
+session_id = "agt_manifest"
+profile = "work"
+agent = "architect"
+model = "repo-model"
+workspace = "/tmp/workspace"
+
+[context]
+path = "context"
+
+[context.repo]
+path = "/tmp/repo"
+link = "context/repo"
+"#;
+
+        let parsed = parse_folder_session_manifest(manifest);
+
+        assert_eq!(parsed.session_id, Some(AgentSessionId::new("agt_manifest")));
+        assert_eq!(parsed.profile.as_deref(), Some("work"));
+        assert_eq!(parsed.agent.as_deref(), Some("architect"));
+        assert_eq!(parsed.model.as_deref(), Some("repo-model"));
+        assert_eq!(parsed.workspace.as_deref(), Some("/tmp/workspace"));
+        assert_eq!(parsed.repo_path.as_deref(), Some("/tmp/repo"));
+        assert_eq!(parsed.repo_link.as_deref(), Some("context/repo"));
+        assert_eq!(
+            session_manifest_workspace_path(Some(&parsed)),
+            Some(PathBuf::from("/tmp/workspace"))
+        );
+    }
+}
