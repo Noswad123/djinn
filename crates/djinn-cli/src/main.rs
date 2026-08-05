@@ -51,6 +51,7 @@ mod promotion_export;
 mod promotion_generation;
 mod promotion_session;
 mod promotion_validation;
+mod prompt;
 mod session_artifact;
 mod session_compact;
 mod session_context;
@@ -96,6 +97,7 @@ use promotion_generation::*;
 pub(crate) use promotion_session::create_promotion_session;
 use promotion_validation::session_validate_candidates;
 pub(crate) use promotion_validation::SessionValidateCandidateEntry;
+pub(crate) use prompt::{prompt_title, resolve_agent_request_prompt};
 #[cfg(test)]
 use session_artifact::resolve_folder_session_open_target_in_root;
 use session_artifact::{resolve_folder_session_open_target, SessionOpenTarget};
@@ -6223,29 +6225,6 @@ fn agent_file_history_restore(args: AgentFileHistoryRestoreArgs) -> Result<()> {
     Ok(())
 }
 
-fn resolve_agent_request_prompt(
-    prompt: Option<String>,
-    session_dir: Option<&Path>,
-) -> Result<String> {
-    if let Some(prompt) = prompt
-        .map(|prompt| prompt.trim_end().to_string())
-        .filter(|prompt| !prompt.trim().is_empty())
-    {
-        return Ok(prompt);
-    }
-    let Some(session_dir) = session_dir else {
-        bail!("agent ask requires a prompt, or --session-dir containing request.md");
-    };
-    let request_path = session_dir.join("request.md");
-    let prompt = fs::read_to_string(&request_path)
-        .with_context(|| format!("reading request prompt from {}", request_path.display()))?;
-    let prompt = prompt.trim_end().to_string();
-    if prompt.trim().is_empty() {
-        bail!("request prompt is empty: {}", request_path.display());
-    }
-    Ok(prompt)
-}
-
 fn load_djinn_config_for_workspace(workspace: &str) -> Result<DjinnConfigLoadReport> {
     load_djinn_config_from_paths(clean_unique_paths(vec![
         default_djinn_config_path(),
@@ -9757,15 +9736,6 @@ fn resolve_agent_workspace(path: Option<PathBuf>) -> Result<String> {
         .unwrap_or(path)
         .to_string_lossy()
         .to_string())
-}
-
-fn prompt_title(prompt: &str, fallback: &str) -> String {
-    let title = prompt
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or(fallback);
-    title.chars().take(80).collect()
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
