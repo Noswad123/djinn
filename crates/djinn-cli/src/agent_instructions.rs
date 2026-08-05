@@ -94,3 +94,30 @@ fn resolve_agent_instruction_path(workspace: &Path, reference: &str) -> PathBuf 
         workspace.join(path)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn current_time_millis() -> i64 {
+        chrono::Local::now().timestamp_millis()
+    }
+
+    #[test]
+    fn read_agent_instruction_file_reads_workspace_relative_file() {
+        let workspace =
+            std::env::temp_dir().join(format!("djinn-instruction-test-{}", current_time_millis()));
+        fs::create_dir_all(&workspace).unwrap();
+        let path = workspace.join("AGENTS.md");
+        fs::write(&path, "Use project conventions.\n").unwrap();
+
+        let instruction = read_agent_instruction_file(&workspace, "AGENTS.md")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(instruction.source, path.display().to_string());
+        assert_eq!(instruction.content, "Use project conventions.");
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir(workspace);
+    }
+}

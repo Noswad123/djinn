@@ -12,10 +12,7 @@ use anyhow::{bail, Result};
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 #[cfg(test)]
-use djinn_agent::{
-    AgentProgressEvent, ModelRole, PermissionEffect, PermissionPolicy, PermissionRule,
-    ReadAccessEffect, ReadAccessPolicy, ReadAccessRule, ToolSpec,
-};
+use djinn_agent::{AgentProgressEvent, PermissionEffect, ReadAccessEffect};
 #[cfg(test)]
 use djinn_memory::AgentSession;
 #[cfg(test)]
@@ -94,40 +91,19 @@ mod stores;
 mod text;
 mod toml_util;
 mod tools_commands;
+mod top_level_commands;
 mod tui_dashboard;
 pub(crate) use agent_ask_command::session_run;
 use agent_ask_command::top_level_ask;
 pub(crate) use agent_commands::warn_legacy_agent_command;
 use agent_commands::{run_agent, run_agents};
-#[cfg(test)]
-use agent_config::AgentEffectivePolicyRule;
-#[cfg(test)]
-use agent_config::{
-    agent_policy_audit_report, agent_policy_report, format_agent_config_options,
-    format_agent_effective_config, format_agent_policy_audit_report, format_agent_policy_report,
-    format_agent_policy_revoke_report, format_agent_tool_spec, format_agent_tool_specs,
-    resolve_agent_tool_spec, AgentEffectiveConfig, AgentPolicyRevokeReport,
-};
-#[cfg(test)]
-use agent_instructions::read_agent_instruction_file;
 use agent_instructions::ResolvedAgentInstruction;
 #[cfg(test)]
 use agent_messages::agent_model_messages;
-#[cfg(test)]
-use agent_messages::agent_system_message;
 use agent_roles::resolve_agent_role_selection_from_config;
 pub(crate) use agent_roles::AgentRoleSelection;
 #[cfg(test)]
-use agent_roles::{
-    configured_agent_roles, format_agent_role, format_agent_role_list, resolve_agent_role,
-};
-#[cfg(test)]
-use agent_runtime_config::agent_tool_specs;
-#[cfg(test)]
-use agent_session_meta::{
-    append_agent_session_lifecycle_event, format_session_run_completion, latest_session_model,
-    maybe_auto_title_agent_session, validate_agent_child_session_depth,
-};
+use agent_session_meta::append_agent_session_lifecycle_event;
 pub(crate) use agent_workspace::{
     clean_unique_paths, load_djinn_config_for_workspace, resolve_agent_workspace,
 };
@@ -163,15 +139,9 @@ use config_write::{
     write_json_config_file,
 };
 pub(crate) use context_commands::context_store;
-use context_commands::{add_context, list_contexts, show_context, switch_context};
 use copilot_auth::*;
 use doctor_commands::run_doctor;
-use memory_commands::{
-    accept_memory, add_action, add_idea, add_memory, add_suggestion, clear_memories,
-    complete_suggestions, ingest_memories, list_actions, list_ideas, list_memories,
-    list_suggestions, reject_memories, reject_suggestions, review_memories, rm_memory,
-    search_memories, search_suggestions, show_action, show_idea, show_memory, show_suggestion,
-};
+pub(crate) use memory_commands::accept_memory;
 #[cfg(test)]
 use memory_commands::{
     background_review_script, format_memory_review_prompt, format_memory_source,
@@ -257,13 +227,13 @@ pub(crate) use session_manifest::{
 #[cfg(test)]
 use session_native::relocate_agent_session_into_folder;
 pub(crate) use session_native::{folder_agent_session_store, load_folder_native_agent_session};
+#[cfg(test)]
+use session_projection::write_agent_session_native_jsonl;
 pub(crate) use session_projection::write_folder_session_events_jsonl;
 #[cfg(test)]
 use session_projection::{
     hydrate_folder_agent_session_from_events_jsonl, project_agent_session_dir,
 };
-#[cfg(test)]
-use session_projection::{write_agent_session_native_jsonl, AgentSessionDirProjection};
 #[cfg(test)]
 use session_reference::auto_folder_session_dir;
 pub(crate) use session_reference::{
@@ -315,7 +285,6 @@ pub(crate) use session_turns::{
 use session_watch::session_watch;
 #[cfg(test)]
 use session_watch::{format_session_watch_snapshot, session_watch_snapshot_key};
-use skills_commands::{add_skill, list_skills, rm_skill, show_skill};
 pub(crate) use skills_commands::{open_skill_entry, skill_records, skill_store};
 pub(crate) use stores::{
     action_store, agent_session_store, file_history_store, idea_store, memory_store,
@@ -326,10 +295,11 @@ pub(crate) use text::{
     truncate, truncate_table_cell, yes_no,
 };
 pub(crate) use toml_util::upsert_toml_root_string;
-use tools_commands::{
-    index_tools, list_tools, open_tool, scan_tools_command, search_tools, show_tool,
-};
 pub(crate) use tools_commands::{open_tool_entry, scan_tools, tool_roots};
+use top_level_commands::{
+    run_accept, run_add, run_clear, run_index, run_ingest, run_list, run_open, run_reject,
+    run_review, run_rm, run_scan, run_search, run_show, run_switch,
+};
 #[cfg(test)]
 use tui_dashboard::dashboard_tab;
 use tui_dashboard::{default_dashboard_tui_args, run_tui};
@@ -2020,7 +1990,7 @@ fn main() -> Result<()> {
     }
     let Some(command) = cli.command else {
         if io::stdin().is_terminal() && io::stdout().is_terminal() {
-            return run_tui_command(default_dashboard_tui_args());
+            return run_tui(default_dashboard_tui_args());
         }
         Cli::command().print_help()?;
         println!();
@@ -2048,136 +2018,13 @@ fn main() -> Result<()> {
         Command::Session(args) => run_session(args),
         Command::Agent(args) => run_agent(args),
         Command::Agents(args) => run_agents(args),
-        Command::Tui(args) => run_tui_command(args),
-    }
-}
-
-fn run_tui_command(args: TuiArgs) -> Result<()> {
-    run_tui(args)
-}
-
-fn run_list(args: ListArgs) -> Result<()> {
-    match args.noun {
-        ListNoun::Tools(scope) => list_tools(scope),
-        ListNoun::Memories => list_memories(),
-        ListNoun::Suggestions => list_suggestions(),
-        ListNoun::Ideas => list_ideas(),
-        ListNoun::Actions => list_actions(),
-        ListNoun::Skills(args) => list_skills(args),
-        ListNoun::Contexts(args) | ListNoun::Ctx(args) => list_contexts(args),
-    }
-}
-
-fn run_show(args: ShowArgs) -> Result<()> {
-    match args.noun {
-        ShowNoun::Memory { id } => show_memory(&id),
-        ShowNoun::Suggestion { id } => show_suggestion(&id),
-        ShowNoun::Idea { id } => show_idea(&id),
-        ShowNoun::Action { id } => show_action(&id),
-        ShowNoun::Ctx(args) => show_context(args),
-        ShowNoun::Tool(args) => show_tool(args),
-        ShowNoun::Skill(args) => show_skill(args),
-    }
-}
-
-fn run_add(args: AddArgs) -> Result<()> {
-    match args.noun {
-        AddNoun::Memory(args) => {
-            let record = add_memory(args)?;
-            println!("Memory saved [{}]: {}", record.id, record.text);
-            Ok(())
-        }
-        AddNoun::Suggestion(args) => add_suggestion(args),
-        AddNoun::Idea(args) => {
-            let record = add_idea(args)?;
-            println!("Idea saved [{}]: {}", record.id, record.text);
-            Ok(())
-        }
-        AddNoun::Action(args) => {
-            let record = add_action(args)?;
-            println!("Action saved [{}]: {}", record.id, record.text);
-            Ok(())
-        }
-        AddNoun::Skill(args) => add_skill(args),
-        AddNoun::Ctx(args) => add_context(args),
-    }
-}
-
-fn run_accept(args: AcceptArgs) -> Result<()> {
-    match args.noun {
-        AcceptNoun::Memory(args) => accept_memory(args),
-        AcceptNoun::Suggestion { id } => complete_suggestions(&[id]),
-    }
-}
-
-fn run_reject(args: RejectArgs) -> Result<()> {
-    match args.noun {
-        RejectNoun::Memory { ids } => reject_memories(&ids),
-        RejectNoun::Suggestion { ids } => reject_suggestions(&ids),
-    }
-}
-
-fn run_ingest(args: IngestArgs) -> Result<()> {
-    match args.noun {
-        IngestNoun::Memories(args) | IngestNoun::Memory(args) => ingest_memories(args),
-    }
-}
-
-fn run_review(args: ReviewArgs) -> Result<()> {
-    match args.source {
-        ReviewSource::Memory(args) | ReviewSource::Memories(args) => review_memories(args),
-    }
-}
-
-fn run_rm(args: RmArgs) -> Result<()> {
-    match args.noun {
-        RmNoun::Memory { keyword } => rm_memory(&keyword),
-        RmNoun::Skill(args) => rm_skill(args),
-    }
-}
-
-fn run_clear(args: ClearArgs) -> Result<()> {
-    match args.noun {
-        ClearNoun::Memories { no_backup } => clear_memories(no_backup),
-    }
-}
-
-fn run_scan(args: ScanArgs) -> Result<()> {
-    match args.noun {
-        ScanNoun::Tools(scope) => scan_tools_command(scope),
-    }
-}
-
-fn run_index(args: IndexArgs) -> Result<()> {
-    match args.noun {
-        IndexNoun::Tools(args) => index_tools(args),
-    }
-}
-
-fn run_search(args: SearchArgs) -> Result<()> {
-    match args.noun {
-        SearchNoun::Tools(args) => search_tools(args),
-        SearchNoun::Memories { query } => search_memories(&query),
-        SearchNoun::Suggestions { query } => search_suggestions(&query),
-    }
-}
-
-fn run_switch(args: SwitchArgs) -> Result<()> {
-    match args.noun {
-        SwitchNoun::Ctx { name } => switch_context(&name),
-    }
-}
-
-fn run_open(args: OpenArgs) -> Result<()> {
-    match args.noun {
-        OpenNoun::Tool(args) => open_tool(args),
+        Command::Tui(args) => run_tui(args),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use djinn_memory::AgentSessionTokenUsage;
 
     fn temp_agent_store(name: &str) -> JsonlAgentSessionStore {
         let dir = std::env::temp_dir().join(format!(
@@ -2866,50 +2713,6 @@ mod tests {
         };
         assert_eq!(args.name, "reviewer");
         assert!(args.json);
-    }
-
-    #[test]
-    fn configured_agent_roles_render_effective_model_and_resolve_names() {
-        let config = parse_djinn_config(
-            r#"{
-              "version": 1,
-              "profiles": {
-                "review": {"model": "openai/gpt-5.5"}
-              },
-              "agents": {
-                "reviewer": {
-                  "description": "Review code diffs",
-                  "profile": "review",
-                  "instructions": ["docs/review.md"],
-                  "tools": ["read_file", "search_files"]
-                },
-                "planner": {
-                  "model": "copilot/gpt-4.1"
-                }
-              }
-            }"#,
-        )
-        .unwrap();
-
-        let roles = configured_agent_roles(&config);
-        assert_eq!(roles.len(), 2);
-        let reviewer = resolve_agent_role(&roles, "review").unwrap();
-        assert_eq!(reviewer.name, "reviewer");
-        assert_eq!(reviewer.effective_model.as_deref(), Some("openai/gpt-5.5"));
-        assert_eq!(reviewer.tools, vec!["read_file", "search_files"]);
-        let rendered = format_agent_role_list(&roles, OutputFormat::Text).unwrap();
-        assert!(rendered.contains("Djinn agent roles"));
-        assert!(rendered.contains("reviewer"));
-        assert!(rendered.contains("model: openai/gpt-5.5"));
-        let show = format_agent_role(reviewer, OutputFormat::Text).unwrap();
-        assert!(show.contains("Name: reviewer"));
-        assert!(show.contains("Effective model: openai/gpt-5.5"));
-        assert!(show.contains("docs/review.md"));
-
-        let json = format_agent_role(reviewer, OutputFormat::Json).unwrap();
-        let value: Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["name"], "reviewer");
-        assert_eq!(value["effective_model"], "openai/gpt-5.5");
     }
 
     #[test]
@@ -8808,29 +8611,6 @@ link = "context/repo"
     }
 
     #[test]
-    fn format_session_run_completion_reports_output_paths() {
-        let session_dir = PathBuf::from("/tmp/djinn/session");
-        let projection = AgentSessionDirProjection {
-            session_dir: session_dir.clone(),
-            turn_dir: Some(session_dir.join("turns/20260728T120000-1")),
-            context_dir: session_dir.join("context"),
-            summary_path: session_dir.join("summary.md"),
-            request_path: session_dir.join("request.md"),
-        };
-
-        let rendered = format_session_run_completion(
-            &AgentSessionId::new("agt_run_test"),
-            Some(&projection),
-            Some(&session_dir),
-        );
-
-        assert!(rendered.contains("Completed Djinn session run: agt_run_test"));
-        assert!(rendered.contains("summary.md"));
-        assert!(rendered.contains("turns/20260728T120000-1/response.md"));
-        assert!(rendered.contains("request.md"));
-    }
-
-    #[test]
     fn format_session_run_background_started_reports_watch_and_log() {
         let report = SessionRunBackgroundReport {
             status: "started".to_string(),
@@ -9037,560 +8817,6 @@ link = "context/repo"
         assert_eq!(model, "repo-model");
 
         let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn format_agent_config_options_marks_current_choices() {
-        let rendered = format_agent_config_options(
-            "architect",
-            "openai/gpt-5.5",
-            &["default".to_string(), "architect".to_string()],
-            &["gpt-4o-mini".to_string(), "openai/gpt-5.5".to_string()],
-            OutputFormat::Text,
-        )
-        .unwrap();
-
-        assert!(rendered.contains("Agent config options"));
-        assert!(rendered.contains("Current profile: architect"));
-        assert!(rendered.contains("* architect"));
-        assert!(rendered.contains("  default"));
-        assert!(rendered.contains("Current model: openai/gpt-5.5"));
-        assert!(rendered.contains("* openai/gpt-5.5"));
-    }
-
-    #[test]
-    fn format_agent_config_options_outputs_json() {
-        let rendered = format_agent_config_options(
-            "default",
-            "gpt-4o-mini",
-            &["default".to_string()],
-            &["gpt-4o-mini".to_string()],
-            OutputFormat::Json,
-        )
-        .unwrap();
-        let value: Value = serde_json::from_str(&rendered).unwrap();
-
-        assert_eq!(value["current_profile"], "default");
-        assert_eq!(value["current_model"], "gpt-4o-mini");
-        assert_eq!(value["profiles"][0], "default");
-        assert_eq!(value["models"][0], "gpt-4o-mini");
-    }
-
-    #[test]
-    fn format_agent_effective_config_renders_text_summary() {
-        let config = AgentEffectiveConfig {
-            workspace: "/tmp/project".to_string(),
-            agent_name: Some("reviewer".to_string()),
-            profile: "architect".to_string(),
-            model: "openai/gpt-5.5".to_string(),
-            agent_instructions: vec!["docs/review.md".to_string()],
-            agent_tools: vec!["read_file".to_string()],
-            read_access: ReadAccessPolicy {
-                allow_roots: vec![PathBuf::from("/tmp/project")],
-                deny_roots: vec![PathBuf::from("/tmp/project/secrets")],
-                rules: vec![ReadAccessRule {
-                    pattern: "*/docs/*".to_string(),
-                    effect: ReadAccessEffect::Allow,
-                }],
-            },
-            permissions: PermissionPolicy {
-                rules: vec![PermissionRule {
-                    action: "write".to_string(),
-                    resource: "*.rs".to_string(),
-                    effect: PermissionEffect::Ask,
-                }],
-            },
-            read_access_rules: vec![AgentEffectivePolicyRule {
-                source: "profile:architect".to_string(),
-                action: "read".to_string(),
-                resource: "*/docs/*".to_string(),
-                effect: "allow".to_string(),
-            }],
-            permission_rules: vec![AgentEffectivePolicyRule {
-                source: "profile:architect".to_string(),
-                action: "write".to_string(),
-                resource: "*.rs".to_string(),
-                effect: "ask".to_string(),
-            }],
-            guardrails: agent_policy_guardrails(),
-        };
-
-        let rendered = format_agent_effective_config(&config, OutputFormat::Text).unwrap();
-
-        assert!(rendered.contains("Agent effective config"));
-        assert!(rendered.contains("Workspace: /tmp/project"));
-        assert!(rendered.contains("Agent: reviewer"));
-        assert!(rendered.contains("Profile: architect"));
-        assert!(rendered.contains("Model: openai/gpt-5.5"));
-        assert!(rendered.contains("docs/review.md"));
-        assert!(rendered.contains("read_file"));
-        assert!(rendered.contains("allow root: /tmp/project"));
-        assert!(rendered.contains("deny root: /tmp/project/secrets"));
-        assert!(rendered.contains("Allow: */docs/*"));
-        assert!(rendered.contains("Ask: write *.rs"));
-        assert!(rendered.contains("profile:architect"));
-        assert!(rendered.contains("destructive-action guardrails always apply"));
-        assert!(rendered.contains("secret-read guardrails"));
-    }
-
-    #[test]
-    fn format_agent_effective_config_outputs_json() {
-        let config = AgentEffectiveConfig {
-            workspace: "/tmp/project".to_string(),
-            agent_name: None,
-            profile: "default".to_string(),
-            model: "gpt-4o-mini".to_string(),
-            agent_instructions: Vec::new(),
-            agent_tools: Vec::new(),
-            read_access: ReadAccessPolicy::allow_by_default(),
-            permissions: PermissionPolicy::allow_by_default(),
-            read_access_rules: Vec::new(),
-            permission_rules: Vec::new(),
-            guardrails: agent_policy_guardrails(),
-        };
-
-        let rendered = format_agent_effective_config(&config, OutputFormat::Json).unwrap();
-        let value: Value = serde_json::from_str(&rendered).unwrap();
-
-        assert_eq!(value["workspace"], "/tmp/project");
-        assert_eq!(value["agent_name"], Value::Null);
-        assert_eq!(value["profile"], "default");
-        assert_eq!(value["model"], "gpt-4o-mini");
-        assert_eq!(value["permissions"]["rules"].as_array().unwrap().len(), 0);
-        assert!(value["guardrails"].as_array().unwrap().len() >= 3);
-    }
-
-    #[test]
-    fn format_agent_policy_surfaces_list_audit_and_revoke() {
-        let config = AgentEffectiveConfig {
-            workspace: "/tmp/project".to_string(),
-            agent_name: Some("reviewer".to_string()),
-            profile: "architect".to_string(),
-            model: "openai/gpt-5.5".to_string(),
-            agent_instructions: Vec::new(),
-            agent_tools: Vec::new(),
-            read_access: ReadAccessPolicy::allow_by_default(),
-            permissions: PermissionPolicy::allow_by_default(),
-            read_access_rules: vec![AgentEffectivePolicyRule {
-                source: "shared permissions".to_string(),
-                action: "read".to_string(),
-                resource: "*".to_string(),
-                effect: "allow".to_string(),
-            }],
-            permission_rules: vec![AgentEffectivePolicyRule {
-                source: "profile:architect".to_string(),
-                action: "shell".to_string(),
-                resource: "*".to_string(),
-                effect: "ask".to_string(),
-            }],
-            guardrails: agent_policy_guardrails(),
-        };
-
-        let report = agent_policy_report(&config);
-        let rendered = format_agent_policy_report(&report, OutputFormat::Text).unwrap();
-        assert!(rendered.contains("Agent effective policy"));
-        assert!(rendered.contains("shared permissions"));
-        assert!(rendered.contains("profile:architect: ask shell *"));
-        assert!(rendered.contains("Durable approvals: not implemented"));
-
-        let audit = agent_policy_audit_report(&config);
-        let rendered = format_agent_policy_audit_report(&audit, OutputFormat::Text).unwrap();
-        assert!(rendered.contains("Agent policy audit"));
-        assert!(rendered.contains("hard_guardrails"));
-        assert!(rendered.contains("no_durable_approval_store"));
-
-        let revoke = AgentPolicyRevokeReport {
-            action: Some("shell".to_string()),
-            resource: Some("printf hello".to_string()),
-            durable_approvals_found: 0,
-            revoked: 0,
-            message: "No durable approval store exists yet".to_string(),
-        };
-        let rendered = format_agent_policy_revoke_report(&revoke, OutputFormat::Text).unwrap();
-        assert!(rendered.contains("Agent policy revoke"));
-        assert!(rendered.contains("Revoked: 0"));
-        assert!(rendered.contains("Action selector: shell"));
-    }
-
-    #[test]
-    fn format_agent_tool_specs_lists_tool_names_and_summaries() {
-        let specs = vec![ToolSpec {
-            name: "edit_file".to_string(),
-            description: "Replace one exact text block. Extra detail.".to_string(),
-            input_schema: serde_json::json!({"type": "object"}),
-        }];
-
-        let rendered = format_agent_tool_specs(&specs, OutputFormat::Text).unwrap();
-
-        assert!(rendered.contains("Agent runtime tools"));
-        assert!(rendered.contains("1 tool"));
-        assert!(rendered.contains("- edit_file"));
-        assert!(rendered.contains("Replace one exact text block."));
-        assert!(!rendered.contains("Extra detail"));
-    }
-
-    #[test]
-    fn format_agent_tool_specs_outputs_json_schemas() {
-        let specs = vec![ToolSpec {
-            name: "write_file".to_string(),
-            description: "Create or replace a file.".to_string(),
-            input_schema: serde_json::json!({"type": "object", "required": ["path"]}),
-        }];
-
-        let rendered = format_agent_tool_specs(&specs, OutputFormat::Json).unwrap();
-        let value: Value = serde_json::from_str(&rendered).unwrap();
-
-        assert_eq!(value[0]["name"], "write_file");
-        assert_eq!(value[0]["input_schema"]["required"][0], "path");
-    }
-
-    #[test]
-    fn agent_tool_specs_apply_role_allowlist() {
-        let workspace = std::env::temp_dir();
-        let specs = agent_tool_specs(
-            Some(workspace),
-            "default",
-            &["read_file".to_string(), "search_files".to_string()],
-        )
-        .unwrap();
-        let names = specs
-            .iter()
-            .map(|spec| spec.name.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(names, vec!["read_file", "search_files"]);
-    }
-
-    #[test]
-    fn resolve_agent_tool_spec_matches_exact_and_unique_substrings() {
-        let specs = vec![
-            ToolSpec {
-                name: "read_file".to_string(),
-                description: String::new(),
-                input_schema: serde_json::json!({}),
-            },
-            ToolSpec {
-                name: "write_file".to_string(),
-                description: String::new(),
-                input_schema: serde_json::json!({}),
-            },
-        ];
-
-        assert_eq!(
-            resolve_agent_tool_spec(&specs, "READ_FILE").unwrap().name,
-            "read_file"
-        );
-        assert_eq!(
-            resolve_agent_tool_spec(&specs, "write").unwrap().name,
-            "write_file"
-        );
-    }
-
-    #[test]
-    fn resolve_agent_tool_spec_rejects_unknown_and_ambiguous_names() {
-        let specs = vec![
-            ToolSpec {
-                name: "read_file".to_string(),
-                description: String::new(),
-                input_schema: serde_json::json!({}),
-            },
-            ToolSpec {
-                name: "write_file".to_string(),
-                description: String::new(),
-                input_schema: serde_json::json!({}),
-            },
-        ];
-
-        assert!(resolve_agent_tool_spec(&specs, "missing")
-            .unwrap_err()
-            .to_string()
-            .contains("unknown"));
-        assert!(resolve_agent_tool_spec(&specs, "file")
-            .unwrap_err()
-            .to_string()
-            .contains("ambiguous"));
-    }
-
-    #[test]
-    fn format_agent_tool_spec_shows_schema_in_text_and_json() {
-        let spec = ToolSpec {
-            name: "write_file".to_string(),
-            description: "Create or replace a file.".to_string(),
-            input_schema: serde_json::json!({"type": "object", "required": ["path", "content"]}),
-        };
-
-        let text = format_agent_tool_spec(&spec, OutputFormat::Text).unwrap();
-        assert!(text.contains("write_file"));
-        assert!(text.contains("Create or replace a file."));
-        assert!(text.contains("Input schema:"));
-        assert!(text.contains("\"required\""));
-
-        let json = format_agent_tool_spec(&spec, OutputFormat::Json).unwrap();
-        let value: Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["name"], "write_file");
-        assert_eq!(value["input_schema"]["required"][1], "content");
-    }
-
-    #[test]
-    fn agent_model_messages_keep_conversation_turns() {
-        let session = AgentSession {
-            id: AgentSessionId::new("agt_test"),
-            meta: AgentSessionMeta::default(),
-            events: vec![
-                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
-                    content: "hello".to_string(),
-                }),
-                AgentSessionEvent::new(AgentSessionEventKind::AssistantMessage {
-                    content: "hi".to_string(),
-                }),
-                AgentSessionEvent::new(AgentSessionEventKind::ModelResponseMetadata {
-                    model: "openai/gpt-test".to_string(),
-                    provider: Some("openai".to_string()),
-                    round: Some(0),
-                    elapsed_ms: 10,
-                    tool_calls: 0,
-                    has_message: true,
-                    request_chars: Some(5),
-                    response_chars: Some(2),
-                    retry_attempts: None,
-                    usage: Some(AgentSessionTokenUsage {
-                        input_tokens: Some(1),
-                        output_tokens: Some(2),
-                        total_tokens: Some(3),
-                    }),
-                    estimated_cost: None,
-                }),
-                AgentSessionEvent::new(AgentSessionEventKind::ToolResult {
-                    id: "call-1".to_string(),
-                    output: serde_json::json!({"stdout": "ignored"}),
-                    success: true,
-                }),
-                AgentSessionEvent::new(AgentSessionEventKind::ToolExecutionMetadata {
-                    id: "call-1".to_string(),
-                    name: "shell".to_string(),
-                    round: Some(0),
-                    elapsed_ms: 10,
-                    success: true,
-                    input_bytes: Some(10),
-                    output_bytes: Some(20),
-                    approval_required: Some(false),
-                    approval_scope: None,
-                    skipped_operations: Some(0),
-                }),
-            ],
-        };
-
-        let messages = agent_model_messages(&session, "/tmp/project", &[]);
-        assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0].role, ModelRole::System);
-        assert_eq!(messages[1].role, ModelRole::User);
-        assert_eq!(messages[1].content, "hello");
-        assert_eq!(messages[2].role, ModelRole::Assistant);
-        assert_eq!(messages[2].content, "hi");
-    }
-
-    #[test]
-    fn agent_system_message_includes_resolved_instructions() {
-        let instructions = vec![ResolvedAgentInstruction {
-            source: "docs/review.md".to_string(),
-            content: "Review for correctness and regressions.".to_string(),
-        }];
-
-        let message = agent_system_message("/tmp/project", &instructions);
-
-        assert_eq!(message.role, ModelRole::System);
-        assert!(message.content.contains("workspace `/tmp/project`"));
-        assert!(message
-            .content
-            .contains("Additional configured instructions"));
-        assert!(message.content.contains("--- docs/review.md ---"));
-        assert!(message
-            .content
-            .contains("Review for correctness and regressions."));
-    }
-
-    #[test]
-    fn read_agent_instruction_file_reads_workspace_relative_file() {
-        let workspace =
-            std::env::temp_dir().join(format!("djinn-instruction-test-{}", current_time_millis()));
-        fs::create_dir_all(&workspace).unwrap();
-        let path = workspace.join("AGENTS.md");
-        fs::write(&path, "Use project conventions.\n").unwrap();
-
-        let instruction = read_agent_instruction_file(&workspace, "AGENTS.md")
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(instruction.source, path.display().to_string());
-        assert_eq!(instruction.content, "Use project conventions.");
-        let _ = fs::remove_file(path);
-        let _ = fs::remove_dir(workspace);
-    }
-
-    #[test]
-    fn latest_session_model_uses_latest_model_until_profile_changes() {
-        let mut session = AgentSession {
-            id: AgentSessionId::new("agt_model"),
-            meta: AgentSessionMeta::default(),
-            events: vec![AgentSessionEvent::new(
-                AgentSessionEventKind::SessionModelUpdated {
-                    model: "openai/gpt-5.5".to_string(),
-                },
-            )],
-        };
-
-        assert_eq!(
-            latest_session_model(&session).as_deref(),
-            Some("openai/gpt-5.5")
-        );
-
-        session.events.push(AgentSessionEvent::new(
-            AgentSessionEventKind::SessionProfileUpdated {
-                profile: "architect".to_string(),
-            },
-        ));
-
-        assert_eq!(latest_session_model(&session), None);
-
-        session.events.push(AgentSessionEvent::new(
-            AgentSessionEventKind::SessionModelUpdated {
-                model: "openai/gpt-5.4-mini".to_string(),
-            },
-        ));
-
-        assert_eq!(
-            latest_session_model(&session).as_deref(),
-            Some("openai/gpt-5.4-mini")
-        );
-    }
-
-    #[test]
-    fn child_session_depth_limit_allows_three_levels_below_root() {
-        let store = temp_agent_store("child-depth-allow");
-        let root = store
-            .create_session(AgentSessionMeta {
-                title: "root".to_string(),
-                ..AgentSessionMeta::default()
-            })
-            .unwrap();
-        let child = store
-            .create_session(AgentSessionMeta {
-                title: "child".to_string(),
-                parent_session_id: Some(root),
-                ..AgentSessionMeta::default()
-            })
-            .unwrap();
-        let grandchild = store
-            .create_session(AgentSessionMeta {
-                title: "grandchild".to_string(),
-                parent_session_id: Some(child),
-                ..AgentSessionMeta::default()
-            })
-            .unwrap();
-
-        validate_agent_child_session_depth(&store, Some(&grandchild)).unwrap();
-    }
-
-    #[test]
-    fn child_session_depth_limit_rejects_fourth_level_below_root() {
-        let store = temp_agent_store("child-depth-reject");
-        let root = store
-            .create_session(AgentSessionMeta {
-                title: "root".to_string(),
-                ..AgentSessionMeta::default()
-            })
-            .unwrap();
-        let child = store
-            .create_session(AgentSessionMeta {
-                title: "child".to_string(),
-                parent_session_id: Some(root),
-                ..AgentSessionMeta::default()
-            })
-            .unwrap();
-        let grandchild = store
-            .create_session(AgentSessionMeta {
-                title: "grandchild".to_string(),
-                parent_session_id: Some(child),
-                ..AgentSessionMeta::default()
-            })
-            .unwrap();
-        let great_grandchild = store
-            .create_session(AgentSessionMeta {
-                title: "great grandchild".to_string(),
-                parent_session_id: Some(grandchild),
-                ..AgentSessionMeta::default()
-            })
-            .unwrap();
-
-        let err = validate_agent_child_session_depth(&store, Some(&great_grandchild)).unwrap_err();
-
-        assert!(err
-            .to_string()
-            .contains("child session depth limit exceeded"));
-        assert!(err.to_string().contains("maximum child-session depth is 3"));
-    }
-
-    #[test]
-    fn maybe_auto_title_agent_session_titles_first_default_session_prompt() {
-        let store = temp_agent_store("auto-title");
-        let id = store
-            .create_session(AgentSessionMeta {
-                title: "Agent chat".to_string(),
-                workspace: "/tmp/workspace".to_string(),
-                profile: "default".to_string(),
-                source: "djinn-agent".to_string(),
-                ..AgentSessionMeta::default()
-            })
-            .unwrap();
-        store
-            .append_event(
-                &id,
-                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
-                    content: "Implement session auto title\nwith extra details".to_string(),
-                }),
-            )
-            .unwrap();
-
-        maybe_auto_title_agent_session(
-            &store,
-            &id,
-            "Implement session auto title\nwith extra details",
-        )
-        .unwrap();
-
-        let loaded = store.load_session(&id).unwrap();
-        assert_eq!(loaded.meta.title, "Implement session auto title");
-        assert!(loaded.events.iter().any(|event| matches!(
-            &event.kind,
-            AgentSessionEventKind::SessionTitleUpdated { title } if title == "Implement session auto title"
-        )));
-    }
-
-    #[test]
-    fn maybe_auto_title_agent_session_preserves_explicit_title() {
-        let store = temp_agent_store("auto-title-explicit");
-        let id = store
-            .create_session(AgentSessionMeta {
-                title: "Explicit title".to_string(),
-                workspace: "/tmp/workspace".to_string(),
-                profile: "default".to_string(),
-                source: "djinn-agent".to_string(),
-                ..AgentSessionMeta::default()
-            })
-            .unwrap();
-        store
-            .append_event(
-                &id,
-                AgentSessionEvent::new(AgentSessionEventKind::UserMessage {
-                    content: "Different first prompt".to_string(),
-                }),
-            )
-            .unwrap();
-
-        maybe_auto_title_agent_session(&store, &id, "Different first prompt").unwrap();
-
-        let loaded = store.load_session(&id).unwrap();
-        assert_eq!(loaded.meta.title, "Explicit title");
     }
 
     #[test]

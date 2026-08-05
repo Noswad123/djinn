@@ -113,8 +113,8 @@ config, auth, policy, model, promotion, and TUI flows can evolve independently.
 
 Current direction:
 
-- Keep Clap structs/enums and top-level command routing in `main.rs` until a
-  deliberate CLI-args module split is worthwhile.
+- Keep Clap structs/enums and the single top-level `Command` router in `main.rs`
+  until a deliberate CLI-args module split is worthwhile.
 - Extract cohesive helper/orchestration clusters behind small option/report types
   rather than moving raw `main.rs` argument structs into domain modules.
 - Preserve folder-backed session semantics and existing user-facing command
@@ -131,17 +131,18 @@ Progress already made:
   promotion modules, agent messages/roles/config/runtime/session metadata,
   model completion/resolution, auth, policy, and config import/export/doctor logic
   have been moved out of `main.rs`.
+- CLI dispatch slimming is substantially complete: session/config/auth/doctor/agent
+  dispatch, top-level noun dispatch, TUI dispatch glue, and TOML/text helpers now
+  live in focused modules. `main.rs` is intentionally limited to imports/re-exports,
+  Clap declarations, `main()`, and remaining tests.
 
 Remaining high-value seams:
 
-- Move promotion candidate session-run generation out of `main.rs` into promotion
-  modules.
-- Move dashboard/TUI orchestration and projections into a focused TUI bridge
-  module.
-- Move agent ask/session-run orchestration behind narrower option/report types.
-- Move legacy collection command handlers and store adapters out of `main.rs`.
+- Relocate large `main.rs` test clusters into the modules that own the behavior,
+  preserving focused test names and local helper setup.
 - Reassess whether CLI arg structs should stay in `main.rs` or move to a dedicated
-  `cli_args` module once the implementation body is mostly dispatch.
+  `cli_args` module only after test relocation shows whether the remaining file is
+  still hard to maintain.
 
 ### Folder-backed session follow-ups
 

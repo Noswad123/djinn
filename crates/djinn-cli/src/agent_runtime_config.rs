@@ -99,3 +99,25 @@ pub(crate) fn agent_tool_specs(
     registry.retain_names(allowed_tools)?;
     Ok(registry.specs())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_tool_specs_apply_role_allowlist() {
+        let workspace = std::env::temp_dir();
+        let specs = agent_tool_specs(
+            Some(workspace),
+            "default",
+            &["read_file".to_string(), "search_files".to_string()],
+        )
+        .unwrap();
+        let names = specs
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["read_file", "search_files"]);
+    }
+}

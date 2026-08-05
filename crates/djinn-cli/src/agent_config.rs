@@ -467,3 +467,292 @@ pub(crate) fn format_agent_tool_spec(spec: &ToolSpec, format: OutputFormat) -> R
 fn same_agent_option(left: &str, right: &str) -> bool {
     left.trim() == right.trim()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use djinn_agent::{
+        PermissionEffect, PermissionPolicy, PermissionRule, ReadAccessEffect, ReadAccessPolicy,
+        ReadAccessRule, ToolSpec,
+    };
+    use serde_json::Value;
+
+    use super::*;
+    use crate::policy_resolution::agent_policy_guardrails;
+
+    #[test]
+    fn format_agent_config_options_marks_current_choices() {
+        let rendered = format_agent_config_options(
+            "architect",
+            "openai/gpt-5.5",
+            &["default".to_string(), "architect".to_string()],
+            &["gpt-4o-mini".to_string(), "openai/gpt-5.5".to_string()],
+            OutputFormat::Text,
+        )
+        .unwrap();
+
+        assert!(rendered.contains("Agent config options"));
+        assert!(rendered.contains("Current profile: architect"));
+        assert!(rendered.contains("* architect"));
+        assert!(rendered.contains("  default"));
+        assert!(rendered.contains("Current model: openai/gpt-5.5"));
+        assert!(rendered.contains("* openai/gpt-5.5"));
+    }
+
+    #[test]
+    fn format_agent_config_options_outputs_json() {
+        let rendered = format_agent_config_options(
+            "default",
+            "gpt-4o-mini",
+            &["default".to_string()],
+            &["gpt-4o-mini".to_string()],
+            OutputFormat::Json,
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(value["current_profile"], "default");
+        assert_eq!(value["current_model"], "gpt-4o-mini");
+        assert_eq!(value["profiles"][0], "default");
+        assert_eq!(value["models"][0], "gpt-4o-mini");
+    }
+
+    #[test]
+    fn format_agent_effective_config_renders_text_summary() {
+        let config = AgentEffectiveConfig {
+            workspace: "/tmp/project".to_string(),
+            agent_name: Some("reviewer".to_string()),
+            profile: "architect".to_string(),
+            model: "openai/gpt-5.5".to_string(),
+            agent_instructions: vec!["docs/review.md".to_string()],
+            agent_tools: vec!["read_file".to_string()],
+            read_access: ReadAccessPolicy {
+                allow_roots: vec![PathBuf::from("/tmp/project")],
+                deny_roots: vec![PathBuf::from("/tmp/project/secrets")],
+                rules: vec![ReadAccessRule {
+                    pattern: "*/docs/*".to_string(),
+                    effect: ReadAccessEffect::Allow,
+                }],
+            },
+            permissions: PermissionPolicy {
+                rules: vec![PermissionRule {
+                    action: "write".to_string(),
+                    resource: "*.rs".to_string(),
+                    effect: PermissionEffect::Ask,
+                }],
+            },
+            read_access_rules: vec![AgentEffectivePolicyRule {
+                source: "profile:architect".to_string(),
+                action: "read".to_string(),
+                resource: "*/docs/*".to_string(),
+                effect: "allow".to_string(),
+            }],
+            permission_rules: vec![AgentEffectivePolicyRule {
+                source: "profile:architect".to_string(),
+                action: "write".to_string(),
+                resource: "*.rs".to_string(),
+                effect: "ask".to_string(),
+            }],
+            guardrails: agent_policy_guardrails(),
+        };
+
+        let rendered = format_agent_effective_config(&config, OutputFormat::Text).unwrap();
+
+        assert!(rendered.contains("Agent effective config"));
+        assert!(rendered.contains("Workspace: /tmp/project"));
+        assert!(rendered.contains("Agent: reviewer"));
+        assert!(rendered.contains("Profile: architect"));
+        assert!(rendered.contains("Model: openai/gpt-5.5"));
+        assert!(rendered.contains("docs/review.md"));
+        assert!(rendered.contains("read_file"));
+        assert!(rendered.contains("allow root: /tmp/project"));
+        assert!(rendered.contains("deny root: /tmp/project/secrets"));
+        assert!(rendered.contains("Allow: */docs/*"));
+        assert!(rendered.contains("Ask: write *.rs"));
+        assert!(rendered.contains("profile:architect"));
+        assert!(rendered.contains("destructive-action guardrails always apply"));
+        assert!(rendered.contains("secret-read guardrails"));
+    }
+
+    #[test]
+    fn format_agent_effective_config_outputs_json() {
+        let config = AgentEffectiveConfig {
+            workspace: "/tmp/project".to_string(),
+            agent_name: None,
+            profile: "default".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            agent_instructions: Vec::new(),
+            agent_tools: Vec::new(),
+            read_access: ReadAccessPolicy::allow_by_default(),
+            permissions: PermissionPolicy::allow_by_default(),
+            read_access_rules: Vec::new(),
+            permission_rules: Vec::new(),
+            guardrails: agent_policy_guardrails(),
+        };
+
+        let rendered = format_agent_effective_config(&config, OutputFormat::Json).unwrap();
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(value["workspace"], "/tmp/project");
+        assert_eq!(value["agent_name"], Value::Null);
+        assert_eq!(value["profile"], "default");
+        assert_eq!(value["model"], "gpt-4o-mini");
+        assert_eq!(value["permissions"]["rules"].as_array().unwrap().len(), 0);
+        assert!(value["guardrails"].as_array().unwrap().len() >= 3);
+    }
+
+    #[test]
+    fn format_agent_policy_surfaces_list_audit_and_revoke() {
+        let config = AgentEffectiveConfig {
+            workspace: "/tmp/project".to_string(),
+            agent_name: Some("reviewer".to_string()),
+            profile: "architect".to_string(),
+            model: "openai/gpt-5.5".to_string(),
+            agent_instructions: Vec::new(),
+            agent_tools: Vec::new(),
+            read_access: ReadAccessPolicy::allow_by_default(),
+            permissions: PermissionPolicy::allow_by_default(),
+            read_access_rules: vec![AgentEffectivePolicyRule {
+                source: "shared permissions".to_string(),
+                action: "read".to_string(),
+                resource: "*".to_string(),
+                effect: "allow".to_string(),
+            }],
+            permission_rules: vec![AgentEffectivePolicyRule {
+                source: "profile:architect".to_string(),
+                action: "shell".to_string(),
+                resource: "*".to_string(),
+                effect: "ask".to_string(),
+            }],
+            guardrails: agent_policy_guardrails(),
+        };
+
+        let report = agent_policy_report(&config);
+        let rendered = format_agent_policy_report(&report, OutputFormat::Text).unwrap();
+        assert!(rendered.contains("Agent effective policy"));
+        assert!(rendered.contains("shared permissions"));
+        assert!(rendered.contains("profile:architect: ask shell *"));
+        assert!(rendered.contains("Durable approvals: not implemented"));
+
+        let audit = agent_policy_audit_report(&config);
+        let rendered = format_agent_policy_audit_report(&audit, OutputFormat::Text).unwrap();
+        assert!(rendered.contains("Agent policy audit"));
+        assert!(rendered.contains("hard_guardrails"));
+        assert!(rendered.contains("no_durable_approval_store"));
+
+        let revoke = AgentPolicyRevokeReport {
+            action: Some("shell".to_string()),
+            resource: Some("printf hello".to_string()),
+            durable_approvals_found: 0,
+            revoked: 0,
+            message: "No durable approval store exists yet".to_string(),
+        };
+        let rendered = format_agent_policy_revoke_report(&revoke, OutputFormat::Text).unwrap();
+        assert!(rendered.contains("Agent policy revoke"));
+        assert!(rendered.contains("Revoked: 0"));
+        assert!(rendered.contains("Action selector: shell"));
+    }
+
+    #[test]
+    fn format_agent_tool_specs_lists_tool_names_and_summaries() {
+        let specs = vec![ToolSpec {
+            name: "edit_file".to_string(),
+            description: "Replace one exact text block. Extra detail.".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+
+        let rendered = format_agent_tool_specs(&specs, OutputFormat::Text).unwrap();
+
+        assert!(rendered.contains("Agent runtime tools"));
+        assert!(rendered.contains("1 tool"));
+        assert!(rendered.contains("- edit_file"));
+        assert!(rendered.contains("Replace one exact text block."));
+        assert!(!rendered.contains("Extra detail"));
+    }
+
+    #[test]
+    fn format_agent_tool_specs_outputs_json_schemas() {
+        let specs = vec![ToolSpec {
+            name: "write_file".to_string(),
+            description: "Create or replace a file.".to_string(),
+            input_schema: serde_json::json!({"type": "object", "required": ["path"]}),
+        }];
+
+        let rendered = format_agent_tool_specs(&specs, OutputFormat::Json).unwrap();
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(value[0]["name"], "write_file");
+        assert_eq!(value[0]["input_schema"]["required"][0], "path");
+    }
+
+    #[test]
+    fn resolve_agent_tool_spec_matches_exact_and_unique_substrings() {
+        let specs = vec![
+            ToolSpec {
+                name: "read_file".to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            },
+            ToolSpec {
+                name: "write_file".to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            },
+        ];
+
+        assert_eq!(
+            resolve_agent_tool_spec(&specs, "READ_FILE").unwrap().name,
+            "read_file"
+        );
+        assert_eq!(
+            resolve_agent_tool_spec(&specs, "write").unwrap().name,
+            "write_file"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_tool_spec_rejects_unknown_and_ambiguous_names() {
+        let specs = vec![
+            ToolSpec {
+                name: "read_file".to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            },
+            ToolSpec {
+                name: "write_file".to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            },
+        ];
+
+        assert!(resolve_agent_tool_spec(&specs, "missing")
+            .unwrap_err()
+            .to_string()
+            .contains("unknown"));
+        assert!(resolve_agent_tool_spec(&specs, "file")
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+    }
+
+    #[test]
+    fn format_agent_tool_spec_shows_schema_in_text_and_json() {
+        let spec = ToolSpec {
+            name: "write_file".to_string(),
+            description: "Create or replace a file.".to_string(),
+            input_schema: serde_json::json!({"type": "object", "required": ["path", "content"]}),
+        };
+
+        let text = format_agent_tool_spec(&spec, OutputFormat::Text).unwrap();
+        assert!(text.contains("write_file"));
+        assert!(text.contains("Create or replace a file."));
+        assert!(text.contains("Input schema:"));
+        assert!(text.contains("\"required\""));
+
+        let json = format_agent_tool_spec(&spec, OutputFormat::Json).unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["name"], "write_file");
+        assert_eq!(value["input_schema"]["required"][1], "content");
+    }
+}
