@@ -64,6 +64,7 @@ mod session_registry;
 mod session_remove;
 mod session_status;
 mod session_transcript;
+mod session_tui;
 mod session_turns;
 mod session_watch;
 mod shell;
@@ -75,7 +76,7 @@ use background_run::{
 };
 use buddy::*;
 use buddy_consolidate::*;
-use editor::{default_editor, open_editor_at, open_editor_path};
+use editor::{open_editor_at, open_editor_path};
 use permission_gate::TerminalPermissionGate;
 #[cfg(test)]
 use promotion_candidate::parse_promotion_candidate;
@@ -94,9 +95,7 @@ use promotion_validation::session_validate_candidates;
 pub(crate) use promotion_validation::SessionValidateCandidateEntry;
 #[cfg(test)]
 use session_artifact::resolve_folder_session_open_target_in_root;
-use session_artifact::{
-    fallback_folder_session_open_target, resolve_folder_session_open_target, SessionOpenTarget,
-};
+use session_artifact::{resolve_folder_session_open_target, SessionOpenTarget};
 use session_compact::compact_folder_session;
 #[cfg(test)]
 use session_context::validate_context_entry_name;
@@ -181,6 +180,9 @@ use session_status::{SessionStatusFileReport, SessionStatusReport};
 #[cfg(test)]
 use session_transcript::{build_session_transcript, render_session_transcript_markdown};
 use session_transcript::{SessionTranscriptFormat, SessionTranscriptOptions};
+#[cfg(test)]
+use session_tui::editor_open_command_hint;
+use session_tui::folder_session_action_message;
 pub(crate) use session_turns::{
     compact_text_snippet, read_folder_session_event_turns, read_folder_session_turns,
     read_optional_markdown_file, FolderSessionTurnDigest,
@@ -4910,129 +4912,6 @@ fn run_folder_session_tui(dir: PathBuf, editor: Option<String>) -> Result<()> {
     }
 }
 
-fn folder_session_action_message(
-    action: &djinn_tui::FolderSessionAction,
-    session_dir: &Path,
-    editor: Option<&str>,
-) -> String {
-    match action {
-        djinn_tui::FolderSessionAction::Run => format!(
-            "Run command: djinn session run {}",
-            shell_quote(&session_dir.display().to_string())
-        ),
-        djinn_tui::FolderSessionAction::Buddy => format!(
-            "Buddy chat command: djinn session chat {}",
-            shell_quote(&session_dir.display().to_string())
-        ),
-        djinn_tui::FolderSessionAction::Watch => format!(
-            "Watch command: djinn session watch {}",
-            shell_quote(&session_dir.display().to_string())
-        ),
-        djinn_tui::FolderSessionAction::OpenSummary => folder_session_open_action_message(
-            session_dir,
-            SessionOpenTarget::Summary,
-            "Open summary command",
-            editor,
-        ),
-        djinn_tui::FolderSessionAction::EditRequest => folder_session_open_action_message(
-            session_dir,
-            SessionOpenTarget::Request,
-            "Edit request command",
-            editor,
-        ),
-        djinn_tui::FolderSessionAction::OpenContext => folder_session_open_action_message(
-            session_dir,
-            SessionOpenTarget::Context,
-            "Open context command",
-            editor,
-        ),
-        djinn_tui::FolderSessionAction::DiscoverContext => format!(
-            "Discover context command: djinn session context discover {}",
-            shell_quote(&session_dir.display().to_string())
-        ),
-        djinn_tui::FolderSessionAction::ValidateCandidates => {
-            format!(
-                "Validate candidates command: djinn session validate-candidates {}",
-                shell_quote(&session_dir.display().to_string())
-            )
-        }
-        djinn_tui::FolderSessionAction::ValidateCandidate(candidate) => {
-            format!(
-                "Validate candidate command: djinn session validate-candidates {} {}",
-                shell_quote(&session_dir.display().to_string()),
-                shell_quote(candidate)
-            )
-        }
-        djinn_tui::FolderSessionAction::ShowPatternExportCommand(candidate) => format!(
-            "Pattern export command: {}",
-            pattern_export_command_hint(session_dir, candidate.as_deref())
-        ),
-        djinn_tui::FolderSessionAction::ShowValidateEventsCommand => format!(
-            "Event validation command: {}",
-            session_events_command_hint(session_dir, "validate-events", false, None)
-        ),
-        djinn_tui::FolderSessionAction::ShowEventsCommand => format!(
-            "Event projection command: {}",
-            session_events_command_hint(session_dir, "events", false, None)
-        ),
-        djinn_tui::FolderSessionAction::ShowEventsWriteCommand => format!(
-            "Event rebuild command: {}",
-            session_events_command_hint(session_dir, "events", true, None)
-        ),
-        djinn_tui::FolderSessionAction::ShowEventsRestoreCommand(backup) => format!(
-            "Event restore command: {}",
-            session_events_command_hint(session_dir, "events", true, Some(backup))
-        ),
-        djinn_tui::FolderSessionAction::AcceptCandidate(candidate) => {
-            format!(
-                "Accept candidate command: djinn session accept {} {}",
-                shell_quote(&session_dir.display().to_string()),
-                shell_quote(candidate)
-            )
-        }
-        djinn_tui::FolderSessionAction::AcceptCandidateAndSyncMindweaver(candidate) => {
-            format!(
-                "Accept candidate + MindWeaver sync command: djinn session accept {} {} --sync-mindweaver",
-                shell_quote(&session_dir.display().to_string()),
-                shell_quote(candidate)
-            )
-        }
-        djinn_tui::FolderSessionAction::DenyCandidate(candidate) => {
-            format!(
-                "Deny candidate command: djinn session deny {} {}",
-                shell_quote(&session_dir.display().to_string()),
-                shell_quote(candidate)
-            )
-        }
-        djinn_tui::FolderSessionAction::OpenCandidate(path) => format!(
-            "Open candidate command: {}",
-            editor_open_command_hint(Path::new(path), editor)
-        ),
-        djinn_tui::FolderSessionAction::OpenPath(path) => {
-            format!(
-                "Open path command: {}",
-                editor_open_command_hint(Path::new(path), editor)
-            )
-        }
-    }
-}
-
-fn folder_session_open_action_message(
-    session_dir: &Path,
-    target: SessionOpenTarget,
-    label: &str,
-    editor: Option<&str>,
-) -> String {
-    let path = resolve_folder_session_open_target(session_dir, target)
-        .unwrap_or_else(|_| fallback_folder_session_open_target(session_dir, target));
-    format!("{label}: {}", editor_open_command_hint(&path, editor))
-}
-
-fn editor_open_command_hint(path: &Path, editor: Option<&str>) -> String {
-    let editor = editor.map(str::to_string).unwrap_or_else(default_editor);
-    format!("{} {}", editor, shell_quote(&path.display().to_string()))
-}
-
 fn handle_folder_session_tui_action(
     action: djinn_tui::FolderSessionAction,
     session_dir: PathBuf,
@@ -5148,39 +5027,6 @@ fn handle_folder_session_tui_action(
             open_editor_path(Path::new(&path), editor.map(str::to_string))
         }
     }
-}
-
-fn pattern_export_command_hint(session_dir: &Path, candidate: Option<&str>) -> String {
-    let mut command = format!(
-        "djinn session export-pattern {}",
-        shell_quote(&session_dir.display().to_string())
-    );
-    if let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
-        command.push(' ');
-        command.push_str(&shell_quote(candidate));
-    }
-    command.push_str(" --to <notes.md>");
-    command
-}
-
-fn session_events_command_hint(
-    session_dir: &Path,
-    subcommand: &str,
-    write: bool,
-    restore: Option<&str>,
-) -> String {
-    let mut command = format!(
-        "djinn session {subcommand} {}",
-        shell_quote(&session_dir.display().to_string())
-    );
-    if let Some(restore) = restore.map(str::trim).filter(|value| !value.is_empty()) {
-        command.push_str(" --restore ");
-        command.push_str(&shell_quote(restore));
-    }
-    if write {
-        command.push_str(" --write");
-    }
-    command
 }
 
 fn folder_session_status_tui_view(
