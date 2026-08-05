@@ -182,7 +182,9 @@ use session_transcript::{build_session_transcript, render_session_transcript_mar
 use session_transcript::{SessionTranscriptFormat, SessionTranscriptOptions};
 #[cfg(test)]
 use session_tui::editor_open_command_hint;
-use session_tui::folder_session_action_message;
+use session_tui::{
+    folder_session_action_message, folder_session_status_tui_view, tui_candidate_row,
+};
 pub(crate) use session_turns::{
     compact_text_snippet, read_folder_session_event_turns, read_folder_session_turns,
     read_optional_markdown_file, FolderSessionTurnDigest,
@@ -5027,103 +5029,6 @@ fn handle_folder_session_tui_action(
             open_editor_path(Path::new(&path), editor.map(str::to_string))
         }
     }
-}
-
-fn folder_session_status_tui_view(
-    session_dir: &Path,
-) -> Result<djinn_tui::FolderSessionStatusView> {
-    let report = folder_session_status(session_dir)?;
-    let manifest = read_folder_session_manifest(session_dir)?;
-    let session_path = PathBuf::from(&report.session_dir);
-    let title = session_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(folder_session_display_name)
-        .unwrap_or_else(|| report.session_dir.clone());
-    Ok(djinn_tui::FolderSessionStatusView {
-        title,
-        state: report.lifecycle.state.clone(),
-        mode: report.lifecycle.mode.clone(),
-        promotion_type: manifest.and_then(|manifest| manifest.promotion_type),
-        session_dir: report.session_dir.clone(),
-        summary_path: report
-            .files
-            .summary_md
-            .then(|| session_path.join("summary.md").display().to_string()),
-        request_path: report
-            .files
-            .request_md
-            .then(|| session_path.join("request.md").display().to_string()),
-        response_path: report
-            .latest_turn
-            .as_ref()
-            .and_then(|turn| turn.response_path.clone()),
-        turn_count: report.turn_count,
-        event_count: report.event_count,
-        candidate_status: report
-            .candidates
-            .as_ref()
-            .map(format_session_candidate_status),
-        candidate_details: report
-            .candidates
-            .as_ref()
-            .map(|candidates| {
-                candidates
-                    .entries
-                    .iter()
-                    .map(format_session_candidate_entry)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        candidate_entries: report
-            .candidates
-            .as_ref()
-            .map(|candidates| candidates.entries.iter().map(tui_candidate_row).collect())
-            .unwrap_or_default(),
-        next_action: report.next_action.clone(),
-        note: report
-            .lifecycle
-            .note
-            .clone()
-            .or(report.lifecycle.reason.clone()),
-        message: None,
-        latest_generation_response_path: latest_promotion_generation_response_path(&session_path)
-            .map(|path| path.display().to_string()),
-        latest_run_log_path: latest_background_session_run_status(&session_path)
-            .and_then(|run| run.log_path),
-        events_path: session_path
-            .join("events.jsonl")
-            .exists()
-            .then(|| session_path.join("events.jsonl").display().to_string()),
-        latest_event_rebuild_backup_path: latest_event_rebuild_backup_path(&session_path)
-            .map(|path| path.display().to_string()),
-        candidates_dir: session_path
-            .join("outputs")
-            .join("candidates")
-            .is_dir()
-            .then(|| {
-                session_path
-                    .join("outputs")
-                    .join("candidates")
-                    .display()
-                    .to_string()
-            }),
-        source_packet_path: session_path
-            .join("context/source-packet.md")
-            .exists()
-            .then(|| {
-                session_path
-                    .join("context/source-packet.md")
-                    .display()
-                    .to_string()
-            }),
-        sources_manifest_path: session_path.join("context/sources.toml").exists().then(|| {
-            session_path
-                .join("context/sources.toml")
-                .display()
-                .to_string()
-        }),
-    })
 }
 
 fn latest_event_rebuild_backup_path(session_dir: &Path) -> Option<PathBuf> {
@@ -10248,20 +10153,6 @@ fn session_records_for_dashboard() -> Result<Vec<djinn_tui::SessionRecord>> {
             next_action: session.next_action,
         })
         .collect())
-}
-
-fn tui_candidate_row(entry: &SessionStatusCandidateEntry) -> djinn_tui::PromotionCandidateRow {
-    djinn_tui::PromotionCandidateRow {
-        id: entry.id.clone(),
-        candidate_type: entry.candidate_type.clone(),
-        status: entry.status.clone(),
-        path: entry.path.clone(),
-        text: entry.text.clone(),
-        rationale: entry.rationale.clone(),
-        evidence: entry.evidence.clone(),
-        destination: entry.destination.clone(),
-        writeback_path: entry.writeback_path.clone(),
-    }
 }
 
 fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
