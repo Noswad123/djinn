@@ -161,3 +161,41 @@ fn find_json_string_by_keys(value: &Value, keys: &[&str]) -> Option<String> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copilot_oauth_token_reads_hosts_and_apps_json_shapes() {
+        let hosts = r#"{
+          "github.com": {
+            "oauth_token": "ghu-host-token",
+            "user": "octo"
+          }
+        }"#;
+        let apps = r#"{
+          "apps": [
+            {"github": {"oauthToken": "ghu-app-token"}}
+          ]
+        }"#;
+
+        assert_eq!(
+            copilot_oauth_token_from_content(hosts).unwrap().as_deref(),
+            Some("ghu-host-token")
+        );
+        assert_eq!(
+            copilot_oauth_token_from_content(apps).unwrap().as_deref(),
+            Some("ghu-app-token")
+        );
+    }
+
+    #[test]
+    fn github_cli_auth_token_parser_reads_first_nonempty_line() {
+        assert_eq!(
+            github_cli_auth_token_from_stdout(b"\n  gho-cli-token  \nignored\n").as_deref(),
+            Some("gho-cli-token")
+        );
+        assert_eq!(github_cli_auth_token_from_stdout(b"\n  \n"), None);
+    }
+}

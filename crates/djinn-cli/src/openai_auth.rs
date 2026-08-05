@@ -1055,3 +1055,156 @@ fn set_owner_only_permissions(path: &Path) -> Result<()> {
 fn set_owner_only_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine;
+
+    use super::*;
+
+    #[test]
+    fn opencode_openai_api_key_reads_provider_key() {
+        let api_key = opencode_openai_api_key_from_content(
+            r#"{
+              "providers": {
+                "openai": { "apiKey": "sk-test" }
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(api_key.as_deref(), Some("sk-test"));
+    }
+
+    #[test]
+    fn opencode_openai_api_key_uses_first_existing_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-opencode-key-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("missing.json");
+        let first = dir.join("first.json");
+        let second = dir.join("second.json");
+        fs::write(&first, r#"{"providers":{"openai":{"apiKey":"sk-first"}}}"#).unwrap();
+        fs::write(
+            &second,
+            r#"{"providers":{"openai":{"apiKey":"sk-second"}}}"#,
+        )
+        .unwrap();
+
+        let api_key = opencode_openai_api_key_from_paths(&[missing, first, second]).unwrap();
+        assert_eq!(api_key.as_deref(), Some("sk-first"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn opencode_auth_openai_api_key_reads_api_auth() {
+        let api_key = opencode_auth_openai_api_key_from_content(
+            r#"{
+              "openai": { "type": "api", "key": "sk-auth" }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(api_key.as_deref(), Some("sk-auth"));
+    }
+
+    #[test]
+    fn opencode_auth_openai_oauth_reads_access_refresh_and_account() {
+        let auth = opencode_auth_openai_auth_from_content(
+            r#"{
+              "openai": {
+                "type": "oauth",
+                "access": "access-token",
+                "refresh": "refresh-token",
+                "expires": 9999999999999,
+                "accountId": "account-123"
+              }
+            }"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            auth,
+            OpenCodeOpenAiAuthCredential::OAuth(OpenCodeOpenAiOAuthCredential {
+                access: "access-token".to_string(),
+                refresh: "refresh-token".to_string(),
+                expires: 9999999999999,
+                account_id: Some("account-123".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn opencode_auth_openai_api_key_helper_ignores_oauth() {
+        let api_key = opencode_auth_openai_api_key_from_content(
+            r#"{
+              "openai": {
+                "type": "oauth",
+                "access": "access-token",
+                "refresh": "refresh-token",
+                "expires": 9999999999999
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(api_key, None);
+    }
+
+    #[test]
+    fn extract_account_id_from_jwt_reads_nested_openai_claim() {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct-1"}}"#);
+        let token = format!("header.{payload}.signature");
+        assert_eq!(
+            extract_account_id_from_jwt(&token).as_deref(),
+            Some("acct-1")
+        );
+    }
+
+    #[test]
+    fn write_refreshed_opencode_oauth_preserves_other_providers() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-opencode-oauth-write-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        let content = r#"{
+          "google": { "type": "api", "key": "google-key" },
+          "openai": { "type": "oauth", "access": "old", "refresh": "old", "expires": 1 }
+        }"#;
+        fs::write(&path, content).unwrap();
+
+        write_refreshed_opencode_openai_oauth(
+            &path,
+            content,
+            &OpenCodeOpenAiOAuthCredential {
+                access: "new-access".to_string(),
+                refresh: "new-refresh".to_string(),
+                expires: 42,
+                account_id: Some("acct-2".to_string()),
+            },
+        )
+        .unwrap();
+
+        let rendered = fs::read_to_string(&path).unwrap();
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            parsed["google"]["key"],
+            Value::String("google-key".to_string())
+        );
+        assert_eq!(
+            parsed["openai"]["access"],
+            Value::String("new-access".to_string())
+        );
+        assert_eq!(
+            parsed["openai"]["accountId"],
+            Value::String("acct-2".to_string())
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+}

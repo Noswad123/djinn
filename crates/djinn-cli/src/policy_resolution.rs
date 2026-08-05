@@ -529,3 +529,129 @@ fn opencode_permission_pattern(pattern: &str, workspace: &Path) -> String {
         workspace.join(expanded).to_string_lossy().to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opencode_read_access_rules_reads_new_agent_permissions() {
+        let workspace = PathBuf::from("/tmp/djinn-workspace");
+        let rules = opencode_read_access_rules_from_content(
+            r#"{
+              "default_agent": "architect",
+              "permissions": [
+                { "action": "read", "resource": "*.env", "effect": "ask" }
+              ],
+              "agent": {
+                "architect": {
+                  "permissions": [
+                    { "action": "read", "resource": "~/public/*", "effect": "allow" },
+                    { "action": "read", "resource": "~/.ssh/*", "effect": "deny" }
+                  ]
+                }
+              }
+            }"#,
+            "default",
+            &workspace,
+        )
+        .unwrap();
+
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0].pattern, "*.env");
+        assert_eq!(rules[0].effect, ReadAccessEffect::Ask);
+        assert!(rules[1].pattern.ends_with("/public/*"));
+        assert_eq!(rules[1].effect, ReadAccessEffect::Allow);
+        assert!(rules[2].pattern.ends_with("/.ssh/*"));
+        assert_eq!(rules[2].effect, ReadAccessEffect::Deny);
+    }
+
+    #[test]
+    fn opencode_read_access_rules_reads_old_permission_object_for_profile() {
+        let workspace = PathBuf::from("/tmp/djinn-workspace");
+        let rules = opencode_read_access_rules_from_content(
+            r#"{
+              "agents": {
+                "coder": {
+                  "permission": {
+                    "read": {
+                      "docs/*": "allow",
+                      "secrets/*": "deny"
+                    }
+                  }
+                }
+              }
+            }"#,
+            "coder",
+            &workspace,
+        )
+        .unwrap();
+
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].pattern, "/tmp/djinn-workspace/docs/*");
+        assert_eq!(rules[0].effect, ReadAccessEffect::Allow);
+        assert_eq!(rules[1].pattern, "/tmp/djinn-workspace/secrets/*");
+        assert_eq!(rules[1].effect, ReadAccessEffect::Deny);
+    }
+
+    #[test]
+    fn opencode_permission_policy_rules_map_bash_to_shell() {
+        let workspace = PathBuf::from("/tmp/djinn-workspace");
+        let rules = opencode_permission_policy_rules_from_content(
+            r#"{
+              "default_agent": "architect",
+              "agent": {
+                "architect": {
+                  "permissions": [
+                    { "action": "bash", "resource": "git reset*", "effect": "deny" },
+                    { "action": "shell", "resource": "cargo test*", "effect": "allow" }
+                  ]
+                }
+              }
+            }"#,
+            "default",
+            &workspace,
+        )
+        .unwrap();
+
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].action, "shell");
+        assert_eq!(rules[0].resource, "git reset*");
+        assert_eq!(rules[0].effect, PermissionEffect::Deny);
+        assert_eq!(rules[1].action, "shell");
+        assert_eq!(rules[1].resource, "cargo test*");
+        assert_eq!(rules[1].effect, PermissionEffect::Allow);
+    }
+
+    #[test]
+    fn opencode_permission_policy_rules_read_old_permission_object() {
+        let workspace = PathBuf::from("/tmp/djinn-workspace");
+        let rules = opencode_permission_policy_rules_from_content(
+            r#"{
+              "agents": {
+                "coder": {
+                  "permission": {
+                    "shell": {
+                      "npm publish*": "deny"
+                    },
+                    "edit": "allow"
+                  }
+                }
+              }
+            }"#,
+            "coder",
+            &workspace,
+        )
+        .unwrap();
+
+        assert_eq!(rules.len(), 2);
+        assert!(rules.iter().any(|rule| {
+            rule.action == "shell"
+                && rule.resource == "npm publish*"
+                && rule.effect == PermissionEffect::Deny
+        }));
+        assert!(rules.iter().any(|rule| {
+            rule.action == "edit" && rule.resource == "*" && rule.effect == PermissionEffect::Allow
+        }));
+    }
+}

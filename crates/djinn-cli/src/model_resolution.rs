@@ -466,3 +466,145 @@ pub(crate) fn default_opencode_config_path() -> PathBuf {
         .join("opencode")
         .join("opencode.json")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copilot_model_prefixes_route_to_copilot_provider() {
+        assert!(is_copilot_model("copilot/gpt-4.1"));
+        assert!(is_copilot_model("github-copilot/claude-sonnet-4"));
+        assert!(!is_copilot_model("openai/gpt-4o-mini"));
+        assert!(!is_copilot_model("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn copilot_model_options_read_models_without_leaking_auth_strings() {
+        let content = r#"{
+          "github.com": {
+            "oauth_token": "ghu-host-token",
+            "user": "octo"
+          },
+          "defaultModel": "gpt-4.1",
+          "availableModels": [
+            { "id": "gpt-4.1", "name": "GPT 4.1" },
+            { "modelId": "claude-sonnet-4" },
+            "o4-mini",
+            "gemini-2.5-pro"
+          ],
+          "models": {
+            "gpt-4o": { "label": "GPT 4o" },
+            "not-a-model": { "label": "ignored" }
+          }
+        }"#;
+
+        let models = copilot_model_options_from_content(content).unwrap();
+
+        assert_eq!(
+            models,
+            vec![
+                "copilot/gpt-4.1",
+                "copilot/gpt-4o",
+                "copilot/claude-sonnet-4",
+                "copilot/o4-mini"
+            ]
+        );
+        assert!(!models.iter().any(|model| model.contains("ghu-host-token")));
+        assert!(!models.iter().any(|model| model.contains("gemini")));
+    }
+
+    #[test]
+    fn copilot_model_list_parser_normalizes_and_deduplicates() {
+        let models = copilot_model_options_from_list(
+            "gpt-4.1, copilot/gpt-4.1;github-copilot/claude-sonnet-4\n sk-secret",
+        );
+
+        assert_eq!(
+            models,
+            vec!["copilot/gpt-4.1", "github-copilot/claude-sonnet-4"]
+        );
+    }
+
+    #[test]
+    fn opencode_default_model_reads_coder_agent_model() {
+        let model = opencode_default_model_from_content(
+            r#"{
+              "agents": {
+                "coder": { "model": "gpt-4.1" },
+                "task": { "model": "gpt-4.1-mini" }
+              }
+            }"#,
+            "default",
+        )
+        .unwrap();
+        assert_eq!(model.as_deref(), Some("gpt-4.1"));
+    }
+
+    #[test]
+    fn opencode_default_model_reads_new_agent_map_default_agent() {
+        let model = opencode_default_model_from_content(
+            r##"{
+              "default_agent": "🧠",
+              "model": "openai/gpt-5.4-mini",
+              "agent": {
+                "🧠": { "model": "openai/gpt-5.5" },
+                "review": { "model": "openai/gpt-5.4" }
+              }
+            }"##,
+            "default",
+        )
+        .unwrap();
+        assert_eq!(model.as_deref(), Some("openai/gpt-5.5"));
+    }
+
+    #[test]
+    fn opencode_default_model_reads_requested_profile_agent() {
+        let model = opencode_default_model_from_content(
+            r##"{
+              "default_agent": "🧠",
+              "model": "openai/gpt-5.4-mini",
+              "agent": {
+                "🧠": { "model": "openai/gpt-5.5" },
+                "review": { "model": "openai/gpt-5.4" }
+              }
+            }"##,
+            "review",
+        )
+        .unwrap();
+        assert_eq!(model.as_deref(), Some("openai/gpt-5.4"));
+    }
+
+    #[test]
+    fn opencode_default_model_falls_back_to_top_level_model() {
+        let model = opencode_default_model_from_content(
+            r#"{
+              "model": "openai/gpt-5.4-mini"
+            }"#,
+            "default",
+        )
+        .unwrap();
+        assert_eq!(model.as_deref(), Some("openai/gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn opencode_default_model_uses_first_existing_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "djinn-opencode-model-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("missing.json");
+        let first = dir.join("first.json");
+        let second = dir.join("second.json");
+        fs::write(&first, r#"{"agents":{"coder":{"model":"gpt-4.1"}}}"#).unwrap();
+        fs::write(&second, r#"{"agents":{"coder":{"model":"gpt-5"}}}"#).unwrap();
+
+        let model =
+            opencode_default_model_from_paths(&[missing, first, second], "default").unwrap();
+        assert_eq!(model.as_deref(), Some("gpt-4.1"));
+        let _ = fs::remove_dir_all(dir);
+    }
+}
