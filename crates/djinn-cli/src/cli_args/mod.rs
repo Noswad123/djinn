@@ -2,7 +2,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 #[cfg(test)]
@@ -10,6 +10,9 @@ use crate::config_commands::validate_config_import_mode;
 use crate::session_artifact::SessionOpenTarget;
 use crate::session_transcript::SessionTranscriptFormat;
 use crate::DEFAULT_AGENT_MAX_TOOL_ROUNDS;
+
+mod tui;
+pub(crate) use tui::{TuiArgs, TuiView};
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
@@ -23,6 +26,16 @@ pub(crate) struct Cli {
     pub(crate) session: Option<PathBuf>,
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
+}
+
+pub(crate) fn parse_cli() -> Cli {
+    Cli::parse()
+}
+
+pub(crate) fn print_cli_help() -> std::io::Result<()> {
+    Cli::command().print_help()?;
+    println!();
+    Ok(())
 }
 
 #[derive(Debug, Subcommand)]
@@ -1500,19 +1513,6 @@ pub(crate) struct OpenToolArgs {
     pub(crate) editor: Option<String>,
 }
 
-#[derive(Debug, Clone, Args)]
-pub(crate) struct TuiArgs {
-    /// TUI view to open. Defaults to sessions.
-    #[arg(value_enum, default_value_t = TuiView::Sessions)]
-    pub(crate) view: TuiView,
-    /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
-    #[arg(long = "root")]
-    pub(crate) roots: Vec<PathBuf>,
-    /// Editor command for opening tools. Defaults to VISUAL, then EDITOR, then nvim.
-    #[arg(long)]
-    pub(crate) editor: Option<String>,
-}
-
 #[derive(Debug, Args)]
 pub(crate) struct AgentFileHistoryListArgs {
     /// Filter by exact patch id.
@@ -1593,15 +1593,6 @@ pub(crate) struct AgentAskArgs {
     /// Open the produced summary.md after an auto-created folder-backed ask completes.
     #[arg(long, conflicts_with_all = ["json", "session_id", "session_dir"])]
     pub(crate) open: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum TuiView {
-    Tools,
-    Sessions,
-    Memories,
-    Suggestions,
-    Skills,
 }
 
 #[derive(Debug, Args)]

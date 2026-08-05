@@ -1,7 +1,6 @@
 use std::io::{self, IsTerminal};
 
 use anyhow::{bail, Result};
-use clap::{CommandFactory, Parser};
 
 mod agent_ask_command;
 mod agent_commands;
@@ -154,7 +153,7 @@ pub(crate) const FOLDER_SESSION_COMPACT_START_MARKER: &str = "<!-- djinn:generat
 pub(crate) const FOLDER_SESSION_COMPACT_END_MARKER: &str = "<!-- djinn:generated:end -->";
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = parse_cli();
     if cli.buddy {
         if cli.command.is_some() {
             bail!("-b/--buddy opens Buddy mode and cannot be combined with a Djinn subcommand");
@@ -176,8 +175,7 @@ fn main() -> Result<()> {
         if io::stdin().is_terminal() && io::stdout().is_terminal() {
             return run_tui(default_dashboard_tui_args());
         }
-        Cli::command().print_help()?;
-        println!();
+        print_cli_help()?;
         return Ok(());
     };
     match command {
