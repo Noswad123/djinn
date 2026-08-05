@@ -42,6 +42,7 @@ mod background_run;
 mod buddy;
 mod buddy_consolidate;
 mod editor;
+mod path_util;
 mod permission_gate;
 mod promotion_candidate;
 mod promotion_cleanup;
@@ -78,6 +79,7 @@ use background_run::{
 use buddy::*;
 use buddy_consolidate::*;
 use editor::{open_editor_at, open_editor_path};
+pub(crate) use path_util::expand_tilde_path;
 use permission_gate::TerminalPermissionGate;
 #[cfg(test)]
 use promotion_candidate::parse_promotion_candidate;
@@ -5205,13 +5207,6 @@ fn session_events(args: SessionEventsArgs) -> Result<()> {
         print!("{}", format_session_project_events_report(&report));
     }
     Ok(())
-}
-
-fn expand_tilde_path(value: &str) -> PathBuf {
-    if let Some(rest) = value.strip_prefix("~/") {
-        return djinn_core::home_dir().join(rest);
-    }
-    PathBuf::from(value)
 }
 
 fn session_promote(args: SessionPromoteArgs) -> Result<()> {
