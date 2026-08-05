@@ -38,7 +38,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+mod agent_config;
 mod agent_instructions;
+mod agent_messages;
+mod agent_roles;
 mod background_run;
 mod buddy;
 mod buddy_consolidate;
@@ -72,9 +75,23 @@ mod session_turns;
 mod session_watch;
 mod shell;
 mod text;
+use agent_config::{
+    agent_policy_audit_report, agent_policy_report, format_agent_config_options,
+    format_agent_effective_config, format_agent_policy_audit_report, format_agent_policy_report,
+    format_agent_policy_revoke_report, format_agent_tool_spec, format_agent_tool_specs,
+    resolve_agent_tool_spec, AgentEffectiveConfig, AgentEffectivePolicyRule,
+    AgentPolicyRevokeReport,
+};
 #[cfg(test)]
 use agent_instructions::read_agent_instruction_file;
 use agent_instructions::{resolve_agent_instruction_contents, ResolvedAgentInstruction};
+use agent_messages::agent_model_messages;
+#[cfg(test)]
+use agent_messages::agent_system_message;
+use agent_roles::{
+    configured_agent_roles, format_agent_role, format_agent_role_list, resolve_agent_role,
+    resolve_agent_role_selection_from_config, AgentRoleSelection,
+};
 #[cfg(test)]
 use background_run::BackgroundRunStatus;
 use background_run::{
@@ -5471,176 +5488,6 @@ fn agents_show(args: AgentsShowArgs) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct AgentRoleView {
-    name: String,
-    description: Option<String>,
-    profile: Option<String>,
-    model: Option<String>,
-    effective_model: Option<String>,
-    instructions: Vec<String>,
-    tools: Vec<String>,
-}
-
-fn configured_agent_roles(config: &DjinnConfig) -> Vec<AgentRoleView> {
-    config
-        .agents
-        .iter()
-        .map(|(name, agent)| {
-            let profile = agent
-                .profile
-                .as_deref()
-                .map(str::trim)
-                .filter(|profile| !profile.is_empty())
-                .map(ToOwned::to_owned);
-            let model = agent
-                .model
-                .as_deref()
-                .map(str::trim)
-                .filter(|model| !model.is_empty())
-                .map(ToOwned::to_owned);
-            let effective_model = model.clone().or_else(|| {
-                profile
-                    .as_deref()
-                    .and_then(|profile| profile_model_from_config(config, profile))
-            });
-            AgentRoleView {
-                name: name.clone(),
-                description: agent
-                    .description
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|description| !description.is_empty())
-                    .map(ToOwned::to_owned),
-                profile,
-                model,
-                effective_model,
-                instructions: agent.instructions.clone(),
-                tools: agent.tools.clone(),
-            }
-        })
-        .collect()
-}
-
-fn resolve_agent_role<'a>(roles: &'a [AgentRoleView], name: &str) -> Result<&'a AgentRoleView> {
-    let requested = name.trim();
-    if let Some(role) = roles.iter().find(|role| role.name == requested) {
-        return Ok(role);
-    }
-    if let Some(role) = roles
-        .iter()
-        .find(|role| role.name.eq_ignore_ascii_case(requested))
-    {
-        return Ok(role);
-    }
-    let needle = requested.to_lowercase();
-    let matches = roles
-        .iter()
-        .filter(|role| {
-            role.name.to_lowercase().contains(&needle)
-                || role
-                    .description
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .contains(&needle)
-        })
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [role] => Ok(role),
-        [] => bail!("no agent role named {requested:?} found"),
-        many => {
-            eprintln!("multiple agent roles match {requested:?}:");
-            for role in many {
-                eprintln!("  - {}", role.name);
-            }
-            bail!("agent role name is ambiguous")
-        }
-    }
-}
-
-fn format_agent_role_list(roles: &[AgentRoleView], format: OutputFormat) -> Result<String> {
-    if format == OutputFormat::Json {
-        let mut rendered = serde_json::to_string_pretty(roles)?;
-        rendered.push('\n');
-        return Ok(rendered);
-    }
-    if roles.is_empty() {
-        return Ok("No configured Djinn agent roles.\n".to_string());
-    }
-    let mut lines = vec!["Djinn agent roles".to_string(), String::new()];
-    for role in roles {
-        lines.push(format!("  - {}", role.name));
-        if let Some(description) = &role.description {
-            lines.push(format!("    {description}"));
-        }
-        if let Some(profile) = &role.profile {
-            lines.push(format!("    profile: {profile}"));
-        }
-        if let Some(model) = &role.effective_model {
-            lines.push(format!("    model: {model}"));
-        }
-        if !role.tools.is_empty() {
-            lines.push(format!("    tools: {}", role.tools.join(", ")));
-        }
-    }
-    lines.push(String::new());
-    lines.push(format!("Total: {} agent roles", roles.len()));
-    lines.push(String::new());
-    Ok(lines.join("\n"))
-}
-
-fn format_agent_role(role: &AgentRoleView, format: OutputFormat) -> Result<String> {
-    if format == OutputFormat::Json {
-        let mut rendered = serde_json::to_string_pretty(role)?;
-        rendered.push('\n');
-        return Ok(rendered);
-    }
-    let mut lines = vec![
-        "Djinn agent role".to_string(),
-        format!("Name: {}", role.name),
-    ];
-    if let Some(description) = &role.description {
-        lines.push(format!("Description: {description}"));
-    }
-    if let Some(profile) = &role.profile {
-        lines.push(format!("Profile: {profile}"));
-    }
-    if let Some(model) = &role.model {
-        lines.push(format!("Model override: {model}"));
-    }
-    if let Some(model) = &role.effective_model {
-        lines.push(format!("Effective model: {model}"));
-    }
-    lines.push("Instructions:".to_string());
-    if role.instructions.is_empty() {
-        lines.push("  - none".to_string());
-    } else {
-        for instruction in &role.instructions {
-            lines.push(format!("  - {instruction}"));
-        }
-    }
-    lines.push("Tools:".to_string());
-    if role.tools.is_empty() {
-        lines.push("  - inherited/default".to_string());
-    } else {
-        for tool in &role.tools {
-            lines.push(format!("  - {tool}"));
-        }
-    }
-    lines.push(String::new());
-    Ok(lines.join("\n"))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AgentRoleSelection {
-    agent_name: Option<String>,
-    profile: String,
-    model: Option<String>,
-    instructions: Vec<String>,
-    tools: Vec<String>,
-}
-
 fn resolve_agent_role_selection(
     agent: Option<String>,
     requested_profile: &str,
@@ -5648,58 +5495,6 @@ fn resolve_agent_role_selection(
 ) -> Result<AgentRoleSelection> {
     let config = effective_djinn_config()?;
     resolve_agent_role_selection_from_config(&config, agent, requested_profile, requested_model)
-}
-
-fn resolve_agent_role_selection_from_config(
-    config: &DjinnConfig,
-    agent: Option<String>,
-    requested_profile: &str,
-    requested_model: Option<String>,
-) -> Result<AgentRoleSelection> {
-    let Some(agent_name) = agent
-        .as_deref()
-        .map(str::trim)
-        .filter(|agent| !agent.is_empty())
-    else {
-        let profile = resolve_agent_profile_from_config(config, requested_profile);
-        return Ok(AgentRoleSelection {
-            agent_name: None,
-            instructions: profile_instructions_from_config(config, &profile),
-            profile,
-            model: requested_model,
-            tools: Vec::new(),
-        });
-    };
-
-    let roles = configured_agent_roles(&config);
-    let role = resolve_agent_role(&roles, agent_name)?;
-    let profile = role
-        .profile
-        .as_deref()
-        .map(str::trim)
-        .filter(|profile| !profile.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| requested_profile.trim().to_string());
-    let profile = resolve_agent_profile_from_config(config, &profile);
-    let mut instructions = profile_instructions_from_config(config, &profile);
-    for instruction in &role.instructions {
-        push_unique_string(&mut instructions, instruction);
-    }
-    Ok(AgentRoleSelection {
-        agent_name: Some(role.name.clone()),
-        profile,
-        model: requested_model.or_else(|| role.model.clone()),
-        instructions,
-        tools: role.tools.clone(),
-    })
-}
-
-fn profile_instructions_from_config(config: &DjinnConfig, profile: &str) -> Vec<String> {
-    config
-        .profiles
-        .get(profile)
-        .map(|profile| profile.instructions.clone())
-        .unwrap_or_default()
 }
 
 fn parent_session_id_from_arg(parent_session: Option<String>) -> Option<AgentSessionId> {
@@ -5783,29 +5578,6 @@ fn agent_config_show(args: AgentConfigShowArgs) -> Result<()> {
         format_agent_effective_config(&config, output_format(args.format, args.json))?
     );
     Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct AgentEffectiveConfig {
-    workspace: String,
-    agent_name: Option<String>,
-    profile: String,
-    model: String,
-    agent_instructions: Vec<String>,
-    agent_tools: Vec<String>,
-    read_access: ReadAccessPolicy,
-    permissions: PermissionPolicy,
-    read_access_rules: Vec<AgentEffectivePolicyRule>,
-    permission_rules: Vec<AgentEffectivePolicyRule>,
-    guardrails: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct AgentEffectivePolicyRule {
-    source: String,
-    action: String,
-    resource: String,
-    effect: String,
 }
 
 fn resolve_agent_effective_config(
@@ -5951,193 +5723,6 @@ fn agent_policy_revoke(args: AgentPolicyRevokeArgs) -> Result<()> {
         format_agent_policy_revoke_report(&report, output_format(args.format, args.json))?
     );
     Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct AgentPolicyReport {
-    workspace: String,
-    agent_name: Option<String>,
-    profile: String,
-    model: String,
-    policy_sources: Vec<String>,
-    read_access_rules: Vec<AgentEffectivePolicyRule>,
-    permission_rules: Vec<AgentEffectivePolicyRule>,
-    guardrails: Vec<String>,
-    session_approvals: String,
-    durable_approvals: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct AgentPolicyAuditReport {
-    policy: AgentPolicyReport,
-    findings: Vec<AgentPolicyAuditFinding>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct AgentPolicyAuditFinding {
-    severity: String,
-    code: String,
-    message: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct AgentPolicyRevokeReport {
-    action: Option<String>,
-    resource: Option<String>,
-    durable_approvals_found: usize,
-    revoked: usize,
-    message: String,
-}
-
-fn agent_policy_report(config: &AgentEffectiveConfig) -> AgentPolicyReport {
-    AgentPolicyReport {
-        workspace: config.workspace.clone(),
-        agent_name: config.agent_name.clone(),
-        profile: config.profile.clone(),
-        model: config.model.clone(),
-        policy_sources: effective_policy_sources(config),
-        read_access_rules: config.read_access_rules.clone(),
-        permission_rules: config.permission_rules.clone(),
-        guardrails: config.guardrails.clone(),
-        session_approvals: "process-local action/workspace/resource grants".to_string(),
-        durable_approvals: "not implemented; native config is the durable policy surface"
-            .to_string(),
-    }
-}
-
-fn agent_policy_audit_report(config: &AgentEffectiveConfig) -> AgentPolicyAuditReport {
-    let policy = agent_policy_report(config);
-    let mut findings = vec![
-        AgentPolicyAuditFinding {
-            severity: "info".to_string(),
-            code: "hard_guardrails".to_string(),
-            message: "Built-in secret-read, destructive shell/git, and sensitive mutation guardrails are active.".to_string(),
-        },
-        AgentPolicyAuditFinding {
-            severity: "info".to_string(),
-            code: "session_scoped_approvals".to_string(),
-            message: "Interactive approvals are process-local and scoped by action, workspace, and resource/path.".to_string(),
-        },
-        AgentPolicyAuditFinding {
-            severity: "info".to_string(),
-            code: "no_durable_approval_store".to_string(),
-            message: "No durable approval database exists; persistent policy changes must be reviewed native config edits.".to_string(),
-        },
-    ];
-    if policy.permission_rules.is_empty() && policy.read_access_rules.is_empty() {
-        findings.push(AgentPolicyAuditFinding {
-            severity: "notice".to_string(),
-            code: "no_config_policy_rules".to_string(),
-            message: "No native config permission rules are active for this profile; built-in defaults and guardrails apply.".to_string(),
-        });
-    }
-    AgentPolicyAuditReport { policy, findings }
-}
-
-fn format_agent_policy_report(report: &AgentPolicyReport, format: OutputFormat) -> Result<String> {
-    if format == OutputFormat::Json {
-        let mut rendered = serde_json::to_string_pretty(report)?;
-        rendered.push('\n');
-        return Ok(rendered);
-    }
-    let mut lines = vec![
-        "Agent effective policy".to_string(),
-        format!("Workspace: {}", report.workspace),
-        format!(
-            "Agent: {}",
-            report.agent_name.as_deref().unwrap_or("<none>")
-        ),
-        format!("Profile: {}", report.profile),
-        format!("Model: {}", report.model),
-        String::new(),
-        "Policy sources:".to_string(),
-    ];
-    if report.policy_sources.is_empty() {
-        lines.push("  - built-in defaults only".to_string());
-    } else {
-        for source in &report.policy_sources {
-            lines.push(format!("  - {source}"));
-        }
-    }
-    lines.push("Read access rules:".to_string());
-    push_agent_policy_rule_lines(&mut lines, &report.read_access_rules);
-    lines.push("Permission rules:".to_string());
-    push_agent_policy_rule_lines(&mut lines, &report.permission_rules);
-    lines.push("Guardrails:".to_string());
-    for guardrail in &report.guardrails {
-        lines.push(format!("  - {guardrail}"));
-    }
-    lines.push(format!("Session approvals: {}", report.session_approvals));
-    lines.push(format!("Durable approvals: {}", report.durable_approvals));
-    lines.push(String::new());
-    Ok(lines.join("\n"))
-}
-
-fn push_agent_policy_rule_lines(lines: &mut Vec<String>, rules: &[AgentEffectivePolicyRule]) {
-    if rules.is_empty() {
-        lines.push("  - none".to_string());
-    } else {
-        for rule in rules {
-            lines.push(format!(
-                "  - {}: {} {} {}",
-                rule.source, rule.effect, rule.action, rule.resource
-            ));
-        }
-    }
-}
-
-fn format_agent_policy_audit_report(
-    report: &AgentPolicyAuditReport,
-    format: OutputFormat,
-) -> Result<String> {
-    if format == OutputFormat::Json {
-        let mut rendered = serde_json::to_string_pretty(report)?;
-        rendered.push('\n');
-        return Ok(rendered);
-    }
-    let mut lines = vec![
-        "Agent policy audit".to_string(),
-        format!("Workspace: {}", report.policy.workspace),
-        format!("Profile: {}", report.policy.profile),
-        String::new(),
-        "Findings:".to_string(),
-    ];
-    for finding in &report.findings {
-        lines.push(format!(
-            "  - [{}] {}: {}",
-            finding.severity, finding.code, finding.message
-        ));
-    }
-    lines.push(String::new());
-    Ok(lines.join("\n"))
-}
-
-fn format_agent_policy_revoke_report(
-    report: &AgentPolicyRevokeReport,
-    format: OutputFormat,
-) -> Result<String> {
-    if format == OutputFormat::Json {
-        let mut rendered = serde_json::to_string_pretty(report)?;
-        rendered.push('\n');
-        return Ok(rendered);
-    }
-    let mut lines = vec![
-        "Agent policy revoke".to_string(),
-        format!(
-            "Durable approvals found: {}",
-            report.durable_approvals_found
-        ),
-        format!("Revoked: {}", report.revoked),
-        report.message.clone(),
-    ];
-    if let Some(action) = &report.action {
-        lines.push(format!("Action selector: {action}"));
-    }
-    if let Some(resource) = &report.resource {
-        lines.push(format!("Resource selector: {resource}"));
-    }
-    lines.push(String::new());
-    Ok(lines.join("\n"))
 }
 
 fn agent_tool_specs(
@@ -7851,10 +7436,6 @@ fn set_owner_only_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn same_agent_option(left: &str, right: &str) -> bool {
-    left.trim() == right.trim()
-}
-
 fn agent_profile_options(current: &str) -> Result<Vec<String>> {
     let mut profiles = vec!["default".to_string(), current.trim().to_string()];
     let config = effective_djinn_config()?;
@@ -7891,249 +7472,6 @@ fn agent_model_options(current: &str) -> Result<Vec<String>> {
         }
     }
     Ok(clean_unique_options(models))
-}
-
-fn format_agent_config_options(
-    current_profile: &str,
-    current_model: &str,
-    profiles: &[String],
-    models: &[String],
-    format: OutputFormat,
-) -> Result<String> {
-    if format == OutputFormat::Json {
-        let mut rendered = serde_json::to_string_pretty(&serde_json::json!({
-            "current_profile": current_profile,
-            "current_model": current_model,
-            "profiles": profiles,
-            "models": models,
-        }))?;
-        rendered.push('\n');
-        return Ok(rendered);
-    }
-
-    let mut lines = vec![
-        "Agent config options".to_string(),
-        format!("Current profile: {current_profile}"),
-        format!("Current model: {current_model}"),
-        String::new(),
-        "Profiles:".to_string(),
-    ];
-    for profile in profiles {
-        let marker = if same_agent_option(profile, current_profile) {
-            "*"
-        } else {
-            " "
-        };
-        lines.push(format!("{marker} {profile}"));
-    }
-    lines.push(String::new());
-    lines.push("Models:".to_string());
-    for model in models {
-        let marker = if same_agent_option(model, current_model) {
-            "*"
-        } else {
-            " "
-        };
-        lines.push(format!("{marker} {model}"));
-    }
-    lines.push(String::new());
-    Ok(lines.join("\n"))
-}
-
-fn format_agent_effective_config(
-    config: &AgentEffectiveConfig,
-    format: OutputFormat,
-) -> Result<String> {
-    if format == OutputFormat::Json {
-        let mut rendered = serde_json::to_string_pretty(config)?;
-        rendered.push('\n');
-        return Ok(rendered);
-    }
-
-    let mut lines = vec![
-        "Agent effective config".to_string(),
-        format!("Workspace: {}", config.workspace),
-        format!(
-            "Agent: {}",
-            config.agent_name.as_deref().unwrap_or("<none>")
-        ),
-        format!("Profile: {}", config.profile),
-        format!("Model: {}", config.model),
-        String::new(),
-        "Role instructions:".to_string(),
-    ];
-    if config.agent_instructions.is_empty() {
-        lines.push("  - none".to_string());
-    } else {
-        for instruction in &config.agent_instructions {
-            lines.push(format!("  - {instruction}"));
-        }
-    }
-    lines.push("Role tool allowlist:".to_string());
-    if config.agent_tools.is_empty() {
-        lines.push("  - all runtime tools".to_string());
-    } else {
-        for tool in &config.agent_tools {
-            lines.push(format!("  - {tool}"));
-        }
-    }
-    lines.push("Policy sources:".to_string());
-    lines.push("  - built-in guardrails".to_string());
-    if config.agent_name.is_some() {
-        lines.push("  - selected agent role context".to_string());
-    }
-    if config.read_access_rules.is_empty() && config.permission_rules.is_empty() {
-        lines.push("  - no native config permission rules".to_string());
-    } else {
-        for source in effective_policy_sources(config) {
-            lines.push(format!("  - {source}"));
-        }
-    }
-    lines.extend([String::new(), "Read access:".to_string()]);
-    if config.read_access.allow_roots.is_empty()
-        && config.read_access.deny_roots.is_empty()
-        && config.read_access.rules.is_empty()
-    {
-        lines.push("  allow by default".to_string());
-    } else {
-        for root in &config.read_access.allow_roots {
-            lines.push(format!("  allow root: {}", root.display()));
-        }
-        for root in &config.read_access.deny_roots {
-            lines.push(format!("  deny root: {}", root.display()));
-        }
-        for rule in &config.read_access.rules {
-            lines.push(format!("  {:?}: {}", rule.effect, rule.pattern));
-        }
-    }
-    if !config.read_access_rules.is_empty() {
-        lines.push("  Sources:".to_string());
-        for rule in &config.read_access_rules {
-            lines.push(format!(
-                "    {}: {} {} {}",
-                rule.source, rule.effect, rule.action, rule.resource
-            ));
-        }
-    }
-    lines.push(String::new());
-    lines.push("Permissions:".to_string());
-    if config.permissions.rules.is_empty() {
-        lines.push("  allow by default with destructive-action guardrails".to_string());
-    } else {
-        for rule in &config.permissions.rules {
-            lines.push(format!(
-                "  {:?}: {} {}",
-                rule.effect, rule.action, rule.resource
-            ));
-        }
-        lines.push("  destructive-action guardrails always apply".to_string());
-    }
-    if !config.permission_rules.is_empty() {
-        lines.push("  Sources:".to_string());
-        for rule in &config.permission_rules {
-            lines.push(format!(
-                "    {}: {} {} {}",
-                rule.source, rule.effect, rule.action, rule.resource
-            ));
-        }
-    }
-    lines.push("Guardrails:".to_string());
-    for guardrail in &config.guardrails {
-        lines.push(format!("  - {guardrail}"));
-    }
-    lines.push(String::new());
-    Ok(lines.join("\n"))
-}
-
-fn effective_policy_sources(config: &AgentEffectiveConfig) -> Vec<String> {
-    let mut sources = Vec::new();
-    for rule in config
-        .read_access_rules
-        .iter()
-        .chain(config.permission_rules.iter())
-    {
-        push_unique_string(&mut sources, &rule.source);
-    }
-    sources
-}
-
-fn format_agent_tool_specs(specs: &[ToolSpec], format: OutputFormat) -> Result<String> {
-    if format == OutputFormat::Json {
-        let mut rendered = serde_json::to_string_pretty(specs)?;
-        rendered.push('\n');
-        return Ok(rendered);
-    }
-
-    let mut lines = vec![
-        "Agent runtime tools".to_string(),
-        format!("{} tool{}", specs.len(), plural_suffix(specs.len())),
-        String::new(),
-    ];
-    for spec in specs {
-        lines.push(format!("- {}", spec.name));
-        let summary = spec
-            .description
-            .split('.')
-            .next()
-            .map(str::trim)
-            .filter(|summary| !summary.is_empty())
-            .unwrap_or(&spec.description);
-        if !summary.trim().is_empty() {
-            lines.push(format!("  {summary}."));
-        }
-    }
-    lines.push(String::new());
-    Ok(lines.join("\n"))
-}
-
-fn resolve_agent_tool_spec<'a>(specs: &'a [ToolSpec], name: &str) -> Result<&'a ToolSpec> {
-    let name = name.trim();
-    if name.is_empty() {
-        bail!("agent tool name cannot be empty");
-    }
-    if let Some(spec) = specs
-        .iter()
-        .find(|spec| spec.name.eq_ignore_ascii_case(name))
-    {
-        return Ok(spec);
-    }
-    let lowered = name.to_ascii_lowercase();
-    let matches = specs
-        .iter()
-        .filter(|spec| spec.name.to_ascii_lowercase().contains(&lowered))
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [spec] => Ok(spec),
-        [] => bail!("unknown agent tool `{name}`"),
-        _ => bail!(
-            "ambiguous agent tool `{name}`; matches: {}",
-            matches
-                .iter()
-                .map(|spec| spec.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
-}
-
-fn format_agent_tool_spec(spec: &ToolSpec, format: OutputFormat) -> Result<String> {
-    if format == OutputFormat::Json {
-        let mut rendered = serde_json::to_string_pretty(spec)?;
-        rendered.push('\n');
-        return Ok(rendered);
-    }
-
-    let schema = serde_json::to_string_pretty(&spec.input_schema)?;
-    let mut lines = vec![
-        spec.name.clone(),
-        String::new(),
-        spec.description.clone(),
-        String::new(),
-        "Input schema:".to_string(),
-        schema,
-    ];
-    lines.push(String::new());
-    Ok(lines.join("\n"))
 }
 
 fn clean_unique_options(values: Vec<String>) -> Vec<String> {
@@ -9740,66 +9078,6 @@ fn resolve_agent_workspace(path: Option<PathBuf>) -> Result<String> {
         .unwrap_or(path)
         .to_string_lossy()
         .to_string())
-}
-
-fn agent_system_message(
-    workspace: &str,
-    instructions: &[ResolvedAgentInstruction],
-) -> ModelMessage {
-    let mut content = format!(
-        "You are running in workspace `{workspace}`. Read-only filesystem tools may also access other paths such as the user's home directory when the configured access policy allows it. Use absolute paths, `~`, or `$HOME` for non-workspace locations."
-    );
-    if !instructions.is_empty() {
-        content.push_str("\n\nAdditional configured instructions:");
-        for instruction in instructions {
-            content.push_str(&format!(
-                "\n\n--- {} ---\n{}",
-                instruction.source, instruction.content
-            ));
-        }
-    }
-    ModelMessage {
-        role: ModelRole::System,
-        content,
-        tool_call_id: None,
-        tool_calls: Vec::new(),
-    }
-}
-
-fn agent_model_messages(
-    session: &AgentSession,
-    workspace: &str,
-    instructions: &[ResolvedAgentInstruction],
-) -> Vec<ModelMessage> {
-    let mut messages = vec![agent_system_message(workspace, instructions)];
-    for event in &session.events {
-        match &event.kind {
-            AgentSessionEventKind::UserMessage { content } => messages.push(ModelMessage {
-                role: ModelRole::User,
-                content: content.clone(),
-                tool_call_id: None,
-                tool_calls: Vec::new(),
-            }),
-            AgentSessionEventKind::AssistantMessage { content } if !content.trim().is_empty() => {
-                messages.push(ModelMessage {
-                    role: ModelRole::Assistant,
-                    content: content.clone(),
-                    tool_call_id: None,
-                    tool_calls: Vec::new(),
-                });
-            }
-            AgentSessionEventKind::Summary { content } if !content.trim().is_empty() => {
-                messages.push(ModelMessage {
-                    role: ModelRole::Assistant,
-                    content: format!("Previous session summary: {content}"),
-                    tool_call_id: None,
-                    tool_calls: Vec::new(),
-                });
-            }
-            _ => {}
-        }
-    }
-    messages
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
