@@ -127,3 +127,63 @@ pub(crate) fn resolve_folder_session_repo_open_target(session_dir: &Path) -> Res
         session_dir.display()
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_session_open_resolves_targets_and_repo() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-open-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let dir = root.join("session");
+        let repo = root.join("repo");
+        fs::create_dir_all(dir.join("context")).unwrap();
+        fs::create_dir_all(dir.join("turns")).unwrap();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(
+            dir.join("djinn.toml"),
+            format!(
+                "profile = \"default\"\n\n[context.repo]\npath = \"{}\"\nlink = \"context/repo\"\n",
+                repo.display()
+            ),
+        )
+        .unwrap();
+        crate::session_init::create_dir_symlink(&repo, &dir.join("context/repo")).unwrap();
+
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Summary).unwrap(),
+            dir.join("summary.md")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Request).unwrap(),
+            dir.join("request.md")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Context).unwrap(),
+            dir.join("context")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Compacted).unwrap(),
+            dir.join("context/compacted.md")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Turns).unwrap(),
+            dir.join("turns")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Manifest).unwrap(),
+            dir.join("djinn.toml")
+        );
+        assert_eq!(
+            resolve_folder_session_open_target(&dir, SessionOpenTarget::Repo).unwrap(),
+            PathBuf::from(repo.display().to_string())
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
