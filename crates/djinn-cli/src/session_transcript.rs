@@ -7,8 +7,19 @@ use serde::Serialize;
 
 use crate::{
     editor::open_editor_path, ensure_trailing_newline, read_event_turn_pairs,
-    resolve_existing_folder_session_dir, shell::shell_quote,
+    resolve_existing_folder_session_dir, shell::shell_quote, SessionTranscriptArgs,
 };
+
+pub(crate) fn session_transcript(args: SessionTranscriptArgs) -> Result<()> {
+    run_session_transcript(SessionTranscriptOptions {
+        dir: args.dir,
+        format: args.format,
+        json: args.json,
+        output: args.output,
+        open: args.open,
+        editor: args.editor,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]

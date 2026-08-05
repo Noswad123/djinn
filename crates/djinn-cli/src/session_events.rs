@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::{env, fs};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use djinn_memory::{AgentSessionEvent, AgentSessionEventKind};
 use serde::Serialize;
 
@@ -11,7 +11,59 @@ use crate::{
     compact_text_snippet, default_folder_session_root, ensure_trailing_newline,
     folder_session_display_name, read_folder_session_turns, read_optional_markdown_file,
     resolve_existing_folder_session_dir, toml_string, yes_no, FolderSessionTurnDigest,
+    SessionEventsArgs, SessionValidateEventsArgs,
 };
+
+pub(crate) fn session_validate_events(args: SessionValidateEventsArgs) -> Result<()> {
+    let report = validate_folder_session_events(&args.dir)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_validate_events_report(&report));
+    }
+    Ok(())
+}
+
+pub(crate) fn session_events(args: SessionEventsArgs) -> Result<()> {
+    if args.all {
+        let report =
+            event_health_report_for_cache_sessions(args.limit, args.health_filter.as_deref())?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", format_event_health_report(&report));
+        }
+        if args.strict {
+            ensure_event_health_strict(&report)?;
+        }
+        return Ok(());
+    }
+
+    let dir = args.dir.as_ref().ok_or_else(|| {
+        anyhow!("session name, path, or Buddy id is required unless --all is used")
+    })?;
+    if let Some(backup) = &args.restore {
+        let report = restore_folder_session_event_backup(dir, backup, args.write)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", format_session_restore_events_report(&report));
+        }
+        return Ok(());
+    }
+
+    let report = if args.write {
+        rebuild_folder_session_from_events(dir)?
+    } else {
+        project_folder_session_events(dir)?
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_project_events_report(&report));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionValidateEventsReport {

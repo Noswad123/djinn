@@ -183,7 +183,9 @@ use session_artifact::resolve_folder_session_open_target;
 use session_artifact::resolve_folder_session_open_target_in_root;
 use session_artifact::session_open;
 use session_artifact::SessionOpenTarget;
+#[cfg(test)]
 use session_compact::compact_folder_session;
+use session_compact::session_compact;
 #[cfg(test)]
 use session_context::validate_context_entry_name;
 #[cfg(test)]
@@ -196,16 +198,18 @@ use session_context::{
     inspect_folder_session_context_dir, resolve_folder_session_context_instructions,
     session_context, session_context_discover,
 };
-use session_events::{
-    ensure_event_health_strict, event_health_report_for_cache_sessions, format_event_health_report,
-    format_session_project_events_report, format_session_restore_events_report,
-    format_session_validate_events_report, latest_event_rebuild_backup_path,
-    project_folder_session_events, projected_event_turn_id, read_event_turn_pairs,
-    rebuild_folder_session_from_events, restore_folder_session_event_backup,
-    validate_folder_session_events,
-};
 #[cfg(test)]
-use session_events::{event_health_report_for_folder_session_root, SessionEventsHealthReport};
+use session_events::{
+    ensure_event_health_strict, event_health_report_for_folder_session_root,
+    format_event_health_report, format_session_project_events_report,
+    format_session_validate_events_report, project_folder_session_events,
+    rebuild_folder_session_from_events, restore_folder_session_event_backup,
+    SessionEventsHealthReport,
+};
+use session_events::{
+    latest_event_rebuild_backup_path, projected_event_turn_id, read_event_turn_pairs,
+    session_events, session_validate_events, validate_folder_session_events,
+};
 use session_init::session_init;
 #[cfg(test)]
 use session_init::{
@@ -277,7 +281,7 @@ use session_status::{format_agent_session_event_summary, format_background_promo
 use session_status::{SessionStatusFileReport, SessionStatusReport};
 #[cfg(test)]
 use session_transcript::{build_session_transcript, render_session_transcript_markdown};
-use session_transcript::{SessionTranscriptFormat, SessionTranscriptOptions};
+use session_transcript::{session_transcript, SessionTranscriptFormat};
 #[cfg(test)]
 use session_tui::editor_open_command_hint;
 use session_tui::{
@@ -2425,17 +2429,6 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
     }
 }
 
-fn session_compact(args: SessionCompactArgs) -> Result<()> {
-    let report = compact_folder_session(&args.session_dir, args.output.as_deref())?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!("Compacted {} turns", report.turn_count);
-        println!("Output: {}", report.output_path);
-    }
-    Ok(())
-}
-
 fn session_decide(args: SessionDecisionArgs, action: SessionDecisionAction) -> Result<()> {
     let report = decide_promotion_session(&args, action)?;
     if args.json {
@@ -2494,68 +2487,6 @@ fn session_decide(args: SessionDecisionArgs, action: SessionDecisionAction) -> R
             println!("    command: {}", post.command);
         }
         println!("  note: {}", report.note);
-    }
-    Ok(())
-}
-
-fn session_validate_events(args: SessionValidateEventsArgs) -> Result<()> {
-    let report = validate_folder_session_events(&args.dir)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_session_validate_events_report(&report));
-    }
-    Ok(())
-}
-
-fn session_transcript(args: SessionTranscriptArgs) -> Result<()> {
-    session_transcript::run_session_transcript(SessionTranscriptOptions {
-        dir: args.dir,
-        format: args.format,
-        json: args.json,
-        output: args.output,
-        open: args.open,
-        editor: args.editor,
-    })
-}
-
-fn session_events(args: SessionEventsArgs) -> Result<()> {
-    if args.all {
-        let report =
-            event_health_report_for_cache_sessions(args.limit, args.health_filter.as_deref())?;
-        if args.json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            print!("{}", format_event_health_report(&report));
-        }
-        if args.strict {
-            ensure_event_health_strict(&report)?;
-        }
-        return Ok(());
-    }
-
-    let dir = args.dir.as_ref().ok_or_else(|| {
-        anyhow!("session name, path, or Buddy id is required unless --all is used")
-    })?;
-    if let Some(backup) = &args.restore {
-        let report = restore_folder_session_event_backup(dir, backup, args.write)?;
-        if args.json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            print!("{}", format_session_restore_events_report(&report));
-        }
-        return Ok(());
-    }
-
-    let report = if args.write {
-        rebuild_folder_session_from_events(dir)?
-    } else {
-        project_folder_session_events(dir)?
-    };
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_session_project_events_report(&report));
     }
     Ok(())
 }

@@ -6,10 +6,21 @@ use serde::Serialize;
 
 use crate::{
     compact_text_snippet, read_folder_session_event_turns, read_folder_session_turns,
-    resolve_existing_folder_session_dir, FolderSessionTurnDigest,
+    resolve_existing_folder_session_dir, FolderSessionTurnDigest, SessionCompactArgs,
     FOLDER_SESSION_COMPACT_END_MARKER, FOLDER_SESSION_COMPACT_SNIPPET_CHARS,
     FOLDER_SESSION_COMPACT_START_MARKER,
 };
+
+pub(crate) fn session_compact(args: SessionCompactArgs) -> Result<()> {
+    let report = compact_folder_session(&args.session_dir, args.output.as_deref())?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Compacted {} turns", report.turn_count);
+        println!("Output: {}", report.output_path);
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionCompactReport {
