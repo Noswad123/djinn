@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::env;
 #[cfg(test)]
 use std::fs;
@@ -40,6 +39,7 @@ mod agent_messages;
 mod agent_roles;
 mod agent_runtime_config;
 mod agent_session_meta;
+mod agent_workspace;
 mod background_run;
 mod buddy;
 mod buddy_consolidate;
@@ -125,6 +125,10 @@ use agent_runtime_config::{agent_effective_config_from_parts, agent_session_runt
 use agent_session_meta::{
     append_agent_session_lifecycle_event, format_session_run_completion, latest_session_model,
     maybe_auto_title_agent_session, validate_agent_child_session_depth,
+};
+pub(crate) use agent_workspace::{
+    clean_unique_paths, load_djinn_config_for_workspace, nonempty_owned_string,
+    resolve_agent_workspace,
 };
 use background_run::latest_background_session_run_status;
 #[cfg(test)]
@@ -319,7 +323,8 @@ pub(crate) use stores::{
     suggestion_store,
 };
 pub(crate) use text::{
-    ensure_trailing_newline, non_empty_string, plural_suffix, truncate, truncate_table_cell,
+    ensure_trailing_newline, non_empty_string, output_format, plural_suffix, truncate,
+    truncate_table_cell, yes_no,
 };
 use tools_commands::{
     index_tools, list_tools, open_tool, scan_tools_command, search_tools, show_tool,
@@ -2326,19 +2331,6 @@ fn run_agent_file_history(args: AgentFileHistoryArgs) -> Result<()> {
     }
 }
 
-fn load_djinn_config_for_workspace(workspace: &str) -> Result<DjinnConfigLoadReport> {
-    load_djinn_config_from_paths(clean_unique_paths(vec![
-        default_djinn_config_path(),
-        Path::new(workspace).join(".djinn.json"),
-    ]))
-}
-
-fn nonempty_owned_string(value: Option<String>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
 fn top_level_ask(args: AgentAskArgs) -> Result<()> {
     agent_ask(args, true, AgentAskOutputMode::Ask)
 }
@@ -2816,42 +2808,6 @@ fn agent_ask(
         }
     }
     Ok(())
-}
-
-fn clean_unique_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for path in paths {
-        if seen.insert(path.clone()) {
-            out.push(path);
-        }
-    }
-    out
-}
-
-fn resolve_agent_workspace(path: Option<PathBuf>) -> Result<String> {
-    let path = path.unwrap_or(env::current_dir().with_context(|| "reading current directory")?);
-    Ok(path
-        .canonicalize()
-        .unwrap_or(path)
-        .to_string_lossy()
-        .to_string())
-}
-
-fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
-fn output_format(format: OutputFormat, json: bool) -> OutputFormat {
-    if json {
-        OutputFormat::Json
-    } else {
-        format
-    }
 }
 
 #[cfg(test)]

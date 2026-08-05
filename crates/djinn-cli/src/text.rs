@@ -44,3 +44,19 @@ pub(crate) fn truncate(value: &str, max_chars: usize) -> String {
         truncated
     }
 }
+
+pub(crate) fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+pub(crate) fn output_format(format: crate::OutputFormat, json: bool) -> crate::OutputFormat {
+    if json {
+        crate::OutputFormat::Json
+    } else {
+        format
+    }
+}
