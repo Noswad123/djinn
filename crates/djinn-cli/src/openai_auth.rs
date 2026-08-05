@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{effective_djinn_config, opencode_model_config_paths};
+use crate::{effective_djinn_config, opencode_model_config_paths, AuthProvider, OpenAiLoginMethod};
 
 #[allow(dead_code)]
 pub(crate) const OPENCODE_OPENAI_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -414,6 +414,56 @@ pub(crate) fn current_time_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+pub(crate) fn prompt_auth_provider() -> AuthProvider {
+    println!("┌  Add credential");
+    println!("│");
+    println!("◇  Select provider");
+    println!("│  1) OpenAI");
+    let choice = prompt_number("Provider", 1, 1).unwrap_or(1);
+    match choice {
+        _ => AuthProvider::Openai,
+    }
+}
+
+pub(crate) fn prompt_openai_login_method() -> OpenAiLoginMethod {
+    println!("│");
+    println!("◆  Login method");
+    println!("│  1) ChatGPT Pro/Plus (browser)");
+    println!("│  2) ChatGPT Pro/Plus (headless)");
+    println!("│  3) Manually enter API Key");
+    match prompt_number("Login method", 1, 3).unwrap_or(1) {
+        2 => OpenAiLoginMethod::Headless,
+        3 => OpenAiLoginMethod::ApiKey,
+        _ => OpenAiLoginMethod::Browser,
+    }
+}
+
+fn prompt_number(prompt: &str, default: usize, max: usize) -> Result<usize> {
+    eprint!("{prompt} [{default}]: ");
+    io::stderr().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(default);
+    }
+    let value = input
+        .parse::<usize>()
+        .with_context(|| format!("invalid {prompt} selection `{input}`"))?;
+    if value == 0 || value > max {
+        bail!("{prompt} selection must be between 1 and {max}");
+    }
+    Ok(value)
+}
+
+pub(crate) fn run_openai_login_method(method: OpenAiLoginMethod) -> Result<()> {
+    match method {
+        OpenAiLoginMethod::Browser => run_djinn_openai_browser_login(),
+        OpenAiLoginMethod::Headless => run_djinn_openai_device_login(),
+        OpenAiLoginMethod::ApiKey => run_djinn_openai_api_key_login(),
+    }
 }
 
 pub(crate) fn run_djinn_openai_api_key_login() -> Result<()> {
