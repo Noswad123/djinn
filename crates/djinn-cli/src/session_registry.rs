@@ -241,3 +241,122 @@ pub(crate) fn format_session_rename_report(report: &SessionRenameReport) -> Stri
     lines.push(String::new());
     lines.join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_rename_moves_cache_folder_and_preserves_buddy_runtime() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-rename-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let from = root.join("old-session");
+        fs::create_dir_all(from.join("runtime")).unwrap();
+        fs::write(from.join("summary.md"), "summary\n").unwrap();
+        fs::write(
+            from.join("runtime/buddy.json"),
+            serde_json::json!({
+                "buddy_session": "ses_renameBuddy123",
+                "stale_buddy_sessions": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let dry = rename_folder_session_in_root(
+            Path::new("ses_renameBuddy123"),
+            "new-session",
+            &root,
+            true,
+        )
+        .unwrap();
+        assert!(dry.dry_run);
+        assert!(dry.renamed);
+        assert!(from.exists());
+        assert!(!root.join("new-session").exists());
+
+        let report = rename_folder_session_in_root(
+            Path::new("ses_renameBuddy123"),
+            "new-session",
+            &root,
+            false,
+        )
+        .unwrap();
+
+        let to = root.join("new-session");
+        assert!(report.renamed);
+        assert!(!from.exists());
+        assert!(to.join("summary.md").exists());
+        assert!(to.join("runtime/buddy.json").exists());
+        assert!(fs::read_to_string(to.join("runtime/buddy.json"))
+            .unwrap()
+            .contains("ses_renameBuddy123"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_rename_rejects_path_target_and_existing_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-rename-guard-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(root.join("old-session")).unwrap();
+        fs::create_dir_all(root.join("existing-session")).unwrap();
+
+        assert!(rename_folder_session_in_root(
+            Path::new("old-session"),
+            "nested/new-session",
+            &root,
+            false,
+        )
+        .is_err());
+        assert!(rename_folder_session_in_root(
+            Path::new("old-session"),
+            "existing-session",
+            &root,
+            false,
+        )
+        .is_err());
+        assert!(root.join("old-session").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shorten_folder_session_names_renames_legacy_long_cache_folders() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-shorten-names-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let legacy_name = "agent-chat-agt_1785201849270486000_123_0";
+        let short_name = crate::folder_session_reference_name(legacy_name);
+        let legacy = root.join(legacy_name);
+        fs::create_dir_all(&legacy).unwrap();
+
+        let dry = shorten_folder_session_names_in_root(&root, true).unwrap();
+        assert!(legacy.exists());
+        assert_eq!(dry.renamed.len(), 1);
+        assert_eq!(
+            Path::new(&dry.renamed[0].to)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(short_name.as_str())
+        );
+
+        let report = shorten_folder_session_names_in_root(&root, false).unwrap();
+        assert_eq!(report.renamed.len(), 1);
+        assert!(!legacy.exists());
+        assert!(root.join(&short_name).exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
