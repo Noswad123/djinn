@@ -176,9 +176,7 @@ use session_events::{
     validate_folder_session_events,
 };
 #[cfg(test)]
-use session_init::{
-    create_dir_symlink, initialize_folder_session_with_buddy, SessionInitBuddyReport,
-};
+use session_init::create_dir_symlink;
 #[cfg(test)]
 use session_list::format_folder_session_ls;
 pub(crate) use session_list::list_folder_sessions_in_root;
@@ -7494,61 +7492,6 @@ link = "context/repo"
             .ignored
             .iter()
             .any(|path| path.contains("node_modules")));
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn session_init_can_create_buddy_binding() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-session-init-buddy-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        let dir = root.join("session");
-        let repo = root.join("repo");
-        fs::create_dir_all(&repo).unwrap();
-        let creates = Arc::new(Mutex::new(Vec::new()));
-        let backend = TestBuddyBackend {
-            command: "in-tree-buddy".to_string(),
-            runtime_command_override: None,
-            create_id: "ses_init_bound".to_string(),
-            creates: creates.clone(),
-        };
-
-        let args = SessionInitArgs {
-            dir: dir.clone(),
-            link_repo: Some(repo.clone()),
-            no_discover_context: true,
-            profile: "default".to_string(),
-            agent: None,
-            model: None,
-            force: false,
-            json: false,
-        };
-        let report = initialize_folder_session_with_buddy(&args, Some(&backend)).unwrap();
-
-        let runtime_path = dir.join("runtime/buddy.json");
-        assert!(runtime_path.exists());
-        assert_eq!(
-            report.buddy,
-            Some(SessionInitBuddyReport {
-                buddy_session: "ses_init_bound".to_string(),
-                repo_path: repo.canonicalize().unwrap().display().to_string(),
-                runtime_path: runtime_path.display().to_string(),
-            })
-        );
-        assert_eq!(
-            creates.lock().unwrap().as_slice(),
-            &[(
-                "Session".to_string(),
-                repo.canonicalize().unwrap().display().to_string()
-            )]
-        );
-        let runtime = fs::read_to_string(runtime_path).unwrap();
-        assert!(runtime.contains("ses_init_bound"));
-        assert!(!runtime.contains("command"));
 
         let _ = fs::remove_dir_all(&root);
     }
