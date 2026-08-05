@@ -15,6 +15,7 @@ mod config;
 mod doctor;
 mod index;
 mod open;
+mod scan;
 mod search;
 mod switch;
 mod tui;
@@ -24,6 +25,7 @@ pub(crate) use config::*;
 pub(crate) use doctor::*;
 pub(crate) use index::*;
 pub(crate) use open::*;
+pub(crate) use scan::*;
 pub(crate) use search::*;
 pub(crate) use switch::*;
 pub(crate) use tui::{TuiArgs, TuiView};
@@ -821,18 +823,6 @@ pub(crate) enum ClearNoun {
         #[arg(long)]
         no_backup: bool,
     },
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ScanArgs {
-    #[command(subcommand)]
-    pub(crate) noun: ScanNoun,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum ScanNoun {
-    /// Scan local tools and print a summary.
-    Tools(ToolsScope),
 }
 
 #[derive(Debug, Args)]
