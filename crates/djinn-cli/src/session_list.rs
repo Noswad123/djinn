@@ -458,3 +458,24 @@ pub(crate) fn compact_session_list_datetime(value: &str) -> String {
         })
         .unwrap_or_else(|| value.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_list_datetime_compaction_removes_fractional_seconds() {
+        assert_eq!(
+            compact_session_list_datetime("2026-07-27T12:34:56.123-04:00"),
+            "2026-07-27T12:34:56-04:00"
+        );
+        assert_eq!(
+            compact_session_list_datetime("2026-07-27T16:34:56.123Z"),
+            "2026-07-27T16:34:56Z"
+        );
+        assert_eq!(
+            parse_session_list_datetime_ms("2026-07-27T16:34:56.123Z"),
+            Some(1_785_170_096_123)
+        );
+    }
+}

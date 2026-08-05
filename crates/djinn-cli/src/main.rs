@@ -190,8 +190,6 @@ use session_init::{
 use session_list::format_folder_session_ls;
 pub(crate) use session_list::list_folder_sessions_in_root;
 pub(crate) use session_list::FolderSessionSummary;
-#[cfg(test)]
-use session_list::{compact_session_list_datetime, parse_session_list_datetime_ms};
 use session_list::{folder_session_event_health_label, list_cache_folder_sessions};
 #[cfg(test)]
 use session_manifest::parse_folder_session_manifest;
@@ -6210,22 +6208,6 @@ link = "context/repo"
         assert_eq!(limited.groups[0].repo, "repo-a");
 
         let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn session_list_datetime_compaction_removes_fractional_seconds() {
-        assert_eq!(
-            compact_session_list_datetime("2026-07-27T12:34:56.123-04:00"),
-            "2026-07-27T12:34:56-04:00"
-        );
-        assert_eq!(
-            compact_session_list_datetime("2026-07-27T16:34:56.123Z"),
-            "2026-07-27T16:34:56Z"
-        );
-        assert_eq!(
-            parse_session_list_datetime_ms("2026-07-27T16:34:56.123Z"),
-            Some(1_785_170_096_123)
-        );
     }
 
     #[test]
