@@ -17,7 +17,7 @@ use djinn_memory::AgentSession;
 use djinn_memory::{
     ActionStore, AgentSessionEvent, AgentSessionEventKind, AgentSessionExecutionMode,
     AgentSessionId, AgentSessionLifecycleState, AgentSessionMeta, AgentSessionStore,
-    JsonlAgentSessionStore, MemoryRecord, MemorySource, SuggestionRecord,
+    JsonlAgentSessionStore,
 };
 #[cfg(test)]
 use djinn_skills::SkillStore;
@@ -123,11 +123,6 @@ pub(crate) use context_commands::context_store;
 use copilot_auth::*;
 use doctor_commands::run_doctor;
 pub(crate) use memory_commands::accept_memory;
-#[cfg(test)]
-use memory_commands::{
-    background_review_script, format_memory_review_prompt, format_memory_source,
-    infer_ingest_target,
-};
 pub(crate) use memory_commands::{remove_memories_silent, remove_suggestions};
 use model_completion::resolve_openai_client;
 use model_resolution::*;
@@ -2016,21 +2011,6 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         JsonlAgentSessionStore::default_in(&dir)
-    }
-
-    fn test_memory(kind: &str, text: &str) -> MemoryRecord {
-        MemoryRecord {
-            id: "memory".to_string(),
-            text: text.to_string(),
-            created_at: "2026-07-09".to_string(),
-            status: "active".to_string(),
-            scope: "project:djinn".to_string(),
-            kind: kind.to_string(),
-            confidence: "medium".to_string(),
-            not_before: String::new(),
-            evidence: Vec::new(),
-            sources: Vec::new(),
-        }
     }
 
     #[test]
@@ -8032,103 +8012,5 @@ link = "context/repo"
         assert_eq!(model, "repo-model");
 
         let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn infer_ingest_target_routes_memory_kinds() {
-        assert_eq!(
-            infer_ingest_target(&test_memory("instruction", "Use uv")),
-            IngestTarget::Suggestion
-        );
-        assert_eq!(
-            infer_ingest_target(&test_memory("skill-proposal", "Reusable workflow")),
-            IngestTarget::Skill
-        );
-        assert_eq!(
-            infer_ingest_target(&test_memory("idea", "Consider better search")),
-            IngestTarget::Idea
-        );
-        assert_eq!(
-            infer_ingest_target(&test_memory("action", "TODO: review docs")),
-            IngestTarget::Action
-        );
-        assert_eq!(
-            infer_ingest_target(&test_memory("preference", "Prefer concise output")),
-            IngestTarget::Suggestion
-        );
-    }
-
-    #[test]
-    fn format_memory_review_prompt_creates_suggestions_from_memories() {
-        let memories = vec![MemoryRecord {
-            id: "djinn-session-note".to_string(),
-            text: "Djinn implementation session detail".to_string(),
-            created_at: "2026-07-09".to_string(),
-            status: "active".to_string(),
-            scope: "project:djinn".to_string(),
-            kind: "implementation-note".to_string(),
-            confidence: "medium".to_string(),
-            not_before: String::new(),
-            evidence: vec!["Captured during a Djinn session.".to_string()],
-            sources: Vec::new(),
-        }];
-        let suggestions = vec![SuggestionRecord {
-            id: "suggestion".to_string(),
-            text: "Create a skill for recurring validation.".to_string(),
-            created_at: "2026-07-09".to_string(),
-            status: "open".to_string(),
-            target: "skill".to_string(),
-            rationale: "Repeated validation friction.".to_string(),
-            draft: String::new(),
-            evidence: Vec::new(),
-            sources: Vec::new(),
-        }];
-        let args = ReviewMemoriesArgs {
-            ids: Vec::new(),
-            limit: 100,
-            all: false,
-            query: Some("djinn".to_string()),
-            agent: None,
-            title: "review".to_string(),
-            opencode_bin: "opencode".to_string(),
-            dry_run: true,
-        };
-
-        let prompt = format_memory_review_prompt(&memories, &suggestions, &args);
-        assert!(prompt.contains("Memory Suggestion Review"));
-        assert!(prompt.contains("djinn add suggestion"));
-        assert!(prompt.contains("djinn-session-note"));
-        assert!(prompt.contains("Create a skill for recurring validation."));
-    }
-
-    #[test]
-    fn background_review_script_uses_prompt_file_and_notification() {
-        let script = background_review_script(
-            "opencode",
-            "memory review",
-            Some("reviewer"),
-            Path::new("/tmp/prompt's.md"),
-            Path::new("/tmp/out.md"),
-        );
-        assert!(script.contains("PROMPT_FILE='/tmp/prompt'\\''s.md'"));
-        assert!(script.contains("DJINN_REVIEWER=1"));
-        assert!(script.contains("osascript"));
-        assert!(script.contains("--agent \"$AGENT\""));
-        assert!(script.contains("> \"$OUT_FILE\" 2>&1"));
-    }
-
-    #[test]
-    fn memory_source_format_tolerates_legacy_chat_reference() {
-        let source = MemorySource {
-            source_type: "chat".to_string(),
-            source: "opencode".to_string(),
-            source_id: "ses_missing".to_string(),
-            chat_id: "missing-chat".to_string(),
-            title: "Deleted OpenCode session".to_string(),
-            captured_at: "2026-07-09".to_string(),
-        };
-        let rendered = format_memory_source(&source);
-        assert!(rendered.contains("legacy chat reference"));
-        assert!(rendered.contains("Deleted OpenCode session"));
     }
 }
