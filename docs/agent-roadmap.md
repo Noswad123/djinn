@@ -105,6 +105,44 @@ Remaining ready UI slices:
 - **Artifact opening polish:** ensure every focused-session action reports the
   exact delegated command/path and leaves the terminal in a clean state.
 
+### CLI dispatch slimming
+
+Move toward a `crates/djinn-cli/src/main.rs` that is primarily CLI declaration and
+dispatch. Domain behavior should live in focused modules so session, Buddy,
+config, auth, policy, model, promotion, and TUI flows can evolve independently.
+
+Current direction:
+
+- Keep Clap structs/enums and top-level command routing in `main.rs` until a
+  deliberate CLI-args module split is worthwhile.
+- Extract cohesive helper/orchestration clusters behind small option/report types
+  rather than moving raw `main.rs` argument structs into domain modules.
+- Preserve folder-backed session semantics and existing user-facing command
+  behavior after each seam.
+- Validate each seam with `cargo fmt --check`, `cargo check -p djinn-cli`, focused
+  tests, `cargo test -p djinn-cli`, `cargo test -p djinn-tui`, and
+  `git diff --check`.
+
+Progress already made:
+
+- Session reference/manifest/projection/turns/native/TUI/context/events/status/
+  list/init/remove/watch/transcript/artifact/registry logic has been extracted.
+- Buddy integration, background-run support, editor/shell/text/path/prompt helpers,
+  promotion modules, agent messages/roles/config/runtime/session metadata,
+  model completion/resolution, auth, policy, and config import/export/doctor logic
+  have been moved out of `main.rs`.
+
+Remaining high-value seams:
+
+- Move promotion candidate session-run generation out of `main.rs` into promotion
+  modules.
+- Move dashboard/TUI orchestration and projections into a focused TUI bridge
+  module.
+- Move agent ask/session-run orchestration behind narrower option/report types.
+- Move legacy collection command handlers and store adapters out of `main.rs`.
+- Reassess whether CLI arg structs should stay in `main.rs` or move to a dedicated
+  `cli_args` module once the implementation body is mostly dispatch.
+
 ### Folder-backed session follow-ups
 
 Use folder-backed sessions as the work capsule for future slices. Implemented

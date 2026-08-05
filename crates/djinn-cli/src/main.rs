@@ -13,10 +13,9 @@ use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 #[cfg(test)]
 use djinn_agent::{
-    AgentProgressEvent, PermissionEffect, PermissionPolicy, PermissionRule, ReadAccessEffect,
-    ReadAccessPolicy, ReadAccessRule, ToolSpec,
+    AgentProgressEvent, ModelRole, PermissionEffect, PermissionPolicy, PermissionRule,
+    ReadAccessEffect, ReadAccessPolicy, ReadAccessRule, ToolSpec,
 };
-use djinn_agent::{CopilotClient, ModelClient, ModelMessage, ModelRequest, ModelRole};
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 #[cfg(test)]
 use djinn_memory::AgentSession;
@@ -3277,22 +3276,6 @@ fn session_run(mut args: SessionRunArgs) -> Result<()> {
     )
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct PromotionCandidateGenerationReport {
-    status: String,
-    dry_run: bool,
-    session_dir: String,
-    promotion_type: String,
-    model: Option<String>,
-    source_packet_path: String,
-    prompt_path: Option<String>,
-    response_path: Option<String>,
-    candidates_dir: String,
-    candidate_index_path: Option<String>,
-    candidate_count: usize,
-    candidates: Vec<PromotionGeneratedCandidateReport>,
-}
-
 fn session_run_promotion(
     args: SessionRunArgs,
     session_dir: PathBuf,
@@ -3301,7 +3284,18 @@ fn session_run_promotion(
     if args.print || args.open {
         bail!("--print and --open are not supported for promotion candidate generation");
     }
-    let report = generate_promotion_candidates(&args, &session_dir, &manifest)?;
+    let report = generate_promotion_candidates(
+        &PromotionCandidateGenerationOptions {
+            dry_run: args.dry_run,
+            profile: args.profile.clone(),
+            agent: args.agent.clone(),
+            model: args.model.clone(),
+            api_key: args.api_key.clone(),
+            base_url: args.base_url.clone(),
+        },
+        &session_dir,
+        &manifest,
+    )?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else if args.dry_run {
@@ -3341,157 +3335,6 @@ fn session_run_promotion(
         );
     }
     Ok(())
-}
-
-fn generate_promotion_candidates(
-    args: &SessionRunArgs,
-    session_dir: &Path,
-    manifest: &FolderSessionManifest,
-) -> Result<PromotionCandidateGenerationReport> {
-    let promotion_type = manifest
-        .promotion_type
-        .clone()
-        .unwrap_or_else(|| "memory".to_string());
-    let source_packet_path = session_dir.join("context").join("source-packet.md");
-    let source_packet = fs::read_to_string(&source_packet_path)
-        .with_context(|| format!("reading {}", source_packet_path.display()))?;
-    let prompt = render_promotion_candidate_generation_prompt(&promotion_type, &source_packet);
-    let outputs_dir = session_dir.join("outputs");
-    let generation_dir = outputs_dir.join("generation");
-    let candidates_dir = outputs_dir.join("candidates");
-    let timestamp = chrono::Local::now()
-        .timestamp_nanos_opt()
-        .unwrap_or_default();
-    fs::create_dir_all(&generation_dir)
-        .with_context(|| format!("creating generation directory {}", generation_dir.display()))?;
-    fs::create_dir_all(&candidates_dir)
-        .with_context(|| format!("creating candidates directory {}", candidates_dir.display()))?;
-    let prompt_path = generation_dir.join(format!("{timestamp}-prompt.md"));
-    fs::write(&prompt_path, ensure_trailing_newline(&prompt))
-        .with_context(|| format!("writing {}", prompt_path.display()))?;
-
-    let (profile, model) = resolve_promotion_generation_profile_model(args, manifest)?;
-    if args.dry_run {
-        return Ok(PromotionCandidateGenerationReport {
-            status: "dry_run".to_string(),
-            dry_run: true,
-            session_dir: session_dir.display().to_string(),
-            promotion_type,
-            model: Some(model),
-            source_packet_path: source_packet_path.display().to_string(),
-            prompt_path: Some(prompt_path.display().to_string()),
-            response_path: None,
-            candidates_dir: candidates_dir.display().to_string(),
-            candidate_index_path: None,
-            candidate_count: 0,
-            candidates: Vec::new(),
-        });
-    }
-
-    let response = complete_promotion_candidate_model(
-        &prompt,
-        model.clone(),
-        args.api_key.clone(),
-        args.base_url.clone(),
-        &profile,
-    )?;
-    let response_path = generation_dir.join(format!("{timestamp}-response.md"));
-    fs::write(
-        &response_path,
-        ensure_trailing_newline(&response.message.content),
-    )
-    .with_context(|| format!("writing {}", response_path.display()))?;
-    let candidates = write_generated_promotion_candidates(
-        session_dir,
-        &promotion_type,
-        &response.message.content,
-        &candidates_dir,
-    )?;
-    let candidate_index_path = write_promotion_candidate_index(session_dir, &candidates)?;
-    write_promotion_generation_summary(session_dir, &promotion_type, &candidates)?;
-
-    Ok(PromotionCandidateGenerationReport {
-        status: "generated".to_string(),
-        dry_run: false,
-        session_dir: session_dir.display().to_string(),
-        promotion_type,
-        model: Some(model),
-        source_packet_path: source_packet_path.display().to_string(),
-        prompt_path: Some(prompt_path.display().to_string()),
-        response_path: Some(response_path.display().to_string()),
-        candidates_dir: candidates_dir.display().to_string(),
-        candidate_index_path: Some(candidate_index_path.display().to_string()),
-        candidate_count: candidates.len(),
-        candidates,
-    })
-}
-
-fn resolve_promotion_generation_profile_model(
-    args: &SessionRunArgs,
-    manifest: &FolderSessionManifest,
-) -> Result<(String, String)> {
-    let workspace = session_manifest_workspace_path(Some(manifest))
-        .unwrap_or(env::current_dir().context("resolving current workspace")?);
-    let workspace = resolve_agent_workspace(Some(workspace))?;
-    let config_report = load_djinn_config_for_workspace(&workspace)?;
-    let requested_profile = nonempty_owned_string(args.profile.clone())
-        .or_else(|| manifest.profile.clone())
-        .unwrap_or_else(|| "default".to_string());
-    let requested_agent = args.agent.clone().or_else(|| manifest.agent.clone());
-    let requested_model = args.model.clone().or_else(|| manifest.model.clone());
-    let selection = resolve_agent_role_selection_from_config(
-        &config_report.effective,
-        requested_agent,
-        &requested_profile,
-        requested_model,
-    )?;
-    let profile = selection.profile;
-    let model =
-        resolve_agent_model_from_config(selection.model, &config_report.effective, &profile);
-    Ok((profile, model))
-}
-
-fn complete_promotion_candidate_model(
-    prompt: &str,
-    model: String,
-    api_key: Option<String>,
-    base_url: Option<String>,
-    profile: &str,
-) -> Result<djinn_agent::ModelResponse> {
-    let messages = vec![
-        ModelMessage {
-            role: ModelRole::System,
-            content: format!(
-                "You generate Djinn promotion candidates for profile `{profile}`. Return only fenced TOML candidate blocks; do not write files or mutate durable stores."
-            ),
-            tool_call_id: None,
-            tool_calls: Vec::new(),
-        },
-        ModelMessage {
-            role: ModelRole::User,
-            content: prompt.to_string(),
-            tool_call_id: None,
-            tool_calls: Vec::new(),
-        },
-    ];
-    let client: Box<dyn ModelClient> = if is_copilot_model(&model) {
-        let token = resolve_copilot_token(api_key)?;
-        let endpoint = base_url
-            .or_else(|| env::var("GITHUB_COPILOT_CHAT_COMPLETIONS_URL").ok())
-            .unwrap_or_else(|| "https://api.githubcopilot.com/chat/completions".to_string());
-        Box::new(CopilotClient::with_endpoint(token, endpoint))
-    } else {
-        Box::new(resolve_openai_client(api_key, base_url)?)
-    };
-    let tokio = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .with_context(|| "creating Tokio runtime for promotion candidate generation")?;
-    tokio.block_on(client.complete(ModelRequest {
-        model,
-        messages,
-        tools: Vec::new(),
-    }))
 }
 
 fn session_run_background(args: SessionRunArgs) -> Result<()> {
