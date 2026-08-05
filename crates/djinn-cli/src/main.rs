@@ -217,10 +217,7 @@ pub(crate) use session_reference::{
     resolve_session_dir, safe_folder_session_slug,
 };
 #[cfg(test)]
-use session_reference::{
-    resolve_buddy_session_reference_in_root, resolve_folder_session_reference_name,
-    short_agent_session_suffix,
-};
+use session_reference::{resolve_buddy_session_reference_in_root, short_agent_session_suffix};
 #[cfg(test)]
 use session_registry::rename_folder_session_in_root;
 #[cfg(test)]
@@ -6206,35 +6203,6 @@ link = "context/repo"
         assert_eq!(limited.sessions[0].name, "gamma");
         assert_eq!(limited.groups.len(), 1);
         assert_eq!(limited.groups[0].repo, "repo-a");
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn folder_session_reference_name_resolves_to_full_cache_folder() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-session-ref-name-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        let session = root.join("agent-chat-agt_1785201849270486000_123_0");
-        fs::create_dir_all(&session).unwrap();
-
-        assert_eq!(
-            resolve_folder_session_reference_name(
-                &root,
-                Path::new(&folder_session_reference_name(
-                    "agent-chat-agt_1785201849270486000_123_0"
-                ))
-            )
-            .unwrap(),
-            Some(session.clone())
-        );
-        assert_eq!(
-            resolve_folder_session_reference_name(&root, Path::new("missing")).unwrap(),
-            None
-        );
 
         let _ = fs::remove_dir_all(&root);
     }

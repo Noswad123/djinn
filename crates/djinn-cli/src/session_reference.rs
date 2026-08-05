@@ -335,4 +335,33 @@ mod tests {
             "manual-notes"
         );
     }
+
+    #[test]
+    fn folder_session_reference_name_resolves_to_full_cache_folder() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-ref-name-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let session = root.join("agent-chat-agt_1785201849270486000_123_0");
+        std::fs::create_dir_all(&session).unwrap();
+
+        assert_eq!(
+            resolve_folder_session_reference_name(
+                &root,
+                Path::new(&folder_session_reference_name(
+                    "agent-chat-agt_1785201849270486000_123_0"
+                ))
+            )
+            .unwrap(),
+            Some(session.clone())
+        );
+        assert_eq!(
+            resolve_folder_session_reference_name(&root, Path::new("missing")).unwrap(),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
