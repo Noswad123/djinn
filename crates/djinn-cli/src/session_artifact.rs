@@ -4,6 +4,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 
+use crate::editor::open_editor_path;
+use crate::SessionOpenArgs;
+
+pub(crate) fn session_open(args: SessionOpenArgs) -> Result<()> {
+    let target = resolve_folder_session_open_target(&args.dir, args.target)?;
+    open_editor_path(&target, args.editor)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SessionOpenTarget {
     Summary,

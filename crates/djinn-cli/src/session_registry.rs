@@ -4,6 +4,29 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
+use crate::{SessionRenameArgs, SessionShortenNamesArgs};
+
+pub(crate) fn session_shorten_names(args: SessionShortenNamesArgs) -> Result<()> {
+    let report = shorten_cache_folder_session_names(args.dry_run)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_shorten_names_report(&report));
+    }
+    Ok(())
+}
+
+pub(crate) fn session_rename(args: SessionRenameArgs) -> Result<()> {
+    let root = crate::default_folder_session_root();
+    let report = rename_folder_session_in_root(&args.dir, &args.new_name, &root, args.dry_run)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_session_rename_report(&report));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionShortenNamesReport {
     pub(crate) root: String,

@@ -178,8 +178,11 @@ use promotion_validation::session_validate_candidates;
 pub(crate) use promotion_validation::SessionValidateCandidateEntry;
 pub(crate) use prompt::{prompt_title, resolve_agent_request_prompt};
 #[cfg(test)]
+use session_artifact::resolve_folder_session_open_target;
+#[cfg(test)]
 use session_artifact::resolve_folder_session_open_target_in_root;
-use session_artifact::{resolve_folder_session_open_target, SessionOpenTarget};
+use session_artifact::session_open;
+use session_artifact::SessionOpenTarget;
 use session_compact::compact_folder_session;
 #[cfg(test)]
 use session_context::validate_context_entry_name;
@@ -209,13 +212,13 @@ use session_init::{
     create_dir_symlink, initialize_folder_session, initialize_folder_session_with_buddy,
     SessionInitBuddyReport,
 };
+#[cfg(test)]
+use session_list::format_folder_session_ls;
 pub(crate) use session_list::list_folder_sessions_in_root;
 pub(crate) use session_list::FolderSessionSummary;
 #[cfg(test)]
 use session_list::{compact_session_list_datetime, parse_session_list_datetime_ms};
-use session_list::{
-    folder_session_event_health_label, format_folder_session_ls, list_cache_folder_sessions,
-};
+use session_list::{folder_session_event_health_label, list_cache_folder_sessions, session_ls};
 #[cfg(test)]
 use session_manifest::parse_folder_session_manifest;
 pub(crate) use session_manifest::{
@@ -247,11 +250,10 @@ use session_reference::{
     short_agent_session_suffix, short_agent_session_suffix_from_str,
 };
 #[cfg(test)]
+use session_registry::rename_folder_session_in_root;
+#[cfg(test)]
 use session_registry::shorten_folder_session_names_in_root;
-use session_registry::{
-    format_session_rename_report, format_session_shorten_names_report,
-    rename_folder_session_in_root, shorten_cache_folder_session_names,
-};
+use session_registry::{session_rename, session_shorten_names};
 use session_remove::session_rm;
 #[cfg(test)]
 use session_run_support::SessionRunBackgroundReport;
@@ -260,13 +262,14 @@ use session_run_support::{
     touch_background_run_marker_from_env, SessionRunBackgroundSpawnOptions,
 };
 #[cfg(test)]
+use session_status::format_folder_session_status;
+#[cfg(test)]
 use session_status::SessionStatusLifecycleReport;
 #[cfg(test)]
 use session_status::SessionStatusTurnReport;
 use session_status::{
-    folder_session_status, format_folder_session_status, format_session_candidate_entry,
-    format_session_candidate_status, latest_promotion_generation_response_path,
-    SessionStatusCandidateEntry,
+    folder_session_status, format_session_candidate_entry, format_session_candidate_status,
+    latest_promotion_generation_response_path, session_status, SessionStatusCandidateEntry,
 };
 #[cfg(test)]
 use session_status::{format_agent_session_event_summary, format_background_promotion_run_note};
@@ -2606,53 +2609,6 @@ pub(crate) fn session_promote_type_instructions(
             "Synthesize common threads, themes, suggestions, conventions, gotchas, and workflow decisions across the source sessions. Separate high-confidence patterns from one-off observations."
         }
     }
-}
-
-fn session_status(args: SessionStatusArgs) -> Result<()> {
-    let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
-    let report = folder_session_status(&session_ref.session_dir)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_folder_session_status(&report));
-    }
-    Ok(())
-}
-
-fn session_ls(args: SessionLsArgs) -> Result<()> {
-    let report = list_cache_folder_sessions(args.limit)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_folder_session_ls(&report));
-    }
-    Ok(())
-}
-
-fn session_shorten_names(args: SessionShortenNamesArgs) -> Result<()> {
-    let report = shorten_cache_folder_session_names(args.dry_run)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_session_shorten_names_report(&report));
-    }
-    Ok(())
-}
-
-fn session_rename(args: SessionRenameArgs) -> Result<()> {
-    let root = default_folder_session_root();
-    let report = rename_folder_session_in_root(&args.dir, &args.new_name, &root, args.dry_run)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", format_session_rename_report(&report));
-    }
-    Ok(())
-}
-
-fn session_open(args: SessionOpenArgs) -> Result<()> {
-    let target = resolve_folder_session_open_target(&args.dir, args.target)?;
-    open_editor_path(&target, args.editor)
 }
 
 fn session_chat(args: SessionChatArgs) -> Result<()> {

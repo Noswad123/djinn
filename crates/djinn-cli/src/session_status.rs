@@ -11,8 +11,20 @@ use crate::{
     background_run::BackgroundRunStatus, inspect_folder_session_context_dir,
     load_folder_native_agent_session, parse_manifest_string_value, read_folder_session_event_turns,
     read_folder_session_manifest, read_folder_session_turns, resolve_existing_folder_session_dir,
-    FolderSessionManifest, FolderSessionTurnDigest,
+    resolve_existing_folder_session_reference, FolderSessionManifest, FolderSessionTurnDigest,
+    SessionStatusArgs,
 };
+
+pub(crate) fn session_status(args: SessionStatusArgs) -> Result<()> {
+    let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
+    let report = folder_session_status(&session_ref.session_dir)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_folder_session_status(&report));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionStatusReport {

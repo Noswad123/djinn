@@ -14,8 +14,18 @@ use crate::{
     default_folder_session_root, folder_session_display_name, folder_session_reference_name,
     load_folder_native_agent_session, non_empty_string, read_buddy_runtime_state,
     read_folder_session_event_turns, read_folder_session_manifest, read_folder_session_turns,
-    validate_folder_session_events, FolderSessionTurnDigest,
+    validate_folder_session_events, FolderSessionTurnDigest, SessionLsArgs,
 };
+
+pub(crate) fn session_ls(args: SessionLsArgs) -> Result<()> {
+    let report = list_cache_folder_sessions(args.limit)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", format_folder_session_ls(&report));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionLsReport {
