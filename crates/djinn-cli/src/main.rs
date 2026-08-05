@@ -128,14 +128,15 @@ use session_status::SessionStatusLifecycleReport;
 #[cfg(test)]
 use session_status::SessionStatusTurnReport;
 use session_status::{
-    count_folder_session_events_jsonl, format_folder_session_status,
-    format_session_candidate_entry, format_session_candidate_status,
-    latest_promotion_generation_response_path, session_status_candidates, session_status_lifecycle,
-    session_status_next_action, session_status_repo, session_status_turn_report,
-    SessionStatusCandidateEntry, SessionStatusFileReport, SessionStatusReport,
+    folder_session_status, format_folder_session_status, format_session_candidate_entry,
+    format_session_candidate_status, latest_promotion_generation_response_path,
+    session_status_candidates, session_status_lifecycle, session_status_next_action,
+    session_status_turn_report, SessionStatusCandidateEntry,
 };
 #[cfg(test)]
 use session_status::{format_agent_session_event_summary, format_background_promotion_run_note};
+#[cfg(test)]
+use session_status::{SessionStatusFileReport, SessionStatusReport};
 #[cfg(test)]
 use session_transcript::{build_session_transcript, render_session_transcript_markdown};
 use session_transcript::{SessionTranscriptFormat, SessionTranscriptOptions};
@@ -6022,90 +6023,6 @@ fn push_session_init_conflict(
     }
 }
 
-fn folder_session_status(dir: &Path) -> Result<SessionStatusReport> {
-    let session_dir = resolve_existing_folder_session_dir(dir)?;
-    let manifest_path = session_dir.join("djinn.toml");
-    let manifest = read_folder_session_manifest(&session_dir)?;
-    let session_id = manifest
-        .as_ref()
-        .and_then(|manifest| manifest.session_id.clone());
-    let native_session = session_id
-        .as_ref()
-        .and_then(|id| load_folder_native_agent_session(&session_dir, id));
-    let native_session_exists = native_session.is_some();
-    let context_dir = session_dir.join("context");
-    let turns_dir = session_dir.join("turns");
-    let (context_ingestible_count, context_skipped) =
-        inspect_folder_session_context_dir(&context_dir)?;
-    let request_exists = session_dir.join("request.md").exists();
-    let turns = read_folder_session_turns(&turns_dir)?;
-    let events_path = session_dir.join("events.jsonl");
-    let event_count = count_folder_session_events_jsonl(&events_path);
-    let event_turns = read_folder_session_event_turns(&session_dir)?;
-    let turn_count = if event_turns.is_empty() {
-        turns.len()
-    } else {
-        event_turns.len()
-    };
-    let latest_turn = event_turns
-        .last()
-        .map(session_status_turn_report)
-        .or_else(|| turns.last().map(session_status_turn_report));
-    let candidates = session_status_candidates(&session_dir)?;
-    let lifecycle = session_status_lifecycle(
-        &session_dir,
-        manifest.as_ref(),
-        native_session.as_ref(),
-        candidates.as_ref(),
-    );
-    let next_action = session_status_next_action(
-        &session_dir,
-        manifest.as_ref(),
-        request_exists,
-        turn_count,
-        &lifecycle,
-        candidates.as_ref(),
-    );
-
-    Ok(SessionStatusReport {
-        session_dir: session_dir.display().to_string(),
-        manifest_exists: manifest_path.exists(),
-        session_id: session_id.map(|id| id.to_string()),
-        native_session_exists,
-        profile: manifest
-            .as_ref()
-            .and_then(|manifest| manifest.profile.clone()),
-        agent: manifest
-            .as_ref()
-            .and_then(|manifest| manifest.agent.clone()),
-        model: manifest
-            .as_ref()
-            .and_then(|manifest| manifest.model.clone()),
-        workspace: manifest
-            .as_ref()
-            .and_then(|manifest| manifest.workspace.clone()),
-        repo: manifest
-            .as_ref()
-            .and_then(|manifest| session_status_repo(&session_dir, manifest)),
-        lifecycle,
-        files: SessionStatusFileReport {
-            request_md: request_exists,
-            summary_md: session_dir.join("summary.md").exists(),
-            context_dir: context_dir.is_dir(),
-            compacted_md: context_dir.join("compacted.md").exists(),
-            turns_dir: turns_dir.is_dir(),
-            events_jsonl: events_path.exists(),
-        },
-        turn_count,
-        event_count,
-        latest_turn,
-        candidates,
-        context_ingestible_count,
-        context_skipped,
-        next_action,
-    })
-}
-
 fn list_cache_folder_sessions(limit: Option<usize>) -> Result<SessionLsReport> {
     let root = default_folder_session_root();
     list_folder_sessions_in_root(&root, limit)
@@ -6400,7 +6317,7 @@ fn folder_session_repo_label(session: &FolderSessionSummary) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-fn load_folder_native_agent_session(
+pub(crate) fn load_folder_native_agent_session(
     session_dir: &Path,
     id: &AgentSessionId,
 ) -> Option<AgentSession> {

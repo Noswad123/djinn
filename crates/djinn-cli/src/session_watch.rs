@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
-use crate::session_status::SessionStatusReport;
-use crate::{folder_session_status, resolve_existing_folder_session_reference, SessionWatchArgs};
+use crate::session_status::{folder_session_status, SessionStatusReport};
+use crate::{resolve_existing_folder_session_reference, SessionWatchArgs};
 
 pub(crate) fn session_watch(args: SessionWatchArgs) -> Result<()> {
     if args.interval_ms == 0 {
