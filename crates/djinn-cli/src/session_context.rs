@@ -8,8 +8,12 @@ use serde_json::Value;
 use crate::session_artifact::resolve_folder_session_repo_open_target;
 use crate::{
     folder_session_slug, resolve_existing_folder_session_dir, truncate_table_cell,
-    SessionContextAddArgs, FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES,
+    ResolvedAgentInstruction, SessionContextAddArgs,
 };
+
+const FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES: u64 = 32 * 1024;
+const FOLDER_SESSION_CONTEXT_MAX_TOTAL_BYTES: usize = 96 * 1024;
+const FOLDER_SESSION_CONTEXT_MAX_FILES: usize = 16;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionContextLsReport {
@@ -774,6 +778,72 @@ pub(crate) fn read_folder_session_context_file(
         return Ok(None);
     }
     Ok(Some(content))
+}
+
+pub(crate) fn resolve_folder_session_context_instructions(
+    session_dir: Option<&Path>,
+) -> Result<Vec<ResolvedAgentInstruction>> {
+    let Some(session_dir) = session_dir else {
+        return Ok(Vec::new());
+    };
+    if !session_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut candidates = Vec::<(PathBuf, String)>::new();
+    candidates.push((session_dir.join("request.md"), "request.md".to_string()));
+    candidates.push((session_dir.join("summary.md"), "summary.md".to_string()));
+    let context_dir = session_dir.join("context");
+    if context_dir.is_dir() {
+        let mut entries = fs::read_dir(&context_dir)
+            .with_context(|| {
+                format!(
+                    "reading session context directory {}",
+                    context_dir.display()
+                )
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("context")
+                .to_string();
+            candidates.push((path, format!("context/{name}")));
+        }
+    }
+
+    let mut resolved = Vec::new();
+    let mut skipped = Vec::new();
+    let mut total_bytes = 0usize;
+    for (path, label) in candidates {
+        if resolved.len() >= FOLDER_SESSION_CONTEXT_MAX_FILES {
+            skipped.push(format!("{label}: file limit reached"));
+            continue;
+        }
+        let Some(content) = read_folder_session_context_file(&path, &label, &mut skipped)? else {
+            continue;
+        };
+        let content_bytes = content.len();
+        if total_bytes + content_bytes > FOLDER_SESSION_CONTEXT_MAX_TOTAL_BYTES {
+            skipped.push(format!("{label}: total context byte limit reached"));
+            continue;
+        }
+        total_bytes += content_bytes;
+        resolved.push(ResolvedAgentInstruction {
+            source: format!("session-context:{label}"),
+            content,
+        });
+    }
+    if !skipped.is_empty() {
+        resolved.push(ResolvedAgentInstruction {
+            source: "session-context:skipped".to_string(),
+            content: skipped.join("\n"),
+        });
+    }
+    Ok(resolved)
 }
 
 fn is_folder_session_context_text_file(path: &Path) -> bool {

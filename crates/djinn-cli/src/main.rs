@@ -98,14 +98,13 @@ use session_artifact::{
     fallback_folder_session_open_target, resolve_folder_session_open_target, SessionOpenTarget,
 };
 use session_compact::compact_folder_session;
-pub(crate) use session_context::read_folder_session_context_file;
 #[cfg(test)]
 use session_context::validate_context_entry_name;
 use session_context::{
     add_folder_session_context_entry, discover_folder_session_context,
     format_folder_session_context_discover, format_folder_session_context_ls,
     inspect_folder_session_context_dir, list_folder_session_context,
-    remove_folder_session_context_entry,
+    remove_folder_session_context_entry, resolve_folder_session_context_instructions,
 };
 use session_events::{
     ensure_event_health_strict, event_health_report_for_cache_sessions, format_event_health_report,
@@ -194,9 +193,6 @@ use shell::shell_quote;
 const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
 const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
 const BACKGROUND_RUN_UNRESPONSIVE_SECONDS: i64 = 30 * 60;
-const FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES: u64 = 32 * 1024;
-const FOLDER_SESSION_CONTEXT_MAX_TOTAL_BYTES: usize = 96 * 1024;
-const FOLDER_SESSION_CONTEXT_MAX_FILES: usize = 16;
 pub(crate) const FOLDER_SESSION_COMPACT_SNIPPET_CHARS: usize = 1_200;
 pub(crate) const FOLDER_SESSION_COMPACT_START_MARKER: &str = "<!-- djinn:generated:start -->";
 pub(crate) const FOLDER_SESSION_COMPACT_END_MARKER: &str = "<!-- djinn:generated:end -->";
@@ -6579,72 +6575,6 @@ fn nonempty_owned_string(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn resolve_folder_session_context_instructions(
-    session_dir: Option<&Path>,
-) -> Result<Vec<ResolvedAgentInstruction>> {
-    let Some(session_dir) = session_dir else {
-        return Ok(Vec::new());
-    };
-    if !session_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut candidates = Vec::<(PathBuf, String)>::new();
-    candidates.push((session_dir.join("request.md"), "request.md".to_string()));
-    candidates.push((session_dir.join("summary.md"), "summary.md".to_string()));
-    let context_dir = session_dir.join("context");
-    if context_dir.is_dir() {
-        let mut entries = fs::read_dir(&context_dir)
-            .with_context(|| {
-                format!(
-                    "reading session context directory {}",
-                    context_dir.display()
-                )
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        entries.sort_by_key(|entry| entry.path());
-        for entry in entries {
-            let path = entry.path();
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("context")
-                .to_string();
-            candidates.push((path, format!("context/{name}")));
-        }
-    }
-
-    let mut resolved = Vec::new();
-    let mut skipped = Vec::new();
-    let mut total_bytes = 0usize;
-    for (path, label) in candidates {
-        if resolved.len() >= FOLDER_SESSION_CONTEXT_MAX_FILES {
-            skipped.push(format!("{label}: file limit reached"));
-            continue;
-        }
-        let Some(content) = read_folder_session_context_file(&path, &label, &mut skipped)? else {
-            continue;
-        };
-        let content_bytes = content.len();
-        if total_bytes + content_bytes > FOLDER_SESSION_CONTEXT_MAX_TOTAL_BYTES {
-            skipped.push(format!("{label}: total context byte limit reached"));
-            continue;
-        }
-        total_bytes += content_bytes;
-        resolved.push(ResolvedAgentInstruction {
-            source: format!("session-context:{label}"),
-            content,
-        });
-    }
-    if !skipped.is_empty() {
-        resolved.push(ResolvedAgentInstruction {
-            source: "session-context:skipped".to_string(),
-            content: skipped.join("\n"),
-        });
-    }
-    Ok(resolved)
-}
-
 fn top_level_ask(args: AgentAskArgs) -> Result<()> {
     agent_ask(args, true, AgentAskOutputMode::Ask)
 }
@@ -10155,9 +10085,9 @@ fn prompt_title(prompt: &str, fallback: &str) -> String {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct ResolvedAgentInstruction {
-    source: String,
-    content: String,
+pub(crate) struct ResolvedAgentInstruction {
+    pub(crate) source: String,
+    pub(crate) content: String,
 }
 
 fn resolve_agent_instruction_contents(
