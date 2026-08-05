@@ -1,5 +1,3 @@
-#[cfg(test)]
-use std::fs;
 use std::io::{self, IsTerminal};
 #[cfg(test)]
 use std::path::Path;
@@ -80,8 +78,7 @@ use agent_ask_command::top_level_ask;
 pub(crate) use agent_commands::warn_legacy_agent_command;
 use agent_commands::{run_agent, run_agents};
 use agent_instructions::ResolvedAgentInstruction;
-use agent_roles::resolve_agent_role_selection_from_config;
-pub(crate) use agent_roles::AgentRoleSelection;
+pub(crate) use agent_roles::{resolve_agent_role_selection_from_config, AgentRoleSelection};
 pub(crate) use agent_workspace::{
     clean_unique_paths, load_djinn_config_for_workspace, resolve_agent_workspace,
 };
@@ -3258,46 +3255,5 @@ mod tests {
     #[test]
     fn rejects_removed_tui_workspaces_view() {
         assert!(Cli::try_parse_from(["djinn", "tui", "workspaces"]).is_err());
-    }
-
-    #[test]
-    fn session_init_repo_config_overrides_global_profile_model() {
-        let root = std::env::temp_dir().join(format!(
-            "djinn-session-config-test-{}",
-            chrono::Local::now()
-                .timestamp_nanos_opt()
-                .unwrap_or_default()
-        ));
-        let global = root.join("global.json");
-        let repo = root.join("repo");
-        fs::create_dir_all(&repo).unwrap();
-        fs::write(
-            &global,
-            r#"{
-  "version": 1,
-  "default_profile": "work",
-  "profiles": { "work": { "model": "global-model" } }
-}"#,
-        )
-        .unwrap();
-        fs::write(
-            repo.join(".djinn.json"),
-            r#"{
-  "version": 1,
-  "profiles": { "work": { "model": "repo-model" } }
-}"#,
-        )
-        .unwrap();
-
-        let load = load_djinn_config_from_paths(vec![global, repo.join(".djinn.json")]).unwrap();
-        let selection =
-            resolve_agent_role_selection_from_config(&load.effective, None, "default", None)
-                .unwrap();
-        let model = resolve_agent_model_from_config(None, &load.effective, &selection.profile);
-
-        assert_eq!(selection.profile, "work");
-        assert_eq!(model, "repo-model");
-
-        let _ = fs::remove_dir_all(&root);
     }
 }

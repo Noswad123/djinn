@@ -227,7 +227,9 @@ pub(crate) fn format_djinn_config_load_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_roles::resolve_agent_role_selection_from_config;
     use crate::model_resolution::profile_model_from_config;
+    use crate::model_resolution::resolve_agent_model_from_config;
     use crate::policy_resolution::{
         extend_permission_rules_from_config, extend_read_access_rules_from_permissions,
     };
@@ -343,5 +345,46 @@ mod tests {
         assert_eq!(permission_rules[0].action, "shell");
         assert_eq!(permission_rules[0].resource, "cargo test");
         assert_eq!(permission_rules[0].effect, PermissionEffect::Ask);
+    }
+
+    #[test]
+    fn repo_config_overrides_global_profile_model() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-session-config-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let global = root.join("global.json");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(
+            &global,
+            r#"{
+  "version": 1,
+  "default_profile": "work",
+  "profiles": { "work": { "model": "global-model" } }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            repo.join(".djinn.json"),
+            r#"{
+  "version": 1,
+  "profiles": { "work": { "model": "repo-model" } }
+}"#,
+        )
+        .unwrap();
+
+        let load = load_djinn_config_from_paths(vec![global, repo.join(".djinn.json")]).unwrap();
+        let selection =
+            resolve_agent_role_selection_from_config(&load.effective, None, "default", None)
+                .unwrap();
+        let model = resolve_agent_model_from_config(None, &load.effective, &selection.profile);
+
+        assert_eq!(selection.profile, "work");
+        assert_eq!(model, "repo-model");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
