@@ -1,4 +1,4 @@
-import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { registerOpencodeSpinner } from "./component/register-spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
@@ -152,11 +152,10 @@ const buddyTabs: { id: AppTabID; title: string }[] = [
   { id: "tools", title: "Tools" },
 ]
 
-const djinnDashboardTabNotes: Record<Exclude<AppTabID, "chat" | "sessions">, string> = {
+const djinnDashboardTabNotes: Record<Exclude<AppTabID, "chat" | "sessions" | "tools">, string> = {
   memories: "Memory review will move here after Buddy has a Djinn data bridge for memories.",
   suggestions: "Suggestion triage will move here after Buddy has a Djinn data bridge for suggestions.",
   skills: "Skill browsing will move here after Buddy has a Djinn data bridge for skills.",
-  tools: "Tool browsing will move here after Buddy has a Djinn data bridge for tool indexes.",
 }
 
 export type TuiInput = {
@@ -1133,7 +1132,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
               <DashboardPlaceholderTab tab="skills" />
             </Match>
             <Match when={activeTab() === "tools"}>
-              <DashboardPlaceholderTab tab="tools" />
+              <ToolsTab />
             </Match>
           </Switch>
         </box>
@@ -1426,7 +1425,182 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
   )
 }
 
-function DashboardPlaceholderTab(props: { tab: Exclude<AppTabID, "chat" | "sessions"> }) {
+function ToolsTab() {
+  const { theme } = useTheme()
+  const toast = useToast()
+  const renderer = useRenderer()
+  const [filter, setFilter] = createSignal("")
+  const [selectedKey, setSelectedKey] = createSignal<string>()
+  const [status, setStatus] = createSignal("Load local tools with djinn list tools --json.")
+  const [tools, { refetch }] = createResource(loadDjinnTools)
+  const query = createMemo(() => filter().trim().toLowerCase())
+  const filteredTools = createMemo(() =>
+    (tools() ?? []).filter((tool) => {
+      const q = query()
+      if (!q) return true
+      return [tool.name, tool.description, tool.path, tool.preview].some((value) => value.toLowerCase().includes(q))
+    }),
+  )
+  const selectedTool = createMemo(() =>
+    (tools() ?? []).find((tool) => toolKey(tool) === selectedKey()) ?? filteredTools()[0],
+  )
+
+  createEffect(() => {
+    const first = filteredTools()[0]
+    if (!first) {
+      setSelectedKey()
+      return
+    }
+    if (!selectedKey() || !filteredTools().some((tool) => toolKey(tool) === selectedKey())) setSelectedKey(toolKey(first))
+  })
+
+  function moveSelection(delta: number) {
+    const items = filteredTools()
+    if (items.length === 0) return
+    const index = Math.max(0, items.findIndex((tool) => toolKey(tool) === selectedKey()))
+    const next = Math.max(0, Math.min(items.length - 1, index + delta))
+    setSelectedKey(toolKey(items[next]!))
+  }
+
+  useKeyboard((evt) => {
+    if (renderer.currentFocusedEditor) return
+    if (evt.name === "j") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      moveSelection(1)
+      return
+    }
+    if (evt.name === "k") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      moveSelection(-1)
+      return
+    }
+    if (evt.ctrl && evt.name === "d") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      moveSelection(10)
+      return
+    }
+    if (evt.ctrl && evt.name === "u") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      moveSelection(-10)
+    }
+  })
+
+  async function openTool(tool: DjinnToolEntry) {
+    setStatus(`Open ${tool.path}:${tool.line}`)
+    await open(tool.path)
+      .then(() => toast.show({ message: `Opened ${tool.name}`, variant: "success" }))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error)
+        setStatus(`Open ${tool.name}: ${message}`)
+        toast.show({ title: `Open ${tool.name}`, message, variant: "error", duration: 5000 })
+      })
+  }
+
+  return (
+    <box flexGrow={1} minHeight={0} paddingLeft={2} paddingRight={2} paddingTop={1} gap={1}>
+      <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
+        <box gap={1}>
+          <text fg={theme.text}>Tools</text>
+          <text fg={theme.textMuted}>Discovered local wrappers, aliases, functions, and scripts.</text>
+        </box>
+        <box flexDirection="row" gap={2}>
+          <text fg={theme.text} onMouseDown={() => void refetch()}>
+            refresh
+          </text>
+          <Show when={selectedTool()}>
+            {(tool) => (
+              <text fg={theme.text} onMouseDown={() => void openTool(tool())}>
+                open
+              </text>
+            )}
+          </Show>
+        </box>
+      </box>
+      <box flexDirection="row" gap={1} flexShrink={0}>
+        <text fg={theme.textMuted}>Filter</text>
+        <input
+          placeholder="name, description, path, preview…"
+          placeholderColor={theme.textMuted}
+          focusedBackgroundColor={theme.backgroundPanel}
+          cursorColor={theme.primary}
+          focusedTextColor={theme.text}
+          onInput={setFilter}
+        />
+      </box>
+      <Switch>
+        <Match when={tools.loading}>
+          <text fg={theme.textMuted}>Loading tools…</text>
+        </Match>
+        <Match when={tools.error}>
+          {(error) => <text fg={theme.error}>{String(error())}</text>}
+        </Match>
+        <Match when={true}>
+          <box flexGrow={1} minHeight={0} flexDirection="row" gap={1}>
+            <box flexGrow={1} minHeight={0} gap={1}>
+              <For each={filteredTools()} fallback={<text fg={theme.textMuted}>No tools match.</text>}>
+                {(tool, index) => {
+                  const active = () => toolKey(tool) === selectedKey()
+                  return (
+                    <box
+                      flexDirection="row"
+                      gap={1}
+                      paddingLeft={1}
+                      paddingRight={1}
+                      backgroundColor={active() ? theme.backgroundElement : theme.background}
+                      onMouseDown={() => setSelectedKey(toolKey(tool))}
+                    >
+                      <text fg={theme.textMuted} flexShrink={0}>
+                        {active() ? "›" : "•"}
+                      </text>
+                      <box flexGrow={1} minWidth={0}>
+                        <text fg={active() ? theme.text : theme.text} wrapMode="none">
+                          {truncateMiddle(tool.name, 72)}
+                        </text>
+                        <text fg={theme.textMuted} wrapMode="none">
+                          {truncateMiddle(tool.description || "No description", 88)}
+                        </text>
+                      </box>
+                    </box>
+                  )
+                }}
+              </For>
+            </box>
+            <box flexGrow={1} minHeight={0} gap={1}>
+              <Show when={selectedTool()} fallback={<text fg={theme.textMuted}>Select a tool for preview and actions.</text>}>
+                {(tool) => (
+                  <>
+                    <box gap={1} flexShrink={0}>
+                      <text fg={theme.text}>{tool().name}</text>
+                      <Show when={tool().description}>
+                        {(description) => <text fg={theme.textMuted}>{description()}</text>}
+                      </Show>
+                      <text fg={theme.textMuted}>Source: {tool().path}:{tool().line}</text>
+                      <box flexDirection="row" gap={1}>
+                        <text fg={theme.primary} onMouseDown={() => void openTool(tool())}>open source</text>
+                      </box>
+                    </box>
+                    <box flexGrow={1} minHeight={0} border borderStyle="rounded" borderColor={theme.border} paddingLeft={1} paddingRight={1}>
+                      <text fg={theme.text}>{toolPreview(tool())}</text>
+                    </box>
+                  </>
+                )}
+              </Show>
+            </box>
+          </box>
+        </Match>
+      </Switch>
+      <text fg={theme.textMuted} flexShrink={0}>
+        {truncateMiddle(status(), 180)}
+      </text>
+    </box>
+  )
+}
+
+function DashboardPlaceholderTab(props: { tab: Exclude<AppTabID, "chat" | "sessions" | "tools"> }) {
   const { theme } = useTheme()
   return (
     <box flexGrow={1} minHeight={0} paddingLeft={2} paddingRight={2} paddingTop={1} gap={1}>
@@ -1435,6 +1609,46 @@ function DashboardPlaceholderTab(props: { tab: Exclude<AppTabID, "chat" | "sessi
       <text fg={theme.textMuted}>This tab is intentionally present now so Tab/Shift+Tab reserve Buddy-wide dashboard navigation.</text>
     </box>
   )
+}
+
+type DjinnToolEntry = {
+  name: string
+  description: string
+  path: string
+  line: number
+  preview: string
+}
+
+async function loadDjinnTools() {
+  const raw = await runDjinn(["list", "tools", "--json"])
+  const trimmed = raw.trim()
+  if (!trimmed.startsWith("[")) return []
+  return JSON.parse(trimmed) as DjinnToolEntry[]
+}
+
+function toolKey(tool: DjinnToolEntry) {
+  return `${tool.name}\0${tool.path}\0${tool.line}`
+}
+
+function toolPreview(tool: DjinnToolEntry) {
+  return sanitizePreview(`${stripToolMetadataLines(tool.preview)}`)
+}
+
+function stripToolMetadataLines(preview: string) {
+  return preview
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trimStart()
+      return ![
+        "# @name:",
+        "# @description:",
+        "// @name:",
+        "// @description:",
+        "-- @name:",
+        "-- @description:",
+      ].some((prefix) => trimmed.startsWith(prefix))
+    })
+    .join("\n")
 }
 
 type DjinnSessionReport = {
@@ -1559,6 +1773,19 @@ function truncateMiddle(value: string, max: number) {
   if (value.length <= max) return value
   const half = Math.floor((max - 1) / 2)
   return `${value.slice(0, half)}…${value.slice(value.length - half)}`
+}
+
+function sanitizePreview(value: string) {
+  return value
+    .split("")
+    .filter((ch) => ch === "\n" || ch === "\t" || !isControlCharacter(ch))
+    .join("")
+    .replaceAll("\t", " ")
+}
+
+function isControlCharacter(value: string) {
+  const code = value.charCodeAt(0)
+  return code < 32 || code === 127
 }
 
 function titlecase(value: string) {
