@@ -1,3 +1,5 @@
+pub(crate) mod consolidate;
+
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -201,6 +203,7 @@ pub(crate) trait BuddyLauncher {
 }
 
 pub(crate) trait BuddySessionBackend {
+    #[allow(dead_code)]
     fn command(&self) -> &str;
     fn runtime_command_override(&self) -> Option<String>;
     fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>>;

@@ -2,139 +2,30 @@ use std::io::{self, IsTerminal};
 
 use anyhow::{bail, Result};
 
-#[path = "commands/agent_ask.rs"]
-mod agent_ask_command;
-#[path = "commands/agent.rs"]
-mod agent_commands;
-#[path = "agent/config.rs"]
-mod agent_config;
-#[path = "agent/file_history.rs"]
-mod agent_file_history;
-#[path = "agent/instructions.rs"]
-mod agent_instructions;
-#[path = "agent/messages.rs"]
-mod agent_messages;
-#[path = "agent/roles.rs"]
-mod agent_roles;
-#[path = "agent/runtime_config.rs"]
-mod agent_runtime_config;
-#[path = "agent/session_meta.rs"]
-mod agent_session_meta;
-#[path = "agent/workspace.rs"]
-mod agent_workspace;
-#[path = "runtime/background_run.rs"]
-mod background_run;
-#[path = "buddy/mod.rs"]
+mod agent;
+mod auth;
 mod buddy;
-#[path = "buddy/consolidate.rs"]
-mod buddy_consolidate;
 mod cli_args;
-#[path = "commands/config.rs"]
-mod config_commands;
-#[path = "config/doctor.rs"]
-mod config_doctor;
-#[path = "config/format.rs"]
-mod config_format;
-#[path = "config/model.rs"]
-mod config_model;
-#[path = "config/native.rs"]
-mod config_native;
-#[path = "config/preview.rs"]
-mod config_preview;
-#[path = "config/write.rs"]
-mod config_write;
-#[path = "commands/context.rs"]
-mod context_commands;
-#[path = "auth/copilot.rs"]
-mod copilot_auth;
-#[path = "commands/doctor.rs"]
-mod doctor_commands;
-#[path = "util/editor.rs"]
-mod editor;
-#[path = "commands/memory.rs"]
-mod memory_commands;
-#[path = "model/completion.rs"]
-mod model_completion;
-#[path = "model/resolution.rs"]
-mod model_resolution;
-#[path = "auth/openai.rs"]
-mod openai_auth;
-#[path = "util/path.rs"]
-mod path_util;
-#[path = "permission/gate.rs"]
-mod permission_gate;
-#[path = "policy/resolution.rs"]
-mod policy_resolution;
-#[path = "promotion/candidate.rs"]
-mod promotion_candidate;
-#[path = "promotion/cleanup.rs"]
-mod promotion_cleanup;
-#[path = "promotion/decision.rs"]
-mod promotion_decision;
-#[path = "promotion/export.rs"]
-mod promotion_export;
-#[path = "promotion/generation.rs"]
-mod promotion_generation;
-#[path = "promotion/session.rs"]
-mod promotion_session;
-#[path = "promotion/validation.rs"]
-mod promotion_validation;
-#[path = "util/prompt.rs"]
-mod prompt;
-#[path = "session/artifact.rs"]
-mod session_artifact;
-#[path = "commands/session.rs"]
-mod session_commands;
-#[path = "session/compact.rs"]
-mod session_compact;
-#[path = "session/context.rs"]
-mod session_context;
-#[path = "session/events.rs"]
-mod session_events;
-#[path = "session/init.rs"]
-mod session_init;
-#[path = "session/list.rs"]
-mod session_list;
-#[path = "session/manifest.rs"]
-mod session_manifest;
-#[path = "session/native.rs"]
-mod session_native;
-#[path = "session/projection.rs"]
-mod session_projection;
-#[path = "session/reference.rs"]
-mod session_reference;
-#[path = "session/registry.rs"]
-mod session_registry;
-#[path = "session/remove.rs"]
-mod session_remove;
-#[path = "session/run_support.rs"]
-mod session_run_support;
-#[path = "session/status.rs"]
-mod session_status;
-#[path = "session/transcript.rs"]
-mod session_transcript;
-#[path = "session/tui.rs"]
-mod session_tui;
-#[path = "session/turns.rs"]
-mod session_turns;
-#[path = "session/watch.rs"]
-mod session_watch;
-#[path = "util/shell.rs"]
-mod shell;
-#[path = "commands/skills.rs"]
-mod skills_commands;
-#[path = "storage/stores.rs"]
-mod stores;
-#[path = "util/text.rs"]
-mod text;
-#[path = "util/toml.rs"]
-mod toml_util;
-#[path = "commands/tools.rs"]
-mod tools_commands;
-#[path = "commands/top_level.rs"]
-mod top_level_commands;
-#[path = "tui/dashboard.rs"]
-mod tui_dashboard;
+mod commands;
+mod config;
+mod model;
+mod permission;
+mod policy;
+mod promotion;
+mod runtime;
+mod session;
+mod storage;
+mod tui;
+mod util;
+
+pub(crate) use agent::config as agent_config;
+pub(crate) use agent::file_history as agent_file_history;
+pub(crate) use agent::instructions as agent_instructions;
+pub(crate) use agent::messages as agent_messages;
+pub(crate) use agent::roles as agent_roles;
+pub(crate) use agent::runtime_config as agent_runtime_config;
+pub(crate) use agent::session_meta as agent_session_meta;
+pub(crate) use agent::workspace as agent_workspace;
 pub(crate) use agent_ask_command::session_run;
 use agent_ask_command::top_level_ask;
 pub(crate) use agent_commands::warn_legacy_agent_command;
@@ -144,9 +35,28 @@ pub(crate) use agent_roles::{resolve_agent_role_selection_from_config, AgentRole
 pub(crate) use agent_workspace::{
     clean_unique_paths, load_djinn_config_for_workspace, resolve_agent_workspace,
 };
+pub(crate) use auth::copilot as copilot_auth;
+pub(crate) use auth::openai as openai_auth;
 pub(crate) use background_run::latest_background_session_run_status;
+pub(crate) use buddy::consolidate as buddy_consolidate;
 use buddy::*;
 pub(crate) use cli_args::*;
+pub(crate) use commands::agent as agent_commands;
+pub(crate) use commands::agent_ask as agent_ask_command;
+pub(crate) use commands::config as config_commands;
+pub(crate) use commands::context as context_commands;
+pub(crate) use commands::doctor as doctor_commands;
+pub(crate) use commands::memory as memory_commands;
+pub(crate) use commands::session as session_commands;
+pub(crate) use commands::skills as skills_commands;
+pub(crate) use commands::tools as tools_commands;
+pub(crate) use commands::top_level as top_level_commands;
+pub(crate) use config::doctor as config_doctor;
+pub(crate) use config::format as config_format;
+pub(crate) use config::model as config_model;
+pub(crate) use config::native as config_native;
+pub(crate) use config::preview as config_preview;
+pub(crate) use config::write as config_write;
 use config_commands::run_config;
 use config_doctor::*;
 use config_model::*;
@@ -156,14 +66,44 @@ use copilot_auth::*;
 use doctor_commands::run_doctor;
 pub(crate) use memory_commands::accept_memory;
 pub(crate) use memory_commands::{remove_memories_silent, remove_suggestions};
+pub(crate) use model::completion as model_completion;
+pub(crate) use model::resolution as model_resolution;
 use model_completion::resolve_openai_client;
 use model_resolution::*;
 use openai_auth::*;
 pub(crate) use path_util::expand_tilde_path;
+pub(crate) use permission::gate as permission_gate;
+pub(crate) use policy::resolution as policy_resolution;
 use policy_resolution::*;
+pub(crate) use promotion::candidate as promotion_candidate;
+pub(crate) use promotion::cleanup as promotion_cleanup;
+pub(crate) use promotion::decision as promotion_decision;
+pub(crate) use promotion::export as promotion_export;
+pub(crate) use promotion::generation as promotion_generation;
+pub(crate) use promotion::session as promotion_session;
+pub(crate) use promotion::validation as promotion_validation;
 pub(crate) use promotion_session::{create_promotion_session, session_promote_type_label};
 pub(crate) use promotion_validation::SessionValidateCandidateEntry;
 pub(crate) use prompt::prompt_title;
+pub(crate) use runtime::background_run;
+pub(crate) use session::artifact as session_artifact;
+pub(crate) use session::compact as session_compact;
+pub(crate) use session::context as session_context;
+pub(crate) use session::events as session_events;
+pub(crate) use session::init as session_init;
+pub(crate) use session::list as session_list;
+pub(crate) use session::manifest as session_manifest;
+pub(crate) use session::native as session_native;
+pub(crate) use session::projection as session_projection;
+pub(crate) use session::reference as session_reference;
+pub(crate) use session::registry as session_registry;
+pub(crate) use session::remove as session_remove;
+pub(crate) use session::run_support as session_run_support;
+pub(crate) use session::status as session_status;
+pub(crate) use session::transcript as session_transcript;
+pub(crate) use session::tui as session_tui;
+pub(crate) use session::turns as session_turns;
+pub(crate) use session::watch as session_watch;
 use session_commands::run_session;
 use session_context::inspect_folder_session_context_dir;
 use session_events::{
@@ -196,6 +136,7 @@ pub(crate) use session_turns::{
     read_optional_markdown_file, FolderSessionTurnDigest,
 };
 pub(crate) use skills_commands::{open_skill_entry, skill_records, skill_store};
+pub(crate) use storage::stores;
 pub(crate) use stores::{
     action_store, agent_session_store, file_history_store, idea_store, memory_store,
     suggestion_store,
@@ -210,7 +151,14 @@ use top_level_commands::{
     run_accept, run_add, run_clear, run_index, run_ingest, run_list, run_open, run_reject,
     run_review, run_rm, run_scan, run_search, run_show, run_switch,
 };
+pub(crate) use tui::dashboard as tui_dashboard;
 use tui_dashboard::{default_dashboard_tui_args, run_tui};
+pub(crate) use util::editor;
+pub(crate) use util::path as path_util;
+pub(crate) use util::prompt;
+pub(crate) use util::shell;
+pub(crate) use util::text;
+pub(crate) use util::toml as toml_util;
 
 pub(crate) const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
 const BACKGROUND_RUN_UNRESPONSIVE_SECONDS: i64 = 30 * 60;
