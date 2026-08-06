@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::{projected_event_turn_id, read_event_turn_pairs, truncate};
+use crate::session::events::{projected_event_turn_id, read_event_turn_pairs};
+use crate::util::text::truncate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FolderSessionTurnDigest {

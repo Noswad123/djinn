@@ -4,18 +4,17 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::buddy::session_chat;
-use crate::editor::default_editor;
-use crate::editor::open_editor_path;
-use crate::promotion_decision::{session_decide, SessionDecisionAction};
-use crate::promotion_validation::session_validate_candidates;
-use crate::session_artifact::session_open;
-use crate::session_artifact::{
+use crate::promotion::decision::{session_decide, SessionDecisionAction};
+use crate::promotion::validation::session_validate_candidates;
+use crate::session::artifact::session_open;
+use crate::session::artifact::{
     fallback_folder_session_open_target, resolve_folder_session_open_target, SessionOpenTarget,
 };
-use crate::session_context::session_context_discover;
-use crate::session_reference::resolve_existing_folder_session_reference;
-use crate::session_watch::session_watch;
-use crate::shell::shell_quote;
+use crate::session::context::session_context_discover;
+use crate::session::reference::resolve_existing_folder_session_reference;
+use crate::session::watch::session_watch;
+use crate::util::editor::{default_editor, open_editor_path};
+use crate::util::shell::shell_quote;
 use crate::{
     folder_session_display_name, folder_session_status, format_session_candidate_entry,
     format_session_candidate_status, latest_background_session_run_status,

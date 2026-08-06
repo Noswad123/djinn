@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::promotion_candidate::{resolve_promotion_candidates, PromotionCandidate};
+use crate::promotion::candidate::{resolve_promotion_candidates, PromotionCandidate};
 use crate::{
     ensure_trailing_newline, expand_tilde_path, plural_suffix, read_folder_session_manifest,
     resolve_existing_folder_session_dir, SessionExportPatternArgs,

@@ -12,7 +12,7 @@ use djinn_memory::{
     AgentSessionId, AgentSessionStore, JsonlAgentSessionStore, JsonlFileHistoryStore,
 };
 
-use crate::permission_gate::TerminalPermissionGate;
+use crate::permission::gate::TerminalPermissionGate;
 use crate::{
     is_copilot_model, resolve_agent_permission_policy, resolve_agent_read_access_policy,
     resolve_copilot_token, resolve_openai_auth,

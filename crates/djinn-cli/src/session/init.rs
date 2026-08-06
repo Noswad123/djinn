@@ -9,7 +9,7 @@ use crate::buddy::{
     ensure_buddy_session_binding, read_buddy_runtime_state, BuddyBindingInput, BuddyBridgeBackend,
     BuddySessionBackend,
 };
-use crate::session_context::{discover_folder_session_context, SessionContextDiscoverReport};
+use crate::session::context::{discover_folder_session_context, SessionContextDiscoverReport};
 use crate::{
     clean_unique_paths, default_djinn_config_path, load_djinn_config_from_paths,
     read_folder_session_manifest, resolve_agent_model_from_config,
@@ -470,7 +470,6 @@ mod tests {
 
     #[derive(Clone)]
     struct TestBuddyBackend {
-        command: String,
         runtime_command_override: Option<String>,
         create_id: String,
         creates: Arc<Mutex<Vec<(String, String)>>>,
@@ -478,7 +477,7 @@ mod tests {
 
     impl BuddySessionBackend for TestBuddyBackend {
         fn command(&self) -> &str {
-            &self.command
+            "in-tree-buddy"
         }
 
         fn runtime_command_override(&self) -> Option<String> {
@@ -626,7 +625,6 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         let creates = Arc::new(Mutex::new(Vec::new()));
         let backend = TestBuddyBackend {
-            command: "in-tree-buddy".to_string(),
             runtime_command_override: None,
             create_id: "ses_init_bound".to_string(),
             creates: creates.clone(),

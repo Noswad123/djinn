@@ -7,43 +7,43 @@ use djinn_memory::{
     AgentSessionLifecycleState, AgentSessionMeta, AgentSessionStore,
 };
 
-use crate::agent_instructions::resolve_agent_instruction_contents;
-use crate::agent_messages::agent_model_messages;
-use crate::agent_roles::resolve_agent_role_selection_from_config;
-use crate::agent_runtime_config::{
+use crate::agent::instructions::resolve_agent_instruction_contents;
+use crate::agent::messages::agent_model_messages;
+use crate::agent::roles::resolve_agent_role_selection_from_config;
+use crate::agent::runtime_config::{
     agent_effective_config_from_parts, agent_session_runtime_config,
 };
-use crate::agent_session_meta::{
+use crate::agent::session_meta::{
     append_agent_session_lifecycle_event, format_session_run_completion, latest_session_model,
     maybe_auto_title_agent_session, validate_agent_child_session_depth,
 };
-use crate::agent_workspace::{
+use crate::agent::workspace::{
     load_djinn_config_for_workspace, nonempty_owned_string, resolve_agent_workspace,
 };
 use crate::buddy::{ensure_folder_session_buddy_binding_for_ask, BuddyBridgeBackend};
-use crate::editor::open_editor_path;
-use crate::model_completion::complete_openai_messages_with_progress;
-use crate::model_resolution::resolve_agent_model_from_config;
-use crate::promotion_generation::session_run_promotion;
-use crate::prompt::{prompt_title, resolve_agent_request_prompt};
-use crate::session_context::resolve_folder_session_context_instructions;
-use crate::session_manifest::{
+use crate::model::completion::complete_openai_messages_with_progress;
+use crate::model::resolution::resolve_agent_model_from_config;
+use crate::promotion::generation::session_run_promotion;
+use crate::session::context::resolve_folder_session_context_instructions;
+use crate::session::manifest::{
     read_folder_session_manifest, session_manifest_workspace_path, write_agent_session_toml,
 };
-use crate::session_native::{
+use crate::session::native::{
     agent_session_store_for_folder_session, relocate_agent_session_into_folder,
 };
-use crate::session_projection::{
+use crate::session::projection::{
     ensure_folder_session_readme, hydrate_folder_agent_session_from_events_jsonl,
     project_agent_session_dir, sync_folder_session_events_jsonl_from_store,
 };
-use crate::session_reference::{
+use crate::session::reference::{
     auto_folder_session_dir, resolve_existing_folder_session_reference, resolve_session_dir,
 };
-use crate::session_run_support::{
+use crate::session::run_support::{
     background_progress_phase, session_run_background, touch_background_run_marker_from_env,
 };
-use crate::stores::agent_session_store;
+use crate::storage::stores::agent_session_store;
+use crate::util::editor::open_editor_path;
+use crate::util::prompt::{prompt_title, resolve_agent_request_prompt};
 use crate::{warn_legacy_agent_command, AgentAskArgs, SessionRunArgs};
 
 pub(crate) fn top_level_ask(args: AgentAskArgs) -> Result<()> {

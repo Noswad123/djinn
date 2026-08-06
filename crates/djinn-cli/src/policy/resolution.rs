@@ -9,8 +9,8 @@ use djinn_agent::{
 };
 use serde_json::Value;
 
-use crate::agent_config::AgentEffectivePolicyRule;
-use crate::config_model::DjinnConfigPermission;
+use crate::agent::config::AgentEffectivePolicyRule;
+use crate::config::model::DjinnConfigPermission;
 use crate::{effective_djinn_config, opencode_model_config_paths};
 
 pub(crate) fn resolve_agent_read_access_policy(

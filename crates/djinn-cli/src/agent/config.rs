@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use djinn_agent::{PermissionPolicy, ReadAccessPolicy, ToolSpec};
 use serde::Serialize;
 
-use crate::text::plural_suffix;
+use crate::util::text::plural_suffix;
 use crate::{push_unique_string, OutputFormat};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -479,7 +479,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::policy_resolution::agent_policy_guardrails;
+    use crate::policy::resolution::agent_policy_guardrails;
 
     #[test]
     fn format_agent_config_options_marks_current_choices() {

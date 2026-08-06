@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
-use crate::session_status::{folder_session_status, SessionStatusReport};
+use crate::session::status::{folder_session_status, SessionStatusReport};
 use crate::{resolve_existing_folder_session_reference, SessionWatchArgs};
 
 pub(crate) fn session_watch(args: SessionWatchArgs) -> Result<()> {
@@ -97,7 +97,7 @@ pub(crate) fn format_session_watch_snapshot(report: &SessionStatusReport) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_status::{
+    use crate::session::status::{
         SessionStatusFileReport, SessionStatusLifecycleReport, SessionStatusTurnReport,
     };
 

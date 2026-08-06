@@ -5,6 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
+use crate::util::toml::upsert_toml_root_string;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BackgroundRunStatus {
     pub(crate) run_id: String,
@@ -67,8 +69,8 @@ pub(crate) fn touch_background_run_marker(marker_path: &Path, phase: &str) -> Re
     let content = fs::read_to_string(marker_path)
         .with_context(|| format!("reading background run marker {}", marker_path.display()))?;
     let heartbeat_at = chrono::Local::now().to_rfc3339();
-    let content = crate::upsert_toml_root_string(&content, "heartbeat_at", &heartbeat_at)?;
-    let content = crate::upsert_toml_root_string(&content, "heartbeat_phase", phase)?;
+    let content = upsert_toml_root_string(&content, "heartbeat_at", &heartbeat_at)?;
+    let content = upsert_toml_root_string(&content, "heartbeat_phase", phase)?;
     fs::write(marker_path, content)
         .with_context(|| format!("writing background run marker {}", marker_path.display()))
 }

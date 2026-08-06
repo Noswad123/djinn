@@ -10,7 +10,7 @@ use djinn_memory::{
     SuggestionRecord,
 };
 
-use crate::shell::shell_quote;
+use crate::util::shell::shell_quote;
 use crate::{
     action_store, idea_store, memory_store, skill_store, suggestion_store, AcceptMemoryArgs,
     AddMemoryArgs, AddSuggestionArgs, IngestMemoriesArgs, IngestTarget, ReviewMemoriesArgs,

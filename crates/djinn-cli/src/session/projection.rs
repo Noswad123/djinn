@@ -9,7 +9,7 @@ use djinn_memory::{
     JsonlAgentSessionStore,
 };
 
-use crate::session_init::session_context_readme;
+use crate::session::init::session_context_readme;
 use crate::{
     ensure_trailing_newline, folder_agent_session_store, folder_session_manifest_meta,
     write_agent_session_toml, FolderSessionManifest,
@@ -222,8 +222,8 @@ pub(crate) fn write_agent_session_native_jsonl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_messages::agent_model_messages;
-    use crate::read_folder_session_manifest;
+    use crate::agent::messages::agent_model_messages;
+    use crate::session::manifest::read_folder_session_manifest;
     use djinn_memory::{AgentSessionId, AgentSessionMeta};
 
     #[test]

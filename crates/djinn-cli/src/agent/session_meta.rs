@@ -7,8 +7,8 @@ use djinn_memory::{
     AgentSessionId, AgentSessionLifecycleState, AgentSessionStore, JsonlAgentSessionStore,
 };
 
-use crate::prompt::prompt_title;
-use crate::session_projection::AgentSessionDirProjection;
+use crate::session::projection::AgentSessionDirProjection;
+use crate::util::prompt::prompt_title;
 
 const AGENT_CHILD_SESSION_MAX_DEPTH: usize = 3;
 

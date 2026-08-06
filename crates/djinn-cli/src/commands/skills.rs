@@ -4,7 +4,7 @@ use djinn_skills::{
     SkillStore,
 };
 
-use crate::editor::open_editor_at;
+use crate::util::editor::open_editor_at;
 use crate::{
     context_store, output_format, AddSkillArgs, ListSkillsArgs, OutputFormat, RmSkillArgs,
     ShowSkillArgs,

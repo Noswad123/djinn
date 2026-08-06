@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use djinn_memory::{AgentSession, AgentSessionId, AgentSessionMeta, AgentSessionRuntimeConfig};
 
-use crate::folder_session_display_name;
+use crate::session::reference::folder_session_display_name;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct FolderSessionManifest {
@@ -210,7 +210,7 @@ pub(crate) fn toml_string(value: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_projection::project_agent_session_dir;
+    use crate::session::projection::project_agent_session_dir;
 
     #[test]
     fn folder_backed_session_projection_preserves_context_manifest_sections() {

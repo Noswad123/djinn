@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::session_remove::remove_folder_session;
+use crate::session::remove::remove_folder_session;
 use crate::{
     expand_tilde_path, parse_manifest_string_value, read_folder_session_manifest,
     resolve_existing_folder_session_dir, SessionCleanupArgs,

@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
 
-use crate::session_artifact::SessionOpenTarget;
-use crate::session_transcript::SessionTranscriptFormat;
+use crate::session::artifact::SessionOpenTarget;
+use crate::session::transcript::SessionTranscriptFormat;
 use crate::DEFAULT_AGENT_MAX_TOOL_ROUNDS;
 
 #[derive(Debug, Args)]

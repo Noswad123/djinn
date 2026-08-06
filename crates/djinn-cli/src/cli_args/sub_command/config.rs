@@ -200,7 +200,7 @@ mod tests {
 
     use super::*;
     use crate::cli_args::{Cli, Command};
-    use crate::config_commands::validate_config_import_mode;
+    use crate::commands::config::validate_config_import_mode;
 
     #[test]
     fn parses_config_doctor_opencode_command() {

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
-use crate::config_model::{DjinnConfig, DjinnConfigFileReport, DjinnConfigLoadReport};
+use crate::config::model::{DjinnConfig, DjinnConfigFileReport, DjinnConfigLoadReport};
 use crate::{clean_unique_paths, OutputFormat};
 
 pub(crate) fn default_djinn_config_path() -> PathBuf {
@@ -227,10 +227,10 @@ pub(crate) fn format_djinn_config_load_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_roles::resolve_agent_role_selection_from_config;
-    use crate::model_resolution::profile_model_from_config;
-    use crate::model_resolution::resolve_agent_model_from_config;
-    use crate::policy_resolution::{
+    use crate::agent::roles::resolve_agent_role_selection_from_config;
+    use crate::model::resolution::profile_model_from_config;
+    use crate::model::resolution::resolve_agent_model_from_config;
+    use crate::policy::resolution::{
         extend_permission_rules_from_config, extend_read_access_rules_from_permissions,
     };
     use djinn_agent::{PermissionEffect, ReadAccessEffect};

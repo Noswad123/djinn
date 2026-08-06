@@ -6,11 +6,14 @@ use anyhow::{Context, Result};
 use djinn_memory::{lifecycle_for, AgentSession, AgentSessionEvent, AgentSessionEventKind};
 use serde::Serialize;
 
-use crate::promotion_candidate::{candidate_string_array_value, candidate_string_value};
+use crate::promotion::candidate::{candidate_string_array_value, candidate_string_value};
+use crate::runtime::background_run::BackgroundRunStatus;
+use crate::util::text::yes_no;
+use crate::util::toml::upsert_toml_root_string;
 use crate::{
-    background_run::BackgroundRunStatus, inspect_folder_session_context_dir,
-    load_folder_native_agent_session, parse_manifest_string_value, read_folder_session_event_turns,
-    read_folder_session_manifest, read_folder_session_turns, resolve_existing_folder_session_dir,
+    inspect_folder_session_context_dir, load_folder_native_agent_session,
+    parse_manifest_string_value, read_folder_session_event_turns, read_folder_session_manifest,
+    read_folder_session_turns, resolve_existing_folder_session_dir,
     resolve_existing_folder_session_reference, FolderSessionManifest, FolderSessionTurnDigest,
     SessionStatusArgs,
 };
@@ -125,10 +128,7 @@ pub(crate) struct SessionStatusFileReport {
 pub(crate) fn format_folder_session_status(report: &SessionStatusReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!("Djinn session: {}", report.session_dir));
-    lines.push(format!(
-        "Manifest: {}",
-        crate::yes_no(report.manifest_exists)
-    ));
+    lines.push(format!("Manifest: {}", yes_no(report.manifest_exists)));
     if let Some(session_id) = &report.session_id {
         lines.push(format!(
             "Native session: {session_id} ({})",
@@ -173,44 +173,26 @@ pub(crate) fn format_folder_session_status(report: &SessionStatusReport) -> Stri
         }
         if let Some(link) = &repo.link {
             lines.push(format!("  link: {link}"));
-            lines.push(format!(
-                "  link exists: {}",
-                crate::yes_no(repo.link_exists)
-            ));
-            lines.push(format!(
-                "  link symlink: {}",
-                crate::yes_no(repo.link_is_symlink)
-            ));
+            lines.push(format!("  link exists: {}", yes_no(repo.link_exists)));
+            lines.push(format!("  link symlink: {}", yes_no(repo.link_is_symlink)));
             if let Some(target) = &repo.link_target {
                 lines.push(format!("  target: {target}"));
             }
-            lines.push(format!("  broken: {}", crate::yes_no(repo.link_broken)));
+            lines.push(format!("  broken: {}", yes_no(repo.link_broken)));
         }
     }
     lines.push("Files:".to_string());
-    lines.push(format!(
-        "  request.md: {}",
-        crate::yes_no(report.files.request_md)
-    ));
-    lines.push(format!(
-        "  summary.md: {}",
-        crate::yes_no(report.files.summary_md)
-    ));
-    lines.push(format!(
-        "  context/: {}",
-        crate::yes_no(report.files.context_dir)
-    ));
+    lines.push(format!("  request.md: {}", yes_no(report.files.request_md)));
+    lines.push(format!("  summary.md: {}", yes_no(report.files.summary_md)));
+    lines.push(format!("  context/: {}", yes_no(report.files.context_dir)));
     lines.push(format!(
         "  context/compacted.md: {}",
-        crate::yes_no(report.files.compacted_md)
+        yes_no(report.files.compacted_md)
     ));
-    lines.push(format!(
-        "  turns/: {}",
-        crate::yes_no(report.files.turns_dir)
-    ));
+    lines.push(format!("  turns/: {}", yes_no(report.files.turns_dir)));
     lines.push(format!(
         "  events.jsonl: {}",
-        crate::yes_no(report.files.events_jsonl)
+        yes_no(report.files.events_jsonl)
     ));
     lines.push(format!("Turns: {}", report.turn_count));
     lines.push(format!("Events: {}", report.event_count));
@@ -223,10 +205,7 @@ pub(crate) fn format_folder_session_status(report: &SessionStatusReport) -> Stri
         if let Some(response_path) = &turn.response_path {
             lines.push(format!("  response: {response_path}"));
         }
-        lines.push(format!(
-            "  has response: {}",
-            crate::yes_no(turn.has_response)
-        ));
+        lines.push(format!("  has response: {}", yes_no(turn.has_response)));
     }
     if let Some(candidates) = &report.candidates {
         lines.push("Candidates:".to_string());
@@ -402,7 +381,8 @@ fn stale_background_run_lifecycle(
     if lifecycle.state != "running" || lifecycle.mode.as_deref() != Some("background") {
         return None;
     }
-    let mut run = crate::background_run::latest_background_session_run_status(session_dir)?;
+    let mut run =
+        crate::runtime::background_run::latest_background_session_run_status(session_dir)?;
     if run.alive && !background_run_unresponsive(&run) {
         return None;
     }
@@ -450,14 +430,14 @@ fn persist_background_run_recovery_observation_to_path(
 ) -> Result<()> {
     let content = fs::read_to_string(marker_path)
         .with_context(|| format!("reading background run marker {}", marker_path.display()))?;
-    let content = crate::upsert_toml_root_string(
+    let content = upsert_toml_root_string(
         &content,
         "recovery_observed_at",
         &chrono::Local::now().to_rfc3339(),
     )?;
-    let content = crate::upsert_toml_root_string(&content, "recovery_reason", reason)?;
+    let content = upsert_toml_root_string(&content, "recovery_reason", reason)?;
     let content = if let Some(event) = &run.last_observed_event {
-        crate::upsert_toml_root_string(&content, "last_observed_event", event)?
+        upsert_toml_root_string(&content, "last_observed_event", event)?
     } else {
         content
     };
@@ -634,8 +614,9 @@ fn promotion_session_status_lifecycle(
     session_dir: &Path,
     candidates: Option<&SessionStatusCandidateReport>,
 ) -> SessionStatusLifecycleReport {
-    if let Some(run) = crate::background_run::latest_background_session_run_status(session_dir)
-        .filter(|run| run.alive)
+    if let Some(run) =
+        crate::runtime::background_run::latest_background_session_run_status(session_dir)
+            .filter(|run| run.alive)
     {
         return SessionStatusLifecycleReport {
             state: "running".to_string(),
@@ -654,7 +635,9 @@ fn promotion_session_status_lifecycle(
             note: Some("Promotion candidates are ready for review.".to_string()),
         };
     }
-    if let Some(run) = crate::background_run::latest_background_session_run_status(session_dir) {
+    if let Some(run) =
+        crate::runtime::background_run::latest_background_session_run_status(session_dir)
+    {
         return SessionStatusLifecycleReport {
             state: "failed".to_string(),
             mode: Some("promotion".to_string()),
@@ -749,7 +732,7 @@ fn latest_promotion_generation_modified_at(session_dir: &Path) -> Option<String>
         .filter_map(std::result::Result::ok)
         .filter_map(|entry| entry.metadata().ok()?.modified().ok())
         .max()
-        .and_then(crate::background_run::system_time_to_rfc3339)
+        .and_then(crate::runtime::background_run::system_time_to_rfc3339)
 }
 
 pub(crate) fn session_status_turn_report(
@@ -1071,16 +1054,16 @@ pub(crate) fn session_status_repo(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_session_meta::append_agent_session_lifecycle_event;
-    use crate::background_run::{
+    use crate::agent::session_meta::append_agent_session_lifecycle_event;
+    use crate::runtime::background_run::{
         latest_background_session_run_status, write_background_session_run_marker,
     };
-    use crate::session_init::create_dir_symlink;
-    use crate::session_list::list_folder_sessions_in_root;
-    use crate::session_native::relocate_agent_session_into_folder;
-    use crate::session_projection::project_agent_session_dir;
-    use crate::session_watch::{format_session_watch_snapshot, session_watch};
-    use crate::{upsert_toml_root_string, SessionWatchArgs};
+    use crate::session::init::create_dir_symlink;
+    use crate::session::list::list_folder_sessions_in_root;
+    use crate::session::native::relocate_agent_session_into_folder;
+    use crate::session::projection::project_agent_session_dir;
+    use crate::session::watch::{format_session_watch_snapshot, session_watch};
+    use crate::SessionWatchArgs;
     use djinn_memory::{
         AgentSessionEvent, AgentSessionEventKind, AgentSessionExecutionMode,
         AgentSessionLifecycleState, AgentSessionMeta, AgentSessionStore, JsonlAgentSessionStore,

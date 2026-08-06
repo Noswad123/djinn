@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::session_artifact::resolve_folder_session_repo_open_target;
+use crate::session::artifact::resolve_folder_session_repo_open_target;
 use crate::{
     folder_session_slug, resolve_existing_folder_session_dir, truncate_table_cell,
     ResolvedAgentInstruction, SessionContextAddArgs, SessionContextArgs, SessionContextCommand,
@@ -1184,7 +1184,7 @@ pub(crate) fn format_folder_session_context_discover(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_init::create_dir_symlink;
+    use crate::session::init::create_dir_symlink;
 
     #[test]
     fn folder_session_context_ingestion_is_shallow_bounded_and_textual() {

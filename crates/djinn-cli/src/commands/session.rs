@@ -1,26 +1,25 @@
 use anyhow::{anyhow, Result};
 
-use crate::agent_ask_command::session_run;
-use crate::buddy::session_chat;
-use crate::buddy_consolidate::session_consolidate;
-use crate::promotion_cleanup::session_cleanup;
-use crate::promotion_decision::{session_decide, SessionDecisionAction};
-use crate::promotion_export::session_export_pattern;
-use crate::promotion_session::session_promote;
-use crate::promotion_validation::session_validate_candidates;
-use crate::session_artifact::{session_open, SessionOpenTarget};
-use crate::session_compact::session_compact;
-use crate::session_context::session_context;
-use crate::session_events::{session_events, session_validate_events};
-use crate::session_init::session_init;
-use crate::session_list::session_ls;
-use crate::session_registry::{session_rename, session_shorten_names};
-use crate::session_remove::session_rm;
-use crate::session_status::session_status;
-use crate::session_transcript::session_transcript;
-use crate::session_tui::run_folder_session_tui;
-use crate::session_watch::session_watch;
-use crate::tui_dashboard::run_tui;
+use crate::buddy::{consolidate::session_consolidate, session_chat};
+use crate::commands::agent_ask::session_run;
+use crate::promotion::cleanup::session_cleanup;
+use crate::promotion::decision::{session_decide, SessionDecisionAction};
+use crate::promotion::export::session_export_pattern;
+use crate::promotion::session::session_promote;
+use crate::promotion::validation::session_validate_candidates;
+use crate::session::artifact::{session_open, SessionOpenTarget};
+use crate::session::compact::session_compact;
+use crate::session::context::session_context;
+use crate::session::events::{session_events, session_validate_events};
+use crate::session::init::session_init;
+use crate::session::list::session_ls;
+use crate::session::registry::{session_rename, session_shorten_names};
+use crate::session::remove::session_rm;
+use crate::session::status::session_status;
+use crate::session::transcript::session_transcript;
+use crate::session::tui::run_folder_session_tui;
+use crate::session::watch::session_watch;
+use crate::tui::dashboard::run_tui;
 use crate::{SessionArgs, SessionCommand, SessionOpenArgs, TuiArgs, TuiView};
 
 pub(crate) fn run_session(args: SessionArgs) -> Result<()> {

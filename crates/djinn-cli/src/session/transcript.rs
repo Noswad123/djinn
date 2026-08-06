@@ -5,9 +5,11 @@ use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 use serde::Serialize;
 
+use crate::util::editor::open_editor_path;
+use crate::util::shell::shell_quote;
 use crate::{
-    editor::open_editor_path, ensure_trailing_newline, read_event_turn_pairs,
-    resolve_existing_folder_session_dir, shell::shell_quote, SessionTranscriptArgs,
+    ensure_trailing_newline, read_event_turn_pairs, resolve_existing_folder_session_dir,
+    SessionTranscriptArgs,
 };
 
 pub(crate) fn session_transcript(args: SessionTranscriptArgs) -> Result<()> {
@@ -213,7 +215,7 @@ mod tests {
                 ),
             ],
         };
-        crate::write_folder_session_events_jsonl(&dir, &session).unwrap();
+        crate::session::projection::write_folder_session_events_jsonl(&dir, &session).unwrap();
 
         let report = build_session_transcript(&dir, SessionTranscriptFormat::Markdown).unwrap();
         let rendered = render_session_transcript_markdown(&report);

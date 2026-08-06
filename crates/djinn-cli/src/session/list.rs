@@ -5,17 +5,22 @@ use anyhow::{Context, Result};
 use djinn_memory::AgentSession;
 use serde::Serialize;
 
-use crate::session_status::{
+use crate::buddy::read_buddy_runtime_state;
+use crate::session::manifest::read_folder_session_manifest;
+use crate::session::native::load_folder_native_agent_session;
+use crate::session::reference::{
+    default_folder_session_root, folder_session_display_name, folder_session_reference_name,
+};
+use crate::session::status::{
     session_status_candidates, session_status_lifecycle, session_status_next_action,
     session_status_turn_report, SessionStatusCandidateReport, SessionStatusLifecycleReport,
     SessionStatusTurnReport,
 };
-use crate::{
-    default_folder_session_root, folder_session_display_name, folder_session_reference_name,
-    load_folder_native_agent_session, non_empty_string, read_buddy_runtime_state,
-    read_folder_session_event_turns, read_folder_session_manifest, read_folder_session_turns,
-    validate_folder_session_events, FolderSessionTurnDigest, SessionLsArgs,
+use crate::session::turns::{
+    read_folder_session_event_turns, read_folder_session_turns, FolderSessionTurnDigest,
 };
+use crate::util::text::{non_empty_string, truncate_table_cell};
+use crate::{session::events::validate_folder_session_events, SessionLsArgs};
 
 pub(crate) fn session_ls(args: SessionLsArgs) -> Result<()> {
     let report = list_cache_folder_sessions(args.limit)?;
@@ -398,8 +403,8 @@ pub(crate) fn format_folder_session_ls(report: &SessionLsReport) -> String {
             let state = folder_session_summary_state_label(session);
             lines.push(format!(
                 "  {:<20} {:<12} {:<34} {}",
-                crate::truncate_table_cell(&updated, 20),
-                crate::truncate_table_cell(&state, 12),
+                truncate_table_cell(&updated, 20),
+                truncate_table_cell(&state, 12),
                 folder_session_buddy_label(session.buddy.as_ref()),
                 format!(
                     "{}{}",
@@ -462,8 +467,8 @@ pub(crate) fn compact_session_list_datetime(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_session_meta::append_agent_session_lifecycle_event;
-    use crate::session_native::folder_agent_session_store;
+    use crate::agent::session_meta::append_agent_session_lifecycle_event;
+    use crate::session::native::folder_agent_session_store;
     use djinn_memory::{
         AgentSessionExecutionMode, AgentSessionLifecycleState, AgentSessionMeta, AgentSessionStore,
     };

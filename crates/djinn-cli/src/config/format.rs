@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::config_model::{
+use crate::config::model::{
     ConfigDoctorFinding, ConfigExportPreview, ConfigExportWriteReport, ConfigImportPreview,
     ConfigImportWriteReport, ConfigImportWriteSummary,
 };

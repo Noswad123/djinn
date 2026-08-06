@@ -4,6 +4,11 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
+use crate::session::reference::{
+    default_folder_session_root, folder_session_reference_name, is_named_folder_session_reference,
+    resolve_existing_folder_session_reference_in_root,
+};
+use crate::util::text::plural_suffix;
 use crate::{SessionRenameArgs, SessionShortenNamesArgs};
 
 pub(crate) fn session_shorten_names(args: SessionShortenNamesArgs) -> Result<()> {
@@ -17,7 +22,7 @@ pub(crate) fn session_shorten_names(args: SessionShortenNamesArgs) -> Result<()>
 }
 
 pub(crate) fn session_rename(args: SessionRenameArgs) -> Result<()> {
-    let root = crate::default_folder_session_root();
+    let root = default_folder_session_root();
     let report = rename_folder_session_in_root(&args.dir, &args.new_name, &root, args.dry_run)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -62,7 +67,7 @@ pub(crate) struct SessionRenameReport {
 pub(crate) fn shorten_cache_folder_session_names(
     dry_run: bool,
 ) -> Result<SessionShortenNamesReport> {
-    let root = crate::default_folder_session_root();
+    let root = default_folder_session_root();
     shorten_folder_session_names_in_root(&root, dry_run)
 }
 
@@ -88,7 +93,7 @@ pub(crate) fn shorten_folder_session_names_in_root(
             if !name.contains("-agt_") {
                 continue;
             }
-            let target_name = crate::folder_session_reference_name(name);
+            let target_name = folder_session_reference_name(name);
             if target_name == name {
                 continue;
             }
@@ -125,7 +130,7 @@ pub(crate) fn rename_folder_session_in_root(
     dry_run: bool,
 ) -> Result<SessionRenameReport> {
     let new_name = validate_session_rename_target(new_name)?;
-    let resolved = crate::resolve_existing_folder_session_reference_in_root(reference, root)?;
+    let resolved = resolve_existing_folder_session_reference_in_root(reference, root)?;
     let from = resolved.session_dir;
     if from.parent() != Some(root) {
         bail!(
@@ -173,7 +178,7 @@ fn validate_session_rename_target(name: &str) -> Result<String> {
         bail!("new session name cannot be empty");
     }
     let path = Path::new(name);
-    if !crate::is_named_folder_session_reference(path) {
+    if !is_named_folder_session_reference(path) {
         bail!("new session name must be a bare folder name without path separators: {name}");
     }
     Ok(name.to_string())
@@ -195,7 +200,7 @@ pub(crate) fn format_session_shorten_names_report(report: &SessionShortenNamesRe
             } else {
                 "Renamed"
             },
-            crate::plural_suffix(report.renamed.len())
+            plural_suffix(report.renamed.len())
         ));
         for entry in &report.renamed {
             let from = Path::new(&entry.from)
@@ -338,7 +343,7 @@ mod tests {
                 .unwrap_or_default()
         ));
         let legacy_name = "agent-chat-agt_1785201849270486000_123_0";
-        let short_name = crate::folder_session_reference_name(legacy_name);
+        let short_name = folder_session_reference_name(legacy_name);
         let legacy = root.join(legacy_name);
         fs::create_dir_all(&legacy).unwrap();
 

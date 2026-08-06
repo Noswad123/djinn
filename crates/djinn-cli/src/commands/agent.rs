@@ -2,20 +2,20 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::agent_ask_command::legacy_agent_ask;
-use crate::agent_config::{
+use crate::agent::config::{
     agent_policy_audit_report, agent_policy_report, format_agent_config_options,
     format_agent_effective_config, format_agent_policy_audit_report, format_agent_policy_report,
     format_agent_policy_revoke_report, format_agent_tool_spec, format_agent_tool_specs,
     resolve_agent_tool_spec, AgentEffectiveConfig, AgentPolicyRevokeReport,
 };
-use crate::agent_file_history::{agent_file_history_list, agent_file_history_restore};
-use crate::agent_roles::{
+use crate::agent::file_history::{agent_file_history_list, agent_file_history_restore};
+use crate::agent::roles::{
     configured_agent_roles, format_agent_role, format_agent_role_list, resolve_agent_role,
     resolve_agent_role_selection_from_config,
 };
-use crate::agent_runtime_config::{agent_effective_config_from_parts, agent_tool_specs};
-use crate::model_resolution::{
+use crate::agent::runtime_config::{agent_effective_config_from_parts, agent_tool_specs};
+use crate::commands::agent_ask::legacy_agent_ask;
+use crate::model::resolution::{
     agent_model_options, agent_profile_options, resolve_agent_model,
     resolve_agent_model_from_config, resolve_agent_profile,
 };

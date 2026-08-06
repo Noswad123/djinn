@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::config_format::push_config_finding_lines;
-use crate::config_model::{
+use crate::config::format::push_config_finding_lines;
+use crate::config::model::{
     ConfigDoctorFileReport, ConfigDoctorFinding, ConfigDoctorReport, ConfigDoctorSummary,
 };
 use crate::{

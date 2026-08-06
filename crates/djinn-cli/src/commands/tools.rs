@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use djinn_tools::ToolEntry;
 
-use crate::editor::open_editor_at;
+use crate::util::editor::open_editor_at;
 use crate::{
     context_store, output_format, IndexToolsArgs, OpenToolArgs, OutputFormat, SearchToolsArgs,
     ToolLookupArgs, ToolsScope,

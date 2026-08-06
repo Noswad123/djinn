@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use djinn_memory::{AgentSessionEvent, AgentSessionEventKind};
 use serde::Serialize;
 
-use crate::shell::shell_quote;
+use crate::util::shell::shell_quote;
 use crate::{
     compact_text_snippet, default_folder_session_root, ensure_trailing_newline,
     folder_session_display_name, read_folder_session_turns, read_optional_markdown_file,
@@ -1265,7 +1265,7 @@ mod tests {
                 }),
             ],
         };
-        crate::session_projection::project_agent_session_dir(&dir, &session, "question", "answer")
+        crate::session::projection::project_agent_session_dir(&dir, &session, "question", "answer")
             .unwrap();
 
         let report = validate_folder_session_events(&dir).unwrap();

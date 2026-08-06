@@ -7,14 +7,14 @@ use anyhow::{bail, Context, Result};
 use djinn_agent::AgentProgressEvent;
 use serde::Serialize;
 
-use crate::background_run::{
+use crate::runtime::background_run::{
     background_session_run_log_path, touch_background_run_marker,
     write_background_session_run_marker,
 };
-use crate::prompt::resolve_agent_request_prompt;
-use crate::session_manifest::read_folder_session_manifest;
-use crate::session_reference::resolve_existing_folder_session_dir;
-use crate::shell::shell_quote;
+use crate::session::manifest::read_folder_session_manifest;
+use crate::session::reference::resolve_existing_folder_session_dir;
+use crate::util::prompt::resolve_agent_request_prompt;
+use crate::util::shell::shell_quote;
 use crate::SessionRunArgs;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

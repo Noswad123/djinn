@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde_json::{Map, Value};
 
-use crate::config_model::{
+use crate::config::model::{
     ConfigDoctorFinding, ConfigExportPreview, ConfigImportPreview, DjinnConfig,
     DjinnConfigLoadReport, DjinnConfigPatchPreview, DjinnConfigPermission,
     DjinnPermissionPatchPreview,
@@ -792,9 +792,9 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::config_doctor::copilot_config_doctor_from_value;
-    use crate::config_format::{format_config_export_preview, format_config_import_preview};
-    use crate::config_model::{
+    use crate::config::doctor::copilot_config_doctor_from_value;
+    use crate::config::format::{format_config_export_preview, format_config_import_preview};
+    use crate::config::model::{
         DjinnConfigCommandTemplate, DjinnConfigFileReport, DjinnConfigLoadReport,
         DjinnConfigPermission, DjinnConfigProfile, DjinnConfigProvider,
     };

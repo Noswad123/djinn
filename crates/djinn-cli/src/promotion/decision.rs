@@ -9,9 +9,10 @@ use djinn_memory::{ActionStore, MemoryInput, MemorySource};
 use djinn_skills::SkillStore;
 use serde::Serialize;
 
-use crate::promotion_candidate::{
+use crate::promotion::candidate::{
     promotion_todo_adapter, resolve_promotion_candidates, PromotionCandidate,
 };
+use crate::util::path::expand_tilde_path;
 use crate::{
     action_store, ensure_trailing_newline, memory_store, read_folder_session_manifest,
     resolve_existing_folder_session_dir, skill_store, toml_string, SessionDecisionArgs,
@@ -984,7 +985,7 @@ fn env_path(name: &str) -> Option<PathBuf> {
     if value.is_empty() {
         return None;
     }
-    Some(crate::expand_tilde_path(value))
+    Some(expand_tilde_path(value))
 }
 
 fn render_session_decision_record(

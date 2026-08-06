@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use djinn_agent::{CopilotClient, ModelClient, ModelMessage, ModelRequest, ModelRole};
 use serde::Serialize;
 
-use crate::promotion_candidate::{candidate_string_value, parse_promotion_candidate};
+use crate::promotion::candidate::{candidate_string_value, parse_promotion_candidate};
 use crate::{
     ensure_trailing_newline, folder_session_slug, is_copilot_model,
     load_djinn_config_for_workspace, plural_suffix, resolve_agent_model_from_config,
@@ -539,7 +539,7 @@ pub(crate) fn render_pattern_promotion_generation_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_status::folder_session_status;
+    use crate::session::status::folder_session_status;
 
     #[test]
     fn promotion_generation_writes_model_toml_blocks_as_candidate_files() {

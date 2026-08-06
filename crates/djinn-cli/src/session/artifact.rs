@@ -4,7 +4,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 
-use crate::editor::open_editor_path;
+use crate::session::manifest::read_folder_session_manifest;
+use crate::session::reference::{
+    default_folder_session_root, resolve_existing_folder_session_reference_in_root,
+};
+use crate::util::editor::open_editor_path;
 use crate::SessionOpenArgs;
 
 pub(crate) fn session_open(args: SessionOpenArgs) -> Result<()> {
@@ -27,7 +31,7 @@ pub(crate) fn resolve_folder_session_open_target(
     dir: &Path,
     target: SessionOpenTarget,
 ) -> Result<PathBuf> {
-    resolve_folder_session_open_target_in_root(dir, target, &crate::default_folder_session_root())
+    resolve_folder_session_open_target_in_root(dir, target, &default_folder_session_root())
 }
 
 pub(crate) fn resolve_folder_session_open_target_in_root(
@@ -67,14 +71,11 @@ pub(crate) fn resolve_folder_session_open_dir_in_root(
     dir: &Path,
     buddy_lookup_root: &Path,
 ) -> Result<PathBuf> {
-    Ok(
-        crate::resolve_existing_folder_session_reference_in_root(dir, buddy_lookup_root)?
-            .session_dir,
-    )
+    Ok(resolve_existing_folder_session_reference_in_root(dir, buddy_lookup_root)?.session_dir)
 }
 
 pub(crate) fn resolve_folder_session_repo_open_target(session_dir: &Path) -> Result<PathBuf> {
-    let manifest = crate::read_folder_session_manifest(session_dir)?;
+    let manifest = read_folder_session_manifest(session_dir)?;
     if let Some(manifest) = manifest {
         if let Some(repo_path) = manifest
             .repo_path
@@ -153,7 +154,7 @@ mod tests {
             ),
         )
         .unwrap();
-        crate::session_init::create_dir_symlink(&repo, &dir.join("context/repo")).unwrap();
+        crate::session::init::create_dir_symlink(&repo, &dir.join("context/repo")).unwrap();
 
         assert_eq!(
             resolve_folder_session_open_target(&dir, SessionOpenTarget::Summary).unwrap(),

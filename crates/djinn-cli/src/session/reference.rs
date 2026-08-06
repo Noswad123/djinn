@@ -6,7 +6,7 @@ use djinn_memory::AgentSessionId;
 use sha2::{Digest, Sha256};
 
 use crate::buddy::read_buddy_runtime_state;
-use crate::prompt_title;
+use crate::util::prompt::prompt_title;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FolderSessionReferenceResolution {

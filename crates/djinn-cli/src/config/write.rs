@@ -5,12 +5,12 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-use crate::config_model::{
+use crate::config::model::{
     ConfigExportPreview, ConfigExportWriteReport, ConfigImportPreview, ConfigImportWriteReport,
     ConfigImportWriteSummary, DjinnConfig, DjinnConfigPatchPreview, DjinnConfigPermission,
     DjinnConfigProfile, DjinnConfigProvider, DjinnPermissionPatchPreview,
 };
-use crate::parse_djinn_config;
+use crate::config::native::parse_djinn_config;
 
 pub(crate) fn write_config_export_preview(
     preview: &ConfigExportPreview,
@@ -282,13 +282,13 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::config_doctor::config_finding;
-    use crate::config_format::{
+    use crate::config::doctor::config_finding;
+    use crate::config::format::{
         format_config_export_write_report, format_config_import_write_report,
     };
-    use crate::config_model::{ConfigExportPreview, DjinnProfilePatchPreview};
-    use crate::config_native::parse_djinn_config;
-    use crate::config_preview::{
+    use crate::config::model::{ConfigExportPreview, DjinnProfilePatchPreview};
+    use crate::config::native::parse_djinn_config;
+    use crate::config::preview::{
         copilot_config_import_preview_from_values, opencode_config_import_preview_from_values,
     };
     use crate::OutputFormat;

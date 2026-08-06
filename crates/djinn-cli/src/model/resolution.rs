@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use crate::config_model::DjinnConfig;
+use crate::config::model::DjinnConfig;
 use crate::{clean_unique_paths, effective_djinn_config};
 
 pub(crate) fn agent_profile_options(current: &str) -> Result<Vec<String>> {
@@ -102,7 +102,7 @@ fn copilot_model_options_from_local_config() -> Result<Vec<String>> {
 }
 
 pub(crate) fn copilot_model_config_paths() -> Vec<PathBuf> {
-    let mut paths = crate::copilot_auth_paths();
+    let mut paths = crate::auth::copilot::copilot_auth_paths();
     for root in copilot_config_roots() {
         paths.push(root.join("models.json"));
         paths.push(root.join("config.json"));

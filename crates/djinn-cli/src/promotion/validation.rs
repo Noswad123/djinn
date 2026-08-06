@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::promotion_candidate::{promotion_candidate_paths, validate_promotion_candidate_path};
+use crate::promotion::candidate::{promotion_candidate_paths, validate_promotion_candidate_path};
 use crate::{
     read_folder_session_manifest, resolve_existing_folder_session_dir,
     SessionValidateCandidatesArgs,

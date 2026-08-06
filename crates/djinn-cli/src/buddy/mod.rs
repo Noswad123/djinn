@@ -11,16 +11,16 @@ use serde::{Deserialize, Serialize};
 
 use djinn_memory::{AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId};
 
-use crate::session_reference::{
+use crate::session::reference::{
     resolve_existing_folder_session_reference, resolve_existing_folder_session_reference_in_root,
     resolve_session_dir_in_root,
 };
+use crate::util::shell::shell_quote_if_needed as shell_quote;
 use crate::{
     default_folder_session_root, ensure_trailing_newline, folder_session_manifest_meta,
     read_event_turn_pairs, read_folder_session_manifest, resolve_session_dir,
-    safe_folder_session_slug, session_manifest_workspace_path,
-    shell::shell_quote_if_needed as shell_quote, write_folder_session_events_jsonl, yes_no,
-    OutputFormat, SessionChatArgs,
+    safe_folder_session_slug, session_manifest_workspace_path, write_folder_session_events_jsonl,
+    yes_no, OutputFormat, SessionChatArgs,
 };
 
 pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
@@ -1797,7 +1797,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    use crate::session_reference::{
+    use crate::session::reference::{
         resolve_buddy_session_reference_in_root, resolve_existing_folder_session_reference_in_root,
     };
 
@@ -2300,7 +2300,6 @@ exit 2
 
     #[derive(Clone)]
     struct TestBuddyBackend {
-        command: String,
         runtime_command_override: Option<String>,
         create_id: String,
         creates: Arc<Mutex<Vec<(String, String)>>>,
@@ -2308,7 +2307,7 @@ exit 2
 
     impl BuddySessionBackend for TestBuddyBackend {
         fn command(&self) -> &str {
-            &self.command
+            "in-tree-buddy"
         }
 
         fn runtime_command_override(&self) -> Option<String> {
@@ -2371,7 +2370,6 @@ exit 2
         let manifest = read_folder_session_manifest(&session_dir).unwrap();
         let creates = Arc::new(Mutex::new(Vec::new()));
         let backend = TestBuddyBackend {
-            command: "in-tree-buddy".to_string(),
             runtime_command_override: None,
             create_id: "ses_auto_bound".to_string(),
             creates: creates.clone(),
@@ -2431,7 +2429,6 @@ exit 2
         };
         let creates = Arc::new(Mutex::new(Vec::new()));
         let backend = TestBuddyBackend {
-            command: "in-tree-buddy".to_string(),
             runtime_command_override: None,
             create_id: "ses_ask_bound".to_string(),
             creates: creates.clone(),
@@ -2499,7 +2496,6 @@ exit 2
         };
         let creates = Arc::new(Mutex::new(Vec::new()));
         let backend = TestBuddyBackend {
-            command: "in-tree-buddy".to_string(),
             runtime_command_override: None,
             create_id: "ses_should_not_create".to_string(),
             creates: creates.clone(),

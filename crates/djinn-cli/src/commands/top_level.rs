@@ -1,14 +1,14 @@
 use anyhow::Result;
 
-use crate::context_commands::{add_context, list_contexts, show_context, switch_context};
-use crate::memory_commands::{
+use crate::commands::context::{add_context, list_contexts, show_context, switch_context};
+use crate::commands::memory::{
     accept_memory, add_action, add_idea, add_memory, add_suggestion, clear_memories,
     complete_suggestions, ingest_memories, list_actions, list_ideas, list_memories,
     list_suggestions, reject_memories, reject_suggestions, review_memories, rm_memory,
     search_memories, search_suggestions, show_action, show_idea, show_memory, show_suggestion,
 };
-use crate::skills_commands::{add_skill, list_skills, rm_skill, show_skill};
-use crate::tools_commands::{
+use crate::commands::skills::{add_skill, list_skills, rm_skill, show_skill};
+use crate::commands::tools::{
     index_tools, list_tools, open_tool, scan_tools_command, search_tools, show_tool,
 };
 use crate::{

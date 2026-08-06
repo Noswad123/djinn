@@ -196,7 +196,7 @@ fn markdown_quote_block(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_projection::project_agent_session_dir;
+    use crate::session::projection::project_agent_session_dir;
     use djinn_memory::{
         AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId, AgentSessionMeta,
     };
