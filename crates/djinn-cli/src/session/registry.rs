@@ -157,7 +157,7 @@ pub(crate) fn rename_folder_session_in_root(
     } else if dry_run {
         "Dry run: no folder was renamed."
     } else {
-        "Session folder renamed. Buddy runtime binding and artifacts moved with the folder."
+        "Session folder renamed. UI runtime binding and artifacts moved with the folder."
     }
     .to_string();
     Ok(SessionRenameReport {

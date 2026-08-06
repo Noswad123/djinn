@@ -15,7 +15,7 @@ instead of assembling user-facing UI CLI commands.
 - Request: one JSON object on stdin.
 - Response: one JSON object on stdout.
 - Failure: non-zero exit status with a human-readable stderr message.
-- Compatibility: Djinn currently falls back to legacy Buddy-compatible commands for session
+- Compatibility: Djinn currently falls back to legacy UI-compatible commands for session
   listing, lookup, creation, and deletion if this bridge is unavailable or returns
   an unexpected response. Lookup fallback scans the strict JSON session list.
 
@@ -27,7 +27,7 @@ instead of assembling user-facing UI CLI commands.
 { "type": "list_sessions" }
 ```
 
-Lists root Buddy sessions for the current Buddy project/instance context.
+Lists root UI sessions for the current Djinn UI project/instance context.
 
 ### `get_session`
 
@@ -38,7 +38,7 @@ Lists root Buddy sessions for the current Buddy project/instance context.
 }
 ```
 
-Returns one Buddy session by id.
+Returns one UI session by id.
 
 ### `create_session`
 
@@ -50,7 +50,7 @@ Returns one Buddy session by id.
 }
 ```
 
-Creates a Buddy session using `repo_path` as the Buddy instance directory and the
+Creates a UI session using `repo_path` as the UI instance directory and the
 given title as session title.
 
 ### `delete_session`
@@ -62,7 +62,7 @@ given title as session title.
 }
 ```
 
-Deletes a Buddy session by id. Djinn uses this as a control-plane cleanup
+Deletes a UI session by id. Djinn uses this as a control-plane cleanup
 operation; it does not mutate Djinn folder-session artifacts by itself.
 
 ## Responses
@@ -94,7 +94,7 @@ operation; it does not mutate Djinn folder-session artifacts by itself.
 }
 ```
 
-`updated` and `created` are epoch milliseconds from Buddy. Djinn converts them to
+`updated` and `created` are epoch milliseconds from the UI. Djinn converts them to
 RFC3339 strings in its internal session-management model.
 
 ### `session`
@@ -129,14 +129,14 @@ RFC3339 strings in its internal session-management model.
 
 ## Rust boundary
 
-Djinn keeps two separate Buddy integration traits:
+Djinn keeps two UI integration traits:
 
-- `BuddyLauncher`: process-oriented launches such as plain Buddy, interactive
+- `UiLauncher`: process-oriented launches such as plain UI startup, interactive
   resume, and final-response capture.
-- `BuddySessionBackend`: control-plane session metadata operations such as
-  listing, looking up, creating, and deleting Buddy sessions.
+- `UiSessionBackend`: control-plane session metadata operations such as
+  listing, looking up, creating, and deleting UI sessions.
 
-`BuddyBridgeBackend` implements both. Its session-management implementation
+`UiBridgeBackend` implements both. Its session-management implementation
 prefers `djinn-ui djinn-bridge`; its launcher implementation still delegates to
 the normal Djinn UI process launch path.
 
@@ -145,8 +145,8 @@ the normal Djinn UI process launch path.
 - Add new bridge request/response variants explicitly; do not overload existing
   shapes.
 - Keep bridge JSON strict and typed on both sides.
-- Keep user-facing Buddy-compatible CLI behavior as fallback only where Djinn already
+- Keep user-facing UI-compatible CLI behavior as fallback only where Djinn already
   has a legacy strict JSON command path.
 - Do not make the bridge a general chat/transcript UI. Folder-session artifacts
-  remain canonical for Djinn-owned files, while Buddy owns its interactive runtime
+  remain canonical for Djinn-owned files, while the UI owns its interactive runtime
   state.

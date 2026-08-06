@@ -51,7 +51,7 @@ pub(crate) struct BuddyRuntimeState {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct BuddyCommandDoctorReport {
+pub(crate) struct UiCommandDoctorReport {
     pub(crate) command: String,
     pub(crate) source: String,
     pub(crate) exists: bool,
@@ -60,13 +60,13 @@ pub(crate) struct BuddyCommandDoctorReport {
     pub(crate) session_dir: Option<String>,
     pub(crate) runtime_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) bridge: Option<BuddyBridgeDoctorReport>,
-    pub(crate) candidates: Vec<BuddyCommandDoctorCandidate>,
+    pub(crate) bridge: Option<UiBridgeDoctorReport>,
+    pub(crate) candidates: Vec<UiCommandDoctorCandidate>,
     pub(crate) note: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct BuddyBridgeDoctorReport {
+pub(crate) struct UiBridgeDoctorReport {
     pub(crate) command: String,
     pub(crate) bridge_available: bool,
     pub(crate) bridge_list_sessions_ok: bool,
@@ -79,26 +79,26 @@ pub(crate) struct BuddyBridgeDoctorReport {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct BuddyCommandDoctorCandidate {
+pub(crate) struct UiCommandDoctorCandidate {
     pub(crate) source: String,
     pub(crate) value: Option<String>,
     pub(crate) status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BuddyCommandResolution {
+pub(crate) struct UiCommandResolution {
     pub(crate) command: String,
     pub(crate) source: String,
 }
 
-impl BuddyCommandResolution {
+impl UiCommandResolution {
     pub(crate) fn runtime_command_override(&self) -> Option<String> {
         (self.source != IN_TREE_BUDDY_COMMAND).then(|| self.command.clone())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BuddyBindingInput {
+pub(crate) struct UiBindingInput {
     pub(crate) session_dir: PathBuf,
     pub(crate) title: Option<String>,
     pub(crate) requested_workspace: Option<PathBuf>,
@@ -106,13 +106,13 @@ pub(crate) struct BuddyBindingInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BuddySessionBinding {
+pub(crate) struct UiSessionBinding {
     pub(crate) buddy_session: String,
     pub(crate) repo_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionBuddyRunArgs {
+pub(crate) struct SessionUiCaptureArgs {
     pub(crate) dir: PathBuf,
     pub(crate) ui_bin: Option<String>,
     pub(crate) buddy_session: Option<String>,
@@ -121,7 +121,7 @@ pub(crate) struct SessionBuddyRunArgs {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct SessionBuddyReport {
+pub(crate) struct SessionUiCaptureReport {
     pub(crate) session_dir: String,
     pub(crate) buddy_command: String,
     pub(crate) buddy_session: Option<String>,
@@ -139,19 +139,19 @@ pub(crate) struct SessionBuddyReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TopLevelBuddySessionBehavior {
+pub(crate) struct TopLevelUiSessionBehavior {
     pub(crate) buddy_session: Option<String>,
     pub(crate) cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BuddyInteractiveSummarySync {
+pub(crate) struct UiInteractiveSummarySync {
     pub(crate) summary_path: PathBuf,
     pub(crate) response_chars: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum BuddyBridgeRequest {
+enum UiBridgeRequest {
     LaunchPlain,
     LaunchInteractive {
         buddy_session: Option<String>,
@@ -180,16 +180,16 @@ enum BuddyBridgeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum BuddyBridgeResponse {
+enum UiBridgeResponse {
     Unit,
     FinalResponse(String),
-    Sessions(Vec<BuddySessionListRecord>),
-    Session(BuddySessionListRecord),
-    CreatedSession(BuddySessionCreateRecord),
+    Sessions(Vec<UiSessionListRecord>),
+    Session(UiSessionListRecord),
+    CreatedSession(UiSessionCreateRecord),
     DeletedSession(String),
 }
 
-pub(crate) trait BuddyLauncher {
+pub(crate) trait UiLauncher {
     fn launch_plain(&self) -> Result<()>;
     fn launch_interactive_session(
         &self,
@@ -206,29 +206,29 @@ pub(crate) trait BuddyLauncher {
     ) -> Result<String>;
 }
 
-pub(crate) trait BuddySessionBackend {
+pub(crate) trait UiSessionBackend {
     #[allow(dead_code)]
     fn command(&self) -> &str;
     fn runtime_command_override(&self) -> Option<String>;
-    fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>>;
+    fn list_sessions(&self) -> Result<Vec<UiSessionListRecord>>;
     #[allow(dead_code)]
-    fn get_session(&self, session_id: &str) -> Result<BuddySessionListRecord>;
-    fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord>;
+    fn get_session(&self, session_id: &str) -> Result<UiSessionListRecord>;
+    fn create_session(&self, title: &str, repo_path: &str) -> Result<UiSessionCreateRecord>;
     #[allow(dead_code)]
     fn delete_session(&self, session_id: &str) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BuddyCliBackend {
-    resolution: BuddyCommandResolution,
+pub(crate) struct UiCliBackend {
+    resolution: UiCommandResolution,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BuddyBridgeBackend {
-    cli: BuddyCliBackend,
+pub(crate) struct UiBridgeBackend {
+    cli: UiCliBackend,
 }
 
-impl BuddyCliBackend {
+impl UiCliBackend {
     pub(crate) fn resolved(previous_runtime: Option<&BuddyRuntimeState>) -> Result<Self> {
         Ok(Self {
             resolution: resolve_buddy_command_resolution(previous_runtime)?,
@@ -237,7 +237,7 @@ impl BuddyCliBackend {
 
     pub(crate) fn explicit(command: String) -> Self {
         Self {
-            resolution: BuddyCommandResolution {
+            resolution: UiCommandResolution {
                 command,
                 source: EXPLICIT_BUDDY_COMMAND_SOURCE.to_string(),
             },
@@ -252,19 +252,19 @@ impl BuddyCliBackend {
         self.resolution.runtime_command_override()
     }
 
-    fn execute_bridge_request(&self, request: BuddyBridgeRequest) -> Result<BuddyBridgeResponse> {
+    fn execute_bridge_request(&self, request: UiBridgeRequest) -> Result<UiBridgeResponse> {
         match request {
-            BuddyBridgeRequest::LaunchPlain => {
+            UiBridgeRequest::LaunchPlain => {
                 let mut command = buddy_process_command(self.command())?;
                 let status = command
                     .status()
                     .with_context(|| format!("launching Djinn UI command `{}`", self.command()))?;
                 if !status.success() {
-                    bail!("Buddy exited with status {status}");
+                    bail!("Djinn UI exited with status {status}");
                 }
-                Ok(BuddyBridgeResponse::Unit)
+                Ok(UiBridgeResponse::Unit)
             }
-            BuddyBridgeRequest::LaunchInteractive {
+            UiBridgeRequest::LaunchInteractive {
                 buddy_session,
                 buddy_args,
                 cwd,
@@ -288,11 +288,11 @@ impl BuddyCliBackend {
                     .status()
                     .with_context(|| format!("launching Djinn UI command `{}`", self.command()))?;
                 if !status.success() {
-                    bail!("Buddy exited with status {status}");
+                    bail!("Djinn UI exited with status {status}");
                 }
-                Ok(BuddyBridgeResponse::Unit)
+                Ok(UiBridgeResponse::Unit)
             }
-            BuddyBridgeRequest::FinalResponse {
+            UiBridgeRequest::FinalResponse {
                 buddy_session,
                 buddy_args,
                 prompt,
@@ -315,15 +315,15 @@ impl BuddyCliBackend {
                 if let Some(stdin) = child.stdin.as_mut() {
                     stdin
                         .write_all(prompt.as_bytes())
-                        .context("writing request.md prompt to Buddy stdin")?;
+                        .context("writing request.md prompt to Djinn UI stdin")?;
                 }
                 let output = child
                     .wait_with_output()
-                    .context("waiting for Buddy to finish")?;
+                    .context("waiting for Djinn UI to finish")?;
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                     bail!(
-                        "Buddy exited with status {}{}",
+                        "Djinn UI exited with status {}{}",
                         output.status,
                         if stderr.is_empty() {
                             String::new()
@@ -332,18 +332,18 @@ impl BuddyCliBackend {
                         }
                     );
                 }
-                Ok(BuddyBridgeResponse::FinalResponse(
+                Ok(UiBridgeResponse::FinalResponse(
                     String::from_utf8_lossy(&output.stdout).to_string(),
                 ))
             }
-            BuddyBridgeRequest::ListSessions => {
-                let list: Vec<BuddySessionListJsonRecord> = run_buddy_json_command(
+            UiBridgeRequest::ListSessions => {
+                let list: Vec<UiSessionListJsonRecord> = run_buddy_json_command(
                     self.command(),
                     &["session", "list", "--format", "json"],
                 )?;
-                Ok(BuddyBridgeResponse::Sessions(
+                Ok(UiBridgeResponse::Sessions(
                     list.into_iter()
-                        .map(|session| BuddySessionListRecord {
+                        .map(|session| UiSessionListRecord {
                             id: session.id,
                             title: session.title,
                             repo_path: session.directory,
@@ -354,8 +354,8 @@ impl BuddyCliBackend {
                         .collect(),
                 ))
             }
-            BuddyBridgeRequest::CreateSession { title, repo_path } => {
-                Ok(BuddyBridgeResponse::CreatedSession(run_buddy_json_command(
+            UiBridgeRequest::CreateSession { title, repo_path } => {
+                Ok(UiBridgeResponse::CreatedSession(run_buddy_json_command(
                     self.command(),
                     &[
                         "session", "create", "--format", "json", "--title", &title, "--repo",
@@ -363,32 +363,32 @@ impl BuddyCliBackend {
                     ],
                 )?))
             }
-            BuddyBridgeRequest::GetSession { session_id } => {
+            UiBridgeRequest::GetSession { session_id } => {
                 let session = self
                     .list_sessions()?
                     .into_iter()
                     .find(|session| session.id == session_id)
-                    .ok_or_else(|| anyhow::anyhow!("Buddy session not found: {session_id}"))?;
-                Ok(BuddyBridgeResponse::Session(session))
+                    .ok_or_else(|| anyhow::anyhow!("UI session not found: {session_id}"))?;
+                Ok(UiBridgeResponse::Session(session))
             }
-            BuddyBridgeRequest::DeleteSession { session_id } => {
+            UiBridgeRequest::DeleteSession { session_id } => {
                 run_buddy_status_command(self.command(), &["session", "delete", &session_id])?;
-                Ok(BuddyBridgeResponse::DeletedSession(session_id))
+                Ok(UiBridgeResponse::DeletedSession(session_id))
             }
         }
     }
 }
 
-impl BuddyBridgeBackend {
+impl UiBridgeBackend {
     pub(crate) fn resolved(previous_runtime: Option<&BuddyRuntimeState>) -> Result<Self> {
         Ok(Self {
-            cli: BuddyCliBackend::resolved(previous_runtime)?,
+            cli: UiCliBackend::resolved(previous_runtime)?,
         })
     }
 
     pub(crate) fn explicit(command: String) -> Self {
         Self {
-            cli: BuddyCliBackend::explicit(command),
+            cli: UiCliBackend::explicit(command),
         }
     }
 
@@ -400,10 +400,7 @@ impl BuddyBridgeBackend {
         self.cli.runtime_command_override()
     }
 
-    fn execute_wire_request(
-        &self,
-        request: BuddyBridgeWireRequest,
-    ) -> Result<BuddyBridgeWireResponse> {
+    fn execute_wire_request(&self, request: UiBridgeWireRequest) -> Result<UiBridgeWireResponse> {
         let mut command = buddy_process_command(self.command())?;
         command.arg("djinn-bridge");
         command.stdin(Stdio::piped());
@@ -419,15 +416,15 @@ impl BuddyBridgeBackend {
         if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(serde_json::to_string(&request)?.as_bytes())
-                .context("writing Djinn bridge request to Buddy stdin")?;
+                .context("writing Djinn bridge request to Djinn UI stdin")?;
         }
         let output = child
             .wait_with_output()
-            .context("waiting for Buddy bridge to finish")?;
+            .context("waiting for Djinn UI bridge to finish")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             bail!(
-                "Buddy bridge command `{}` exited with status {}{}",
+                "Djinn UI bridge command `{}` exited with status {}{}",
                 self.bridge_command_hint(),
                 output.status,
                 if stderr.is_empty() {
@@ -439,7 +436,7 @@ impl BuddyBridgeBackend {
         }
         serde_json::from_slice(&output.stdout).with_context(|| {
             format!(
-                "parsing strict Buddy bridge JSON from `{}`",
+                "parsing strict Djinn UI bridge JSON from `{}`",
                 self.bridge_command_hint()
             )
         })
@@ -450,11 +447,11 @@ impl BuddyBridgeBackend {
     }
 }
 
-impl BuddyLauncher for BuddyCliBackend {
+impl UiLauncher for UiCliBackend {
     fn launch_plain(&self) -> Result<()> {
-        match self.execute_bridge_request(BuddyBridgeRequest::LaunchPlain)? {
-            BuddyBridgeResponse::Unit => Ok(()),
-            other => bail!("unexpected Buddy bridge response: {other:?}"),
+        match self.execute_bridge_request(UiBridgeRequest::LaunchPlain)? {
+            UiBridgeResponse::Unit => Ok(()),
+            other => bail!("unexpected Djinn UI bridge response: {other:?}"),
         }
     }
 
@@ -465,14 +462,14 @@ impl BuddyLauncher for BuddyCliBackend {
         cwd: Option<&Path>,
         session_dir: &Path,
     ) -> Result<()> {
-        match self.execute_bridge_request(BuddyBridgeRequest::LaunchInteractive {
+        match self.execute_bridge_request(UiBridgeRequest::LaunchInteractive {
             buddy_session: buddy_session.map(str::to_string),
             buddy_args: buddy_args.to_vec(),
             cwd: cwd.map(Path::to_path_buf),
             session_dir: session_dir.to_path_buf(),
         })? {
-            BuddyBridgeResponse::Unit => Ok(()),
-            other => bail!("unexpected Buddy bridge response: {other:?}"),
+            UiBridgeResponse::Unit => Ok(()),
+            other => bail!("unexpected Djinn UI bridge response: {other:?}"),
         }
     }
 
@@ -482,18 +479,18 @@ impl BuddyLauncher for BuddyCliBackend {
         buddy_args: &[String],
         prompt: &str,
     ) -> Result<String> {
-        match self.execute_bridge_request(BuddyBridgeRequest::FinalResponse {
+        match self.execute_bridge_request(UiBridgeRequest::FinalResponse {
             buddy_session: buddy_session.map(str::to_string),
             buddy_args: buddy_args.to_vec(),
             prompt: prompt.to_string(),
         })? {
-            BuddyBridgeResponse::FinalResponse(response) => Ok(response),
-            other => bail!("unexpected Buddy bridge response: {other:?}"),
+            UiBridgeResponse::FinalResponse(response) => Ok(response),
+            other => bail!("unexpected Djinn UI bridge response: {other:?}"),
         }
     }
 }
 
-impl BuddySessionBackend for BuddyCliBackend {
+impl UiSessionBackend for UiCliBackend {
     fn command(&self) -> &str {
         self.command()
     }
@@ -502,43 +499,43 @@ impl BuddySessionBackend for BuddyCliBackend {
         self.runtime_command_override()
     }
 
-    fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
-        match self.execute_bridge_request(BuddyBridgeRequest::ListSessions)? {
-            BuddyBridgeResponse::Sessions(sessions) => Ok(sessions),
-            other => bail!("unexpected Buddy bridge response: {other:?}"),
+    fn list_sessions(&self) -> Result<Vec<UiSessionListRecord>> {
+        match self.execute_bridge_request(UiBridgeRequest::ListSessions)? {
+            UiBridgeResponse::Sessions(sessions) => Ok(sessions),
+            other => bail!("unexpected Djinn UI bridge response: {other:?}"),
         }
     }
 
-    fn get_session(&self, session_id: &str) -> Result<BuddySessionListRecord> {
-        match self.execute_bridge_request(BuddyBridgeRequest::GetSession {
+    fn get_session(&self, session_id: &str) -> Result<UiSessionListRecord> {
+        match self.execute_bridge_request(UiBridgeRequest::GetSession {
             session_id: session_id.to_string(),
         })? {
-            BuddyBridgeResponse::Session(session) => Ok(session),
-            other => bail!("unexpected Buddy bridge response: {other:?}"),
+            UiBridgeResponse::Session(session) => Ok(session),
+            other => bail!("unexpected Djinn UI bridge response: {other:?}"),
         }
     }
 
-    fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord> {
-        match self.execute_bridge_request(BuddyBridgeRequest::CreateSession {
+    fn create_session(&self, title: &str, repo_path: &str) -> Result<UiSessionCreateRecord> {
+        match self.execute_bridge_request(UiBridgeRequest::CreateSession {
             title: title.to_string(),
             repo_path: repo_path.to_string(),
         })? {
-            BuddyBridgeResponse::CreatedSession(session) => Ok(session),
-            other => bail!("unexpected Buddy bridge response: {other:?}"),
+            UiBridgeResponse::CreatedSession(session) => Ok(session),
+            other => bail!("unexpected Djinn UI bridge response: {other:?}"),
         }
     }
 
     fn delete_session(&self, session_id: &str) -> Result<()> {
-        match self.execute_bridge_request(BuddyBridgeRequest::DeleteSession {
+        match self.execute_bridge_request(UiBridgeRequest::DeleteSession {
             session_id: session_id.to_string(),
         })? {
-            BuddyBridgeResponse::DeletedSession(_) => Ok(()),
-            other => bail!("unexpected Buddy bridge response: {other:?}"),
+            UiBridgeResponse::DeletedSession(_) => Ok(()),
+            other => bail!("unexpected Djinn UI bridge response: {other:?}"),
         }
     }
 }
 
-impl BuddyLauncher for BuddyBridgeBackend {
+impl UiLauncher for UiBridgeBackend {
     fn launch_plain(&self) -> Result<()> {
         self.cli.launch_plain()
     }
@@ -564,7 +561,7 @@ impl BuddyLauncher for BuddyBridgeBackend {
     }
 }
 
-impl BuddySessionBackend for BuddyBridgeBackend {
+impl UiSessionBackend for UiBridgeBackend {
     fn command(&self) -> &str {
         self.command()
     }
@@ -573,73 +570,73 @@ impl BuddySessionBackend for BuddyBridgeBackend {
         self.runtime_command_override()
     }
 
-    fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
-        match self.execute_wire_request(BuddyBridgeWireRequest::ListSessions) {
-            Ok(BuddyBridgeWireResponse::Sessions { sessions }) => Ok(sessions
+    fn list_sessions(&self) -> Result<Vec<UiSessionListRecord>> {
+        match self.execute_wire_request(UiBridgeWireRequest::ListSessions) {
+            Ok(UiBridgeWireResponse::Sessions { sessions }) => Ok(sessions
                 .into_iter()
-                .map(buddy_bridge_session_record)
+                .map(ui_bridge_session_record)
                 .collect()),
             Ok(other) => self.cli.list_sessions().with_context(|| {
                 format!(
-                    "Buddy bridge list_sessions returned unexpected response ({other:?}); CLI fallback also failed"
+                    "Djinn UI bridge list_sessions returned unexpected response ({other:?}); CLI fallback also failed"
                 )
             }),
             Err(bridge_error) => self.cli.list_sessions().with_context(|| {
                 format!(
-                    "Buddy bridge list_sessions failed ({bridge_error}); CLI fallback also failed"
+                    "Djinn UI bridge list_sessions failed ({bridge_error}); CLI fallback also failed"
                 )
             }),
         }
     }
 
-    fn get_session(&self, session_id: &str) -> Result<BuddySessionListRecord> {
-        match self.execute_wire_request(BuddyBridgeWireRequest::GetSession {
+    fn get_session(&self, session_id: &str) -> Result<UiSessionListRecord> {
+        match self.execute_wire_request(UiBridgeWireRequest::GetSession {
             session_id: session_id.to_string(),
         }) {
-            Ok(BuddyBridgeWireResponse::Session { session }) => Ok(buddy_bridge_session_record(session)),
+            Ok(UiBridgeWireResponse::Session { session }) => Ok(ui_bridge_session_record(session)),
             Ok(other) => self.cli.get_session(session_id).with_context(|| {
                 format!(
-                    "Buddy bridge get_session returned unexpected response ({other:?}); CLI fallback also failed"
+                    "Djinn UI bridge get_session returned unexpected response ({other:?}); CLI fallback also failed"
                 )
             }),
             Err(bridge_error) => self.cli.get_session(session_id).with_context(|| {
-                format!("Buddy bridge get_session failed ({bridge_error}); CLI fallback also failed")
+                format!("Djinn UI bridge get_session failed ({bridge_error}); CLI fallback also failed")
             }),
         }
     }
 
-    fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord> {
-        match self.execute_wire_request(BuddyBridgeWireRequest::CreateSession {
+    fn create_session(&self, title: &str, repo_path: &str) -> Result<UiSessionCreateRecord> {
+        match self.execute_wire_request(UiBridgeWireRequest::CreateSession {
             title: title.to_string(),
             repo_path: repo_path.to_string(),
         }) {
-            Ok(BuddyBridgeWireResponse::CreatedSession { session }) => Ok(session),
+            Ok(UiBridgeWireResponse::CreatedSession { session }) => Ok(session),
             Ok(other) => self.cli.create_session(title, repo_path).with_context(|| {
                 format!(
-                    "Buddy bridge create_session returned unexpected response ({other:?}); CLI fallback also failed"
+                    "Djinn UI bridge create_session returned unexpected response ({other:?}); CLI fallback also failed"
                 )
             }),
             Err(bridge_error) => self.cli.create_session(title, repo_path).with_context(|| {
                 format!(
-                    "Buddy bridge create_session failed ({bridge_error}); CLI fallback also failed"
+                    "Djinn UI bridge create_session failed ({bridge_error}); CLI fallback also failed"
                 )
             }),
         }
     }
 
     fn delete_session(&self, session_id: &str) -> Result<()> {
-        match self.execute_wire_request(BuddyBridgeWireRequest::DeleteSession {
+        match self.execute_wire_request(UiBridgeWireRequest::DeleteSession {
             session_id: session_id.to_string(),
         }) {
-            Ok(BuddyBridgeWireResponse::DeletedSession { .. }) => Ok(()),
+            Ok(UiBridgeWireResponse::DeletedSession { .. }) => Ok(()),
             Ok(other) => self.cli.delete_session(session_id).with_context(|| {
                 format!(
-                    "Buddy bridge delete_session returned unexpected response ({other:?}); CLI fallback also failed"
+                    "Djinn UI bridge delete_session returned unexpected response ({other:?}); CLI fallback also failed"
                 )
             }),
             Err(bridge_error) => self.cli.delete_session(session_id).with_context(|| {
                 format!(
-                    "Buddy bridge delete_session failed ({bridge_error}); CLI fallback also failed"
+                    "Djinn UI bridge delete_session failed ({bridge_error}); CLI fallback also failed"
                 )
             }),
         }
@@ -648,7 +645,7 @@ impl BuddySessionBackend for BuddyBridgeBackend {
 
 pub(crate) fn resolve_buddy_command_resolution(
     previous_runtime: Option<&BuddyRuntimeState>,
-) -> Result<BuddyCommandResolution> {
+) -> Result<UiCommandResolution> {
     let env_ui_command = env::var(DJINN_UI_BIN_ENV).ok();
     let env_legacy_command = env::var(DJINN_BUDDY_BIN_ENV).ok();
     let env_command = env_ui_command.clone().or(env_legacy_command.clone());
@@ -660,7 +657,7 @@ pub(crate) fn resolve_buddy_command_resolution(
         runtime_command.clone(),
         Some(&workspace_root),
     )
-    .map(|command| BuddyCommandResolution {
+    .map(|command| UiCommandResolution {
         source: buddy_command_source(
             Some(command.as_str()),
             env_ui_command.as_deref(),
@@ -680,7 +677,7 @@ pub(crate) fn buddy_command_doctor_report_from(
     workspace_root: Option<&Path>,
     session_dir: Option<&Path>,
     runtime_path: Option<&Path>,
-) -> BuddyCommandDoctorReport {
+) -> UiCommandDoctorReport {
     let in_tree = workspace_root.and_then(in_tree_buddy_command);
     let env_command = env_ui_command.clone().or(env_legacy_command.clone());
     let command = resolve_buddy_command_from(env_command, runtime_command.clone(), workspace_root);
@@ -713,7 +710,7 @@ pub(crate) fn buddy_command_doctor_report_from(
             runtime_command.as_deref(),
             source == "runtime/buddy.json.command",
         ),
-        BuddyCommandDoctorCandidate {
+        UiCommandDoctorCandidate {
             source: IN_TREE_BUDDY_COMMAND.to_string(),
             value: in_tree.clone(),
             status: if source == IN_TREE_BUDDY_COMMAND {
@@ -728,14 +725,14 @@ pub(crate) fn buddy_command_doctor_report_from(
     let note = if source == "runtime/buddy.json.command" {
         "Session runtime command overrides the in-tree Djinn UI launcher.".to_string()
     } else if source == IN_TREE_BUDDY_COMMAND {
-        "Djinn will use its in-tree Djinn UI launcher; the launcher itself does not fall back to external Buddy.".to_string()
+        "Djinn will use its in-tree Djinn UI launcher; the launcher itself does not fall back to an external UI.".to_string()
     } else if source == DJINN_UI_BIN_ENV || source == DJINN_BUDDY_BIN_ENV {
         "Environment override is active.".to_string()
     } else {
         buddy_command_unavailable_message()
     };
 
-    BuddyCommandDoctorReport {
+    UiCommandDoctorReport {
         command,
         source,
         exists,
@@ -752,14 +749,14 @@ pub(crate) fn buddy_command_doctor_report_from(
 pub(crate) fn probe_buddy_bridge_doctor(
     command: &str,
     command_available: bool,
-) -> BuddyBridgeDoctorReport {
+) -> UiBridgeDoctorReport {
     let bridge_command = if command.trim().is_empty() || command == "<unavailable>" {
         "<unavailable> djinn-bridge".to_string()
     } else {
         format!("{} djinn-bridge", shell_quote(command))
     };
     if !command_available || command == "<unavailable>" {
-        return BuddyBridgeDoctorReport {
+        return UiBridgeDoctorReport {
             command: bridge_command,
             bridge_available: false,
             bridge_list_sessions_ok: false,
@@ -770,26 +767,26 @@ pub(crate) fn probe_buddy_bridge_doctor(
         };
     }
 
-    let bridge_backend = BuddyBridgeBackend::explicit(command.to_string());
+    let bridge_backend = UiBridgeBackend::explicit(command.to_string());
     let (bridge_available, bridge_list_sessions_ok, bridge_error) =
-        match bridge_backend.execute_wire_request(BuddyBridgeWireRequest::ListSessions) {
-            Ok(BuddyBridgeWireResponse::Sessions { .. }) => (true, true, None),
+        match bridge_backend.execute_wire_request(UiBridgeWireRequest::ListSessions) {
+            Ok(UiBridgeWireResponse::Sessions { .. }) => (true, true, None),
             Ok(other) => (
                 false,
                 false,
-                Some(format!("unexpected Buddy bridge response: {other:?}")),
+                Some(format!("unexpected Djinn UI bridge response: {other:?}")),
             ),
             Err(error) => (false, false, Some(error.to_string())),
         };
 
-    let cli_backend = BuddyCliBackend::explicit(command.to_string());
+    let cli_backend = UiCliBackend::explicit(command.to_string());
     let (fallback_available, fallback_list_sessions_ok, fallback_error) =
         match cli_backend.list_sessions() {
             Ok(_) => (true, true, None),
             Err(error) => (false, false, Some(error.to_string())),
         };
 
-    BuddyBridgeDoctorReport {
+    UiBridgeDoctorReport {
         command: bridge_command,
         bridge_available,
         bridge_list_sessions_ok,
@@ -847,9 +844,9 @@ fn buddy_command_candidate(
     source: &str,
     value: Option<&str>,
     selected: bool,
-) -> BuddyCommandDoctorCandidate {
+) -> UiCommandDoctorCandidate {
     let value = value.map(str::trim).filter(|value| !value.is_empty());
-    BuddyCommandDoctorCandidate {
+    UiCommandDoctorCandidate {
         source: source.to_string(),
         value: value.map(str::to_string),
         status: if selected {
@@ -912,13 +909,13 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 pub(crate) fn format_buddy_command_doctor_report(
-    report: &BuddyCommandDoctorReport,
+    report: &UiCommandDoctorReport,
     format: OutputFormat,
 ) -> Result<String> {
     if format == OutputFormat::Json {
         return Ok(serde_json::to_string_pretty(report)? + "\n");
     }
-    let mut lines = vec!["Buddy doctor".to_string()];
+    let mut lines = vec!["Djinn UI doctor".to_string()];
     if let Some(session_dir) = &report.session_dir {
         lines.push(format!("  session: {session_dir}"));
     }
@@ -1018,7 +1015,7 @@ pub(crate) fn write_buddy_runtime_state(path: &Path, state: &BuddyRuntimeState) 
 }
 
 pub(crate) fn run_plain_buddy_mode() -> Result<()> {
-    BuddyBridgeBackend::resolved(None)?.launch_plain()
+    UiBridgeBackend::resolved(None)?.launch_plain()
 }
 
 pub(crate) fn run_top_level_buddy_mode(session: Option<PathBuf>) -> Result<()> {
@@ -1039,7 +1036,7 @@ pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
 
     if args.capture_request {
         let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
-        let report = run_session_buddy(&SessionBuddyRunArgs {
+        let report = run_session_ui_capture(&SessionUiCaptureArgs {
             dir: session_ref.session_dir,
             ui_bin: args.ui_bin.clone(),
             buddy_session: session_ref.buddy_session,
@@ -1049,7 +1046,7 @@ pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
         if args.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
-            print!("{}", format_session_buddy_report(&report));
+            print!("{}", format_session_ui_capture_report(&report));
         }
         return Ok(());
     }
@@ -1094,9 +1091,9 @@ pub(crate) fn run_top_level_folder_buddy_session_with_options(
         .clone()
         .filter(|value| !value.trim().is_empty())
     {
-        BuddyBridgeBackend::explicit(ui_bin)
+        UiBridgeBackend::explicit(ui_bin)
     } else {
-        BuddyBridgeBackend::resolved(previous_runtime.as_ref())?
+        UiBridgeBackend::resolved(previous_runtime.as_ref())?
     };
     let behavior = top_level_buddy_session_behavior_with_backend(
         session_dir,
@@ -1111,10 +1108,10 @@ pub(crate) fn run_top_level_folder_buddy_session_with_options(
 pub(crate) fn top_level_buddy_session_behavior(
     session_dir: &Path,
     explicit_buddy_session: Option<String>,
-) -> Result<TopLevelBuddySessionBehavior> {
+) -> Result<TopLevelUiSessionBehavior> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = BuddyBridgeBackend::resolved(previous_runtime.as_ref())?;
+    let buddy_backend = UiBridgeBackend::resolved(previous_runtime.as_ref())?;
     top_level_buddy_session_behavior_with_backend(
         session_dir,
         explicit_buddy_session,
@@ -1126,9 +1123,9 @@ pub(crate) fn top_level_buddy_session_behavior(
 fn top_level_buddy_session_behavior_with_backend(
     session_dir: &Path,
     explicit_buddy_session: Option<String>,
-    buddy_backend: &dyn BuddySessionBackend,
+    buddy_backend: &dyn UiSessionBackend,
     previous_runtime: Option<BuddyRuntimeState>,
-) -> Result<TopLevelBuddySessionBehavior> {
+) -> Result<TopLevelUiSessionBehavior> {
     let buddy_session = explicit_buddy_session.or_else(|| {
         previous_runtime
             .as_ref()
@@ -1139,7 +1136,7 @@ fn top_level_buddy_session_behavior_with_backend(
     if buddy_session.is_none() && session_dir.is_dir() {
         let binding = ensure_buddy_session_binding(
             buddy_backend,
-            BuddyBindingInput {
+            UiBindingInput {
                 session_dir: session_dir.to_path_buf(),
                 title: manifest
                     .as_ref()
@@ -1148,7 +1145,7 @@ fn top_level_buddy_session_behavior_with_backend(
                 previous_runtime: previous_runtime.clone(),
             },
         )?;
-        return Ok(TopLevelBuddySessionBehavior {
+        return Ok(TopLevelUiSessionBehavior {
             buddy_session: Some(binding.buddy_session),
             cwd: Some(binding.repo_path),
         });
@@ -1164,7 +1161,7 @@ fn top_level_buddy_session_behavior_with_backend(
                 id,
                 Some(&path),
             )?;
-            return Ok(TopLevelBuddySessionBehavior {
+            return Ok(TopLevelUiSessionBehavior {
                 buddy_session: Some(promoted),
                 cwd: Some(session_dir.to_path_buf()),
             });
@@ -1173,17 +1170,17 @@ fn top_level_buddy_session_behavior_with_backend(
         (None, Some(path)) if path.is_dir() => Some(path),
         _ => None,
     };
-    Ok(TopLevelBuddySessionBehavior { buddy_session, cwd })
+    Ok(TopLevelUiSessionBehavior { buddy_session, cwd })
 }
 
 pub(crate) fn run_interactive_session_buddy_with_backend<B>(
     session_dir: &Path,
-    behavior: TopLevelBuddySessionBehavior,
+    behavior: TopLevelUiSessionBehavior,
     buddy_backend: &B,
     ui_args: &[String],
 ) -> Result<()>
 where
-    B: BuddyLauncher + BuddySessionBackend,
+    B: UiLauncher + UiSessionBackend,
 {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
@@ -1244,9 +1241,9 @@ where
 
 pub(crate) fn format_interactive_buddy_sync_status(
     session_dir: &Path,
-    summary_sync: Option<&BuddyInteractiveSummarySync>,
+    summary_sync: Option<&UiInteractiveSummarySync>,
 ) -> String {
-    let mut lines = vec!["Buddy session completed.".to_string()];
+    let mut lines = vec!["Djinn UI session completed.".to_string()];
     match summary_sync {
         Some(sync) => lines.push(format!(
             "Synced {} from latest events.jsonl assistant message ({} chars).",
@@ -1263,7 +1260,7 @@ pub(crate) fn format_interactive_buddy_sync_status(
 
 pub(crate) fn refresh_folder_summary_from_latest_event(
     session_dir: &Path,
-) -> Result<Option<BuddyInteractiveSummarySync>> {
+) -> Result<Option<UiInteractiveSummarySync>> {
     let events_path = session_dir.join("events.jsonl");
     if !events_path.is_file() {
         return Ok(None);
@@ -1285,7 +1282,7 @@ pub(crate) fn refresh_folder_summary_from_latest_event(
     let summary_path = session_dir.join("summary.md");
     fs::write(&summary_path, ensure_trailing_newline(&latest.response))
         .with_context(|| format!("writing {}", summary_path.display()))?;
-    Ok(Some(BuddyInteractiveSummarySync {
+    Ok(Some(UiInteractiveSummarySync {
         summary_path,
         response_chars: latest.response.chars().count(),
     }))
@@ -1323,7 +1320,9 @@ fn clear_folder_session_workspace(session_dir: &Path) -> Result<()> {
         .with_context(|| format!("writing {}", manifest_path.display()))
 }
 
-pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBuddyReport> {
+pub(crate) fn run_session_ui_capture(
+    args: &SessionUiCaptureArgs,
+) -> Result<SessionUiCaptureReport> {
     let session_dir = resolve_session_dir(&args.dir)?;
     let request_path = session_dir.join("request.md");
     let summary_path = session_dir.join("summary.md");
@@ -1331,15 +1330,15 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
     let prompt = fs::read_to_string(&request_path)
         .with_context(|| format!("reading {}", request_path.display()))?;
     if prompt.trim().is_empty() {
-        bail!("request.md is empty; write a request before opening Buddy");
+        bail!("request.md is empty; write a request before opening the Djinn UI");
     }
 
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
     let buddy_backend =
         if let Some(ui_bin) = args.ui_bin.clone().filter(|value| !value.trim().is_empty()) {
-            BuddyBridgeBackend::explicit(ui_bin)
+            UiBridgeBackend::explicit(ui_bin)
         } else {
-            BuddyBridgeBackend::resolved(previous_runtime.as_ref())?
+            UiBridgeBackend::resolved(previous_runtime.as_ref())?
         };
     let buddy_session = args.buddy_session.clone().or_else(|| {
         previous_runtime
@@ -1353,7 +1352,7 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
     );
 
     if args.dry_run {
-        return Ok(SessionBuddyReport {
+        return Ok(SessionUiCaptureReport {
             session_dir: session_dir.display().to_string(),
             buddy_command,
             buddy_session,
@@ -1367,7 +1366,7 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
             wrote_summary: false,
             appended_events: false,
             cleared_request: false,
-            note: "Dry run only; Buddy was not launched and no session files were changed."
+            note: "Dry run only; the Djinn UI was not launched and no session files were changed."
                 .to_string(),
         });
     }
@@ -1376,7 +1375,7 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
         buddy_backend.final_response(buddy_session.as_deref(), &args.ui_args, &prompt)?;
     let response = response.trim().to_string();
     if response.is_empty() {
-        bail!("Buddy returned an empty final response");
+        bail!("Djinn UI returned an empty final response");
     }
 
     fs::write(&summary_path, ensure_trailing_newline(&response))
@@ -1425,7 +1424,7 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
         },
     )?;
 
-    Ok(SessionBuddyReport {
+    Ok(SessionUiCaptureReport {
         session_dir: session_dir.display().to_string(),
         buddy_command,
         buddy_session,
@@ -1439,17 +1438,17 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
         wrote_summary: true,
         appended_events: true,
         cleared_request: true,
-        note: "Buddy final response captured into summary.md and events.jsonl; request.md was cleared."
+        note: "Djinn UI final response captured into summary.md and events.jsonl; request.md was cleared."
             .to_string(),
     })
 }
 
-pub(crate) fn format_session_buddy_report(report: &SessionBuddyReport) -> String {
+pub(crate) fn format_session_ui_capture_report(report: &SessionUiCaptureReport) -> String {
     let mut lines = Vec::new();
-    lines.push(format!("Buddy capture: {}", report.session_dir));
+    lines.push(format!("Djinn UI capture: {}", report.session_dir));
     lines.push(format!("  command: {}", report.buddy_command));
     if let Some(session) = &report.buddy_session {
-        lines.push(format!("  buddy session: {session}"));
+        lines.push(format!("  ui session: {session}"));
     }
     lines.push(format!("  dry run: {}", yes_no(report.dry_run)));
     lines.push(format!("  prompt chars: {}", report.prompt_chars));
@@ -1496,16 +1495,16 @@ fn fallback_buddy_session_id(session_dir: &Path) -> AgentSessionId {
 }
 
 pub(crate) fn ensure_buddy_session_binding(
-    buddy_backend: &dyn BuddySessionBackend,
-    input: BuddyBindingInput,
-) -> Result<BuddySessionBinding> {
+    buddy_backend: &dyn UiSessionBackend,
+    input: UiBindingInput,
+) -> Result<UiSessionBinding> {
     let previous_runtime = input.previous_runtime.as_ref();
     if let Some(existing) = previous_runtime
         .and_then(|state| state.buddy_session.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        return Ok(BuddySessionBinding {
+        return Ok(UiSessionBinding {
             buddy_session: existing.to_string(),
             repo_path: buddy_binding_repo_path(
                 &input.session_dir,
@@ -1522,7 +1521,7 @@ pub(crate) fn ensure_buddy_session_binding(
         .create_session(&title, &repo)
         .with_context(|| {
             format!(
-                "creating Buddy session binding for {}",
+                "creating UI session binding for {}",
                 input.session_dir.display()
             )
         })?;
@@ -1546,7 +1545,7 @@ pub(crate) fn ensure_buddy_session_binding(
                 .unwrap_or_default(),
         },
     )?;
-    Ok(BuddySessionBinding {
+    Ok(UiSessionBinding {
         buddy_session: created.id,
         repo_path,
     })
@@ -1556,13 +1555,13 @@ pub(crate) fn ensure_folder_session_buddy_binding_for_ask(
     session_dir: &Path,
     session: &AgentSession,
     workspace: &Path,
-    buddy_backend: &dyn BuddySessionBackend,
-) -> Result<BuddySessionBinding> {
+    buddy_backend: &dyn UiSessionBackend,
+) -> Result<UiSessionBinding> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
     ensure_buddy_session_binding(
         buddy_backend,
-        BuddyBindingInput {
+        UiBindingInput {
             session_dir: session_dir.to_path_buf(),
             title: Some(session.meta.title.clone()).and_then(nonempty_owned_string),
             requested_workspace: Some(workspace.to_path_buf()),
@@ -1578,7 +1577,7 @@ fn nonempty_owned_string(value: String) -> Option<String> {
 
 pub(crate) fn promote_stale_buddy_workspace(
     session_dir: &Path,
-    buddy_backend: &dyn BuddySessionBackend,
+    buddy_backend: &dyn UiSessionBackend,
     previous_runtime: Option<&BuddyRuntimeState>,
     stale_buddy_session: &str,
     stale_workspace: Option<&Path>,
@@ -1592,7 +1591,7 @@ pub(crate) fn promote_stale_buddy_workspace(
         .create_session(title, &repo)
         .with_context(|| {
             format!(
-                "promoting stale Buddy binding for {} into session-local workspace {}",
+                "promoting stale UI binding for {} into session-local workspace {}",
                 stale_workspace
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|| "<none>".to_string()),
@@ -1668,7 +1667,7 @@ fn folder_session_display_name(name: &str) -> String {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct BuddySessionListJsonRecord {
+struct UiSessionListJsonRecord {
     id: String,
     title: String,
     updated: i64,
@@ -1680,7 +1679,7 @@ struct BuddySessionListJsonRecord {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum BuddyBridgeWireRequest {
+enum UiBridgeWireRequest {
     ListSessions,
     #[allow(dead_code)]
     GetSession {
@@ -1698,15 +1697,15 @@ enum BuddyBridgeWireRequest {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum BuddyBridgeWireResponse {
+enum UiBridgeWireResponse {
     Sessions {
-        sessions: Vec<BuddyBridgeSessionListRecord>,
+        sessions: Vec<UiBridgeSessionListRecord>,
     },
     Session {
-        session: BuddyBridgeSessionListRecord,
+        session: UiBridgeSessionListRecord,
     },
     CreatedSession {
-        session: BuddySessionCreateRecord,
+        session: UiSessionCreateRecord,
     },
     DeletedSession {
         session_id: String,
@@ -1715,7 +1714,7 @@ enum BuddyBridgeWireResponse {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct BuddyBridgeSessionListRecord {
+struct UiBridgeSessionListRecord {
     id: String,
     title: String,
     updated: i64,
@@ -1725,8 +1724,8 @@ struct BuddyBridgeSessionListRecord {
     directory: String,
 }
 
-fn buddy_bridge_session_record(session: BuddyBridgeSessionListRecord) -> BuddySessionListRecord {
-    BuddySessionListRecord {
+fn ui_bridge_session_record(session: UiBridgeSessionListRecord) -> UiSessionListRecord {
+    UiSessionListRecord {
         id: session.id,
         title: session.title,
         repo_path: session.directory,
@@ -1737,7 +1736,7 @@ fn buddy_bridge_session_record(session: BuddyBridgeSessionListRecord) -> BuddySe
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BuddySessionListRecord {
+pub(crate) struct UiSessionListRecord {
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) repo_path: String,
@@ -1748,7 +1747,7 @@ pub(crate) struct BuddySessionListRecord {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct BuddySessionCreateRecord {
+pub(crate) struct UiSessionCreateRecord {
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) repo_path: String,
@@ -1768,7 +1767,7 @@ where
     let output = run_buddy_output_command(buddy_bin, args)?;
     serde_json::from_slice(&output.stdout).with_context(|| {
         format!(
-            "parsing strict Buddy JSON from `{}`",
+            "parsing strict Djinn UI JSON from `{}`",
             buddy_json_command_hint(buddy_bin, args)
         )
     })
@@ -1882,7 +1881,7 @@ exit 2
         permissions.set_mode(0o755);
         fs::set_permissions(&buddy_bin, permissions).unwrap();
 
-        let backend = BuddyBridgeBackend::explicit(buddy_bin.display().to_string());
+        let backend = UiBridgeBackend::explicit(buddy_bin.display().to_string());
         let sessions = backend.list_sessions().unwrap();
         let fetched = backend.get_session("bud_bridge").unwrap();
         let created = backend
@@ -1955,7 +1954,7 @@ exit 2
         permissions.set_mode(0o755);
         fs::set_permissions(&buddy_bin, permissions).unwrap();
 
-        let backend = BuddyBridgeBackend::explicit(buddy_bin.display().to_string());
+        let backend = UiBridgeBackend::explicit(buddy_bin.display().to_string());
         let sessions = backend.list_sessions().unwrap();
         let fetched = backend.get_session("bud_legacy").unwrap();
         let created = backend
@@ -2008,12 +2007,12 @@ exit 2
             resolve_buddy_command_from(None, Some("  ".to_string()), Some(&root)),
             Some(in_tree.display().to_string())
         );
-        let in_tree_resolution = BuddyCommandResolution {
+        let in_tree_resolution = UiCommandResolution {
             command: in_tree.display().to_string(),
             source: IN_TREE_BUDDY_COMMAND.to_string(),
         };
         assert_eq!(in_tree_resolution.runtime_command_override(), None);
-        let explicit_resolution = BuddyCommandResolution {
+        let explicit_resolution = UiCommandResolution {
             command: "env-buddy --debug".to_string(),
             source: DJINN_BUDDY_BIN_ENV.to_string(),
         };
@@ -2058,7 +2057,7 @@ exit 2
             .any(|candidate| candidate.source == "buddy"));
         assert!(in_tree_report
             .note
-            .contains("does not fall back to external Buddy"));
+            .contains("does not fall back to an external UI"));
 
         let unavailable_report = buddy_command_doctor_report_from(
             None,
@@ -2354,7 +2353,7 @@ exit 2
         creates: Arc<Mutex<Vec<(String, String)>>>,
     }
 
-    impl BuddySessionBackend for TestBuddyBackend {
+    impl UiSessionBackend for TestBuddyBackend {
         fn command(&self) -> &str {
             "in-tree-buddy"
         }
@@ -2363,12 +2362,12 @@ exit 2
             self.runtime_command_override.clone()
         }
 
-        fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
+        fn list_sessions(&self) -> Result<Vec<UiSessionListRecord>> {
             Ok(Vec::new())
         }
 
-        fn get_session(&self, session_id: &str) -> Result<BuddySessionListRecord> {
-            Ok(BuddySessionListRecord {
+        fn get_session(&self, session_id: &str) -> Result<UiSessionListRecord> {
+            Ok(UiSessionListRecord {
                 id: session_id.to_string(),
                 title: session_id.to_string(),
                 repo_path: String::new(),
@@ -2378,12 +2377,12 @@ exit 2
             })
         }
 
-        fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord> {
+        fn create_session(&self, title: &str, repo_path: &str) -> Result<UiSessionCreateRecord> {
             self.creates
                 .lock()
                 .unwrap()
                 .push((title.to_string(), repo_path.to_string()));
-            Ok(BuddySessionCreateRecord {
+            Ok(UiSessionCreateRecord {
                 id: self.create_id.clone(),
                 title: title.to_string(),
                 repo_path: repo_path.to_string(),
@@ -2426,7 +2425,7 @@ exit 2
 
         let binding = ensure_buddy_session_binding(
             &backend,
-            BuddyBindingInput {
+            UiBindingInput {
                 session_dir: session_dir.clone(),
                 title: manifest
                     .as_ref()
@@ -2786,7 +2785,7 @@ exit 2
             fs::set_permissions(&buddy_bin, permissions).unwrap();
         }
 
-        let report = run_session_buddy(&SessionBuddyRunArgs {
+        let report = run_session_ui_capture(&SessionUiCaptureArgs {
             dir: dir.clone(),
             ui_bin: Some(buddy_bin.display().to_string()),
             buddy_session: Some("bud_test".to_string()),
@@ -2821,7 +2820,7 @@ exit 2
         let runtime = fs::read_to_string(dir.join("runtime/buddy.json")).unwrap();
         assert!(runtime.contains("bud_test"));
         assert!(runtime.contains("--final"));
-        assert!(format_session_buddy_report(&report).contains("Buddy capture:"));
+        assert!(format_session_ui_capture_report(&report).contains("Djinn UI capture:"));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2893,18 +2892,18 @@ exit 2
     #[test]
     fn interactive_buddy_sync_status_reports_synced_or_unchanged() {
         let session_dir = PathBuf::from("/tmp/djinn-session");
-        let sync = BuddyInteractiveSummarySync {
+        let sync = UiInteractiveSummarySync {
             summary_path: session_dir.join("summary.md"),
             response_chars: 42,
         };
 
         let synced = format_interactive_buddy_sync_status(&session_dir, Some(&sync));
-        assert!(synced.contains("Buddy session completed."));
+        assert!(synced.contains("Djinn UI session completed."));
         assert!(synced.contains("Synced /tmp/djinn-session/summary.md"));
         assert!(synced.contains("42 chars"));
 
         let unchanged = format_interactive_buddy_sync_status(&session_dir, None);
-        assert!(unchanged.contains("Buddy session completed."));
+        assert!(unchanged.contains("Djinn UI session completed."));
         assert!(unchanged.contains("No valid event pair found in /tmp/djinn-session/events.jsonl"));
         assert!(unchanged.contains("summary.md unchanged"));
     }

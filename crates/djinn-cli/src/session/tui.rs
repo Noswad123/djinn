@@ -81,7 +81,7 @@ fn handle_folder_session_tui_action(
             print: false,
             open: false,
         }),
-        djinn_tui::FolderSessionAction::Buddy => session_chat(SessionChatArgs {
+        djinn_tui::FolderSessionAction::Chat => session_chat(SessionChatArgs {
             dir: session_dir,
             ui_bin: None,
             ui_args: Vec::new(),
@@ -186,7 +186,7 @@ pub(crate) fn folder_session_action_message(
             "Run command: djinn session run {}",
             shell_quote(&session_dir.display().to_string())
         ),
-        djinn_tui::FolderSessionAction::Buddy => format!(
+        djinn_tui::FolderSessionAction::Chat => format!(
             "Djinn UI chat command: djinn session chat {}",
             shell_quote(&session_dir.display().to_string())
         ),
@@ -562,7 +562,7 @@ mod tests {
         );
         assert_eq!(
             folder_session_action_message(
-                &djinn_tui::FolderSessionAction::Buddy,
+                &djinn_tui::FolderSessionAction::Chat,
                 &session_dir,
                 None
             ),

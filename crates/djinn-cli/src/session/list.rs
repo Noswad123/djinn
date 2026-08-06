@@ -390,7 +390,7 @@ pub(crate) fn format_folder_session_ls(report: &SessionLsReport) -> String {
         lines.push(format!("Repo: {}", group.repo));
         lines.push(format!(
             "  {:<20} {:<12} {:<34} {}",
-            "UPDATED", "STATE", "BUDDY", "NAME"
+            "UPDATED", "STATE", "UI ID", "NAME"
         ));
         lines.push(format!("  {}", "-".repeat(86)));
         for session in &group.sessions {
@@ -671,7 +671,7 @@ mod tests {
         assert!(text.contains("Repo: -"));
         assert!(text.contains("UPDATED"));
         assert!(text.contains("STATE"));
-        assert!(text.contains("BUDDY"));
+        assert!(text.contains("UI ID"));
         assert!(!text.contains("TURNS"));
         assert!(!text.contains("EVENTS"));
         assert!(text.contains("bud_alpha"));

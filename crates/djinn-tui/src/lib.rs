@@ -179,7 +179,7 @@ pub struct SessionRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FolderSessionAction {
     Run,
-    Buddy,
+    Chat,
     Watch,
     OpenSummary,
     EditRequest,
@@ -584,7 +584,7 @@ where
 fn folder_session_action_for_key(code: KeyCode) -> Option<FolderSessionAction> {
     match code {
         KeyCode::Char('r') => Some(FolderSessionAction::Run),
-        KeyCode::Char('b') => Some(FolderSessionAction::Buddy),
+        KeyCode::Char('b') => Some(FolderSessionAction::Chat),
         KeyCode::Char('w') => Some(FolderSessionAction::Watch),
         KeyCode::Char('o') => Some(FolderSessionAction::OpenSummary),
         KeyCode::Char('e') => Some(FolderSessionAction::EditRequest),
@@ -608,8 +608,8 @@ fn folder_session_command_palette(
         folder_session_command_entry(
             "Session",
             "Open Djinn UI chat",
-            "Launch Buddy with request.md on stdin and capture the final response",
-            FolderSessionCommand::Action(FolderSessionAction::Buddy),
+            "Launch the Djinn UI with request.md on stdin and capture the final response",
+            FolderSessionCommand::Action(FolderSessionAction::Chat),
         ),
         folder_session_command_entry(
             "Session",
@@ -3761,7 +3761,7 @@ mod tests {
         );
         assert_eq!(
             folder_session_action_for_key(KeyCode::Char('b')),
-            Some(FolderSessionAction::Buddy)
+            Some(FolderSessionAction::Chat)
         );
         assert_eq!(
             folder_session_action_for_key(KeyCode::Char('w')),

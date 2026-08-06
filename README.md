@@ -82,20 +82,20 @@ djinn session watch repo-review
 ```
 
 Folder-backed sessions are the canonical interactive workflow. `djinn` opens the
-Buddy-first Djinn UI by default, and `djinn tui` remains a deprecated alias. Use
+Djinn UI by default, and `djinn tui` remains a deprecated alias. Use
 `djinn -s <session>` for a specific folder session, `djinn session run` to execute
 turns, and `djinn session watch` to follow lifecycle status. `djinn session init
 <name>` and new auto-created top-level `djinn ask "..."` sessions create both the
-folder capsule and the Buddy-compatible UI session binding recorded in
+folder capsule and the UI session binding recorded in
 `runtime/buddy.json`; the Djinn UI is expected to ship with Djinn, so these
 creation paths fail if that binding cannot be created or reused. `djinn --ui` is
 the explicit UI launch spelling; `djinn -b`, `djinn -b -s <ref>`, and
-`djinn -bs <ref>` remain deprecated Buddy-era aliases for the same UI launch path.
+`djinn -bs <ref>` remain deprecated aliases for the same UI launch path.
 `djinn session chat <ref>` is the explicit interactive chat spelling for the same
 folder-session UI experience. Core
 existing-session entry points such as `djinn -s`, `session open`, `session status`,
 `session watch`, `session run`, `session chat`, and `session rm`
-resolve folder-session names/paths plus current or stale Buddy ids already recorded
+resolve folder-session names/paths plus current or stale UI ids already recorded
 in `runtime/buddy.json`. Use `djinn session chat <ref> --capture-request` to send
 `request.md` to the Djinn UI on stdin and capture the UI's final response back into
 `summary.md` and `events.jsonl`; plain UI/chat mode resumes the UI interactively
@@ -105,9 +105,9 @@ instead. When the UI is launched through `djinn -s <ref>` or
 also appended to the same folder-local event history. After the UI exits, Djinn
 refreshes `summary.md` from the latest valid assistant event so the folder capsule
 stays file-native and current, then prints a short sync status.
-If a bound Buddy session points at a workspace that no longer exists, Djinn clears
-that stale workspace/repo link, creates a fresh Buddy session scoped to the folder
-capsule itself, and keeps the old Buddy id as an alias.
+If a bound UI session points at a workspace that no longer exists, Djinn clears
+that stale workspace/repo link, creates a fresh UI session scoped to the folder
+capsule itself, and keeps the old UI id as an alias.
 For UI session listing and creation, Djinn now prefers the hidden
 `djinn-ui djinn-bridge` JSON stdin/stdout entrypoint and falls back to the legacy
 `djinn-ui session list/create --format json` commands when that bridge is unavailable.
@@ -124,8 +124,8 @@ subcommand has been removed. Use `djinn session events --all --json` to audit
 event-ledger health across cache-backed sessions, or add `--strict` for a
 read-only script/CI guard that fails when any reported session is not ready.
 The Sessions dashboard shows compact event health labels for routine triage;
-`djinn session ls` keeps its text table focused on recent work, state, Buddy id,
-name, and summary preview. JSON list output still carries event-health fields.
+`djinn session ls` keeps its text table focused on recent work, state, UI id, name,
+and summary preview. JSON list output still carries event-health fields.
 Health audits can be focused with `--health ready`, `--health not-ready`,
 `--health missing`, or an issue code.
 

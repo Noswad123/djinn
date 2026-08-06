@@ -19,7 +19,7 @@ pub(crate) struct Cli {
     /// Open the Djinn UI immediately.
     #[arg(short = 'b', long = "ui", alias = "buddy")]
     pub(crate) buddy: bool,
-    /// Folder-backed session name, path, or Buddy-compatible id to open in the Djinn UI.
+    /// Folder-backed session name, path, or UI session id to open in the Djinn UI.
     #[arg(short = 's', long = "session", value_name = "SESSION")]
     pub(crate) session: Option<PathBuf>,
     #[command(subcommand)]

@@ -11,7 +11,7 @@ use crate::DEFAULT_AGENT_MAX_TOOL_ROUNDS;
 pub(crate) struct SessionArgs {
     #[command(subcommand)]
     pub(crate) command: Option<SessionCommand>,
-    /// Folder-backed session name, path, or Buddy-compatible id for convenience actions.
+    /// Folder-backed session name, path, or UI session id for convenience actions.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: Option<PathBuf>,
     /// Open the session summary without spelling `session open`.
@@ -72,7 +72,7 @@ pub(crate) enum SessionCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionWatchArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to watch.
+    /// Folder-backed session name, path, or UI session id to watch.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Poll interval in milliseconds while the session is running.
@@ -88,7 +88,7 @@ pub(crate) struct SessionWatchArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionRunArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to run.
+    /// Folder-backed session name, path, or UI session id to run.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Run in the foreground and block until the answer is written. Background is the default.
@@ -131,7 +131,7 @@ pub(crate) struct SessionRunArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionChatArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to open in interactive Djinn UI chat.
+    /// Folder-backed session name, path, or UI session id to open in interactive Djinn UI chat.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, legacy DJINN_BUDDY_BIN, runtime binding, then tools/buddy/bin/djinn-ui.
@@ -198,7 +198,7 @@ pub(crate) struct SessionInitArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionCompactArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id containing events/context artifacts.
+    /// Folder-backed session name, path, or UI session id containing events/context artifacts.
     #[arg(long = "session-dir", value_name = "SESSION")]
     pub(crate) session_dir: PathBuf,
     /// Output path. Defaults to <session-dir>/context/compacted.md.
@@ -211,7 +211,7 @@ pub(crate) struct SessionCompactArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionPromoteArgs {
-    /// Folder-backed session names, paths, or Buddy-compatible ids to promote from.
+    /// Folder-backed session names, paths, or UI session ids to promote from.
     #[arg(required = true, value_name = "SESSION")]
     pub(crate) dirs: Vec<PathBuf>,
     /// Promotion type to prepare for.
@@ -233,7 +233,7 @@ pub(crate) struct SessionPromoteArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionDecisionArgs {
-    /// Promotion session name, path, or Buddy-compatible id.
+    /// Promotion session name, path, or UI session id.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Optional candidate id/path within the promotion session. Defaults to the whole promotion outcome.
@@ -251,7 +251,7 @@ pub(crate) struct SessionDecisionArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionCleanupArgs {
-    /// Promotion session name, path, or Buddy-compatible id whose source sessions should be removed.
+    /// Promotion session name, path, or UI session id whose source sessions should be removed.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Permanently delete source sessions recorded in context/sources.toml.
@@ -267,7 +267,7 @@ pub(crate) struct SessionCleanupArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionExportPatternArgs {
-    /// Pattern promotion session name, path, or Buddy-compatible id.
+    /// Pattern promotion session name, path, or UI session id.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Optional pattern candidate id/path. Defaults to all generated pattern candidates.
@@ -288,7 +288,7 @@ pub(crate) struct SessionExportPatternArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionValidateCandidatesArgs {
-    /// Promotion session name, path, or Buddy-compatible id.
+    /// Promotion session name, path, or UI session id.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Optional candidate id/path within the promotion session. Defaults to all candidates.
@@ -300,7 +300,7 @@ pub(crate) struct SessionValidateCandidatesArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionValidateEventsArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to validate.
+    /// Folder-backed session name, path, or UI session id to validate.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Output JSON instead of text.
@@ -310,7 +310,7 @@ pub(crate) struct SessionValidateEventsArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionTranscriptArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to render.
+    /// Folder-backed session name, path, or UI session id to render.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Output format.
@@ -332,7 +332,7 @@ pub(crate) struct SessionTranscriptArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionEventsArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to project from.
+    /// Folder-backed session name, path, or UI session id to project from.
     #[arg(required_unless_present = "all", value_name = "SESSION")]
     pub(crate) dir: Option<PathBuf>,
     /// Report event-ledger health for all cache-backed sessions.
@@ -396,7 +396,7 @@ pub(crate) enum SessionContextCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionContextDiscoverArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to update.
+    /// Folder-backed session name, path, or UI session id to update.
     #[arg(value_name = "SESSION")]
     pub(crate) session: PathBuf,
     /// Preview discoveries without creating links or repo-index.md.
@@ -409,7 +409,7 @@ pub(crate) struct SessionContextDiscoverArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionContextLsArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to inspect.
+    /// Folder-backed session name, path, or UI session id to inspect.
     #[arg(value_name = "SESSION")]
     pub(crate) session: PathBuf,
     /// Output JSON instead of text.
@@ -419,7 +419,7 @@ pub(crate) struct SessionContextLsArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionContextAddArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to update.
+    /// Folder-backed session name, path, or UI session id to update.
     #[arg(value_name = "SESSION")]
     pub(crate) session: PathBuf,
     /// File or directory to link into context/.
@@ -437,7 +437,7 @@ pub(crate) struct SessionContextAddArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionContextRmArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to update.
+    /// Folder-backed session name, path, or UI session id to update.
     #[arg(value_name = "SESSION")]
     pub(crate) session: PathBuf,
     /// Context entry name to remove.
@@ -449,7 +449,7 @@ pub(crate) struct SessionContextRmArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionStatusArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to inspect.
+    /// Folder-backed session name, path, or UI session id to inspect.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Output JSON instead of text.
@@ -479,7 +479,7 @@ pub(crate) struct SessionShortenNamesArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionRenameArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to rename.
+    /// Folder-backed session name, path, or UI session id to rename.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// New cache-backed session folder name.
@@ -495,7 +495,7 @@ pub(crate) struct SessionRenameArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionOpenArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to open.
+    /// Folder-backed session name, path, or UI session id to open.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Session artifact to open. Defaults to summary.md.
@@ -508,7 +508,7 @@ pub(crate) struct SessionOpenArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionRmArgs {
-    /// Folder-backed session name, path, or Buddy-compatible id to remove.
+    /// Folder-backed session name, path, or UI session id to remove.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
     /// Output JSON instead of text.

@@ -8,8 +8,8 @@ use serde::Serialize;
 use crate::agent::roles::{resolve_agent_role_selection_from_config, AgentRoleSelection};
 use crate::agent::workspace::clean_unique_paths;
 use crate::buddy::{
-    ensure_buddy_session_binding, read_buddy_runtime_state, BuddyBindingInput, BuddyBridgeBackend,
-    BuddySessionBackend,
+    ensure_buddy_session_binding, read_buddy_runtime_state, UiBindingInput, UiBridgeBackend,
+    UiSessionBackend,
 };
 use crate::cli_args::SessionInitArgs;
 use crate::config::native::{default_djinn_config_path, load_djinn_config_from_paths};
@@ -53,7 +53,7 @@ pub(crate) struct SessionRepoLinkReport {
 }
 
 pub(crate) fn session_init(args: SessionInitArgs) -> Result<()> {
-    let buddy_backend = BuddyBridgeBackend::resolved(None)?;
+    let buddy_backend = UiBridgeBackend::resolved(None)?;
     let report = initialize_folder_session_with_buddy(&args, Some(&buddy_backend))?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -69,8 +69,8 @@ pub(crate) fn session_init(args: SessionInitArgs) -> Result<()> {
             println!("  repo link: {} -> {}", repo_link.path, repo_link.target);
         }
         if let Some(buddy) = &report.buddy {
-            println!("  buddy session: {}", buddy.buddy_session);
-            println!("  buddy repo: {}", buddy.repo_path);
+            println!("  ui session: {}", buddy.buddy_session);
+            println!("  ui repo: {}", buddy.repo_path);
         }
         if let Some(discovered) = &report.discovered_context {
             let created = discovered.links.iter().filter(|link| link.created).count();
@@ -95,7 +95,7 @@ pub(crate) fn initialize_folder_session(args: &SessionInitArgs) -> Result<Sessio
 
 pub(crate) fn initialize_folder_session_with_buddy(
     args: &SessionInitArgs,
-    buddy_backend: Option<&dyn BuddySessionBackend>,
+    buddy_backend: Option<&dyn UiSessionBackend>,
 ) -> Result<SessionInitReport> {
     let session_dir = resolve_session_dir(&args.dir)?;
     fs::create_dir_all(&session_dir)
@@ -178,7 +178,7 @@ pub(crate) fn initialize_folder_session_with_buddy(
         let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
         let binding = ensure_buddy_session_binding(
             buddy_backend,
-            BuddyBindingInput {
+            UiBindingInput {
                 session_dir: session_dir.clone(),
                 title: None,
                 requested_workspace: Some(workspace.clone()),
@@ -467,7 +467,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    use crate::buddy::{BuddySessionCreateRecord, BuddySessionListRecord};
+    use crate::buddy::{UiSessionCreateRecord, UiSessionListRecord};
 
     #[derive(Clone)]
     struct TestBuddyBackend {
@@ -476,7 +476,7 @@ mod tests {
         creates: Arc<Mutex<Vec<(String, String)>>>,
     }
 
-    impl BuddySessionBackend for TestBuddyBackend {
+    impl UiSessionBackend for TestBuddyBackend {
         fn command(&self) -> &str {
             "in-tree-buddy"
         }
@@ -485,12 +485,12 @@ mod tests {
             self.runtime_command_override.clone()
         }
 
-        fn list_sessions(&self) -> Result<Vec<BuddySessionListRecord>> {
+        fn list_sessions(&self) -> Result<Vec<UiSessionListRecord>> {
             Ok(Vec::new())
         }
 
-        fn get_session(&self, session_id: &str) -> Result<BuddySessionListRecord> {
-            Ok(BuddySessionListRecord {
+        fn get_session(&self, session_id: &str) -> Result<UiSessionListRecord> {
+            Ok(UiSessionListRecord {
                 id: session_id.to_string(),
                 title: session_id.to_string(),
                 repo_path: String::new(),
@@ -500,12 +500,12 @@ mod tests {
             })
         }
 
-        fn create_session(&self, title: &str, repo_path: &str) -> Result<BuddySessionCreateRecord> {
+        fn create_session(&self, title: &str, repo_path: &str) -> Result<UiSessionCreateRecord> {
             self.creates
                 .lock()
                 .unwrap()
                 .push((title.to_string(), repo_path.to_string()));
-            Ok(BuddySessionCreateRecord {
+            Ok(UiSessionCreateRecord {
                 id: self.create_id.clone(),
                 title: title.to_string(),
                 repo_path: repo_path.to_string(),

@@ -44,7 +44,7 @@ pub(crate) fn session_events(args: SessionEventsArgs) -> Result<()> {
     }
 
     let dir = args.dir.as_ref().ok_or_else(|| {
-        anyhow!("session name, path, or Buddy id is required unless --all is used")
+        anyhow!("session name, path, or UI session id is required unless --all is used")
     })?;
     if let Some(backup) = &args.restore {
         let report = restore_folder_session_event_backup(dir, backup, args.write)?;

@@ -4,13 +4,13 @@ use clap::{Args, ValueEnum};
 
 #[derive(Debug, Clone, Args)]
 pub(crate) struct TuiArgs {
-    /// Legacy Rust TUI view hint. The command now opens the Buddy-first Djinn UI.
+    /// Legacy Rust TUI view hint. The command now opens the Djinn UI.
     #[arg(value_enum, default_value_t = TuiView::Sessions)]
     pub(crate) view: TuiView,
-    /// Legacy Rust TUI tooling root hint. Ignored by the Buddy-first Djinn UI.
+    /// Legacy Rust TUI tooling root hint. Ignored by the Djinn UI.
     #[arg(long = "root")]
     pub(crate) roots: Vec<PathBuf>,
-    /// Legacy Rust TUI editor hint. Ignored by the Buddy-first Djinn UI.
+    /// Legacy Rust TUI editor hint. Ignored by the Djinn UI.
     #[arg(long)]
     pub(crate) editor: Option<String>,
 }

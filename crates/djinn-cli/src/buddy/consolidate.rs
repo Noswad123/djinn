@@ -7,8 +7,8 @@ use djinn_memory::AgentSessionId;
 use serde::Serialize;
 
 use crate::buddy::{
-    write_buddy_runtime_state, BuddyBridgeBackend, BuddyRuntimeState, BuddySessionBackend,
-    BuddySessionListRecord,
+    write_buddy_runtime_state, BuddyRuntimeState, UiBridgeBackend, UiSessionBackend,
+    UiSessionListRecord,
 };
 use crate::cli_args::SessionConsolidateArgs;
 use crate::session::list::{list_folder_sessions_in_root, FolderSessionSummary};
@@ -47,9 +47,9 @@ pub(crate) fn consolidate_sessions_in_root(
 ) -> Result<SessionConsolidateReport> {
     let buddy_backend =
         if let Some(ui_bin) = args.ui_bin.clone().filter(|value| !value.trim().is_empty()) {
-            BuddyBridgeBackend::explicit(ui_bin)
+            UiBridgeBackend::explicit(ui_bin)
         } else {
-            BuddyBridgeBackend::resolved(None)?
+            UiBridgeBackend::resolved(None)?
         };
     let buddy_sessions = buddy_backend.list_sessions()?;
     let folder_report = list_folder_sessions_in_root(root, None)?;
@@ -146,9 +146,9 @@ pub(crate) fn consolidate_sessions_in_root(
                 session_dir: Some(session.path.clone()),
                 buddy_session,
                 note: if args.dry_run {
-                    "No deterministic Buddy match; dry-run would create a new Buddy session."
+                    "No deterministic UI session match; dry-run would create a new UI session."
                 } else {
-                    "No deterministic Buddy match; created and bound a new Buddy session."
+                    "No deterministic UI session match; created and bound a new UI session."
                 }
                 .to_string(),
             });
@@ -185,8 +185,7 @@ pub(crate) fn consolidate_sessions_in_root(
             )),
             session_dir: Some(folder_dir.display().to_string()),
             buddy_session: Some(buddy.id.clone()),
-            note: "Buddy session had no Djinn folder binding; created a folder capsule."
-                .to_string(),
+            note: "UI session had no Djinn folder binding; created a folder capsule.".to_string(),
         });
     }
 
@@ -217,9 +216,9 @@ pub(crate) fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
 
 fn deterministic_buddy_match<'a>(
     session: &FolderSessionSummary,
-    buddy_sessions: &'a [BuddySessionListRecord],
+    buddy_sessions: &'a [UiSessionListRecord],
     used_buddy_ids: &BTreeSet<String>,
-) -> Option<&'a BuddySessionListRecord> {
+) -> Option<&'a UiSessionListRecord> {
     let folder_titles = [
         normalize_session_match_key(&session.display_name),
         normalize_session_match_key(&session.reference_name),
@@ -268,7 +267,7 @@ fn buddy_repo_for_folder_session(session: &FolderSessionSummary) -> String {
         .to_string()
 }
 
-fn buddy_adopted_folder_path(root: &Path, buddy: &BuddySessionListRecord) -> Result<PathBuf> {
+fn buddy_adopted_folder_path(root: &Path, buddy: &UiSessionListRecord) -> Result<PathBuf> {
     let base = format!(
         "{}-{}",
         safe_folder_session_slug(&buddy.title),
@@ -286,7 +285,7 @@ fn buddy_adopted_folder_path(root: &Path, buddy: &BuddySessionListRecord) -> Res
 fn create_folder_session_from_buddy(
     _root: &Path,
     folder_dir: &Path,
-    buddy: &BuddySessionListRecord,
+    buddy: &UiSessionListRecord,
     runtime_command_override: Option<String>,
 ) -> Result<()> {
     fs::create_dir_all(folder_dir).with_context(|| format!("creating {}", folder_dir.display()))?;
@@ -316,7 +315,7 @@ fn create_folder_session_from_buddy(
 fn write_buddy_adopted_manifest(
     folder_dir: &Path,
     session_id: &AgentSessionId,
-    buddy: &BuddySessionListRecord,
+    buddy: &UiSessionListRecord,
 ) -> Result<()> {
     let mut output = String::new();
     output.push_str(&format!(

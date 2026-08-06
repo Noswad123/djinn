@@ -87,33 +87,33 @@ tools rather than the central history path.
 Session status and JSON list data prefer `events.jsonl` for the latest exchange,
 conversation count, and response preview; `turns/` is only consulted when no valid
 event pairs are available. The default text `djinn session ls` table stays compact:
-repo grouping, updated time, lifecycle state, Buddy id, name, and summary preview.
+repo grouping, updated time, lifecycle state, UI id, name, and summary preview.
 
 For direct interactive work, run `djinn`; use `djinn -s <ref>` to open a specific
 folder session in the Djinn UI. `djinn --ui` is the explicit UI launch spelling;
-`djinn -b` and the clustered short form `djinn -bs <ref>` remain deprecated
-Buddy-era aliases for the same UI launch path.
+`djinn -b` and the clustered short form `djinn -bs <ref>` remain deprecated aliases
+for the same UI launch path.
 Use `djinn session chat <ref>` when you want the same interactive chat experience
 but prefer an explicit subcommand over `-s`. Core
 existing-session entry points (`djinn -s`, `session open`, `session status`,
 `session watch`, `session run`, `session chat`, `session rm`, and
 context subcommands) share the same resolver for folder-session names/paths plus
-current or stale Buddy-compatible ids recorded in `runtime/buddy.json`. The
+current or stale UI ids recorded in `runtime/buddy.json`. The
 `djinn session chat <session> --capture-request` mode reads the current
-`request.md`, sends that prompt to the Djinn UI on stdin, passes `-s <buddy-session>`
+`request.md`, sends that prompt to the Djinn UI on stdin, passes `-s <ui-session>`
 when provided or when `runtime/buddy.json` already records one, captures the UI's final
 stdout response, then writes `summary.md`, appends a user/assistant pair to
 `events.jsonl`, clears `request.md`, and records bridge metadata under
 `runtime/buddy.json`. The focused Sessions UI exposes interactive chat as “chat”.
 Top-level Djinn UI mode
 and `djinn session chat <ref>` are the interactive resume affordances: they launch
-the UI directly with the bound `-s <buddy-session>` instead of running the capture
+the UI directly with the bound `-s <ui-session>` instead of running the capture
 bridge, even if `request.md` contains a pending prompt. For folder-backed launches,
 Djinn also sets
 `DJINN_SESSION_DIR` and `DJINN_EVENTS_JSONL`; the UI uses those to append completed
 interactive user/assistant exchanges to the capsule's `events.jsonl`. When the UI
 exits, Djinn reads the latest valid event pair and refreshes `summary.md` from the
-assistant response, then prints a short sync status. Buddy-stamped events include
+assistant response, then prints a short sync status. UI-stamped events include
 deterministic event ids so replayed message writes can be skipped without collapsing
 legitimate repeated prompts. Use `--dry-run` to preview the
 lower-level UI command without launching the UI or mutating session files.
@@ -130,7 +130,7 @@ the next run. Explicit `--ui-bin`, `DJINN_UI_BIN`, legacy `DJINN_BUDDY_BIN`, or
 manually-authored runtime commands are preserved as overrides.
 `djinn session init <name>` and auto-created top-level `djinn ask "..."` sessions
 now create both the folder capsule and a UI session binding up front, writing the
-Buddy-compatible id to `<session>/runtime/buddy.json`. The Djinn UI is part of
+UI id to `<session>/runtime/buddy.json`. The Djinn UI is part of
 Djinn's expected runtime, so these creation paths fail if the UI backend cannot
 create or reuse that binding. Re-running init for the same session is idempotent when the folder
 identity still matches and an existing runtime UI id is present.
@@ -150,11 +150,11 @@ reconciliation lives in `crates/djinn-cli/src/buddy/consolidate.rs`. The current
 bridge JSON contract is documented in [`buddy-bridge-protocol.md`](./buddy-bridge-protocol.md).
 When `djinn -s <folder-session>` opens a folder session without a UI binding,
 Djinn now asks the UI backend to create one before launch, records the resulting
-Buddy-compatible session id in `runtime/buddy.json`, and launches the UI with that stable id. The
+UI session id in `runtime/buddy.json`, and launches the UI with that stable id. The
 binding uses the session title from `djinn.toml` when present and uses a valid
 workspace/repo path when available, otherwise the folder-session directory itself.
 The checked-in `tools/buddy/bin/djinn-ui` wrapper is the migration seam for moving
-Buddy into Djinn while keeping `tools/buddy/` available as the UI's in-repo
+the forked UI into Djinn while keeping `tools/buddy/` available as the UI's in-repo
 home: it honors `DJINN_TOOLS_UI_TARGET` and legacy `DJINN_TOOLS_BUDDY_TARGET`, then
 tries in-repo UI builds under `tools/buddy/`, then runs
 `tools/buddy/packages/opencode/src/index.ts` with Bun when the source tree and
@@ -174,21 +174,21 @@ output shows the configured resolver candidates and reports `<unavailable>` when
 configured or in-tree command exists. Add `--session <session>` to include
 `runtime/buddy.json.command` for a specific folder session, or `--json` for scripts.
 Legacy `djinn doctor buddy` remains accepted as an alias.
-When a bound Buddy session's recorded workspace/repo path no longer exists, Djinn
-promotes the folder capsule to a session-local Buddy workspace: it removes the
-stale workspace and `[context.repo]` binding from `djinn.toml`, creates a new Buddy
-session for the folder path, records that id in `runtime/buddy.json`, and keeps the
-old Buddy id as an alias so existing `djinn -s <old-id>` references continue to
+When a bound UI session's recorded workspace/repo path no longer exists, Djinn
+promotes the folder capsule to a session-local UI workspace: it removes the stale
+workspace and `[context.repo]` binding from `djinn.toml`, creates a new UI session
+for the folder path, records that id in `runtime/buddy.json`, and keeps the old UI
+id as an alias so existing `djinn -s <old-id>` references continue to
 resolve.
-`djinn session ls` surfaces the Buddy session id when `runtime/buddy.json` records
-one, so picker/list views can show the shared session's Buddy binding.
+`djinn session ls` surfaces the UI session id when `runtime/buddy.json` records
+one, so picker/list views can show the shared UI binding.
 
 Use `djinn session validate-events <session>` to check compatibility projections.
 It is read-only: it parses `events.jsonl`, pairs user/assistant message events,
 compares them to any projected `turns/<id>/request.md` and
 `turns/<id>/response.md` in turn order, and verifies root `summary.md` matches the
 latest response. The command reports issues but does not rewrite artifacts.
-Buddy-stamped duplicate event ids are reported as `duplicate_event_id`; audit them
+UI-stamped duplicate event ids are reported as `duplicate_event_id`; audit them
 across cached sessions with `djinn session events --all --health duplicate_event_id`.
 
 Use `djinn session events <session>` to preview the `turns/` tree that would be
@@ -263,7 +263,7 @@ projection, or `--open` to write and open `<session>/transcript.md`. The command
 does not read or rebuild `turns/`; if `events.jsonl` has validation issues, run
 `djinn session validate-events <ref>` before generating a transcript.
 Use `djinn session rename <ref> <new-name>` to give cache-backed sessions a shorter
-human name after creation. `<ref>` can be a folder name/path or Buddy id; the new
+human name after creation. `<ref>` can be a folder name/path or UI session id; the new
 name must be a bare cache folder name and must not already exist. Use `--dry-run`
 or `--json` for scripted previews.
 

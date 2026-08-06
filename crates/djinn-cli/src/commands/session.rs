@@ -26,9 +26,9 @@ pub(crate) fn run_session(args: SessionArgs) -> Result<()> {
     match args.command {
         Some(command) => run_session_command(command),
         None if args.open => {
-            let dir = args
-                .dir
-                .ok_or_else(|| anyhow!("session name, path, or Buddy id is required for --open"))?;
+            let dir = args.dir.ok_or_else(|| {
+                anyhow!("session name, path, or UI session id is required for --open")
+            })?;
             session_open(SessionOpenArgs {
                 dir,
                 target: SessionOpenTarget::Summary,

@@ -171,7 +171,7 @@ pub(crate) fn resolve_buddy_session_reference_in_root(
         0 => Ok(None),
         1 => Ok(matches.pop()),
         _ => bail!(
-            "ambiguous Buddy session reference `{reference}` matched {} folder sessions; run `djinn session consolidate --dry-run` and remove duplicate bindings",
+            "ambiguous UI session reference `{reference}` matched {} folder sessions; run `djinn session consolidate --dry-run` and remove duplicate bindings",
             matches.len()
         ),
     }

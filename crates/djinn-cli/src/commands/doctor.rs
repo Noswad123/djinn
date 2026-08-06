@@ -6,7 +6,7 @@ use anyhow::Result;
 use crate::buddy::{
     buddy_command_doctor_report_from, djinn_source_workspace_root,
     format_buddy_command_doctor_report, probe_buddy_bridge_doctor, read_buddy_runtime_state,
-    BuddyCommandDoctorReport, DJINN_BUDDY_BIN_ENV, DJINN_UI_BIN_ENV,
+    UiCommandDoctorReport, DJINN_BUDDY_BIN_ENV, DJINN_UI_BIN_ENV,
 };
 use crate::cli_args::{DoctorArgs, DoctorBuddyArgs, DoctorCommand};
 use crate::session::reference::resolve_session_dir;
@@ -27,9 +27,7 @@ pub(crate) fn doctor_buddy(args: DoctorBuddyArgs) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn buddy_command_doctor_report(
-    session: Option<&Path>,
-) -> Result<BuddyCommandDoctorReport> {
+pub(crate) fn buddy_command_doctor_report(session: Option<&Path>) -> Result<UiCommandDoctorReport> {
     let session_dir = session.map(resolve_session_dir).transpose()?;
     let runtime_path = session_dir
         .as_ref()
