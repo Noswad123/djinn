@@ -14,12 +14,12 @@ pub(crate) use tui::{TuiArgs, TuiView};
 
 #[derive(Debug, Parser)]
 #[command(name = "djinn")]
-#[command(about = "Local-first companion for OpenCode and other AI coding agents")]
+#[command(about = "Local-first companion for AI coding agents")]
 pub(crate) struct Cli {
-    /// Deprecated alias for opening the Djinn UI immediately.
-    #[arg(short = 'b', long = "buddy")]
+    /// Open the Djinn UI immediately.
+    #[arg(short = 'b', long = "ui", alias = "buddy")]
     pub(crate) buddy: bool,
-    /// Folder-backed session name, path, or Buddy id to open in the Djinn UI.
+    /// Folder-backed session name, path, or Buddy-compatible id to open in the Djinn UI.
     #[arg(short = 's', long = "session", value_name = "SESSION")]
     pub(crate) session: Option<PathBuf>,
     #[command(subcommand)]
@@ -133,7 +133,17 @@ mod tests {
     }
 
     #[test]
-    fn parses_top_level_buddy_mode_flags() {
+    fn parses_top_level_ui_mode_flags() {
+        let cli = Cli::try_parse_from(["djinn", "--ui"]).unwrap();
+        assert!(cli.buddy);
+        assert!(cli.session.is_none());
+        assert!(cli.command.is_none());
+
+        let cli = Cli::try_parse_from(["djinn", "--buddy"]).unwrap();
+        assert!(cli.buddy);
+        assert!(cli.session.is_none());
+        assert!(cli.command.is_none());
+
         let cli = Cli::try_parse_from(["djinn", "-b"]).unwrap();
         assert!(cli.buddy);
         assert!(cli.session.is_none());

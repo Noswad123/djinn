@@ -41,13 +41,13 @@ fn main() -> Result<()> {
     let cli = parse_cli();
     if cli.buddy {
         if cli.command.is_some() {
-            bail!("-b/--buddy opens the Djinn UI and cannot be combined with a Djinn subcommand");
+            bail!("-b/--ui opens the Djinn UI and cannot be combined with a Djinn subcommand");
         }
         return run_top_level_buddy_mode(cli.session);
     }
     if let Some(session) = cli.session {
         if cli.command.is_some() {
-            bail!("-s/--session opens a focused Djinn UI session and cannot be combined with a Djinn subcommand unless -b/--buddy is also set");
+            bail!("-s/--session opens a focused Djinn UI session and cannot be combined with a Djinn subcommand unless -b/--ui is also set");
         }
         return run_top_level_buddy_mode(Some(session));
     }

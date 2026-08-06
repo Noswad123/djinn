@@ -90,8 +90,9 @@ event pairs are available. The default text `djinn session ls` table stays compa
 repo grouping, updated time, lifecycle state, Buddy id, name, and summary preview.
 
 For direct interactive work, run `djinn`; use `djinn -s <ref>` to open a specific
-folder session in the Djinn UI. `djinn -b` and the clustered short form
-`djinn -bs <ref>` remain deprecated Buddy-era aliases for the same UI launch path.
+folder session in the Djinn UI. `djinn --ui` is the explicit UI launch spelling;
+`djinn -b` and the clustered short form `djinn -bs <ref>` remain deprecated
+Buddy-era aliases for the same UI launch path.
 Use `djinn session chat <ref>` when you want the same interactive chat experience
 but prefer an explicit subcommand over `-s`. Core
 existing-session entry points (`djinn -s`, `session open`, `session status`,
@@ -116,15 +117,16 @@ assistant response, then prints a short sync status. Buddy-stamped events includ
 deterministic event ids so replayed message writes can be skipped without collapsing
 legitimate repeated prompts. Use `--dry-run` to preview the
 lower-level UI command without launching the UI or mutating session files.
-Djinn resolves the UI command in one place: explicit `--buddy-bin` where a
-subcommand still has that legacy option, then `DJINN_UI_BIN`, then legacy
-`DJINN_BUDDY_BIN`, then `runtime/buddy.json.command` for session-scoped launches,
-then the in-tree `tools/buddy/bin/djinn-ui` launcher. If none of those sources is
-available, UI launch paths fail with an explicit setup error; Djinn does not fall
-back to a bare `buddy` on `PATH`.
+Djinn resolves the UI command in one place: explicit `--ui-bin` where a subcommand
+has one, then `DJINN_UI_BIN`, then legacy `DJINN_BUDDY_BIN`, then
+`runtime/buddy.json.command` for session-scoped launches, then the in-tree
+`tools/buddy/bin/djinn-ui` launcher. If none of those sources is available, UI
+launch paths fail with an explicit setup error; Djinn does not fall back to a bare
+`buddy` on `PATH`. Legacy `--buddy-bin` remains accepted as an alias for
+`--ui-bin` during the migration.
 New runtime metadata treats `runtime/buddy.json.command` as an override only: normal
 in-tree launches leave it unset so Djinn re-resolves the current in-tree launcher on
-the next run. Explicit `--buddy-bin`, `DJINN_UI_BIN`, legacy `DJINN_BUDDY_BIN`, or
+the next run. Explicit `--ui-bin`, `DJINN_UI_BIN`, legacy `DJINN_BUDDY_BIN`, or
 manually-authored runtime commands are preserved as overrides.
 `djinn session init <name>` and auto-created top-level `djinn ask "..."` sessions
 now create both the folder capsule and a UI session binding up front, writing the
@@ -167,15 +169,16 @@ binary, plus a deprecated `buddy` alias for older scripts. It runs `bun install`
 under `tools/buddy/`, builds the UI from `tools/buddy/packages/opencode`, and
 installs the resulting binary as `$(INSTALL_DIR)/djinn-ui` and
 `$(INSTALL_DIR)/buddy` alongside `$(INSTALL_DIR)/djinn`.
-Use `djinn doctor buddy` to inspect this resolver without launching the UI. Normal
+Use `djinn doctor ui` to inspect this resolver without launching the UI. Normal
 output shows the configured resolver candidates and reports `<unavailable>` when no
 configured or in-tree command exists. Add `--session <session>` to include
 `runtime/buddy.json.command` for a specific folder session, or `--json` for scripts.
+Legacy `djinn doctor buddy` remains accepted as an alias.
 When a bound Buddy session's recorded workspace/repo path no longer exists, Djinn
 promotes the folder capsule to a session-local Buddy workspace: it removes the
 stale workspace and `[context.repo]` binding from `djinn.toml`, creates a new Buddy
 session for the folder path, records that id in `runtime/buddy.json`, and keeps the
-old Buddy id as an alias so existing `djinn -bs <old-id>` references continue to
+old Buddy id as an alias so existing `djinn -s <old-id>` references continue to
 resolve.
 `djinn session ls` surfaces the Buddy session id when `runtime/buddy.json` records
 one, so picker/list views can show the shared session's Buddy binding.
@@ -514,6 +517,7 @@ Run:
 
 ```bash
 djinn
+djinn --ui
 djinn -s <folder-session>
 djinn session chat <folder-session>
 djinn tui  # deprecated alias for djinn

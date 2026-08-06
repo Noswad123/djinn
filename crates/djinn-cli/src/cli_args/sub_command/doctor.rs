@@ -13,6 +13,7 @@ pub(crate) struct DoctorArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum DoctorCommand {
     /// Show which Djinn UI command Djinn will use without launching the UI.
+    #[command(name = "ui", alias = "buddy")]
     Buddy(DoctorBuddyArgs),
 }
 
@@ -39,11 +40,11 @@ mod tests {
     use crate::cli_args::{Cli, Command};
 
     #[test]
-    fn parses_doctor_buddy_command() {
+    fn parses_doctor_ui_command() {
         let cli = Cli::try_parse_from([
             "djinn",
             "doctor",
-            "buddy",
+            "ui",
             "--session",
             "rebrand-opencode",
             "--json",
@@ -57,5 +58,7 @@ mod tests {
 
         assert_eq!(args.session.as_deref(), Some(Path::new("rebrand-opencode")));
         assert!(args.json);
+
+        assert!(Cli::try_parse_from(["djinn", "doctor", "buddy"]).is_ok());
     }
 }

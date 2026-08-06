@@ -29,7 +29,7 @@ pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
 pub(crate) const DJINN_UI_BIN_ENV: &str = "DJINN_UI_BIN";
 pub(crate) const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/djinn-ui";
 const LEGACY_IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/buddy";
-const EXPLICIT_BUDDY_COMMAND_SOURCE: &str = "--buddy-bin";
+const EXPLICIT_BUDDY_COMMAND_SOURCE: &str = "--ui-bin";
 pub(crate) const UNAVAILABLE_BUDDY_COMMAND_SOURCE: &str = "unavailable";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

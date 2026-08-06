@@ -88,10 +88,11 @@ turns, and `djinn session watch` to follow lifecycle status. `djinn session init
 <name>` and new auto-created top-level `djinn ask "..."` sessions create both the
 folder capsule and the Buddy-compatible UI session binding recorded in
 `runtime/buddy.json`; the Djinn UI is expected to ship with Djinn, so these
-creation paths fail if that binding cannot be created or reused. `djinn -b`,
-`djinn -b -s <ref>`, and `djinn -bs <ref>` remain deprecated Buddy-era aliases for
-the same UI launch path. `djinn session chat <ref>` is the explicit interactive
-chat spelling for the same folder-session UI experience. Core
+creation paths fail if that binding cannot be created or reused. `djinn --ui` is
+the explicit UI launch spelling; `djinn -b`, `djinn -b -s <ref>`, and
+`djinn -bs <ref>` remain deprecated Buddy-era aliases for the same UI launch path.
+`djinn session chat <ref>` is the explicit interactive chat spelling for the same
+folder-session UI experience. Core
 existing-session entry points such as `djinn -s`, `session open`, `session status`,
 `session watch`, `session run`, `session chat`, and `session rm`
 resolve folder-session names/paths plus current or stale Buddy ids already recorded
