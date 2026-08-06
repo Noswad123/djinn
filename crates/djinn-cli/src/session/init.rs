@@ -5,17 +5,18 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
+use crate::agent::roles::{resolve_agent_role_selection_from_config, AgentRoleSelection};
+use crate::agent::workspace::clean_unique_paths;
 use crate::buddy::{
     ensure_buddy_session_binding, read_buddy_runtime_state, BuddyBindingInput, BuddyBridgeBackend,
     BuddySessionBackend,
 };
+use crate::config::native::{default_djinn_config_path, load_djinn_config_from_paths};
+use crate::model::resolution::resolve_agent_model_from_config;
 use crate::session::context::{discover_folder_session_context, SessionContextDiscoverReport};
-use crate::{
-    clean_unique_paths, default_djinn_config_path, load_djinn_config_from_paths,
-    read_folder_session_manifest, resolve_agent_model_from_config,
-    resolve_agent_role_selection_from_config, resolve_session_dir, toml_string, AgentRoleSelection,
-    SessionInitArgs,
-};
+use crate::session::manifest::{read_folder_session_manifest, toml_string};
+use crate::session::reference::resolve_session_dir;
+use crate::SessionInitArgs;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionInitReport {

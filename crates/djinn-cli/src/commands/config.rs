@@ -16,11 +16,11 @@ use crate::config::preview::{
 };
 use crate::config::write::{write_config_export_preview, write_config_import_preview};
 use crate::model::resolution::{default_copilot_config_path, default_opencode_config_path};
+use crate::util::text::output_format;
 use crate::{
-    output_format, ConfigArgs, ConfigCommand, ConfigDoctorArgs, ConfigExportArgs,
-    ConfigExportCopilotArgs, ConfigExportOpencodeArgs, ConfigExportTarget, ConfigImportArgs,
-    ConfigImportCopilotArgs, ConfigImportOpencodeArgs, ConfigImportSource, ConfigShowArgs,
-    ConfigSource,
+    ConfigArgs, ConfigCommand, ConfigDoctorArgs, ConfigExportArgs, ConfigExportCopilotArgs,
+    ConfigExportOpencodeArgs, ConfigExportTarget, ConfigImportArgs, ConfigImportCopilotArgs,
+    ConfigImportOpencodeArgs, ConfigImportSource, ConfigShowArgs, ConfigSource,
 };
 
 pub(crate) fn run_config(args: ConfigArgs) -> Result<()> {

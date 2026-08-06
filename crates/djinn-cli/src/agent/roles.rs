@@ -1,10 +1,10 @@
 use anyhow::{bail, Result};
 use serde::Serialize;
 
-use crate::{
-    profile_model_from_config, push_unique_string, resolve_agent_profile_from_config, DjinnConfig,
-    OutputFormat,
-};
+use crate::config::model::DjinnConfig;
+use crate::model::resolution::{profile_model_from_config, resolve_agent_profile_from_config};
+use crate::util::text::push_unique_string;
+use crate::OutputFormat;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct AgentRoleView {
@@ -178,7 +178,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::parse_djinn_config;
+    use crate::config::native::parse_djinn_config;
 
     #[test]
     fn configured_agent_roles_render_effective_model_and_resolve_names() {

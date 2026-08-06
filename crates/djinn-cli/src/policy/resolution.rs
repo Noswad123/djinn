@@ -11,7 +11,8 @@ use serde_json::Value;
 
 use crate::agent::config::AgentEffectivePolicyRule;
 use crate::config::model::DjinnConfigPermission;
-use crate::{effective_djinn_config, opencode_model_config_paths};
+use crate::config::native::effective_djinn_config;
+use crate::model::resolution::opencode_model_config_paths;
 
 pub(crate) fn resolve_agent_read_access_policy(
     profile: &str,

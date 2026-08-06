@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::SessionValidateCandidateEntry;
+use crate::promotion::validation::SessionValidateCandidateEntry;
+use crate::session::manifest::manifest_root_string_value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PromotionCandidate {
@@ -223,7 +224,7 @@ fn read_candidate_body_path(
 }
 
 pub(crate) fn candidate_string_value(content: &str, key: &str) -> Option<String> {
-    crate::manifest_root_string_value(content, key)
+    manifest_root_string_value(content, key)
 }
 
 pub(crate) fn candidate_string_array_value(content: &str, key: &str) -> Vec<String> {

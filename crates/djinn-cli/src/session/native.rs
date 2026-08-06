@@ -4,6 +4,8 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use djinn_memory::{AgentSession, AgentSessionId, AgentSessionStore, JsonlAgentSessionStore};
 
+use crate::storage::stores::agent_session_store;
+
 const FOLDER_NATIVE_SESSION_DIR: &str = ".djinn";
 
 pub(crate) fn folder_agent_session_store(session_dir: &Path) -> JsonlAgentSessionStore {
@@ -17,7 +19,7 @@ pub(crate) fn load_folder_native_agent_session(
     folder_agent_session_store(session_dir)
         .load_session(id)
         .ok()
-        .or_else(|| crate::agent_session_store().load_session(id).ok())
+        .or_else(|| agent_session_store().load_session(id).ok())
 }
 
 pub(crate) fn agent_session_store_for_folder_session(
@@ -28,7 +30,7 @@ pub(crate) fn agent_session_store_for_folder_session(
     if folder_store.load_session(id).is_ok() {
         folder_store
     } else {
-        crate::agent_session_store()
+        agent_session_store()
     }
 }
 

@@ -5,11 +5,13 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::agent::instructions::ResolvedAgentInstruction;
 use crate::session::artifact::resolve_folder_session_repo_open_target;
+use crate::session::reference::{folder_session_slug, resolve_existing_folder_session_dir};
+use crate::util::text::truncate_table_cell;
 use crate::{
-    folder_session_slug, resolve_existing_folder_session_dir, truncate_table_cell,
-    ResolvedAgentInstruction, SessionContextAddArgs, SessionContextArgs, SessionContextCommand,
-    SessionContextDiscoverArgs, SessionContextLsArgs, SessionContextRmArgs,
+    SessionContextAddArgs, SessionContextArgs, SessionContextCommand, SessionContextDiscoverArgs,
+    SessionContextLsArgs, SessionContextRmArgs,
 };
 
 const FOLDER_SESSION_CONTEXT_MAX_FILE_BYTES: u64 = 32 * 1024;

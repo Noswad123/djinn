@@ -8,15 +8,20 @@ use serde::Serialize;
 
 use crate::promotion::candidate::{candidate_string_array_value, candidate_string_value};
 use crate::runtime::background_run::BackgroundRunStatus;
-use crate::util::text::yes_no;
-use crate::util::toml::upsert_toml_root_string;
-use crate::{
-    inspect_folder_session_context_dir, load_folder_native_agent_session,
-    parse_manifest_string_value, read_folder_session_event_turns, read_folder_session_manifest,
-    read_folder_session_turns, resolve_existing_folder_session_dir,
-    resolve_existing_folder_session_reference, FolderSessionManifest, FolderSessionTurnDigest,
-    SessionStatusArgs,
+use crate::session::context::inspect_folder_session_context_dir;
+use crate::session::manifest::{
+    parse_manifest_string_value, read_folder_session_manifest, FolderSessionManifest,
 };
+use crate::session::native::load_folder_native_agent_session;
+use crate::session::reference::{
+    resolve_existing_folder_session_dir, resolve_existing_folder_session_reference,
+};
+use crate::session::turns::{
+    read_folder_session_event_turns, read_folder_session_turns, FolderSessionTurnDigest,
+};
+use crate::util::text::{non_empty_string, yes_no};
+use crate::util::toml::upsert_toml_root_string;
+use crate::SessionStatusArgs;
 
 pub(crate) fn session_status(args: SessionStatusArgs) -> Result<()> {
     let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
@@ -355,7 +360,7 @@ pub(crate) fn session_status_lifecycle(
         let report = SessionStatusLifecycleReport {
             state: lifecycle.state.as_str().to_string(),
             mode: lifecycle.mode.map(|mode| mode.as_str().to_string()),
-            updated_at: crate::non_empty_string(&lifecycle.updated_at),
+            updated_at: non_empty_string(&lifecycle.updated_at),
             reason: lifecycle.reason,
             note: lifecycle.note,
         };

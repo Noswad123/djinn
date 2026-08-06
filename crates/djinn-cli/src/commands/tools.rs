@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use djinn_tools::ToolEntry;
 
+use crate::commands::context::context_store;
 use crate::util::editor::open_editor_at;
+use crate::util::text::output_format;
 use crate::{
-    context_store, output_format, IndexToolsArgs, OpenToolArgs, OutputFormat, SearchToolsArgs,
-    ToolLookupArgs, ToolsScope,
+    IndexToolsArgs, OpenToolArgs, OutputFormat, SearchToolsArgs, ToolLookupArgs, ToolsScope,
 };
 
 pub(crate) fn list_tools(scope: ToolsScope) -> Result<()> {

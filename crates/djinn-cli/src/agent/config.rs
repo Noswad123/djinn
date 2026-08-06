@@ -2,8 +2,8 @@ use anyhow::{bail, Result};
 use djinn_agent::{PermissionPolicy, ReadAccessPolicy, ToolSpec};
 use serde::Serialize;
 
-use crate::util::text::plural_suffix;
-use crate::{push_unique_string, OutputFormat};
+use crate::util::text::{plural_suffix, push_unique_string};
+use crate::OutputFormat;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct AgentEffectiveConfig {

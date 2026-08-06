@@ -5,12 +5,12 @@ use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 use serde::Serialize;
 
+use crate::session::events::read_event_turn_pairs;
+use crate::session::reference::resolve_existing_folder_session_dir;
 use crate::util::editor::open_editor_path;
 use crate::util::shell::shell_quote;
-use crate::{
-    ensure_trailing_newline, read_event_turn_pairs, resolve_existing_folder_session_dir,
-    SessionTranscriptArgs,
-};
+use crate::util::text::ensure_trailing_newline;
+use crate::SessionTranscriptArgs;
 
 pub(crate) fn session_transcript(args: SessionTranscriptArgs) -> Result<()> {
     run_session_transcript(SessionTranscriptOptions {

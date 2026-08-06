@@ -11,17 +11,19 @@ use serde::{Deserialize, Serialize};
 
 use djinn_memory::{AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId};
 
+use crate::session::events::read_event_turn_pairs;
+use crate::session::manifest::{
+    folder_session_manifest_meta, read_folder_session_manifest, session_manifest_workspace_path,
+};
+use crate::session::projection::write_folder_session_events_jsonl;
 use crate::session::reference::{
-    resolve_existing_folder_session_reference, resolve_existing_folder_session_reference_in_root,
-    resolve_session_dir_in_root,
+    default_folder_session_root, resolve_existing_folder_session_reference,
+    resolve_existing_folder_session_reference_in_root, resolve_session_dir,
+    resolve_session_dir_in_root, safe_folder_session_slug,
 };
 use crate::util::shell::shell_quote_if_needed as shell_quote;
-use crate::{
-    default_folder_session_root, ensure_trailing_newline, folder_session_manifest_meta,
-    read_event_turn_pairs, read_folder_session_manifest, resolve_session_dir,
-    safe_folder_session_slug, session_manifest_workspace_path, write_folder_session_events_jsonl,
-    yes_no, OutputFormat, SessionChatArgs,
-};
+use crate::util::text::{ensure_trailing_newline, yes_no};
+use crate::{OutputFormat, SessionChatArgs};
 
 pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
 pub(crate) const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/buddy";

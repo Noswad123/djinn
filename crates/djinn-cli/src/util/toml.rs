@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::toml_string;
+use crate::session::manifest::toml_string;
 
 pub(crate) fn upsert_toml_root_string(content: &str, key: &str, value: &str) -> Result<String> {
     let rendered = format!("{key} = {}", toml_string(value)?);

@@ -5,10 +5,11 @@ use djinn_agent::{tools_with_policies_file_history_and_gate, ToolSpec};
 use djinn_memory::{AgentSessionPolicyRule, AgentSessionPolicySnapshot, AgentSessionRuntimeConfig};
 
 use crate::agent::config::{AgentEffectiveConfig, AgentEffectivePolicyRule};
-use crate::{
+use crate::agent::workspace::resolve_agent_workspace;
+use crate::policy::resolution::{
     agent_policy_guardrails, effective_permission_rules_with_sources,
     effective_read_access_rules_with_sources, resolve_agent_permission_policy,
-    resolve_agent_read_access_policy, resolve_agent_workspace,
+    resolve_agent_read_access_policy,
 };
 
 pub(crate) fn agent_effective_config_from_parts(

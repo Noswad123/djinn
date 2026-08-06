@@ -4,10 +4,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::{
+use crate::session::reference::resolve_existing_folder_session_dir;
+use crate::session::turns::{
     compact_text_snippet, read_folder_session_event_turns, read_folder_session_turns,
-    resolve_existing_folder_session_dir, FolderSessionTurnDigest, SessionCompactArgs,
-    FOLDER_SESSION_COMPACT_END_MARKER, FOLDER_SESSION_COMPACT_SNIPPET_CHARS,
+    FolderSessionTurnDigest,
+};
+use crate::{
+    SessionCompactArgs, FOLDER_SESSION_COMPACT_END_MARKER, FOLDER_SESSION_COMPACT_SNIPPET_CHARS,
     FOLDER_SESSION_COMPACT_START_MARKER,
 };
 

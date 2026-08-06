@@ -2,10 +2,9 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::promotion::candidate::{promotion_candidate_paths, validate_promotion_candidate_path};
-use crate::{
-    read_folder_session_manifest, resolve_existing_folder_session_dir,
-    SessionValidateCandidatesArgs,
-};
+use crate::session::manifest::read_folder_session_manifest;
+use crate::session::reference::resolve_existing_folder_session_dir;
+use crate::SessionValidateCandidatesArgs;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SessionValidateCandidatesReport {
@@ -117,7 +116,8 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::{create_promotion_session, SessionPromoteArgs, SessionPromoteType};
+    use crate::promotion::session::create_promotion_session;
+    use crate::{SessionPromoteArgs, SessionPromoteType};
 
     #[test]
     fn session_validate_candidates_reports_valid_and_invalid_files_without_writeback() {

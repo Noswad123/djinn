@@ -14,18 +14,20 @@ use crate::agent::roles::{
     resolve_agent_role_selection_from_config,
 };
 use crate::agent::runtime_config::{agent_effective_config_from_parts, agent_tool_specs};
+use crate::agent::workspace::resolve_agent_workspace;
 use crate::commands::agent_ask::legacy_agent_ask;
+use crate::config::native::effective_djinn_config;
 use crate::model::resolution::{
     agent_model_options, agent_profile_options, resolve_agent_model,
     resolve_agent_model_from_config, resolve_agent_profile,
 };
+use crate::util::text::output_format;
 use crate::{
-    effective_djinn_config, output_format, resolve_agent_workspace, AgentArgs, AgentCommand,
-    AgentConfigArgs, AgentConfigCommand, AgentConfigListArgs, AgentConfigShowArgs,
-    AgentFileHistoryArgs, AgentFileHistoryCommand, AgentPolicyArgs, AgentPolicyAuditArgs,
-    AgentPolicyCommand, AgentPolicyListArgs, AgentPolicyRevokeArgs, AgentToolsArgs,
-    AgentToolsCommand, AgentToolsListArgs, AgentToolsShowArgs, AgentsArgs, AgentsCommand,
-    AgentsListArgs, AgentsShowArgs,
+    AgentArgs, AgentCommand, AgentConfigArgs, AgentConfigCommand, AgentConfigListArgs,
+    AgentConfigShowArgs, AgentFileHistoryArgs, AgentFileHistoryCommand, AgentPolicyArgs,
+    AgentPolicyAuditArgs, AgentPolicyCommand, AgentPolicyListArgs, AgentPolicyRevokeArgs,
+    AgentToolsArgs, AgentToolsCommand, AgentToolsListArgs, AgentToolsShowArgs, AgentsArgs,
+    AgentsCommand, AgentsListArgs, AgentsShowArgs,
 };
 
 pub(crate) fn run_agent(args: AgentArgs) -> Result<()> {

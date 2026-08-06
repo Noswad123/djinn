@@ -9,14 +9,16 @@ use djinn_memory::{ActionStore, MemoryInput, MemorySource};
 use djinn_skills::SkillStore;
 use serde::Serialize;
 
+use crate::commands::skills::skill_store;
 use crate::promotion::candidate::{
     promotion_todo_adapter, resolve_promotion_candidates, PromotionCandidate,
 };
+use crate::session::manifest::{read_folder_session_manifest, toml_string};
+use crate::session::reference::resolve_existing_folder_session_dir;
+use crate::storage::stores::{action_store, memory_store};
 use crate::util::path::expand_tilde_path;
-use crate::{
-    action_store, ensure_trailing_newline, memory_store, read_folder_session_manifest,
-    resolve_existing_folder_session_dir, skill_store, toml_string, SessionDecisionArgs,
-};
+use crate::util::text::ensure_trailing_newline;
+use crate::SessionDecisionArgs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1055,7 +1057,8 @@ fn render_session_decision_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{create_promotion_session, SessionPromoteArgs, SessionPromoteType};
+    use crate::promotion::session::create_promotion_session;
+    use crate::{SessionPromoteArgs, SessionPromoteType};
 
     #[test]
     fn session_accept_and_deny_record_promotion_decisions_with_dry_run() {

@@ -21,6 +21,7 @@ use crate::agent::workspace::{
     load_djinn_config_for_workspace, nonempty_owned_string, resolve_agent_workspace,
 };
 use crate::buddy::{ensure_folder_session_buddy_binding_for_ask, BuddyBridgeBackend};
+use crate::commands::agent::warn_legacy_agent_command;
 use crate::model::completion::complete_openai_messages_with_progress;
 use crate::model::resolution::resolve_agent_model_from_config;
 use crate::promotion::generation::session_run_promotion;
@@ -44,7 +45,7 @@ use crate::session::run_support::{
 use crate::storage::stores::agent_session_store;
 use crate::util::editor::open_editor_path;
 use crate::util::prompt::{prompt_title, resolve_agent_request_prompt};
-use crate::{warn_legacy_agent_command, AgentAskArgs, SessionRunArgs};
+use crate::{AgentAskArgs, SessionRunArgs};
 
 pub(crate) fn top_level_ask(args: AgentAskArgs) -> Result<()> {
     agent_ask(args, true, AgentAskOutputMode::Ask)

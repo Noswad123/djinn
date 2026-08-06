@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::{default_djinn_config_path, load_djinn_config_from_paths, DjinnConfigLoadReport};
+use crate::config::model::DjinnConfigLoadReport;
+use crate::config::native::{default_djinn_config_path, load_djinn_config_from_paths};
 
 pub(crate) fn load_djinn_config_for_workspace(workspace: &str) -> Result<DjinnConfigLoadReport> {
     load_djinn_config_from_paths(clean_unique_paths(vec![

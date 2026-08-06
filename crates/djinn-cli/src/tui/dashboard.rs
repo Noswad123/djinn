@@ -2,14 +2,17 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 
-use crate::{
-    accept_memory, context_store, create_promotion_session, folder_session_event_health_label,
-    format_session_candidate_entry, format_session_candidate_status, list_cache_folder_sessions,
-    memory_store, open_skill_entry, open_tool_entry, plural_suffix, remove_memories_silent,
-    remove_suggestions, run_folder_session_tui, scan_tools, session_promote_type_label,
-    skill_records, suggestion_store, tool_roots, tui_candidate_row, AcceptMemoryArgs,
-    SessionPromoteArgs, SessionPromoteType, TuiArgs, TuiView,
-};
+use crate::commands::context::context_store;
+use crate::commands::memory::{accept_memory, remove_memories_silent, remove_suggestions};
+use crate::commands::skills::{open_skill_entry, skill_records};
+use crate::commands::tools::{open_tool_entry, scan_tools, tool_roots};
+use crate::promotion::session::{create_promotion_session, session_promote_type_label};
+use crate::session::list::{folder_session_event_health_label, list_cache_folder_sessions};
+use crate::session::status::{format_session_candidate_entry, format_session_candidate_status};
+use crate::session::tui::{run_folder_session_tui, tui_candidate_row};
+use crate::storage::stores::{memory_store, suggestion_store};
+use crate::util::text::plural_suffix;
+use crate::{AcceptMemoryArgs, SessionPromoteArgs, SessionPromoteType, TuiArgs, TuiView};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TuiRunOutcome {

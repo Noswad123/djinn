@@ -5,12 +5,17 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::{
-    default_folder_session_root, folder_session_display_name, read_event_turn_pairs,
-    read_folder_session_event_turns, read_folder_session_turns, read_optional_markdown_file,
-    resolve_existing_folder_session_dir, resolve_session_dir, toml_string, truncate,
-    SessionPromoteArgs, SessionPromoteType,
+use crate::session::events::read_event_turn_pairs;
+use crate::session::manifest::toml_string;
+use crate::session::reference::{
+    default_folder_session_root, folder_session_display_name, resolve_existing_folder_session_dir,
+    resolve_session_dir,
 };
+use crate::session::turns::{
+    read_folder_session_event_turns, read_folder_session_turns, read_optional_markdown_file,
+};
+use crate::util::text::truncate;
+use crate::{SessionPromoteArgs, SessionPromoteType};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionPromoteReport {

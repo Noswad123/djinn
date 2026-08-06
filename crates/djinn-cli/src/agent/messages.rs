@@ -1,7 +1,7 @@
 use djinn_agent::{ModelMessage, ModelRole};
 use djinn_memory::{AgentSession, AgentSessionEventKind};
 
-use crate::ResolvedAgentInstruction;
+use crate::agent::instructions::ResolvedAgentInstruction;
 
 pub(crate) fn agent_system_message(
     workspace: &str,

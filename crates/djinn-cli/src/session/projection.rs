@@ -10,10 +10,11 @@ use djinn_memory::{
 };
 
 use crate::session::init::session_context_readme;
-use crate::{
-    ensure_trailing_newline, folder_agent_session_store, folder_session_manifest_meta,
-    write_agent_session_toml, FolderSessionManifest,
+use crate::session::manifest::{
+    folder_session_manifest_meta, write_agent_session_toml, FolderSessionManifest,
 };
+use crate::session::native::folder_agent_session_store;
+use crate::util::text::ensure_trailing_newline;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentSessionDirProjection {

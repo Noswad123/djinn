@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::{effective_djinn_config, truncate};
+use crate::config::native::effective_djinn_config;
+use crate::util::text::truncate;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct ResolvedAgentInstruction {

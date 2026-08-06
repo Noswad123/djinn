@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
+use crate::agent::workspace::clean_unique_paths;
 use crate::config::model::DjinnConfig;
-use crate::{clean_unique_paths, effective_djinn_config};
+use crate::config::native::effective_djinn_config;
 
 pub(crate) fn agent_profile_options(current: &str) -> Result<Vec<String>> {
     let mut profiles = vec!["default".to_string(), current.trim().to_string()];

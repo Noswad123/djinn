@@ -4,24 +4,30 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::buddy::session_chat;
+use crate::commands::agent_ask::session_run;
 use crate::promotion::decision::{session_decide, SessionDecisionAction};
 use crate::promotion::validation::session_validate_candidates;
+use crate::runtime::background_run::latest_background_session_run_status;
 use crate::session::artifact::session_open;
 use crate::session::artifact::{
     fallback_folder_session_open_target, resolve_folder_session_open_target, SessionOpenTarget,
 };
 use crate::session::context::session_context_discover;
-use crate::session::reference::resolve_existing_folder_session_reference;
+use crate::session::events::latest_event_rebuild_backup_path;
+use crate::session::manifest::read_folder_session_manifest;
+use crate::session::reference::{
+    folder_session_display_name, resolve_existing_folder_session_reference,
+};
+use crate::session::status::{
+    folder_session_status, format_session_candidate_entry, format_session_candidate_status,
+    latest_promotion_generation_response_path, SessionStatusCandidateEntry,
+};
 use crate::session::watch::session_watch;
 use crate::util::editor::{default_editor, open_editor_path};
 use crate::util::shell::shell_quote;
 use crate::{
-    folder_session_display_name, folder_session_status, format_session_candidate_entry,
-    format_session_candidate_status, latest_background_session_run_status,
-    latest_event_rebuild_backup_path, latest_promotion_generation_response_path,
-    read_folder_session_manifest, session_run, SessionChatArgs, SessionContextDiscoverArgs,
-    SessionDecisionArgs, SessionOpenArgs, SessionRunArgs, SessionStatusCandidateEntry,
-    SessionValidateCandidatesArgs, SessionWatchArgs, DEFAULT_AGENT_MAX_TOOL_ROUNDS,
+    SessionChatArgs, SessionContextDiscoverArgs, SessionDecisionArgs, SessionOpenArgs,
+    SessionRunArgs, SessionValidateCandidatesArgs, SessionWatchArgs, DEFAULT_AGENT_MAX_TOOL_ROUNDS,
 };
 
 pub(crate) fn run_folder_session_tui(dir: PathBuf, editor: Option<String>) -> Result<()> {

@@ -8,7 +8,8 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{clean_unique_paths, copilot_config_roots};
+use crate::agent::workspace::clean_unique_paths;
+use crate::model::resolution::copilot_config_roots;
 
 #[derive(Debug, Deserialize)]
 struct CopilotInternalTokenResponse {

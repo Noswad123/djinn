@@ -15,10 +15,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{
-    effective_djinn_config, opencode_model_config_paths, AuthArgs, AuthCommand, AuthLoginArgs,
-    AuthProvider, OpenAiLoginMethod,
-};
+use crate::config::native::effective_djinn_config;
+use crate::model::resolution::opencode_model_config_paths;
+use crate::{AuthArgs, AuthCommand, AuthLoginArgs, AuthProvider, OpenAiLoginMethod};
 
 #[allow(dead_code)]
 pub(crate) const OPENCODE_OPENAI_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";

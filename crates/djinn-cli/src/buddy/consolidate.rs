@@ -10,11 +10,13 @@ use crate::buddy::{
     write_buddy_runtime_state, BuddyBridgeBackend, BuddyRuntimeState, BuddySessionBackend,
     BuddySessionListRecord,
 };
-use crate::{
-    default_folder_session_root, ensure_trailing_newline, folder_session_reference_name,
-    list_folder_sessions_in_root, non_empty_string, safe_folder_session_slug, toml_string, yes_no,
-    FolderSessionSummary, SessionConsolidateArgs,
+use crate::session::list::{list_folder_sessions_in_root, FolderSessionSummary};
+use crate::session::manifest::toml_string;
+use crate::session::reference::{
+    default_folder_session_root, folder_session_reference_name, safe_folder_session_slug,
 };
+use crate::util::text::{ensure_trailing_newline, non_empty_string, yes_no};
+use crate::SessionConsolidateArgs;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionConsolidateReport {

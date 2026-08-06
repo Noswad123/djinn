@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
+use crate::session::manifest::{manifest_root_string_value, toml_string};
 use crate::util::toml::upsert_toml_root_string;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,24 +42,24 @@ pub(crate) fn write_background_session_run_marker(
     let now = chrono::Local::now().to_rfc3339();
     let mut content = String::new();
     content.push_str("version = 1\n");
-    content.push_str(&format!("run_id = {}\n", crate::toml_string(run_id)?));
-    content.push_str(&format!("started_at = {}\n", crate::toml_string(&now)?));
-    content.push_str(&format!("heartbeat_at = {}\n", crate::toml_string(&now)?));
+    content.push_str(&format!("run_id = {}\n", toml_string(run_id)?));
+    content.push_str(&format!("started_at = {}\n", toml_string(&now)?));
+    content.push_str(&format!("heartbeat_at = {}\n", toml_string(&now)?));
     content.push_str("heartbeat_phase = \"spawned\"\n");
     content.push_str(&format!(
         "session_dir = {}\n",
-        crate::toml_string(&session_dir.display().to_string())?
+        toml_string(&session_dir.display().to_string())?
     ));
     content.push_str(&format!("pid = {pid}\n"));
     content.push_str(&format!(
         "log_path = {}\n",
-        crate::toml_string(&log_path.display().to_string())?
+        toml_string(&log_path.display().to_string())?
     ));
-    content.push_str(&format!("command = {}\n", crate::toml_string(command)?));
+    content.push_str(&format!("command = {}\n", toml_string(command)?));
     if let Some(native_session_id) = native_session_id {
         content.push_str(&format!(
             "native_session_id = {}\n",
-            crate::toml_string(native_session_id)?
+            toml_string(native_session_id)?
         ));
     }
     fs::write(&marker_path, content)
@@ -91,11 +92,11 @@ pub(crate) fn latest_background_session_run_status(
         .max_by_key(|(modified, _)| *modified)?
         .1;
     let content = fs::read_to_string(&marker).ok()?;
-    let pid = crate::manifest_root_string_value(&content, "pid")?
+    let pid = manifest_root_string_value(&content, "pid")?
         .parse::<u32>()
         .ok()?;
-    let log_path = crate::manifest_root_string_value(&content, "log_path");
-    let heartbeat_at = crate::manifest_root_string_value(&content, "heartbeat_at");
+    let log_path = manifest_root_string_value(&content, "log_path");
+    let heartbeat_at = manifest_root_string_value(&content, "heartbeat_at");
     let heartbeat_age_seconds = heartbeat_at
         .as_deref()
         .and_then(background_run_heartbeat_age_seconds);
@@ -104,7 +105,7 @@ pub(crate) fn latest_background_session_run_status(
         .as_deref()
         .and_then(|path| fs::metadata(path).ok());
     Some(BackgroundRunStatus {
-        run_id: crate::manifest_root_string_value(&content, "run_id").unwrap_or_else(|| {
+        run_id: manifest_root_string_value(&content, "run_id").unwrap_or_else(|| {
             log_path_buf
                 .as_deref()
                 .and_then(|path| path.file_stem())
@@ -115,11 +116,11 @@ pub(crate) fn latest_background_session_run_status(
         marker_path: Some(marker.display().to_string()),
         pid,
         log_path,
-        command: crate::manifest_root_string_value(&content, "command"),
-        native_session_id: crate::manifest_root_string_value(&content, "native_session_id"),
+        command: manifest_root_string_value(&content, "command"),
+        native_session_id: manifest_root_string_value(&content, "native_session_id"),
         last_observed_event: None,
         heartbeat_at,
-        heartbeat_phase: crate::manifest_root_string_value(&content, "heartbeat_phase"),
+        heartbeat_phase: manifest_root_string_value(&content, "heartbeat_phase"),
         heartbeat_age_seconds,
         log_bytes: log_metadata.as_ref().map(|metadata| metadata.len()),
         log_modified_at: log_metadata
@@ -127,7 +128,7 @@ pub(crate) fn latest_background_session_run_status(
             .and_then(|metadata| metadata.modified().ok())
             .and_then(system_time_to_rfc3339),
         log_tail: log_path_buf.as_deref().and_then(latest_nonempty_file_line),
-        started_at: crate::manifest_root_string_value(&content, "started_at"),
+        started_at: manifest_root_string_value(&content, "started_at"),
         alive: process_pid_alive(pid),
     })
 }

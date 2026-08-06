@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
+use crate::agent::workspace::clean_unique_paths;
 use crate::config::model::{DjinnConfig, DjinnConfigFileReport, DjinnConfigLoadReport};
-use crate::{clean_unique_paths, OutputFormat};
+use crate::OutputFormat;
 
 pub(crate) fn default_djinn_config_path() -> PathBuf {
     djinn_config_dir().join("config.json")

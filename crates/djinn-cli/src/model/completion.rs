@@ -12,10 +12,12 @@ use djinn_memory::{
     AgentSessionId, AgentSessionStore, JsonlAgentSessionStore, JsonlFileHistoryStore,
 };
 
+use crate::auth::copilot::resolve_copilot_token;
+use crate::auth::openai::resolve_openai_auth;
+use crate::model::resolution::is_copilot_model;
 use crate::permission::gate::TerminalPermissionGate;
-use crate::{
-    is_copilot_model, resolve_agent_permission_policy, resolve_agent_read_access_policy,
-    resolve_copilot_token, resolve_openai_auth,
+use crate::policy::resolution::{
+    resolve_agent_permission_policy, resolve_agent_read_access_policy,
 };
 
 pub(crate) fn complete_openai_messages_with_progress<F>(

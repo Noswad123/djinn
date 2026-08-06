@@ -6,14 +6,18 @@ use anyhow::{bail, Context, Result};
 use djinn_agent::{CopilotClient, ModelClient, ModelMessage, ModelRequest, ModelRole};
 use serde::Serialize;
 
+use crate::agent::roles::resolve_agent_role_selection_from_config;
+use crate::agent::workspace::{load_djinn_config_for_workspace, resolve_agent_workspace};
+use crate::auth::copilot::resolve_copilot_token;
+use crate::model::completion::resolve_openai_client;
+use crate::model::resolution::{is_copilot_model, resolve_agent_model_from_config};
 use crate::promotion::candidate::{candidate_string_value, parse_promotion_candidate};
-use crate::{
-    ensure_trailing_newline, folder_session_slug, is_copilot_model,
-    load_djinn_config_for_workspace, plural_suffix, resolve_agent_model_from_config,
-    resolve_agent_role_selection_from_config, resolve_agent_workspace, resolve_copilot_token,
-    resolve_openai_client, session_manifest_workspace_path, toml_string, FolderSessionManifest,
-    SessionRunArgs,
+use crate::session::manifest::{
+    session_manifest_workspace_path, toml_string, FolderSessionManifest,
 };
+use crate::session::reference::folder_session_slug;
+use crate::util::text::{ensure_trailing_newline, plural_suffix};
+use crate::SessionRunArgs;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PromotionCandidateGenerationOptions {

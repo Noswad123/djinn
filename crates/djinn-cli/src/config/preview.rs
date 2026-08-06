@@ -5,18 +5,23 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde_json::{Map, Value};
 
+use crate::agent::workspace::clean_unique_paths;
+use crate::config::doctor::{
+    config_finding, copilot_config_doctor_from_value, dedupe_config_findings, json_pointer_escape,
+    opencode_config_doctor_from_value,
+};
 use crate::config::model::{
     ConfigDoctorFinding, ConfigExportPreview, ConfigImportPreview, DjinnConfig,
     DjinnConfigLoadReport, DjinnConfigPatchPreview, DjinnConfigPermission,
     DjinnPermissionPatchPreview,
 };
-use crate::{
-    clean_unique_paths, config_finding, copilot_config_doctor_from_value,
-    copilot_model_config_paths, copilot_model_options_from_value, dedupe_config_findings,
-    is_copilot_model, json_pointer_escape, load_djinn_config, opencode_config_doctor_from_value,
-    opencode_model_config_paths, opencode_permission_action, profile_model_from_config,
-    push_unique_string,
+use crate::config::native::load_djinn_config;
+use crate::model::resolution::{
+    copilot_model_config_paths, copilot_model_options_from_value, is_copilot_model,
+    opencode_model_config_paths, profile_model_from_config,
 };
+use crate::policy::resolution::opencode_permission_action;
+use crate::util::text::push_unique_string;
 
 pub(crate) fn opencode_config_import_preview(path: Option<PathBuf>) -> Result<ConfigImportPreview> {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
