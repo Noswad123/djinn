@@ -2,72 +2,138 @@ use std::io::{self, IsTerminal};
 
 use anyhow::{bail, Result};
 
+#[path = "agent/ask_command.rs"]
 mod agent_ask_command;
+#[path = "agent/commands.rs"]
 mod agent_commands;
+#[path = "agent/config.rs"]
 mod agent_config;
+#[path = "agent/file_history.rs"]
 mod agent_file_history;
+#[path = "agent/instructions.rs"]
 mod agent_instructions;
+#[path = "agent/messages.rs"]
 mod agent_messages;
+#[path = "agent/roles.rs"]
 mod agent_roles;
+#[path = "agent/runtime_config.rs"]
 mod agent_runtime_config;
+#[path = "agent/session_meta.rs"]
 mod agent_session_meta;
+#[path = "agent/workspace.rs"]
 mod agent_workspace;
+#[path = "runtime/background_run.rs"]
 mod background_run;
+#[path = "buddy/mod.rs"]
 mod buddy;
+#[path = "buddy/consolidate.rs"]
 mod buddy_consolidate;
 mod cli_args;
+#[path = "config/commands.rs"]
 mod config_commands;
+#[path = "config/doctor.rs"]
 mod config_doctor;
+#[path = "config/format.rs"]
 mod config_format;
+#[path = "config/model.rs"]
 mod config_model;
+#[path = "config/native.rs"]
 mod config_native;
+#[path = "config/preview.rs"]
 mod config_preview;
+#[path = "config/write.rs"]
 mod config_write;
+#[path = "context/commands.rs"]
 mod context_commands;
+#[path = "auth/copilot.rs"]
 mod copilot_auth;
+#[path = "commands/doctor.rs"]
 mod doctor_commands;
+#[path = "util/editor.rs"]
 mod editor;
+#[path = "memory/commands.rs"]
 mod memory_commands;
+#[path = "model/completion.rs"]
 mod model_completion;
+#[path = "model/resolution.rs"]
 mod model_resolution;
+#[path = "auth/openai.rs"]
 mod openai_auth;
+#[path = "util/path.rs"]
 mod path_util;
+#[path = "permission/gate.rs"]
 mod permission_gate;
+#[path = "policy/resolution.rs"]
 mod policy_resolution;
+#[path = "promotion/candidate.rs"]
 mod promotion_candidate;
+#[path = "promotion/cleanup.rs"]
 mod promotion_cleanup;
+#[path = "promotion/decision.rs"]
 mod promotion_decision;
+#[path = "promotion/export.rs"]
 mod promotion_export;
+#[path = "promotion/generation.rs"]
 mod promotion_generation;
+#[path = "promotion/session.rs"]
 mod promotion_session;
+#[path = "promotion/validation.rs"]
 mod promotion_validation;
+#[path = "util/prompt.rs"]
 mod prompt;
+#[path = "session/artifact.rs"]
 mod session_artifact;
+#[path = "session/commands.rs"]
 mod session_commands;
+#[path = "session/compact.rs"]
 mod session_compact;
+#[path = "session/context.rs"]
 mod session_context;
+#[path = "session/events.rs"]
 mod session_events;
+#[path = "session/init.rs"]
 mod session_init;
+#[path = "session/list.rs"]
 mod session_list;
+#[path = "session/manifest.rs"]
 mod session_manifest;
+#[path = "session/native.rs"]
 mod session_native;
+#[path = "session/projection.rs"]
 mod session_projection;
+#[path = "session/reference.rs"]
 mod session_reference;
+#[path = "session/registry.rs"]
 mod session_registry;
+#[path = "session/remove.rs"]
 mod session_remove;
+#[path = "session/run_support.rs"]
 mod session_run_support;
+#[path = "session/status.rs"]
 mod session_status;
+#[path = "session/transcript.rs"]
 mod session_transcript;
+#[path = "session/tui.rs"]
 mod session_tui;
+#[path = "session/turns.rs"]
 mod session_turns;
+#[path = "session/watch.rs"]
 mod session_watch;
+#[path = "util/shell.rs"]
 mod shell;
+#[path = "skills/commands.rs"]
 mod skills_commands;
+#[path = "storage/stores.rs"]
 mod stores;
+#[path = "util/text.rs"]
 mod text;
+#[path = "util/toml.rs"]
 mod toml_util;
+#[path = "tools/commands.rs"]
 mod tools_commands;
+#[path = "commands/top_level.rs"]
 mod top_level_commands;
+#[path = "tui/dashboard.rs"]
 mod tui_dashboard;
 pub(crate) use agent_ask_command::session_run;
 use agent_ask_command::top_level_ask;
