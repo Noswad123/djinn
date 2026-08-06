@@ -187,7 +187,6 @@ pub enum FolderSessionAction {
     DiscoverContext,
     ValidateCandidates,
     ValidateCandidate(String),
-    ShowPatternExportCommand(Option<String>),
     ShowValidateEventsCommand,
     ShowEventsCommand,
     ShowEventsWriteCommand,
@@ -684,14 +683,6 @@ fn folder_session_command_palette(
             "Check candidate TOML without accepting or rerunning the model",
             FolderSessionCommand::Action(FolderSessionAction::ValidateCandidates),
         ));
-        if view.promotion_type.as_deref() == Some("pattern") {
-            entries.push(folder_session_command_entry(
-                "Promotion",
-                "Show pattern export command",
-                "Show the exact export-pattern command for all pattern candidates",
-                FolderSessionCommand::Action(FolderSessionAction::ShowPatternExportCommand(None)),
-            ));
-        }
     }
     if let Some(path) = &view.latest_generation_response_path {
         entries.push(folder_session_command_entry(
@@ -742,16 +733,6 @@ fn folder_session_command_palette(
         ));
     }
     if let Some(candidate) = view.candidate_entries.get(selected_candidate) {
-        if candidate.candidate_type.as_deref() == Some("pattern") {
-            entries.push(folder_session_command_entry(
-                "Candidate",
-                "Show selected pattern export command",
-                &format!("Show export-pattern command for {}", candidate.id),
-                FolderSessionCommand::Action(FolderSessionAction::ShowPatternExportCommand(Some(
-                    candidate.id.clone(),
-                ))),
-            ));
-        }
         entries.extend([
             folder_session_command_entry(
                 "Candidate",
@@ -3879,10 +3860,10 @@ mod tests {
         assert!(palette
             .iter()
             .any(|entry| entry.label == "Validate selected candidate"));
-        assert!(palette
+        assert!(!palette
             .iter()
             .any(|entry| entry.label == "Show pattern export command"));
-        assert!(palette
+        assert!(!palette
             .iter()
             .any(|entry| entry.label == "Show selected pattern export command"));
         assert!(palette

@@ -28,29 +28,40 @@ Implications:
   providers, and permission gates.
 - The CLI should be a product surface, not just a thin debug wrapper.
 
-### D2. UI direction: Rust Ratatui inspired by OpenCode
+### D2. UI direction: Buddy-first interactive UI over Djinn-owned state
 
 **Status:** Decided
 
-Djinn's interactive UI should be built in Rust with `ratatui`, heavily inspired
-by OpenCode's interface.
+Djinn's rich interactive UI should be Buddy-first. Buddy is Djinn's embedded/forked
+OpenCode UI and is the preferred place to carry OpenCode-like layout, keyboard
+flow, command palette behavior, chat ergonomics, and visual polish. Djinn's Rust
+code owns the local runtime, folder-session files, CLI commands, policy, stores,
+and projections; Buddy presents and invokes those capabilities through explicit
+bridge/API seams. The Rust `djinn-tui` may remain as a lightweight dashboard,
+debug/status surface, or fallback, but it should not try to clone Buddy/OpenCode's
+full look and feel.
 
-Useful OpenCode-inspired concepts to consider:
+Buddy interaction direction:
 
-- chat-first layout;
-- status/footer area with cwd, session, model, and token/cost metadata;
-- command palette or slash-command flow;
-- dialogs for sessions, models, permissions, files, help, and quit;
-- logs/diagnostics view;
-- external editor integration.
+- Buddy tabs are the broad navigation primitive; `Tab` and `Shift+Tab` should move
+  between tabs.
+- Agent switching should move to an explicit `/agents` selector rather than using
+  Tab.
+- Command-palette commands should come from a configurable registry, with TOML as
+  the user/project configuration format.
+- Chat sessions should expose the bound Djinn folder session for inspection and
+  make `request.md` contents summonable into the next prompt on explicit user
+  action.
 
 Implications:
 
-- Keep terminal UI state outside the agent loop.
-- Design the harness so the TUI can subscribe to events rather than own the
-  runtime logic.
-- Avoid copying OpenCode implementation details directly; use it as interaction
-  inspiration.
+- Keep UI state outside the agent/runtime loop.
+- Keep Djinn folder sessions and `events.jsonl` as the source of truth for Djinn
+  work, even when Buddy is the active UI.
+- Prefer extending the Buddy/Djinn bridge or command registry over porting rich UI
+  flows into Ratatui.
+- Avoid moving business logic into Buddy; Buddy should request state/projections and
+  delegate mutations to Djinn commands or bridge actions.
 
 ### D3. Session storage: use JSONL for now
 
@@ -1162,9 +1173,9 @@ The first non-interactive agent slice is implemented as:
     actions as Djinn's standalone fallback, `skill` candidates write
     Djinn-managed `SKILL.md` files, and `pattern` candidates write a standalone
     `summary.md` synthesis plus accepted Markdown summaries under
-    `outputs/accepted/`; the focused Sessions TUI exposes pattern export handoff
-    commands for copying the exact `djinn session export-pattern ... --to <notes.md>`
-    invocation. Every writeback-capable
+    `outputs/accepted/`; `djinn session export-pattern ... --to <notes.md>` remains
+    an explicit CLI handoff for users who want to copy accepted pattern insight into
+    notes. Every writeback-capable
     candidate must carry explicit evidence links and type-specific fields:
     memories require `scope`, `kind`, and
     `confidence`; todos require `kind` and `confidence`; skills require
@@ -1189,6 +1200,19 @@ The first non-interactive agent slice is implemented as:
     prematurely creating a parallel first-class Djinn todo store.
     Legacy JSONL row identity and the removed saved-row CLI should not define the
     new UX or data model.
+86. The `djinn-cli` binary keeps CLI entry and dispatch thin. `main.rs` declares
+    the grouped modules, imports only the command handlers and parser pieces needed
+    for top-level routing, holds shared constants that have not yet justified a
+    separate defaults module, and dispatches parsed commands. Clap argument types
+    live under `crates/djinn-cli/src/cli_args/`, grouped into top-level collection
+    nouns, subcommand families, TUI args, and common output-format helpers.
+    Command handler/adaptor modules live under `commands/`; runtime/domain behavior
+    lives under owning groups such as `session`, `buddy`, `promotion`, `agent`,
+    `config`, `model`, `policy`, `permission`, `runtime`, `storage`, `tui`, and
+    `util`. Internal modules should import helpers from their owning grouped module
+    paths rather than through a crate-root `main.rs` facade. Runtime code may still
+    receive Clap-shaped argument structs at command boundaries, but deeper domain
+    logic should prefer focused option/report types when a seam is worth extracting.
 
 Not in the first slice unless explicitly reopened:
 

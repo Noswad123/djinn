@@ -131,7 +131,6 @@ fn handle_folder_session_tui_action(
                 json: false,
             })
         }
-        djinn_tui::FolderSessionAction::ShowPatternExportCommand(_) => Ok(()),
         djinn_tui::FolderSessionAction::ShowValidateEventsCommand
         | djinn_tui::FolderSessionAction::ShowEventsCommand
         | djinn_tui::FolderSessionAction::ShowEventsWriteCommand
@@ -230,10 +229,6 @@ pub(crate) fn folder_session_action_message(
                 shell_quote(candidate)
             )
         }
-        djinn_tui::FolderSessionAction::ShowPatternExportCommand(candidate) => format!(
-            "Pattern export command: {}",
-            pattern_export_command_hint(session_dir, candidate.as_deref())
-        ),
         djinn_tui::FolderSessionAction::ShowValidateEventsCommand => format!(
             "Event validation command: {}",
             session_events_command_hint(session_dir, "validate-events", false, None)
@@ -298,19 +293,6 @@ fn folder_session_open_action_message(
 pub(crate) fn editor_open_command_hint(path: &Path, editor: Option<&str>) -> String {
     let editor = editor.map(str::to_string).unwrap_or_else(default_editor);
     format!("{} {}", editor, shell_quote(&path.display().to_string()))
-}
-
-fn pattern_export_command_hint(session_dir: &Path, candidate: Option<&str>) -> String {
-    let mut command = format!(
-        "djinn session export-pattern {}",
-        shell_quote(&session_dir.display().to_string())
-    );
-    if let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
-        command.push(' ');
-        command.push_str(&shell_quote(candidate));
-    }
-    command.push_str(" --to <notes.md>");
-    command
 }
 
 fn session_events_command_hint(
@@ -633,19 +615,6 @@ mod tests {
             format!(
                 "Open candidate command: {}",
                 editor_open_command_hint(Path::new(&view.candidate_entries[0].path), None)
-            )
-        );
-        assert_eq!(
-            folder_session_action_message(
-                &djinn_tui::FolderSessionAction::ShowPatternExportCommand(Some(
-                    "pattern-001".to_string(),
-                )),
-                &session_dir,
-                None,
-            ),
-            format!(
-                "Pattern export command: djinn session export-pattern '{}' 'pattern-001' --to <notes.md>",
-                session_dir.display()
             )
         );
         assert_eq!(

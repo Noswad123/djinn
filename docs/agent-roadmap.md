@@ -1,7 +1,7 @@
 # Djinn Agent Roadmap
 
 This roadmap is the forward-looking work queue for the Djinn-native agent
-harness and CLI/TUI assistant.
+harness, CLI, and Buddy-first interactive assistant.
 
 It intentionally does **not** repeat implemented baseline behavior or settled
 design decisions. Use these documents as the source of truth for those:
@@ -32,117 +32,41 @@ These items are small enough or well-defined enough to implement without another
 product-design pass. UI work is the current priority because it affects every
 agent turn and makes the rest of the runtime easier to evaluate.
 
-### Folder-backed promotion sessions
+### Buddy-first interactive UI
 
-Future promotion work should target recovery, notes handoff, and review ergonomics
-rather than more hidden artifact formats. Keep the source-packet and candidate
-schemas evolvable; durable behavior belongs in the app guide and design decisions.
+Buddy, Djinn's embedded/forked OpenCode UI, is the preferred surface for rich
+interactive work. Do not try to recreate Buddy/OpenCode polish in Rust/Ratatui
+unless a workflow specifically needs a Rust-native fallback. Djinn should keep
+owning folder sessions, CLI commands, policy, stores, and projections; Buddy
+should become the polished UI shell over those capabilities.
 
-No promotion-session slice is currently queued here; add the next recovery,
-handoff, or review-ergonomics improvement when it is ready to implement.
+Design criteria:
 
-### Session TUI polish
+- Use Buddy tabs for broad Djinn surfaces. `Tab` and `Shift+Tab` should move
+  between tabs rather than switching agents.
+- Move agent switching behind a `/agents` command that opens a searchable selector
+  for all configured/selectable agents.
+- Build a complete command-palette command registry for Buddy and make it
+  configurable from a TOML file. The registry should describe labels, grouping,
+  keybindings, visibility/context rules, and delegated Djinn/Buddy actions rather
+  than hard-coding every action in UI code.
+- While in the Buddy chat interface, provide an action to open/inspect the bound
+  Djinn session folder so users can see `request.md`, `summary.md`, `events.jsonl`,
+  `runtime/buddy.json`, and context/artifact files without leaving the workflow.
+- Provide a chat action/slash command to summon the current `request.md` contents
+  into the next prompt. This should insert or stage the file contents explicitly;
+  it should not silently mutate `request.md` or send it without user confirmation.
+- Keep Rust `djinn-tui` as a lightweight/debug/fallback dashboard unless a future
+  slice explicitly retires it.
 
-Use the folder-backed Sessions dashboard and focused session view as the primary
-UI investment areas. Keep the Ratatui/local-first architecture, but borrow
-OpenCode's strongest UX patterns where they map cleanly to file-backed terminal
-workflows: quiet chrome, easy copy/paste of paths and artifacts, progressive
-disclosure, and visually scannable status/provenance. This is an OpenCode-inspired
-direction, not a commitment to clone OpenCode wholesale; choose the degree of
-stylistic emulation slice-by-slice as the file-first UI evolves.
+Ready implementation slices:
 
-Useful OpenCode reference files:
-
-- `~/Projects/opencode/opencode/packages/tui/src/routes/session/index.tsx`:
-  session layout, transcript, message/tool/reasoning rendering, navigation,
-  sidebar, scrolling.
-- `~/Projects/opencode/opencode/packages/tui/src/component/prompt/index.tsx`:
-  composer layout, metadata/status rows, paste handling, shell/normal mode.
-- `~/Projects/opencode/opencode/packages/tui/src/component/prompt/autocomplete.tsx`:
-  slash and at-mention autocomplete.
-- `~/Projects/opencode/opencode/packages/tui/src/component/command-palette.tsx`
-  and `~/Projects/opencode/opencode/packages/tui/src/ui/dialog-select.tsx`:
-  command registry-backed palette and reusable grouped fuzzy select dialogs.
-- `~/Projects/opencode/opencode/packages/tui/src/routes/session/footer.tsx`:
-  quiet persistent footer status.
-- `~/Projects/opencode/opencode/packages/tui/src/routes/session/permission.tsx`:
-  docked permission prompts and diff previews.
-- `~/Projects/opencode/opencode/packages/tui/src/theme/index.ts` and
-  `~/Projects/opencode/opencode/packages/tui/src/context/theme.tsx`: theme token
-  model and custom/system theme handling.
-
-Borrow these concepts directly where they fit Ratatui:
-
-- **Session layout:** a recent-work list with a rich preview, focused status
-  view, low-noise persistent footer, and artifact-oriented actions.
-- **Status hierarchy:** prominent lifecycle state, muted repo/model/session
-  metadata, clear next-action hints, and distinct failure/warning rows.
-- **Artifact taxonomy:** summary, request, context, events, transcripts, logs,
-  and repo links should be visible as navigable artifacts rather than hidden
-  implementation details.
-- **Progressive disclosure:** show concise previews by default, with keyboard-first
-  drill-down into status, context, turn evidence, and run logs.
-- **Reusable dialogs:** one grouped fuzzy select abstraction for commands,
-  models, sessions, themes, agents/profiles, and future pickers.
-- **Navigation:** tab switching, filter/search, recency/grouping, page/line scroll,
-  and focused open/run/watch shortcuts should stay keyboard-first.
-- **Theme tokens:** move from direct color constants toward semantic tokens for
-  backgrounds, text/muted text, borders, status colors, diff colors, and Markdown
-  colors.
-
-Do not copy these OpenCode details directly:
-
-- Solid/OpenTUI component architecture; port concepts to Rust/Ratatui instead.
-- Mouse/hover as the primary control path; Djinn should stay keyboard-first.
-- Web-only details such as DOM copy buttons, CSS transitions, Shiki workers, or
-  browser-grade Markdown behavior.
-- Aggressive hiding of tool/audit details unless there is an obvious, reversible
-  expansion path.
-- Fixed widths without adapting to terminal size and copy/paste constraints.
-
-Remaining ready UI slices:
-
-- **Artifact opening polish:** ensure every focused-session action reports the
-  exact delegated command/path and leaves the terminal in a clean state.
-
-### CLI dispatch slimming
-
-Move toward a `crates/djinn-cli/src/main.rs` that is primarily CLI declaration and
-dispatch. Domain behavior should live in focused modules so session, Buddy,
-config, auth, policy, model, promotion, and TUI flows can evolve independently.
-
-Current direction:
-
-- Keep Clap structs/enums and the single top-level `Command` router in `main.rs`
-  until a deliberate CLI-args module split is worthwhile.
-- Extract cohesive helper/orchestration clusters behind small option/report types
-  rather than moving raw `main.rs` argument structs into domain modules.
-- Preserve folder-backed session semantics and existing user-facing command
-  behavior after each seam.
-- Validate each seam with `cargo fmt --check`, `cargo check -p djinn-cli`, focused
-  tests, `cargo test -p djinn-cli`, `cargo test -p djinn-tui`, and
-  `git diff --check`.
-
-Progress already made:
-
-- Session reference/manifest/projection/turns/native/TUI/context/events/status/
-  list/init/remove/watch/transcript/artifact/registry logic has been extracted.
-- Buddy integration, background-run support, editor/shell/text/path/prompt helpers,
-  promotion modules, agent messages/roles/config/runtime/session metadata,
-  model completion/resolution, auth, policy, and config import/export/doctor logic
-  have been moved out of `main.rs`.
-- CLI dispatch slimming is substantially complete: session/config/auth/doctor/agent
-  dispatch, top-level noun dispatch, TUI dispatch glue, and TOML/text helpers now
-  live in focused modules. `main.rs` is intentionally limited to imports/re-exports,
-  Clap declarations, `main()`, and remaining tests.
-
-Remaining high-value seams:
-
-- Relocate large `main.rs` test clusters into the modules that own the behavior,
-  preserving focused test names and local helper setup.
-- Reassess whether CLI arg structs should stay in `main.rs` or move to a dedicated
-  `cli_args` module only after test relocation shows whether the remaining file is
-  still hard to maintain.
+1. Add the Buddy tab shell and reserve `Tab`/`Shift+Tab` for tab navigation.
+2. Add `/agents` as the replacement for tab-based agent switching.
+3. Introduce the Buddy command registry plus TOML configuration format, initially
+   covering existing chat/session actions.
+4. Add session-folder inspect/open action for the bound Djinn folder session.
+5. Add request summoning from `request.md` into the next Buddy prompt.
 
 ### Folder-backed session follow-ups
 
@@ -150,27 +74,6 @@ Use folder-backed sessions as the work capsule for future slices. Implemented
 behavior belongs in [`agent-design-decisions.md`](./agent-design-decisions.md) and
 the app guide rather than being repeated here. Remaining ready slices should build
 on the file-first surfaces without restoring the removed legacy saved-row model.
-
-#### Interactive UI over Djinn-owned sessions
-
-Future interactive work should fold useful Buddy/OpenCode-style ergonomics into
-Djinn without changing the folder-session ownership model documented in the app
-guide and design decisions. Do **not** move existing session storage roots as part
-of this work; keep storage migration as a separate, explicit command if it ever
-becomes necessary.
-
-Ready implementation slices:
-
-- Expand the hidden `buddy djinn-bridge` protocol only for concrete Djinn-owned
-  needs that cannot be expressed through the existing list/get/create/delete
-  operations. Keep additions strict and explicit; do not support loose legacy
-  shapes.
-- Add an inline or docked request composer in the Sessions UI for quick edits to
-  `request.md` before launching the existing folder-session or Buddy run paths.
-- Extend interactive event capture beyond completed user/assistant pairs only when
-  richer streaming state or partial-run recovery is ready to ship. Keep
-  `events.jsonl` as the active history path; do not make `turns/<id>/` active
-  history again.
 
 #### Background run recovery follow-ups
 
