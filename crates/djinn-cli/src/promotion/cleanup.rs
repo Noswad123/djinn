@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
+use crate::cli_args::SessionCleanupArgs;
 use crate::session::manifest::{parse_manifest_string_value, read_folder_session_manifest};
 use crate::session::reference::resolve_existing_folder_session_dir;
 use crate::session::remove::remove_folder_session;
 use crate::util::path::expand_tilde_path;
-use crate::SessionCleanupArgs;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SessionCleanupReport {
@@ -158,8 +158,8 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::cli_args::{SessionPromoteArgs, SessionPromoteType};
     use crate::promotion::session::create_promotion_session;
-    use crate::{SessionPromoteArgs, SessionPromoteType};
 
     #[test]
     fn session_cleanup_deletes_promotion_sources_only_when_requested() {

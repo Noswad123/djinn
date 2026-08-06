@@ -11,12 +11,12 @@ use crate::buddy::{
     ensure_buddy_session_binding, read_buddy_runtime_state, BuddyBindingInput, BuddyBridgeBackend,
     BuddySessionBackend,
 };
+use crate::cli_args::SessionInitArgs;
 use crate::config::native::{default_djinn_config_path, load_djinn_config_from_paths};
 use crate::model::resolution::resolve_agent_model_from_config;
 use crate::session::context::{discover_folder_session_context, SessionContextDiscoverReport};
 use crate::session::manifest::{read_folder_session_manifest, toml_string};
 use crate::session::reference::resolve_session_dir;
-use crate::SessionInitArgs;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionInitReport {

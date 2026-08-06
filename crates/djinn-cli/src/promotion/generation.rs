@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::agent::roles::resolve_agent_role_selection_from_config;
 use crate::agent::workspace::{load_djinn_config_for_workspace, resolve_agent_workspace};
 use crate::auth::copilot::resolve_copilot_token;
+use crate::cli_args::SessionRunArgs;
 use crate::model::completion::resolve_openai_client;
 use crate::model::resolution::{is_copilot_model, resolve_agent_model_from_config};
 use crate::promotion::candidate::{candidate_string_value, parse_promotion_candidate};
@@ -17,7 +18,6 @@ use crate::session::manifest::{
 };
 use crate::session::reference::folder_session_slug;
 use crate::util::text::{ensure_trailing_newline, plural_suffix};
-use crate::SessionRunArgs;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PromotionCandidateGenerationOptions {

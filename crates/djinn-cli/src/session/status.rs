@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use djinn_memory::{lifecycle_for, AgentSession, AgentSessionEvent, AgentSessionEventKind};
 use serde::Serialize;
 
+use crate::cli_args::SessionStatusArgs;
 use crate::promotion::candidate::{candidate_string_array_value, candidate_string_value};
 use crate::runtime::background_run::BackgroundRunStatus;
 use crate::session::context::inspect_folder_session_context_dir;
@@ -21,7 +22,6 @@ use crate::session::turns::{
 };
 use crate::util::text::{non_empty_string, yes_no};
 use crate::util::toml::upsert_toml_root_string;
-use crate::SessionStatusArgs;
 
 pub(crate) fn session_status(args: SessionStatusArgs) -> Result<()> {
     let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
@@ -1060,6 +1060,7 @@ pub(crate) fn session_status_repo(
 mod tests {
     use super::*;
     use crate::agent::session_meta::append_agent_session_lifecycle_event;
+    use crate::cli_args::SessionWatchArgs;
     use crate::runtime::background_run::{
         latest_background_session_run_status, write_background_session_run_marker,
     };
@@ -1068,7 +1069,6 @@ mod tests {
     use crate::session::native::relocate_agent_session_into_folder;
     use crate::session::projection::project_agent_session_dir;
     use crate::session::watch::{format_session_watch_snapshot, session_watch};
-    use crate::SessionWatchArgs;
     use djinn_memory::{
         AgentSessionEvent, AgentSessionEventKind, AgentSessionExecutionMode,
         AgentSessionLifecycleState, AgentSessionMeta, AgentSessionStore, JsonlAgentSessionStore,

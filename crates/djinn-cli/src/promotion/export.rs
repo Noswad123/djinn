@@ -5,12 +5,12 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
+use crate::cli_args::SessionExportPatternArgs;
 use crate::promotion::candidate::{resolve_promotion_candidates, PromotionCandidate};
 use crate::session::manifest::read_folder_session_manifest;
 use crate::session::reference::resolve_existing_folder_session_dir;
 use crate::util::path::expand_tilde_path;
 use crate::util::text::{ensure_trailing_newline, plural_suffix};
-use crate::SessionExportPatternArgs;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SessionExportPatternReport {

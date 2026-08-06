@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 
+use crate::cli_args::{AcceptMemoryArgs, SessionPromoteArgs, SessionPromoteType, TuiArgs, TuiView};
 use crate::commands::context::context_store;
 use crate::commands::memory::{accept_memory, remove_memories_silent, remove_suggestions};
 use crate::commands::skills::{open_skill_entry, skill_records};
@@ -12,7 +13,6 @@ use crate::session::status::{format_session_candidate_entry, format_session_cand
 use crate::session::tui::{run_folder_session_tui, tui_candidate_row};
 use crate::storage::stores::{memory_store, suggestion_store};
 use crate::util::text::plural_suffix;
-use crate::{AcceptMemoryArgs, SessionPromoteArgs, SessionPromoteType, TuiArgs, TuiView};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TuiRunOutcome {

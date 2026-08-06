@@ -1,5 +1,11 @@
 use anyhow::Result;
 
+use crate::cli_args::{
+    AcceptArgs, AcceptNoun, AddArgs, AddNoun, ClearArgs, ClearNoun, IndexArgs, IndexNoun,
+    IngestArgs, IngestNoun, ListArgs, ListNoun, OpenArgs, OpenNoun, RejectArgs, RejectNoun,
+    ReviewArgs, ReviewSource, RmArgs, RmNoun, ScanArgs, ScanNoun, SearchArgs, SearchNoun, ShowArgs,
+    ShowNoun, SwitchArgs, SwitchNoun,
+};
 use crate::commands::context::{add_context, list_contexts, show_context, switch_context};
 use crate::commands::memory::{
     accept_memory, add_action, add_idea, add_memory, add_suggestion, clear_memories,
@@ -10,12 +16,6 @@ use crate::commands::memory::{
 use crate::commands::skills::{add_skill, list_skills, rm_skill, show_skill};
 use crate::commands::tools::{
     index_tools, list_tools, open_tool, scan_tools_command, search_tools, show_tool,
-};
-use crate::{
-    AcceptArgs, AcceptNoun, AddArgs, AddNoun, ClearArgs, ClearNoun, IndexArgs, IndexNoun,
-    IngestArgs, IngestNoun, ListArgs, ListNoun, OpenArgs, OpenNoun, RejectArgs, RejectNoun,
-    ReviewArgs, ReviewSource, RmArgs, RmNoun, ScanArgs, ScanNoun, SearchArgs, SearchNoun, ShowArgs,
-    ShowNoun, SwitchArgs, SwitchNoun,
 };
 
 pub(crate) fn run_list(args: ListArgs) -> Result<()> {

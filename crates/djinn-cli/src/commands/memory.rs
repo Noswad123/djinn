@@ -10,13 +10,13 @@ use djinn_memory::{
     SuggestionRecord,
 };
 
-use crate::commands::skills::skill_store;
-use crate::storage::stores::{action_store, idea_store, memory_store, suggestion_store};
-use crate::util::shell::shell_quote;
-use crate::{
+use crate::cli_args::{
     AcceptMemoryArgs, AddMemoryArgs, AddSuggestionArgs, IngestMemoriesArgs, IngestTarget,
     ReviewMemoriesArgs,
 };
+use crate::commands::skills::skill_store;
+use crate::storage::stores::{action_store, idea_store, memory_store, suggestion_store};
+use crate::util::shell::shell_quote;
 
 pub(crate) fn list_memories() -> Result<()> {
     let records = memory_store().list()?;

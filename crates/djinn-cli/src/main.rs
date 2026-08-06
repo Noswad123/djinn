@@ -20,7 +20,7 @@ mod util;
 
 use auth::openai::run_auth;
 use buddy::run_top_level_buddy_mode;
-pub(crate) use cli_args::*;
+use cli_args::{parse_cli, print_cli_help, Command, SessionArgs};
 use commands::agent::{run_agent, run_agents};
 use commands::agent_ask::top_level_ask;
 use commands::config::run_config;

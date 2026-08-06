@@ -1,5 +1,10 @@
 use anyhow::{bail, Result};
 
+use crate::cli_args::{
+    ConfigArgs, ConfigCommand, ConfigDoctorArgs, ConfigExportArgs, ConfigExportCopilotArgs,
+    ConfigExportOpencodeArgs, ConfigExportTarget, ConfigImportArgs, ConfigImportCopilotArgs,
+    ConfigImportOpencodeArgs, ConfigImportSource, ConfigShowArgs, ConfigSource,
+};
 use crate::config::doctor::{
     copilot_config_doctor, djinn_config_doctor, format_config_doctor_report, opencode_config_doctor,
 };
@@ -17,11 +22,6 @@ use crate::config::preview::{
 use crate::config::write::{write_config_export_preview, write_config_import_preview};
 use crate::model::resolution::{default_copilot_config_path, default_opencode_config_path};
 use crate::util::text::output_format;
-use crate::{
-    ConfigArgs, ConfigCommand, ConfigDoctorArgs, ConfigExportArgs, ConfigExportCopilotArgs,
-    ConfigExportOpencodeArgs, ConfigExportTarget, ConfigImportArgs, ConfigImportCopilotArgs,
-    ConfigImportOpencodeArgs, ConfigImportSource, ConfigShowArgs, ConfigSource,
-};
 
 pub(crate) fn run_config(args: ConfigArgs) -> Result<()> {
     match args.command {

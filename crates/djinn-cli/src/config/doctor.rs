@@ -7,6 +7,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::agent::workspace::clean_unique_paths;
+use crate::cli_args::OutputFormat;
 use crate::config::format::push_config_finding_lines;
 use crate::config::model::{
     ConfigDoctorFileReport, ConfigDoctorFinding, ConfigDoctorReport, ConfigDoctorSummary,
@@ -15,7 +16,6 @@ use crate::config::native::load_djinn_config;
 use crate::model::resolution::{
     copilot_model_config_paths, copilot_model_options_from_value, opencode_model_config_paths,
 };
-use crate::OutputFormat;
 
 pub(crate) fn djinn_config_doctor(path: Option<PathBuf>) -> Result<ConfigDoctorReport> {
     let load = load_djinn_config(path)?;

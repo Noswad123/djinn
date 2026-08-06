@@ -1,10 +1,10 @@
 use anyhow::{bail, Result};
 use serde::Serialize;
 
+use crate::cli_args::OutputFormat;
 use crate::config::model::DjinnConfig;
 use crate::model::resolution::{profile_model_from_config, resolve_agent_profile_from_config};
 use crate::util::text::push_unique_string;
-use crate::OutputFormat;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct AgentRoleView {

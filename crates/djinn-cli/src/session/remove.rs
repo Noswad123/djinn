@@ -7,6 +7,7 @@ use djinn_memory::AgentSessionMeta;
 use djinn_memory::{AgentSessionStore, JsonlAgentSessionStore};
 use serde::Serialize;
 
+use crate::cli_args::SessionRmArgs;
 use crate::session::manifest::session_id_from_session_dir;
 use crate::session::native::folder_agent_session_store;
 use crate::session::reference::{
@@ -14,7 +15,6 @@ use crate::session::reference::{
     resolve_existing_folder_session_reference,
 };
 use crate::storage::stores::agent_session_store;
-use crate::SessionRmArgs;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionRmReport {

@@ -35,6 +35,8 @@ pub(crate) fn plural_suffix(count: usize) -> &'static str {
     }
 }
 
+use crate::cli_args::OutputFormat;
+
 pub(crate) fn truncate(value: &str, max_chars: usize) -> String {
     let mut chars = value.chars();
     let truncated = chars.by_ref().take(max_chars).collect::<String>();
@@ -53,9 +55,9 @@ pub(crate) fn yes_no(value: bool) -> &'static str {
     }
 }
 
-pub(crate) fn output_format(format: crate::OutputFormat, json: bool) -> crate::OutputFormat {
+pub(crate) fn output_format(format: OutputFormat, json: bool) -> OutputFormat {
     if json {
-        crate::OutputFormat::Json
+        OutputFormat::Json
     } else {
         format
     }

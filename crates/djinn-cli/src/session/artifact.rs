@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 
+use crate::cli_args::SessionOpenArgs;
 use crate::session::manifest::read_folder_session_manifest;
 use crate::session::reference::{
     default_folder_session_root, resolve_existing_folder_session_reference_in_root,
 };
 use crate::util::editor::open_editor_path;
-use crate::SessionOpenArgs;
 
 pub(crate) fn session_open(args: SessionOpenArgs) -> Result<()> {
     let target = resolve_folder_session_open_target(&args.dir, args.target)?;

@@ -4,10 +4,10 @@ use djinn_skills::{
     SkillStore,
 };
 
+use crate::cli_args::{AddSkillArgs, ListSkillsArgs, OutputFormat, RmSkillArgs, ShowSkillArgs};
 use crate::commands::context::context_store;
 use crate::util::editor::open_editor_at;
 use crate::util::text::output_format;
-use crate::{AddSkillArgs, ListSkillsArgs, OutputFormat, RmSkillArgs, ShowSkillArgs};
 
 pub(crate) fn list_skills(args: ListSkillsArgs) -> Result<()> {
     let records = skill_records()?;

@@ -282,6 +282,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::cli_args::OutputFormat;
     use crate::config::doctor::config_finding;
     use crate::config::format::{
         format_config_export_write_report, format_config_import_write_report,
@@ -291,7 +292,6 @@ mod tests {
     use crate::config::preview::{
         copilot_config_import_preview_from_values, opencode_config_import_preview_from_values,
     };
-    use crate::OutputFormat;
 
     fn current_time_millis() -> i64 {
         chrono::Local::now().timestamp_millis()

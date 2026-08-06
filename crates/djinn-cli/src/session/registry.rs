@@ -4,12 +4,12 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
+use crate::cli_args::{SessionRenameArgs, SessionShortenNamesArgs};
 use crate::session::reference::{
     default_folder_session_root, folder_session_reference_name, is_named_folder_session_reference,
     resolve_existing_folder_session_reference_in_root,
 };
 use crate::util::text::plural_suffix;
-use crate::{SessionRenameArgs, SessionShortenNamesArgs};
 
 pub(crate) fn session_shorten_names(args: SessionShortenNamesArgs) -> Result<()> {
     let report = shorten_cache_folder_session_names(args.dry_run)?;

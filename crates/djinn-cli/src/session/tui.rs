@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::buddy::session_chat;
+use crate::cli_args::{
+    SessionChatArgs, SessionContextDiscoverArgs, SessionDecisionArgs, SessionOpenArgs,
+    SessionRunArgs, SessionValidateCandidatesArgs, SessionWatchArgs,
+};
 use crate::commands::agent_ask::session_run;
 use crate::promotion::decision::{session_decide, SessionDecisionAction};
 use crate::promotion::validation::session_validate_candidates;
@@ -25,10 +29,7 @@ use crate::session::status::{
 use crate::session::watch::session_watch;
 use crate::util::editor::{default_editor, open_editor_path};
 use crate::util::shell::shell_quote;
-use crate::{
-    SessionChatArgs, SessionContextDiscoverArgs, SessionDecisionArgs, SessionOpenArgs,
-    SessionRunArgs, SessionValidateCandidatesArgs, SessionWatchArgs, DEFAULT_AGENT_MAX_TOOL_ROUNDS,
-};
+use crate::DEFAULT_AGENT_MAX_TOOL_ROUNDS;
 
 pub(crate) fn run_folder_session_tui(dir: PathBuf, editor: Option<String>) -> Result<()> {
     let session_dir = resolve_existing_folder_session_reference(&dir)?.session_dir;

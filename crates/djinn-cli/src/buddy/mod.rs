@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use djinn_memory::{AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId};
 
+use crate::cli_args::{OutputFormat, SessionChatArgs};
 use crate::session::events::read_event_turn_pairs;
 use crate::session::manifest::{
     folder_session_manifest_meta, read_folder_session_manifest, session_manifest_workspace_path,
@@ -23,7 +24,6 @@ use crate::session::reference::{
 };
 use crate::util::shell::shell_quote_if_needed as shell_quote;
 use crate::util::text::{ensure_trailing_newline, yes_no};
-use crate::{OutputFormat, SessionChatArgs};
 
 pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
 pub(crate) const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/buddy";

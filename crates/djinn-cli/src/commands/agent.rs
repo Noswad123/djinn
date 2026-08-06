@@ -15,6 +15,13 @@ use crate::agent::roles::{
 };
 use crate::agent::runtime_config::{agent_effective_config_from_parts, agent_tool_specs};
 use crate::agent::workspace::resolve_agent_workspace;
+use crate::cli_args::{
+    AgentArgs, AgentCommand, AgentConfigArgs, AgentConfigCommand, AgentConfigListArgs,
+    AgentConfigShowArgs, AgentFileHistoryArgs, AgentFileHistoryCommand, AgentPolicyArgs,
+    AgentPolicyAuditArgs, AgentPolicyCommand, AgentPolicyListArgs, AgentPolicyRevokeArgs,
+    AgentToolsArgs, AgentToolsCommand, AgentToolsListArgs, AgentToolsShowArgs, AgentsArgs,
+    AgentsCommand, AgentsListArgs, AgentsShowArgs,
+};
 use crate::commands::agent_ask::legacy_agent_ask;
 use crate::config::native::effective_djinn_config;
 use crate::model::resolution::{
@@ -22,13 +29,6 @@ use crate::model::resolution::{
     resolve_agent_model_from_config, resolve_agent_profile,
 };
 use crate::util::text::output_format;
-use crate::{
-    AgentArgs, AgentCommand, AgentConfigArgs, AgentConfigCommand, AgentConfigListArgs,
-    AgentConfigShowArgs, AgentFileHistoryArgs, AgentFileHistoryCommand, AgentPolicyArgs,
-    AgentPolicyAuditArgs, AgentPolicyCommand, AgentPolicyListArgs, AgentPolicyRevokeArgs,
-    AgentToolsArgs, AgentToolsCommand, AgentToolsListArgs, AgentToolsShowArgs, AgentsArgs,
-    AgentsCommand, AgentsListArgs, AgentsShowArgs,
-};
 
 pub(crate) fn run_agent(args: AgentArgs) -> Result<()> {
     match args.command {

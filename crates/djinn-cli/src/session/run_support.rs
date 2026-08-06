@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use djinn_agent::AgentProgressEvent;
 use serde::Serialize;
 
+use crate::cli_args::SessionRunArgs;
 use crate::runtime::background_run::{
     background_session_run_log_path, touch_background_run_marker,
     write_background_session_run_marker,
@@ -15,7 +16,6 @@ use crate::session::manifest::read_folder_session_manifest;
 use crate::session::reference::resolve_existing_folder_session_dir;
 use crate::util::prompt::resolve_agent_request_prompt;
 use crate::util::shell::shell_quote;
-use crate::SessionRunArgs;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SessionRunBackgroundSpawnOptions {

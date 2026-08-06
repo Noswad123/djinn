@@ -797,13 +797,13 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::cli_args::OutputFormat;
     use crate::config::doctor::copilot_config_doctor_from_value;
     use crate::config::format::{format_config_export_preview, format_config_import_preview};
     use crate::config::model::{
         DjinnConfigCommandTemplate, DjinnConfigFileReport, DjinnConfigLoadReport,
         DjinnConfigPermission, DjinnConfigProfile, DjinnConfigProvider,
     };
-    use crate::OutputFormat;
 
     #[test]
     fn opencode_config_import_preview_maps_patch_without_secret_values() {

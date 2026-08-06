@@ -6,6 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use djinn_memory::{AgentSessionEvent, AgentSessionEventKind};
 use serde::Serialize;
 
+use crate::cli_args::{SessionEventsArgs, SessionValidateEventsArgs};
 use crate::session::manifest::toml_string;
 use crate::session::reference::{
     default_folder_session_root, folder_session_display_name, resolve_existing_folder_session_dir,
@@ -16,7 +17,6 @@ use crate::session::turns::{
 };
 use crate::util::shell::shell_quote;
 use crate::util::text::{ensure_trailing_newline, yes_no};
-use crate::{SessionEventsArgs, SessionValidateEventsArgs};
 
 pub(crate) fn session_validate_events(args: SessionValidateEventsArgs) -> Result<()> {
     let report = validate_folder_session_events(&args.dir)?;

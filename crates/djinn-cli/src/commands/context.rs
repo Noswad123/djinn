@@ -1,7 +1,7 @@
 use anyhow::Result;
 use djinn_contexts::{resolve_context, ContextInput, ContextRecord, ContextStore};
 
-use crate::{AddCtxArgs, ListCtxArgs, ShowCtxArgs};
+use crate::cli_args::{AddCtxArgs, ListCtxArgs, ShowCtxArgs};
 
 pub(crate) fn list_contexts(args: ListCtxArgs) -> Result<()> {
     let store = context_store();

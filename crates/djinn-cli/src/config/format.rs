@@ -1,10 +1,10 @@
 use anyhow::Result;
 
+use crate::cli_args::OutputFormat;
 use crate::config::model::{
     ConfigDoctorFinding, ConfigExportPreview, ConfigExportWriteReport, ConfigImportPreview,
     ConfigImportWriteReport, ConfigImportWriteSummary,
 };
-use crate::OutputFormat;
 
 pub(crate) fn format_config_import_preview(
     preview: &ConfigImportPreview,

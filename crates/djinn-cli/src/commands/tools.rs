@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use djinn_tools::ToolEntry;
 
+use crate::cli_args::{
+    IndexToolsArgs, OpenToolArgs, OutputFormat, SearchToolsArgs, ToolLookupArgs, ToolsScope,
+};
 use crate::commands::context::context_store;
 use crate::util::editor::open_editor_at;
 use crate::util::text::output_format;
-use crate::{
-    IndexToolsArgs, OpenToolArgs, OutputFormat, SearchToolsArgs, ToolLookupArgs, ToolsScope,
-};
 
 pub(crate) fn list_tools(scope: ToolsScope) -> Result<()> {
     let roots = tool_roots(scope.roots);
