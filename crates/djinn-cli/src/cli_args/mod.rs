@@ -16,10 +16,10 @@ pub(crate) use tui::{TuiArgs, TuiView};
 #[command(name = "djinn")]
 #[command(about = "Local-first companion for OpenCode and other AI coding agents")]
 pub(crate) struct Cli {
-    /// Open Buddy mode immediately instead of the Djinn dashboard.
+    /// Deprecated alias for opening the Djinn UI immediately.
     #[arg(short = 'b', long = "buddy")]
     pub(crate) buddy: bool,
-    /// Folder-backed session name, path, or Buddy id to open.
+    /// Folder-backed session name, path, or Buddy id to open in the Djinn UI.
     #[arg(short = 's', long = "session", value_name = "SESSION")]
     pub(crate) session: Option<PathBuf>,
     #[command(subcommand)]
@@ -80,7 +80,7 @@ pub(crate) enum Command {
     Agent(AgentArgs),
     /// Inspect configured Djinn agent roles.
     Agents(AgentsArgs),
-    /// Open the unified terminal dashboard.
+    /// Deprecated alias for opening the Djinn UI.
     Tui(TuiArgs),
 }
 

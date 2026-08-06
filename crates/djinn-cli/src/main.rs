@@ -20,7 +20,7 @@ mod util;
 
 use auth::openai::run_auth;
 use buddy::run_top_level_buddy_mode;
-use cli_args::{parse_cli, print_cli_help, Command, SessionArgs};
+use cli_args::{parse_cli, print_cli_help, Command};
 use commands::agent::{run_agent, run_agents};
 use commands::agent_ask::top_level_ask;
 use commands::config::run_config;
@@ -30,7 +30,6 @@ use commands::top_level::{
     run_accept, run_add, run_clear, run_index, run_ingest, run_list, run_open, run_reject,
     run_review, run_rm, run_scan, run_search, run_show, run_switch,
 };
-use tui::dashboard::{default_dashboard_tui_args, run_tui};
 
 pub(crate) const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
 const BACKGROUND_RUN_UNRESPONSIVE_SECONDS: i64 = 30 * 60;
@@ -42,24 +41,19 @@ fn main() -> Result<()> {
     let cli = parse_cli();
     if cli.buddy {
         if cli.command.is_some() {
-            bail!("-b/--buddy opens Buddy mode and cannot be combined with a Djinn subcommand");
+            bail!("-b/--buddy opens the Djinn UI and cannot be combined with a Djinn subcommand");
         }
         return run_top_level_buddy_mode(cli.session);
     }
     if let Some(session) = cli.session {
         if cli.command.is_some() {
-            bail!("-s/--session opens a focused folder session and cannot be combined with a Djinn subcommand unless -b/--buddy is also set");
+            bail!("-s/--session opens a focused Djinn UI session and cannot be combined with a Djinn subcommand unless -b/--buddy is also set");
         }
-        return run_session(SessionArgs {
-            command: None,
-            dir: Some(session),
-            open: false,
-            editor: None,
-        });
+        return run_top_level_buddy_mode(Some(session));
     }
     let Some(command) = cli.command else {
         if io::stdin().is_terminal() && io::stdout().is_terminal() {
-            return run_tui(default_dashboard_tui_args());
+            return run_top_level_buddy_mode(None);
         }
         print_cli_help()?;
         return Ok(());
@@ -86,6 +80,6 @@ fn main() -> Result<()> {
         Command::Session(args) => run_session(args),
         Command::Agent(args) => run_agent(args),
         Command::Agents(args) => run_agents(args),
-        Command::Tui(args) => run_tui(args),
+        Command::Tui(_args) => run_top_level_buddy_mode(None),
     }
 }

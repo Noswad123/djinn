@@ -70,7 +70,9 @@ if (!skipInstall) {
   await $`bun install @ff-labs/fff-bun@${pkg.dependencies["@ff-labs/fff-bun"]}`
 }
 
-const name = [pkg.name, target.os, target.arch].join("-")
+const binaryName = "djinn-ui"
+const legacyBinaryName = "buddy"
+const name = [binaryName, target.os, target.arch].join("-")
 console.log(`building ${name}`)
 await $`mkdir -p dist/${name}/bin`
 
@@ -91,9 +93,9 @@ await Bun.build({
     autoloadDotenv: false,
     autoloadTsconfig: true,
     autoloadPackageJson: true,
-    target: name.replace(pkg.name, "bun") as any,
-    outfile: `dist/${name}/bin/buddy`,
-    execArgv: [`--user-agent=buddy/${Script.version}`, "--use-system-ca", "--"],
+    target: ["bun", target.os, target.arch].join("-") as any,
+    outfile: `dist/${name}/bin/${binaryName}`,
+    execArgv: [`--user-agent=${binaryName}/${Script.version}`, "--use-system-ca", "--"],
     windows: {},
   },
   files: {
@@ -113,7 +115,8 @@ await Bun.build({
   },
 })
 
-const binaryPath = `dist/${name}/bin/buddy`
+const binaryPath = `dist/${name}/bin/${binaryName}`
+await $`cp ${binaryPath} dist/${name}/bin/${legacyBinaryName}`
 console.log(`Running smoke test: ${binaryPath} --version`)
 try {
   const versionOutput = await $`${binaryPath} --version`.text()

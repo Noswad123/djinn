@@ -1,61 +1,9 @@
 #!/bin/sh
 set -eu
 
-# Repo-local Buddy launcher used by Djinn's Buddy command resolver.
-#
-# This path deliberately lives under tools/buddy/ so that directory can become
-# the in-repo Buddy home without changing Djinn's launch contract.
-#
-# Resolution order inside this wrapper:
-#   1. DJINN_TOOLS_BUDDY_TARGET, when set (may include command arguments).
-#   2. In-repo Buddy built binary under tools/buddy/.
-#   3. In-repo Buddy TypeScript source under tools/buddy/packages/opencode/.
-#   4. In-repo Buddy package launcher under tools/buddy/packages/opencode/.
+# Deprecated repo-local Buddy launcher alias. The canonical implementation
+# binary is djinn-ui; keep this shim while older runtime/buddy.json bindings and
+# user scripts still point at tools/buddy/bin/buddy.
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-buddy_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-
-if [ "${DJINN_TOOLS_BUDDY_TARGET:-}" != "" ]; then
-  # Intentionally allow shell word splitting so callers can provide a command
-  # with fixed leading arguments, matching Djinn's whitespace-split command
-  # behavior for Buddy commands.
-  # shellcheck disable=SC2086
-  exec ${DJINN_TOOLS_BUDDY_TARGET} "$@"
-fi
-
-for candidate in \
-  "$buddy_root"/packages/opencode/dist/buddy-*/bin/buddy \
-  "$buddy_root"/dist/buddy-*/bin/buddy
-do
-  if [ -x "$candidate" ]; then
-    exec "$candidate" "$@"
-  fi
-done
-
-source_pkg="$buddy_root/packages/opencode"
-source_entry="$source_pkg/src/index.ts"
-if [ -d "$buddy_root/node_modules" ] || [ -d "$source_pkg/node_modules" ]; then
-  deps_ready=1
-else
-  deps_ready=0
-fi
-
-if [ -f "$source_entry" ] && [ "$deps_ready" = 1 ]; then
-  bun_bin="${DJINN_TOOLS_BUDDY_BUN:-}"
-  if [ "$bun_bin" = "" ]; then
-    bun_bin=$(command -v bun 2>/dev/null || true)
-  fi
-  if [ "$bun_bin" != "" ]; then
-    cd "$source_pkg"
-    exec "$bun_bin" run --conditions=browser ./src/index.ts "$@"
-  fi
-fi
-
-source_launcher="$source_pkg/bin/buddy"
-if [ "$deps_ready" = 1 ] && [ -x "$source_launcher" ]; then
-  exec "$source_launcher" "$@"
-fi
-
-printf '%s\n' "djinn tools/buddy/bin/buddy: no Buddy executable found" >&2
-printf '%s\n' "Run make install, set DJINN_TOOLS_BUDDY_TARGET, or place Buddy under tools/buddy/." >&2
-exit 127
+exec "$script_dir/djinn-ui" "$@"

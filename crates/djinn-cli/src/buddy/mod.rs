@@ -26,7 +26,9 @@ use crate::util::shell::shell_quote_if_needed as shell_quote;
 use crate::util::text::{ensure_trailing_newline, yes_no};
 
 pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
-pub(crate) const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/buddy";
+pub(crate) const DJINN_UI_BIN_ENV: &str = "DJINN_UI_BIN";
+pub(crate) const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/djinn-ui";
+const LEGACY_IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/buddy";
 const EXPLICIT_BUDDY_COMMAND_SOURCE: &str = "--buddy-bin";
 pub(crate) const UNAVAILABLE_BUDDY_COMMAND_SOURCE: &str = "unavailable";
 
@@ -256,7 +258,7 @@ impl BuddyCliBackend {
                 let mut command = buddy_process_command(self.command())?;
                 let status = command
                     .status()
-                    .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
+                    .with_context(|| format!("launching Djinn UI command `{}`", self.command()))?;
                 if !status.success() {
                     bail!("Buddy exited with status {status}");
                 }
@@ -284,7 +286,7 @@ impl BuddyCliBackend {
                 command.env("DJINN_EVENTS_JSONL", session_dir.join("events.jsonl"));
                 let status = command
                     .status()
-                    .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
+                    .with_context(|| format!("launching Djinn UI command `{}`", self.command()))?;
                 if !status.success() {
                     bail!("Buddy exited with status {status}");
                 }
@@ -309,7 +311,7 @@ impl BuddyCliBackend {
                 command.stderr(Stdio::piped());
                 let mut child = command
                     .spawn()
-                    .with_context(|| format!("launching Buddy command `{}`", self.command()))?;
+                    .with_context(|| format!("launching Djinn UI command `{}`", self.command()))?;
                 if let Some(stdin) = child.stdin.as_mut() {
                     stdin
                         .write_all(prompt.as_bytes())
@@ -410,7 +412,7 @@ impl BuddyBridgeBackend {
 
         let mut child = command.spawn().with_context(|| {
             format!(
-                "launching Buddy bridge command `{}`",
+                "launching Djinn UI bridge command `{}`",
                 self.bridge_command_hint()
             )
         })?;
@@ -647,7 +649,9 @@ impl BuddySessionBackend for BuddyBridgeBackend {
 pub(crate) fn resolve_buddy_command_resolution(
     previous_runtime: Option<&BuddyRuntimeState>,
 ) -> Result<BuddyCommandResolution> {
-    let env_command = env::var(DJINN_BUDDY_BIN_ENV).ok();
+    let env_ui_command = env::var(DJINN_UI_BIN_ENV).ok();
+    let env_legacy_command = env::var(DJINN_BUDDY_BIN_ENV).ok();
+    let env_command = env_ui_command.clone().or(env_legacy_command.clone());
     let runtime_command = previous_runtime.and_then(|state| state.command.clone());
     let workspace_root = djinn_source_workspace_root();
     let in_tree = in_tree_buddy_command(&workspace_root);
@@ -659,7 +663,8 @@ pub(crate) fn resolve_buddy_command_resolution(
     .map(|command| BuddyCommandResolution {
         source: buddy_command_source(
             Some(command.as_str()),
-            env_command.as_deref(),
+            env_ui_command.as_deref(),
+            env_legacy_command.as_deref(),
             runtime_command.as_deref(),
             in_tree.as_deref(),
         ),
@@ -669,18 +674,20 @@ pub(crate) fn resolve_buddy_command_resolution(
 }
 
 pub(crate) fn buddy_command_doctor_report_from(
-    env_command: Option<String>,
+    env_ui_command: Option<String>,
+    env_legacy_command: Option<String>,
     runtime_command: Option<String>,
     workspace_root: Option<&Path>,
     session_dir: Option<&Path>,
     runtime_path: Option<&Path>,
 ) -> BuddyCommandDoctorReport {
     let in_tree = workspace_root.and_then(in_tree_buddy_command);
-    let command =
-        resolve_buddy_command_from(env_command.clone(), runtime_command.clone(), workspace_root);
+    let env_command = env_ui_command.clone().or(env_legacy_command.clone());
+    let command = resolve_buddy_command_from(env_command, runtime_command.clone(), workspace_root);
     let source = buddy_command_source(
         command.as_deref(),
-        env_command.as_deref(),
+        env_ui_command.as_deref(),
+        env_legacy_command.as_deref(),
         runtime_command.as_deref(),
         in_tree.as_deref(),
     );
@@ -692,8 +699,13 @@ pub(crate) fn buddy_command_doctor_report_from(
     };
     let candidates = vec![
         buddy_command_candidate(
+            DJINN_UI_BIN_ENV,
+            env_ui_command.as_deref(),
+            source == DJINN_UI_BIN_ENV,
+        ),
+        buddy_command_candidate(
             DJINN_BUDDY_BIN_ENV,
-            env_command.as_deref(),
+            env_legacy_command.as_deref(),
             source == DJINN_BUDDY_BIN_ENV,
         ),
         buddy_command_candidate(
@@ -714,10 +726,10 @@ pub(crate) fn buddy_command_doctor_report_from(
         },
     ];
     let note = if source == "runtime/buddy.json.command" {
-        "Session runtime command overrides the in-tree Buddy launcher.".to_string()
+        "Session runtime command overrides the in-tree Djinn UI launcher.".to_string()
     } else if source == IN_TREE_BUDDY_COMMAND {
-        "Djinn will use its in-tree Buddy launcher; the launcher itself does not fall back to external Buddy.".to_string()
-    } else if source == DJINN_BUDDY_BIN_ENV {
+        "Djinn will use its in-tree Djinn UI launcher; the launcher itself does not fall back to external Buddy.".to_string()
+    } else if source == DJINN_UI_BIN_ENV || source == DJINN_BUDDY_BIN_ENV {
         "Environment override is active.".to_string()
     } else {
         buddy_command_unavailable_message()
@@ -751,10 +763,10 @@ pub(crate) fn probe_buddy_bridge_doctor(
             command: bridge_command,
             bridge_available: false,
             bridge_list_sessions_ok: false,
-            bridge_error: Some("Buddy command is unavailable or not executable.".to_string()),
+            bridge_error: Some("Djinn UI command is unavailable or not executable.".to_string()),
             fallback_available: false,
             fallback_list_sessions_ok: false,
-            fallback_error: Some("Buddy command is unavailable or not executable.".to_string()),
+            fallback_error: Some("Djinn UI command is unavailable or not executable.".to_string()),
         };
     }
 
@@ -790,14 +802,26 @@ pub(crate) fn probe_buddy_bridge_doctor(
 
 fn buddy_command_source(
     command: Option<&str>,
-    env_command: Option<&str>,
+    env_ui_command: Option<&str>,
+    env_legacy_command: Option<&str>,
     runtime_command: Option<&str>,
     in_tree_command: Option<&str>,
 ) -> String {
     let Some(command) = command else {
         return UNAVAILABLE_BUDDY_COMMAND_SOURCE.to_string();
     };
-    if env_command.map(str::trim).filter(|value| !value.is_empty()) == Some(command) {
+    if env_ui_command
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        == Some(command)
+    {
+        return DJINN_UI_BIN_ENV.to_string();
+    }
+    if env_legacy_command
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        == Some(command)
+    {
         return DJINN_BUDDY_BIN_ENV.to_string();
     }
     if runtime_command
@@ -815,7 +839,7 @@ fn buddy_command_source(
 
 fn buddy_command_unavailable_message() -> String {
     format!(
-        "No Buddy command is configured; run `make install` from Djinn so {IN_TREE_BUDDY_COMMAND} exists, or set {DJINN_BUDDY_BIN_ENV} explicitly."
+        "No Djinn UI command is configured; run `make install` from Djinn so {IN_TREE_BUDDY_COMMAND} exists, or set {DJINN_UI_BIN_ENV} explicitly. Legacy {DJINN_BUDDY_BIN_ENV} is still accepted for now."
     )
 }
 
@@ -858,7 +882,7 @@ fn buddy_command_status(command: &str) -> (Option<PathBuf>, bool, bool) {
 fn buddy_process_command(buddy_command: &str) -> Result<ProcessCommand> {
     let mut parts = buddy_command.split_whitespace();
     let Some(program) = parts.next() else {
-        bail!("Buddy command is empty");
+        bail!("Djinn UI command is empty");
     };
     let mut command = ProcessCommand::new(program);
     command.args(parts);
@@ -968,7 +992,11 @@ pub(crate) fn djinn_source_workspace_root() -> PathBuf {
 
 pub(crate) fn in_tree_buddy_command(workspace_root: &Path) -> Option<String> {
     let candidate = workspace_root.join(IN_TREE_BUDDY_COMMAND);
-    candidate.is_file().then(|| candidate.display().to_string())
+    if candidate.is_file() {
+        return Some(candidate.display().to_string());
+    }
+    let legacy = workspace_root.join(LEGACY_IN_TREE_BUDDY_COMMAND);
+    legacy.is_file().then(|| legacy.display().to_string())
 }
 
 pub(crate) fn read_buddy_runtime_state(path: &Path) -> Result<Option<BuddyRuntimeState>> {
@@ -1757,7 +1785,7 @@ fn run_buddy_status_command(buddy_bin: &str, args: &[&str]) -> Result<()> {
 fn run_buddy_output_command(buddy_bin: &str, args: &[&str]) -> Result<std::process::Output> {
     let mut parts = buddy_bin.split_whitespace();
     let Some(program) = parts.next() else {
-        bail!("Buddy command is empty");
+        bail!("Djinn UI command is empty");
     };
     let output = ProcessCommand::new(program)
         .args(parts)
@@ -1765,14 +1793,14 @@ fn run_buddy_output_command(buddy_bin: &str, args: &[&str]) -> Result<std::proce
         .output()
         .with_context(|| {
             format!(
-                "running Buddy command `{}`",
+                "running Djinn UI command `{}`",
                 buddy_json_command_hint(buddy_bin, args)
             )
         })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         bail!(
-            "Buddy command `{}` exited with status {}{}",
+            "Djinn UI command `{}` exited with status {}{}",
             buddy_json_command_hint(buddy_bin, args),
             output.status,
             if stderr.is_empty() {
@@ -2016,7 +2044,8 @@ exit 2
         let in_tree = root.join(IN_TREE_BUDDY_COMMAND);
         fs::write(&in_tree, "#!/bin/sh\n").unwrap();
 
-        let in_tree_report = buddy_command_doctor_report_from(None, None, Some(&root), None, None);
+        let in_tree_report =
+            buddy_command_doctor_report_from(None, None, None, Some(&root), None, None);
         assert_eq!(in_tree_report.command, in_tree.display().to_string());
         assert_eq!(in_tree_report.source, IN_TREE_BUDDY_COMMAND);
         assert!(in_tree_report.exists);
@@ -2024,7 +2053,7 @@ exit 2
         assert!(
             format_buddy_command_doctor_report(&in_tree_report, OutputFormat::Text)
                 .unwrap()
-                .contains("source: tools/buddy/bin/buddy")
+                .contains("source: tools/buddy/bin/djinn-ui")
         );
         assert!(!in_tree_report
             .candidates
@@ -2037,6 +2066,7 @@ exit 2
         let unavailable_report = buddy_command_doctor_report_from(
             None,
             None,
+            None,
             Some(&root.join("missing-root")),
             None,
             None,
@@ -2047,9 +2077,10 @@ exit 2
         assert!(!unavailable_report.executable);
         assert!(unavailable_report
             .note
-            .contains("No Buddy command is configured"));
+            .contains("No Djinn UI command is configured"));
 
         let runtime_report = buddy_command_doctor_report_from(
+            None,
             None,
             Some("/old/buddy --dev".to_string()),
             Some(&root),
@@ -2067,6 +2098,23 @@ exit 2
 
         let json = format_buddy_command_doctor_report(&runtime_report, OutputFormat::Json).unwrap();
         assert!(json.contains("\"source\": \"runtime/buddy.json.command\""));
+
+        let legacy_env_report = buddy_command_doctor_report_from(
+            None,
+            Some("/legacy/buddy".to_string()),
+            None,
+            Some(&root),
+            None,
+            None,
+        );
+        assert_eq!(legacy_env_report.command, "/legacy/buddy");
+        assert_eq!(legacy_env_report.source, DJINN_BUDDY_BIN_ENV);
+        assert!(legacy_env_report
+            .candidates
+            .iter()
+            .any(|candidate| candidate.source == DJINN_BUDDY_BIN_ENV
+                && candidate.value.as_deref() == Some("/legacy/buddy")
+                && candidate.status == "selected"));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2106,6 +2154,7 @@ exit 2
 
         let mut report = buddy_command_doctor_report_from(
             Some(buddy_bin.display().to_string()),
+            None,
             None,
             None,
             None,
@@ -2164,6 +2213,7 @@ exit 2
 
         let mut report = buddy_command_doctor_report_from(
             Some(buddy_bin.display().to_string()),
+            None,
             None,
             None,
             None,

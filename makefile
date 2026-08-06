@@ -29,35 +29,37 @@ install-djinn: build
 
 buddy-deps:
 	@if ! command -v bun >/dev/null 2>&1; then \
-		echo "bun is required to install Buddy from $(BUDDY_ROOT)" >&2; \
+		echo "bun is required to install the Djinn UI from $(BUDDY_ROOT)" >&2; \
 		exit 1; \
 	fi
 	bun install --cwd "$(BUDDY_ROOT)"
 
 build-buddy: buddy-deps
-	@echo "🔨 Building Buddy from $(BUDDY_PACKAGE)..."
+	@echo "🔨 Building Djinn UI from $(BUDDY_PACKAGE)..."
 	bun run --cwd "$(BUDDY_PACKAGE)" build --skip-install --skip-embed-web-ui
 
 install-buddy: build-buddy
-	@echo "📦 Installing Buddy to $(INSTALL_DIR)/buddy"
+	@echo "📦 Installing Djinn UI to $(INSTALL_DIR)/djinn-ui and deprecated buddy alias"
 	@mkdir -p "$(INSTALL_DIR)"
 	@set -eu; \
 	found=; \
-	for candidate in "$(BUDDY_PACKAGE)"/dist/buddy-*/bin/buddy "$(BUDDY_ROOT)"/dist/buddy-*/bin/buddy; do \
+	for candidate in "$(BUDDY_PACKAGE)"/dist/djinn-ui-*/bin/djinn-ui "$(BUDDY_ROOT)"/dist/djinn-ui-*/bin/djinn-ui "$(BUDDY_PACKAGE)"/dist/buddy-*/bin/buddy "$(BUDDY_ROOT)"/dist/buddy-*/bin/buddy; do \
 		if [ -x "$$candidate" ]; then \
+			install -m 0755 "$$candidate" "$(INSTALL_DIR)/djinn-ui"; \
 			install -m 0755 "$$candidate" "$(INSTALL_DIR)/buddy"; \
 			found=1; \
 			break; \
 		fi; \
 	done; \
 	if [ "$$found" = "" ]; then \
-		echo "Buddy build output not found under $(BUDDY_PACKAGE)/dist" >&2; \
+		echo "Djinn UI build output not found under $(BUDDY_PACKAGE)/dist" >&2; \
 		exit 1; \
 	fi
 	@if command -v xattr >/dev/null 2>&1; then \
+		xattr -d com.apple.quarantine "$(INSTALL_DIR)/djinn-ui" 2>/dev/null || true; \
 		xattr -d com.apple.quarantine "$(INSTALL_DIR)/buddy" 2>/dev/null || true; \
 	fi
-	@echo "✅ Installed. Run with: buddy"
+	@echo "✅ Installed. Run with: djinn"
 
 legacy-go-build:
 	$(MAKE) -C legacy/go build

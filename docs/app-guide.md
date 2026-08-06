@@ -89,81 +89,85 @@ conversation count, and response preview; `turns/` is only consulted when no val
 event pairs are available. The default text `djinn session ls` table stays compact:
 repo grouping, updated time, lifecycle state, Buddy id, name, and summary preview.
 
-For direct session entry, use `djinn -s <ref>` to open the focused
-folder-session view. For occasional Buddy-style quick interaction without turning
-Djinn into a full chat UI, use `djinn -b` to open Buddy directly. Use `djinn -b -s
-<ref>` or the clustered short form `djinn -bs <ref>` to open a specific folder
-session through Buddy. Use `djinn session chat <ref>` when you want the same
-interactive chat experience but prefer an explicit subcommand over `-bs`. Core
+For direct interactive work, run `djinn`; use `djinn -s <ref>` to open a specific
+folder session in the Djinn UI. `djinn -b` and the clustered short form
+`djinn -bs <ref>` remain deprecated Buddy-era aliases for the same UI launch path.
+Use `djinn session chat <ref>` when you want the same interactive chat experience
+but prefer an explicit subcommand over `-s`. Core
 existing-session entry points (`djinn -s`, `session open`, `session status`,
 `session watch`, `session run`, `session chat`, `session rm`, and
 context subcommands) share the same resolver for folder-session names/paths plus
-current or stale Buddy ids recorded in `runtime/buddy.json`. The
+current or stale Buddy-compatible ids recorded in `runtime/buddy.json`. The
 `djinn session chat <session> --capture-request` mode reads the current
-`request.md`, sends that prompt to Buddy on stdin, passes `-s <buddy-session>` when
-provided or when `runtime/buddy.json` already records one, captures Buddy's final
+`request.md`, sends that prompt to the Djinn UI on stdin, passes `-s <buddy-session>`
+when provided or when `runtime/buddy.json` already records one, captures the UI's final
 stdout response, then writes `summary.md`, appends a user/assistant pair to
 `events.jsonl`, clears `request.md`, and records bridge metadata under
-`runtime/buddy.json`. The focused Sessions UI exposes interactive chat as “Open
-Buddy chat”. Top-level Buddy mode
+`runtime/buddy.json`. The focused Sessions UI exposes interactive chat as “chat”.
+Top-level Djinn UI mode
 and `djinn session chat <ref>` are the interactive resume affordances: they launch
-Buddy directly with the bound `-s <buddy-session>` instead of running the capture
+the UI directly with the bound `-s <buddy-session>` instead of running the capture
 bridge, even if `request.md` contains a pending prompt. For folder-backed launches,
 Djinn also sets
-`DJINN_SESSION_DIR` and `DJINN_EVENTS_JSONL`; Buddy uses those to append completed
-interactive user/assistant exchanges to the capsule's `events.jsonl`. When Buddy
+`DJINN_SESSION_DIR` and `DJINN_EVENTS_JSONL`; the UI uses those to append completed
+interactive user/assistant exchanges to the capsule's `events.jsonl`. When the UI
 exits, Djinn reads the latest valid event pair and refreshes `summary.md` from the
 assistant response, then prints a short sync status. Buddy-stamped events include
 deterministic event ids so replayed message writes can be skipped without collapsing
 legitimate repeated prompts. Use `--dry-run` to preview the
-lower-level Buddy command without launching Buddy or mutating session files.
-Djinn resolves the Buddy command in one place: explicit `--buddy-bin` where a
-subcommand has one, then `DJINN_BUDDY_BIN`, then `runtime/buddy.json.command` for
-session-scoped launches, then the in-tree `tools/buddy/bin/buddy` launcher. If none
-of those sources is available, Buddy launch paths fail with an explicit setup error;
-Djinn does not fall back to a bare `buddy` on `PATH`.
+lower-level UI command without launching the UI or mutating session files.
+Djinn resolves the UI command in one place: explicit `--buddy-bin` where a
+subcommand still has that legacy option, then `DJINN_UI_BIN`, then legacy
+`DJINN_BUDDY_BIN`, then `runtime/buddy.json.command` for session-scoped launches,
+then the in-tree `tools/buddy/bin/djinn-ui` launcher. If none of those sources is
+available, UI launch paths fail with an explicit setup error; Djinn does not fall
+back to a bare `buddy` on `PATH`.
 New runtime metadata treats `runtime/buddy.json.command` as an override only: normal
 in-tree launches leave it unset so Djinn re-resolves the current in-tree launcher on
-the next run. Explicit `--buddy-bin`, `DJINN_BUDDY_BIN`, or manually-authored runtime
-commands are preserved as overrides.
+the next run. Explicit `--buddy-bin`, `DJINN_UI_BIN`, legacy `DJINN_BUDDY_BIN`, or
+manually-authored runtime commands are preserved as overrides.
 `djinn session init <name>` and auto-created top-level `djinn ask "..."` sessions
-now create both the folder capsule and a Buddy session binding up front, writing
-the Buddy id to `<session>/runtime/buddy.json`. Buddy is part of Djinn's expected
-runtime, so these creation paths fail if the Buddy backend cannot create or reuse
-that binding. Re-running init for the same session is idempotent when the folder
-identity still matches and an existing runtime Buddy id is present.
-Djinn routes Buddy operations through a Buddy backend boundary and an internal bridge
-request/response contract. Session listing and creation prefer Buddy's hidden
-`buddy djinn-bridge` JSON stdin/stdout entrypoint with request types
+now create both the folder capsule and a UI session binding up front, writing the
+Buddy-compatible id to `<session>/runtime/buddy.json`. The Djinn UI is part of
+Djinn's expected runtime, so these creation paths fail if the UI backend cannot
+create or reuse that binding. Re-running init for the same session is idempotent when the folder
+identity still matches and an existing runtime UI id is present.
+Djinn routes UI operations through a backend boundary and an internal bridge
+request/response contract. Session listing and creation prefer the UI's hidden
+`djinn-ui djinn-bridge` JSON stdin/stdout entrypoint with request types
 `list_sessions` and `create_session`; if that bridge is missing or returns an
 unexpected response, Djinn falls back to the legacy strict JSON commands
-`buddy session list --format json` and `buddy session create --format json ...`.
-Interactive launches and final-response capture still delegate to the in-tree Buddy
-launcher. Feature code calls backend operations instead of assembling Buddy CLI
+`djinn-ui session list --format json` and `djinn-ui session create --format json ...`.
+Interactive launches and final-response capture still delegate to the in-tree UI
+launcher. Feature code calls backend operations instead of assembling UI CLI
 subcommands directly, keeping the integration ready for a future in-process
 transport. The backend, bridge contract, command resolver, runtime metadata, and
-doctor formatting live in `crates/djinn-cli/src/buddy.rs`; top-level interactive
-Buddy launch planning and summary sync live there as well. Buddy/Djinn session
-reconciliation lives in `crates/djinn-cli/src/buddy_consolidate.rs`. The current
+doctor formatting live under `crates/djinn-cli/src/buddy/`; top-level interactive
+UI launch planning and summary sync live there as well. UI/Djinn session
+reconciliation lives in `crates/djinn-cli/src/buddy/consolidate.rs`. The current
 bridge JSON contract is documented in [`buddy-bridge-protocol.md`](./buddy-bridge-protocol.md).
-When `djinn -bs <folder-session>` opens a folder session without a Buddy binding,
-Djinn now asks the Buddy backend to create one before launch, records the resulting
-Buddy session id in `runtime/buddy.json`, and launches Buddy with that stable id. The
+When `djinn -s <folder-session>` opens a folder session without a UI binding,
+Djinn now asks the UI backend to create one before launch, records the resulting
+Buddy-compatible session id in `runtime/buddy.json`, and launches the UI with that stable id. The
 binding uses the session title from `djinn.toml` when present and uses a valid
 workspace/repo path when available, otherwise the folder-session directory itself.
-The checked-in `tools/buddy/bin/buddy` wrapper is the migration seam for moving
-Buddy into Djinn while keeping `tools/buddy/` available as Buddy's future in-repo
-home: it honors `DJINN_TOOLS_BUDDY_TARGET`, then tries in-repo Buddy builds under
-`tools/buddy/`, then runs `tools/buddy/packages/opencode/src/index.ts` with Bun
-when the source tree and dependencies are present, then tries the in-repo package
-launcher. It intentionally does not fall back to a sibling checkout, `~/.local/bin`,
-or `buddy` on `PATH`; use `DJINN_TOOLS_BUDDY_TARGET` for an explicit temporary
-override. Set `DJINN_TOOLS_BUDDY_BUN` to override the Bun executable used for the
-source-run path.
-`make install` now installs both `djinn` and `buddy`: it runs `bun install` under
-`tools/buddy/`, builds Buddy from `tools/buddy/packages/opencode`, and installs the
-resulting binary as `$(INSTALL_DIR)/buddy` alongside `$(INSTALL_DIR)/djinn`.
-Use `djinn doctor buddy` to inspect this resolver without launching Buddy. Normal
+The checked-in `tools/buddy/bin/djinn-ui` wrapper is the migration seam for moving
+Buddy into Djinn while keeping `tools/buddy/` available as the UI's in-repo
+home: it honors `DJINN_TOOLS_UI_TARGET` and legacy `DJINN_TOOLS_BUDDY_TARGET`, then
+tries in-repo UI builds under `tools/buddy/`, then runs
+`tools/buddy/packages/opencode/src/index.ts` with Bun when the source tree and
+dependencies are present, then tries the in-repo package launcher. It intentionally
+does not fall back to a sibling checkout, `~/.local/bin`, or `buddy` on `PATH`; use
+`DJINN_TOOLS_UI_TARGET` for an explicit temporary override. Set `DJINN_TOOLS_UI_BUN`
+to override the Bun executable used for the source-run path. The older
+`tools/buddy/bin/buddy` wrapper remains as a deprecated alias that delegates to
+`djinn-ui`.
+`make install` installs both `djinn` and the internal `djinn-ui` implementation
+binary, plus a deprecated `buddy` alias for older scripts. It runs `bun install`
+under `tools/buddy/`, builds the UI from `tools/buddy/packages/opencode`, and
+installs the resulting binary as `$(INSTALL_DIR)/djinn-ui` and
+`$(INSTALL_DIR)/buddy` alongside `$(INSTALL_DIR)/djinn`.
+Use `djinn doctor buddy` to inspect this resolver without launching the UI. Normal
 output shows the configured resolver candidates and reports `<unavailable>` when no
 configured or in-tree command exists. Add `--session <session>` to include
 `runtime/buddy.json.command` for a specific folder session, or `--json` for scripts.
@@ -504,41 +508,34 @@ Current context behavior:
 - active context skill roots are included in skill discovery;
 - the TUI header shows the active context.
 
-## TUI
+## Djinn UI
 
 Run:
 
 ```bash
 djinn
-djinn tui
-djinn tui sessions
-djinn tui memories
-djinn tui suggestions
-djinn tui skills
-djinn tui --editor nvim
+djinn -s <folder-session>
+djinn session chat <folder-session>
+djinn tui  # deprecated alias for djinn
 ```
 
 Current tab order:
 
 ```text
-Tools → Sessions → Memories → Suggestions → Skills
+Chat → Sessions → Memories → Suggestions → Skills → Tools
 ```
 
 Keybindings:
 
 - `Tab` / `Shift+Tab`: move between tabs.
-- `/`: enter fuzzy filter; `/` again clears it.
-- `↑`/`k`, `↓`/`j`: move selection.
-- `PageUp`/`u`, `PageDown`/`d`: scroll preview.
-- Tools: `Enter` opens the selected tool.
-- Sessions: `Enter` opens the focused folder-backed session view; `Space` checks
-  sessions for promotion, and `Ctrl+P` offers memory/todo/skill/pattern promotion
-  actions for checked sessions.
-- Focused Sessions: `Ctrl+P` includes event-ledger handoff commands for validating
-  `events.jsonl`, previewing projected turns, showing the explicit rebuild command,
-  and showing a restore command for the latest event rebuild backup when one
-  exists. Rebuild/restore remain explicit CLI commands; the palette only shows the
-  exact command text.
+- Tools and Sessions: `j`/`k` or arrow keys move selection; `Ctrl+u`/`Ctrl+d`
+  page selection up/down; `/` focuses the filter.
+- Tools: `open` opens the selected tool source.
+- Sessions: `Enter`/`b` opens linked chat, `r` runs, `w` watches, `o` opens
+  summary, `e` edits request, `c` opens context, `d` discovers context, `Space`
+  checks sessions for promotion, and `A` toggles all visible sessions.
+- Sessions candidate shortcuts: `p` opens the selected candidate, `a` accepts it,
+  `m` accepts and syncs MindWeaver, and `x` denies it.
 - Memories: `a` reviews the selected memory, `r` rejects/removes it.
 - Suggestions: `r` removes selected suggestions.
 - Skills: `Enter` opens the selected skill.

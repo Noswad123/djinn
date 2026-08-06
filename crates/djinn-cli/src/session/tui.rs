@@ -187,7 +187,7 @@ pub(crate) fn folder_session_action_message(
             shell_quote(&session_dir.display().to_string())
         ),
         djinn_tui::FolderSessionAction::Buddy => format!(
-            "Buddy chat command: djinn session chat {}",
+            "Djinn UI chat command: djinn session chat {}",
             shell_quote(&session_dir.display().to_string())
         ),
         djinn_tui::FolderSessionAction::Watch => format!(
@@ -567,7 +567,7 @@ mod tests {
                 None
             ),
             format!(
-                "Buddy chat command: djinn session chat '{}'",
+                "Djinn UI chat command: djinn session chat '{}'",
                 session_dir.display()
             )
         );

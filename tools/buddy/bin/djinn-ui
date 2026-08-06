@@ -1,0 +1,75 @@
+#!/bin/sh
+set -eu
+
+# Repo-local Djinn UI launcher used by Djinn's UI command resolver.
+#
+# This path deliberately lives under tools/buddy/ while the embedded/forked
+# OpenCode UI is still stored there. The public user command remains `djinn`;
+# this wrapper is an implementation detail that Rust Djinn delegates to.
+#
+# Resolution order inside this wrapper:
+#   1. DJINN_TOOLS_UI_TARGET, when set (may include command arguments).
+#   2. DJINN_TOOLS_BUDDY_TARGET, legacy override while the alias exists.
+#   3. In-repo built UI binary under tools/buddy/.
+#   4. In-repo TypeScript source under tools/buddy/packages/opencode/.
+#   5. In-repo package launcher under tools/buddy/packages/opencode/.
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+buddy_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+
+if [ "${DJINN_TOOLS_UI_TARGET:-}" != "" ]; then
+  # Intentionally allow shell word splitting so callers can provide a command
+  # with fixed leading arguments, matching Djinn's whitespace-split command
+  # behavior for UI commands.
+  # shellcheck disable=SC2086
+  exec ${DJINN_TOOLS_UI_TARGET} "$@"
+fi
+
+if [ "${DJINN_TOOLS_BUDDY_TARGET:-}" != "" ]; then
+  # shellcheck disable=SC2086
+  exec ${DJINN_TOOLS_BUDDY_TARGET} "$@"
+fi
+
+for candidate in \
+  "$buddy_root"/packages/opencode/dist/djinn-ui-*/bin/djinn-ui \
+  "$buddy_root"/dist/djinn-ui-*/bin/djinn-ui \
+  "$buddy_root"/packages/opencode/dist/buddy-*/bin/buddy \
+  "$buddy_root"/dist/buddy-*/bin/buddy
+do
+  if [ -x "$candidate" ]; then
+    exec "$candidate" "$@"
+  fi
+done
+
+source_pkg="$buddy_root/packages/opencode"
+source_entry="$source_pkg/src/index.ts"
+if [ -d "$buddy_root/node_modules" ] || [ -d "$source_pkg/node_modules" ]; then
+  deps_ready=1
+else
+  deps_ready=0
+fi
+
+if [ -f "$source_entry" ] && [ "$deps_ready" = 1 ]; then
+  bun_bin="${DJINN_TOOLS_UI_BUN:-${DJINN_TOOLS_BUDDY_BUN:-}}"
+  if [ "$bun_bin" = "" ]; then
+    bun_bin=$(command -v bun 2>/dev/null || true)
+  fi
+  if [ "$bun_bin" != "" ]; then
+    cd "$source_pkg"
+    exec "$bun_bin" run --conditions=browser ./src/index.ts "$@"
+  fi
+fi
+
+source_launcher="$source_pkg/bin/djinn-ui"
+if [ "$deps_ready" = 1 ] && [ -x "$source_launcher" ]; then
+  exec "$source_launcher" "$@"
+fi
+
+source_launcher="$source_pkg/bin/buddy"
+if [ "$deps_ready" = 1 ] && [ -x "$source_launcher" ]; then
+  exec "$source_launcher" "$@"
+fi
+
+printf '%s\n' "djinn tools/buddy/bin/djinn-ui: no Djinn UI executable found" >&2
+printf '%s\n' "Run make install, set DJINN_TOOLS_UI_TARGET, or place Djinn UI under tools/buddy/." >&2
+exit 127

@@ -28,7 +28,7 @@ pub(crate) enum SessionCommand {
     Init(SessionInitArgs),
     /// Start request.md for a folder-backed session in the background by default.
     Run(SessionRunArgs),
-    /// Open an interactive Buddy chat for a folder-backed session.
+    /// Open an interactive Djinn UI chat for a folder-backed session.
     Chat(SessionChatArgs),
     /// Reconcile Djinn folder sessions and Buddy native sessions.
     Consolidate(SessionConsolidateArgs),
@@ -131,19 +131,19 @@ pub(crate) struct SessionRunArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct SessionChatArgs {
-    /// Folder-backed session name, path, or Buddy id to open in interactive Buddy chat.
+    /// Folder-backed session name, path, or Buddy id to open in interactive Djinn UI chat.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
-    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, runtime binding, then tools/buddy/bin/buddy.
+    /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, legacy DJINN_BUDDY_BIN, runtime binding, then tools/buddy/bin/djinn-ui.
     #[arg(long = "buddy-bin")]
     pub(crate) buddy_bin: Option<String>,
-    /// Extra argument to pass through to Buddy. Repeat for multiple args.
+    /// Extra argument to pass through to the Djinn UI. Repeat for multiple args.
     #[arg(long = "buddy-arg", allow_hyphen_values = true)]
     pub(crate) buddy_args: Vec<String>,
-    /// Send request.md to Buddy and capture the final response instead of opening interactive chat.
+    /// Send request.md to the Djinn UI and capture the final response instead of opening interactive chat.
     #[arg(long = "capture-request", visible_alias = "capture")]
     pub(crate) capture_request: bool,
-    /// With --capture-request, preview the Buddy command and request without writing files.
+    /// With --capture-request, preview the Djinn UI command and request without writing files.
     #[arg(long)]
     pub(crate) dry_run: bool,
     /// With --capture-request, output JSON instead of text.
@@ -156,7 +156,7 @@ pub(crate) struct SessionConsolidateArgs {
     /// Preview reconciliation without creating Buddy sessions, folders, or bindings.
     #[arg(long)]
     pub(crate) dry_run: bool,
-    /// Buddy executable/command. Defaults to DJINN_BUDDY_BIN, tools/buddy/bin/buddy, then buddy.
+    /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, legacy DJINN_BUDDY_BIN, then tools/buddy/bin/djinn-ui.
     #[arg(long = "buddy-bin")]
     pub(crate) buddy_bin: Option<String>,
     /// Output JSON instead of text.

@@ -6,7 +6,7 @@ use anyhow::Result;
 use crate::buddy::{
     buddy_command_doctor_report_from, djinn_source_workspace_root,
     format_buddy_command_doctor_report, probe_buddy_bridge_doctor, read_buddy_runtime_state,
-    BuddyCommandDoctorReport, DJINN_BUDDY_BIN_ENV,
+    BuddyCommandDoctorReport, DJINN_BUDDY_BIN_ENV, DJINN_UI_BIN_ENV,
 };
 use crate::cli_args::{DoctorArgs, DoctorBuddyArgs, DoctorCommand};
 use crate::session::reference::resolve_session_dir;
@@ -40,6 +40,7 @@ pub(crate) fn buddy_command_doctor_report(
         .transpose()?
         .flatten();
     let mut report = buddy_command_doctor_report_from(
+        env::var(DJINN_UI_BIN_ENV).ok(),
         env::var(DJINN_BUDDY_BIN_ENV).ok(),
         runtime.as_ref().and_then(|state| state.command.clone()),
         Some(&djinn_source_workspace_root()),

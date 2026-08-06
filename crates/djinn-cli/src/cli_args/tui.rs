@@ -4,13 +4,13 @@ use clap::{Args, ValueEnum};
 
 #[derive(Debug, Clone, Args)]
 pub(crate) struct TuiArgs {
-    /// TUI view to open. Defaults to sessions.
+    /// Legacy Rust TUI view hint. The command now opens the Buddy-first Djinn UI.
     #[arg(value_enum, default_value_t = TuiView::Sessions)]
     pub(crate) view: TuiView,
-    /// Local tooling root to scan. Repeatable. Defaults to DJINN_TOOL_ROOTS or ~/.dotfiles.
+    /// Legacy Rust TUI tooling root hint. Ignored by the Buddy-first Djinn UI.
     #[arg(long = "root")]
     pub(crate) roots: Vec<PathBuf>,
-    /// Editor command for opening tools. Defaults to VISUAL, then EDITOR, then nvim.
+    /// Legacy Rust TUI editor hint. Ignored by the Buddy-first Djinn UI.
     #[arg(long)]
     pub(crate) editor: Option<String>,
 }

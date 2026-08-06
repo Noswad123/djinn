@@ -187,6 +187,7 @@ pub(crate) fn dashboard_tab(view: TuiView) -> djinn_tui::DashboardTab {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn default_dashboard_tui_args() -> TuiArgs {
     TuiArgs {
         view: TuiView::Sessions,

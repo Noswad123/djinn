@@ -12,7 +12,7 @@ pub(crate) struct DoctorArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum DoctorCommand {
-    /// Show which Buddy command Djinn will use without launching Buddy.
+    /// Show which Djinn UI command Djinn will use without launching the UI.
     Buddy(DoctorBuddyArgs),
 }
 

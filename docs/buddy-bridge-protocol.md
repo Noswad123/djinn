@@ -1,21 +1,21 @@
-# Buddy Bridge Protocol
+# Djinn UI Bridge Protocol
 
-Djinn talks to in-tree Buddy through a hidden JSON stdin/stdout command:
+Djinn talks to its in-tree UI through a hidden JSON stdin/stdout command:
 
 ```bash
-buddy djinn-bridge < request.json
+djinn-ui djinn-bridge < request.json
 ```
 
-The command is intentionally hidden from normal Buddy help. It exists as an
-internal Djinn/Buddy control-plane seam so Djinn feature code can depend on a
-small protocol instead of assembling user-facing Buddy CLI commands.
+The command is intentionally hidden from normal UI help. It exists as an internal
+Djinn/UI control-plane seam so Djinn feature code can depend on a small protocol
+instead of assembling user-facing UI CLI commands.
 
 ## Transport
 
 - Request: one JSON object on stdin.
 - Response: one JSON object on stdout.
 - Failure: non-zero exit status with a human-readable stderr message.
-- Compatibility: Djinn currently falls back to legacy Buddy commands for session
+- Compatibility: Djinn currently falls back to legacy Buddy-compatible commands for session
   listing, lookup, creation, and deletion if this bridge is unavailable or returns
   an unexpected response. Lookup fallback scans the strict JSON session list.
 
@@ -137,15 +137,15 @@ Djinn keeps two separate Buddy integration traits:
   listing, looking up, creating, and deleting Buddy sessions.
 
 `BuddyBridgeBackend` implements both. Its session-management implementation
-prefers `buddy djinn-bridge`; its launcher implementation still delegates to the
-normal Buddy process launch path.
+prefers `djinn-ui djinn-bridge`; its launcher implementation still delegates to
+the normal Djinn UI process launch path.
 
 ## Evolution rules
 
 - Add new bridge request/response variants explicitly; do not overload existing
   shapes.
 - Keep bridge JSON strict and typed on both sides.
-- Keep user-facing Buddy CLI compatibility as fallback only where Djinn already
+- Keep user-facing Buddy-compatible CLI behavior as fallback only where Djinn already
   has a legacy strict JSON command path.
 - Do not make the bridge a general chat/transcript UI. Folder-session artifacts
   remain canonical for Djinn-owned files, while Buddy owns its interactive runtime

@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+
+import childProcess from "node:child_process"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const child = childProcess.spawn(path.join(scriptDir, "buddy"), process.argv.slice(2), {
+  stdio: "inherit",
+})
+
+child.on("error", (error) => {
+  console.error(error.message)
+  process.exit(1)
+})
+
+child.on("exit", (code, signal) => {
+  if (signal) {
+    process.kill(process.pid, signal)
+    return
+  }
+  process.exit(typeof code === "number" ? code : 0)
+})
