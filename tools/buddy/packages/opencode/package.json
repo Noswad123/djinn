@@ -16,8 +16,7 @@
     "dev:temporary": "bun run --conditions=browser ./src/temporary.ts"
   },
   "bin": {
-    "djinn-ui": "./bin/djinn-ui",
-    "buddy": "./bin/buddy"
+    "djinn-ui": "./bin/djinn-ui"
   },
   "exports": {
     "./*": "./src/*.ts"

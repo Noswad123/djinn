@@ -9,10 +9,9 @@ set -eu
 #
 # Resolution order inside this wrapper:
 #   1. DJINN_TOOLS_UI_TARGET, when set (may include command arguments).
-#   2. DJINN_TOOLS_BUDDY_TARGET, legacy override while the alias exists.
-#   3. In-repo built UI binary under tools/buddy/.
-#   4. In-repo TypeScript source under tools/buddy/packages/opencode/.
-#   5. In-repo package launcher under tools/buddy/packages/opencode/.
+#   2. In-repo built UI binary under tools/buddy/.
+#   3. In-repo TypeScript source under tools/buddy/packages/opencode/.
+#   4. In-repo package launcher under tools/buddy/packages/opencode/.
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 buddy_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
@@ -25,16 +24,9 @@ if [ "${DJINN_TOOLS_UI_TARGET:-}" != "" ]; then
   exec ${DJINN_TOOLS_UI_TARGET} "$@"
 fi
 
-if [ "${DJINN_TOOLS_BUDDY_TARGET:-}" != "" ]; then
-  # shellcheck disable=SC2086
-  exec ${DJINN_TOOLS_BUDDY_TARGET} "$@"
-fi
-
 for candidate in \
   "$buddy_root"/packages/opencode/dist/djinn-ui-*/bin/djinn-ui \
-  "$buddy_root"/dist/djinn-ui-*/bin/djinn-ui \
-  "$buddy_root"/packages/opencode/dist/buddy-*/bin/buddy \
-  "$buddy_root"/dist/buddy-*/bin/buddy
+  "$buddy_root"/dist/djinn-ui-*/bin/djinn-ui
 do
   if [ -x "$candidate" ]; then
     exec "$candidate" "$@"
@@ -50,7 +42,7 @@ else
 fi
 
 if [ -f "$source_entry" ] && [ "$deps_ready" = 1 ]; then
-  bun_bin="${DJINN_TOOLS_UI_BUN:-${DJINN_TOOLS_BUDDY_BUN:-}}"
+  bun_bin="${DJINN_TOOLS_UI_BUN:-}"
   if [ "$bun_bin" = "" ]; then
     bun_bin=$(command -v bun 2>/dev/null || true)
   fi
@@ -61,11 +53,6 @@ if [ -f "$source_entry" ] && [ "$deps_ready" = 1 ]; then
 fi
 
 source_launcher="$source_pkg/bin/djinn-ui"
-if [ "$deps_ready" = 1 ] && [ -x "$source_launcher" ]; then
-  exec "$source_launcher" "$@"
-fi
-
-source_launcher="$source_pkg/bin/buddy"
 if [ "$deps_ready" = 1 ] && [ -x "$source_launcher" ]; then
   exec "$source_launcher" "$@"
 fi

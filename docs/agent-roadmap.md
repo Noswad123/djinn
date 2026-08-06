@@ -1,7 +1,7 @@
 # Djinn Agent Roadmap
 
 This roadmap is the forward-looking work queue for the Djinn-native agent
-harness, CLI, and Buddy-first interactive assistant.
+harness, CLI, and Djinn UI interactive assistant.
 
 It intentionally does **not** repeat implemented baseline behavior or settled
 design decisions. Use these documents as the source of truth for those:
@@ -32,25 +32,25 @@ These items are small enough or well-defined enough to implement without another
 product-design pass. UI work is the current priority because it affects every
 agent turn and makes the rest of the runtime easier to evaluate.
 
-### Buddy-first interactive UI
+### Djinn UI interactive surface
 
-Buddy, Djinn's embedded/forked OpenCode UI, is the preferred surface for rich
-interactive work. Do not try to recreate Buddy/OpenCode polish in Rust/Ratatui
+The Djinn UI, Djinn's embedded/forked OpenCode UI, is the preferred surface for rich
+interactive work. Do not try to recreate Djinn UI/OpenCode polish in Rust/Ratatui
 unless a workflow specifically needs a Rust-native fallback. Djinn should keep
-owning folder sessions, CLI commands, policy, stores, and projections; Buddy
+owning folder sessions, CLI commands, policy, stores, and projections; the Djinn UI
 should become the polished UI shell over those capabilities.
 
 Design criteria:
 
-- Use Buddy tabs for broad Djinn surfaces. `Tab` and `Shift+Tab` should move
+- Use Djinn UI tabs for broad Djinn surfaces. `Tab` and `Shift+Tab` should move
   between tabs rather than switching agents.
 - Move agent switching behind a `/agents` command that opens a searchable selector
   for all configured/selectable agents.
-- Build a complete command-palette command registry for Buddy and make it
+- Build a complete command-palette command registry for Djinn UI and make it
   configurable from a TOML file. The registry should describe labels, grouping,
-  keybindings, visibility/context rules, and delegated Djinn/Buddy actions rather
+  keybindings, visibility/context rules, and delegated Djinn/UI actions rather
   than hard-coding every action in UI code.
-- While in the Buddy chat interface, provide an action to open/inspect the bound
+- While in the Djinn UI chat interface, provide an action to open/inspect the bound
   Djinn session folder so users can see `request.md`, `summary.md`, `events.jsonl`,
   `runtime/djinn.json`, and context/artifact files without leaving the workflow.
 - Provide a chat action/slash command to summon the current `request.md` contents
@@ -61,12 +61,12 @@ Design criteria:
 
 Ready implementation slices:
 
-1. Add the Buddy tab shell and reserve `Tab`/`Shift+Tab` for tab navigation.
+1. Add the Djinn UI tab shell and reserve `Tab`/`Shift+Tab` for tab navigation.
 2. Add `/agents` as the replacement for tab-based agent switching.
-3. Introduce the Buddy command registry plus TOML configuration format, initially
+3. Introduce the Djinn UI command registry plus TOML configuration format, initially
    covering existing chat/session actions.
 4. Add session-folder inspect/open action for the bound Djinn folder session.
-5. Add request summoning from `request.md` into the next Buddy prompt.
+5. Add request summoning from `request.md` into the next Djinn UI prompt.
 
 ### Folder-backed session follow-ups
 

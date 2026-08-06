@@ -39,7 +39,7 @@ pub(crate) const FOLDER_SESSION_COMPACT_END_MARKER: &str = "<!-- djinn:generated
 
 fn main() -> Result<()> {
     let cli = parse_cli();
-    if cli.buddy {
+    if cli.ui {
         if cli.command.is_some() {
             bail!("-b/--ui opens the Djinn UI and cannot be combined with a Djinn subcommand");
         }

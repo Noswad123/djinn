@@ -17,8 +17,8 @@ pub(crate) use tui::{TuiArgs, TuiView};
 #[command(about = "Local-first companion for AI coding agents")]
 pub(crate) struct Cli {
     /// Open the Djinn UI immediately.
-    #[arg(short = 'b', long = "ui", alias = "buddy")]
-    pub(crate) buddy: bool,
+    #[arg(short = 'b', long = "ui")]
+    pub(crate) ui: bool,
     /// Folder-backed session name, path, or UI session id to open in the Djinn UI.
     #[arg(short = 's', long = "session", value_name = "SESSION")]
     pub(crate) session: Option<PathBuf>,
@@ -135,32 +135,27 @@ mod tests {
     #[test]
     fn parses_top_level_ui_mode_flags() {
         let cli = Cli::try_parse_from(["djinn", "--ui"]).unwrap();
-        assert!(cli.buddy);
-        assert!(cli.session.is_none());
-        assert!(cli.command.is_none());
-
-        let cli = Cli::try_parse_from(["djinn", "--buddy"]).unwrap();
-        assert!(cli.buddy);
+        assert!(cli.ui);
         assert!(cli.session.is_none());
         assert!(cli.command.is_none());
 
         let cli = Cli::try_parse_from(["djinn", "-b"]).unwrap();
-        assert!(cli.buddy);
+        assert!(cli.ui);
         assert!(cli.session.is_none());
         assert!(cli.command.is_none());
 
         let cli = Cli::try_parse_from(["djinn", "-b", "-s", "bap-questions"]).unwrap();
-        assert!(cli.buddy);
+        assert!(cli.ui);
         assert_eq!(cli.session, Some(PathBuf::from("bap-questions")));
         assert!(cli.command.is_none());
 
         let cli = Cli::try_parse_from(["djinn", "-bs", "bap-questions"]).unwrap();
-        assert!(cli.buddy);
+        assert!(cli.ui);
         assert_eq!(cli.session, Some(PathBuf::from("bap-questions")));
         assert!(cli.command.is_none());
 
         let cli = Cli::try_parse_from(["djinn", "-s", "bap-questions"]).unwrap();
-        assert!(!cli.buddy);
+        assert!(!cli.ui);
         assert_eq!(cli.session, Some(PathBuf::from("bap-questions")));
         assert!(cli.command.is_none());
     }

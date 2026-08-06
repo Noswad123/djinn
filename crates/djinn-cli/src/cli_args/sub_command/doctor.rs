@@ -13,12 +13,12 @@ pub(crate) struct DoctorArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum DoctorCommand {
     /// Show which Djinn UI command Djinn will use without launching the UI.
-    #[command(name = "ui", alias = "buddy")]
-    Buddy(DoctorBuddyArgs),
+    #[command(name = "ui")]
+    Ui(DoctorUiArgs),
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct DoctorBuddyArgs {
+pub(crate) struct DoctorUiArgs {
     /// Folder-backed session name or directory whose runtime/djinn.json should be considered.
     #[arg(short = 's', long = "session", value_name = "SESSION")]
     pub(crate) session: Option<PathBuf>,
@@ -54,11 +54,11 @@ mod tests {
         let Some(Command::Doctor(args)) = cli.command else {
             panic!("expected doctor command");
         };
-        let DoctorCommand::Buddy(args) = args.command;
+        let DoctorCommand::Ui(args) = args.command;
 
         assert_eq!(args.session.as_deref(), Some(Path::new("rebrand-opencode")));
         assert!(args.json);
 
-        assert!(Cli::try_parse_from(["djinn", "doctor", "buddy"]).is_ok());
+        assert!(Cli::try_parse_from(["djinn", "doctor", "buddy"]).is_err());
     }
 }

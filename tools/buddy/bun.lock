@@ -559,7 +559,7 @@
       "name": "buddy",
       "version": "1.18.4",
       "bin": {
-        "buddy": "./bin/buddy",
+        "djinn-ui": "./bin/djinn-ui",
       },
       "dependencies": {
         "@actions/core": "1.11.1",

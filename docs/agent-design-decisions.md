@@ -28,22 +28,22 @@ Implications:
   providers, and permission gates.
 - The CLI should be a product surface, not just a thin debug wrapper.
 
-### D2. UI direction: Buddy-first interactive UI over Djinn-owned state
+### D2. UI direction: Djinn UI interactive surface over Djinn-owned state
 
 **Status:** Decided
 
-Djinn's rich interactive UI should be Buddy-first. Buddy is Djinn's embedded/forked
-OpenCode UI and is the preferred place to carry OpenCode-like layout, keyboard
+Djinn's rich interactive UI should be the Djinn UI. It is Djinn's embedded/forked
+OpenCode-derived UI and is the preferred place to carry OpenCode-like layout, keyboard
 flow, command palette behavior, chat ergonomics, and visual polish. Djinn's Rust
 code owns the local runtime, folder-session files, CLI commands, policy, stores,
-and projections; Buddy presents and invokes those capabilities through explicit
+and projections; the Djinn UI presents and invokes those capabilities through explicit
 bridge/API seams. The Rust `djinn-tui` may remain as a lightweight dashboard,
-debug/status surface, or fallback, but it should not try to clone Buddy/OpenCode's
+debug/status surface, or fallback, but it should not try to clone Djinn UI/OpenCode's
 full look and feel.
 
-Buddy interaction direction:
+Djinn UI interaction direction:
 
-- Buddy tabs are the broad navigation primitive; `Tab` and `Shift+Tab` should move
+- Djinn UI tabs are the broad navigation primitive; `Tab` and `Shift+Tab` should move
   between tabs.
 - Agent switching should move to an explicit `/agents` selector rather than using
   Tab.
@@ -57,10 +57,10 @@ Implications:
 
 - Keep UI state outside the agent/runtime loop.
 - Keep Djinn folder sessions and `events.jsonl` as the source of truth for Djinn
-  work, even when Buddy is the active UI.
-- Prefer extending the Buddy/Djinn bridge or command registry over porting rich UI
+  work, even when the Djinn UI is active.
+- Prefer extending the Djinn UI bridge or command registry over porting rich UI
   flows into Ratatui.
-- Avoid moving business logic into Buddy; Buddy should request state/projections and
+- Avoid moving business logic into the Djinn UI; The Djinn UI should request state/projections and
   delegate mutations to Djinn commands or bridge actions.
 
 ### D3. Session storage: use JSONL for now
@@ -901,8 +901,8 @@ The first non-interactive agent slice is implemented as:
     context can override global defaults; session-local files remain the strongest
     explicit context. The repo appears as a symlink under `context/<repo-name>`
     and is recorded in `djinn.toml` as a live reference, not as a command to
-    ingest the whole tree. `session init` also creates or reuses the Buddy session
-    binding immediately and writes it to `runtime/djinn.json`; Buddy is expected to
+    ingest the whole tree. `session init` also creates or reuses the UI session
+    binding immediately and writes it to `runtime/djinn.json`; the Djinn UI is expected to
     ship with Djinn, so init fails if that binding cannot be established. Safe
     context discovery runs during linked-repo init by default and can be skipped
     with `--no-discover-context`.
@@ -910,7 +910,7 @@ The first non-interactive agent slice is implemented as:
     common path. `djinn ask` is the preferred shorthand for `djinn agent ask` and
     creates a native Djinn session by default using the effective global +
     repo-local config for the current workspace. When top-level `djinn ask` creates
-    a new cache-backed folder capsule, it also creates or reuses the Buddy binding
+    a new cache-backed folder capsule, it also creates or reuses the UI binding
     before the model call and records it in `runtime/djinn.json`. `--session-id`
     appends a turn to an existing native session. `--session-dir` reads/writes the
     folder-backed capsule and, when its `djinn.toml` already records a
@@ -979,7 +979,7 @@ The first non-interactive agent slice is implemented as:
     labels derived from the same validation state, so normal triage can spot
     missing, invalid, or ready event ledgers without opening each session. The
     default text `djinn session ls` table stays focused on choosing recent work:
-    updated time, lifecycle state, Buddy id, name, and summary preview. JSON list
+    updated time, lifecycle state, UI id, name, and summary preview. JSON list
     output still carries event-health fields. Health audits accept `--health`
     filters for `ready`, `not-ready`, `missing`, or specific validation issue
     codes; the Sessions dashboard fuzzy filter also matches compact event health
@@ -1000,7 +1000,7 @@ The first non-interactive agent slice is implemented as:
     listing includes created/updated timestamps, using native session metadata
     when available and folder metadata as a fallback, so duplicate-looking prompt
     names can be distinguished. Its text table carries lifecycle state/mode and
-    Buddy binding for quick selection; JSON projections also carry latest turn and
+    UI binding for quick selection; JSON projections also carry latest turn and
     event-health metadata for dashboard/watch consumers that need detail without
     opening every session folder.
 73. Cache-backed folder session names are unique by resolved path. Re-running
@@ -1011,7 +1011,7 @@ The first non-interactive agent slice is implemented as:
 74. `djinn session open <ref> [target]` is the file-first navigation command for
     folder-backed sessions. Existing-session entry points, including `djinn -s`,
     `session chat`, `session watch`, and other session subcommands, share a central
-    resolver for bare cache names, explicit paths, and current or stale Buddy ids
+    resolver for bare cache names, explicit paths, and current or stale UI ids
     recorded in `runtime/djinn.json`; missing refs fail before opening editors or
     launching workers. `session open` opens `summary.md` by default. Supported
     targets are `summary`, `request`, `context`, `compacted`, `turns`, `manifest`,
@@ -1029,10 +1029,10 @@ The first non-interactive agent slice is implemented as:
     session folders remain easy to remove because they live under the disposable
     session cache root.
     `djinn session rename <ref> <new-name>` is the targeted rename path for
-    cache-backed folder sessions. It resolves `<ref>` with the shared folder/Buddy
+    cache-backed folder sessions. It resolves `<ref>` with the shared folder/UI
     resolver, only writes inside the cache session root, rejects path-like or
     existing target names, and moves `runtime/djinn.json` plus all artifacts with
-    the folder instead of rewriting Buddy ids.
+    the folder instead of rewriting UI ids.
 76. Plain top-level `djinn ask "..."` creates and projects a cache-backed folder
     session automatically, using a prompt slug plus native session id under the
     cache session root. Explicit `--session-dir` / `--session <name-or-path>` keep
@@ -1207,7 +1207,7 @@ The first non-interactive agent slice is implemented as:
     live under `crates/djinn-cli/src/cli_args/`, grouped into top-level collection
     nouns, subcommand families, TUI args, and common output-format helpers.
     Command handler/adaptor modules live under `commands/`; runtime/domain behavior
-    lives under owning groups such as `session`, `buddy`, `promotion`, `agent`,
+    lives under owning groups such as `session`, `ui`, `promotion`, `agent`,
     `config`, `model`, `policy`, `permission`, `runtime`, `storage`, `tui`, and
     `util`. Internal modules should import helpers from their owning grouped module
     paths rather than through a crate-root `main.rs` facade. Runtime code may still

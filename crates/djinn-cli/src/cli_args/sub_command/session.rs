@@ -134,16 +134,11 @@ pub(crate) struct SessionChatArgs {
     /// Folder-backed session name, path, or UI session id to open in interactive Djinn UI chat.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
-    /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, legacy DJINN_BUDDY_BIN, runtime binding, then tools/buddy/bin/djinn-ui.
-    #[arg(long = "ui-bin", alias = "buddy-bin", value_name = "UI_COMMAND")]
+    /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, runtime binding, then tools/buddy/bin/djinn-ui.
+    #[arg(long = "ui-bin", value_name = "UI_COMMAND")]
     pub(crate) ui_bin: Option<String>,
     /// Extra argument to pass through to the Djinn UI. Repeat for multiple args.
-    #[arg(
-        long = "ui-arg",
-        alias = "buddy-arg",
-        value_name = "UI_ARG",
-        allow_hyphen_values = true
-    )]
+    #[arg(long = "ui-arg", value_name = "UI_ARG", allow_hyphen_values = true)]
     pub(crate) ui_args: Vec<String>,
     /// Send request.md to the Djinn UI and capture the final response instead of opening interactive chat.
     #[arg(long = "capture-request", visible_alias = "capture")]
@@ -161,8 +156,8 @@ pub(crate) struct SessionConsolidateArgs {
     /// Preview reconciliation without creating UI sessions, folders, or bindings.
     #[arg(long)]
     pub(crate) dry_run: bool,
-    /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, legacy DJINN_BUDDY_BIN, then tools/buddy/bin/djinn-ui.
-    #[arg(long = "ui-bin", alias = "buddy-bin", value_name = "UI_COMMAND")]
+    /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, then tools/buddy/bin/djinn-ui.
+    #[arg(long = "ui-bin", value_name = "UI_COMMAND")]
     pub(crate) ui_bin: Option<String>,
     /// Output JSON instead of text.
     #[arg(long)]
@@ -593,26 +588,6 @@ mod tests {
         assert_eq!(args.dir, PathBuf::from("ses_chatBuddy123"));
         assert_eq!(args.ui_bin.as_deref(), Some("djinn-ui --dev"));
         assert_eq!(args.ui_args, vec!["--trace"]);
-
-        let cli = Cli::try_parse_from([
-            "djinn",
-            "session",
-            "chat",
-            "ses_chatBuddy123",
-            "--buddy-bin",
-            "legacy-buddy",
-            "--buddy-arg",
-            "--legacy",
-        ])
-        .unwrap();
-        let Some(Command::Session(args)) = cli.command else {
-            panic!("expected session command");
-        };
-        let Some(SessionCommand::Chat(args)) = args.command else {
-            panic!("expected session chat command");
-        };
-        assert_eq!(args.ui_bin.as_deref(), Some("legacy-buddy"));
-        assert_eq!(args.ui_args, vec!["--legacy"]);
 
         let cli = Cli::try_parse_from([
             "djinn",

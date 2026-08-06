@@ -39,14 +39,13 @@ build-buddy: buddy-deps
 	bun run --cwd "$(BUDDY_PACKAGE)" build --skip-install --skip-embed-web-ui
 
 install-buddy: build-buddy
-	@echo "📦 Installing Djinn UI to $(INSTALL_DIR)/djinn-ui and deprecated buddy alias"
+	@echo "📦 Installing Djinn UI to $(INSTALL_DIR)/djinn-ui"
 	@mkdir -p "$(INSTALL_DIR)"
 	@set -eu; \
 	found=; \
-	for candidate in "$(BUDDY_PACKAGE)"/dist/djinn-ui-*/bin/djinn-ui "$(BUDDY_ROOT)"/dist/djinn-ui-*/bin/djinn-ui "$(BUDDY_PACKAGE)"/dist/buddy-*/bin/buddy "$(BUDDY_ROOT)"/dist/buddy-*/bin/buddy; do \
+	for candidate in "$(BUDDY_PACKAGE)"/dist/djinn-ui-*/bin/djinn-ui "$(BUDDY_ROOT)"/dist/djinn-ui-*/bin/djinn-ui; do \
 		if [ -x "$$candidate" ]; then \
 			install -m 0755 "$$candidate" "$(INSTALL_DIR)/djinn-ui"; \
-			install -m 0755 "$$candidate" "$(INSTALL_DIR)/buddy"; \
 			found=1; \
 			break; \
 		fi; \
@@ -57,7 +56,6 @@ install-buddy: build-buddy
 	fi
 	@if command -v xattr >/dev/null 2>&1; then \
 		xattr -d com.apple.quarantine "$(INSTALL_DIR)/djinn-ui" 2>/dev/null || true; \
-		xattr -d com.apple.quarantine "$(INSTALL_DIR)/buddy" 2>/dev/null || true; \
 	fi
 	@echo "✅ Installed. Run with: djinn"
 

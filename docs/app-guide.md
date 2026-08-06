@@ -118,16 +118,15 @@ deterministic event ids so replayed message writes can be skipped without collap
 legitimate repeated prompts. Use `--dry-run` to preview the
 lower-level UI command without launching the UI or mutating session files.
 Djinn resolves the UI command in one place: explicit `--ui-bin` where a subcommand
-has one, then `DJINN_UI_BIN`, then legacy `DJINN_BUDDY_BIN`, then
-`runtime/djinn.json.command` for session-scoped launches, then the in-tree
+has one, then `DJINN_UI_BIN`, then `runtime/djinn.json.command` for
+session-scoped launches, then the in-tree
 `tools/buddy/bin/djinn-ui` launcher. If none of those sources is available, UI
 launch paths fail with an explicit setup error; Djinn does not fall back to a bare
-`buddy` on `PATH`. Legacy `--buddy-bin` remains accepted as an alias for
-`--ui-bin` during the migration.
+`buddy` on `PATH`.
 New runtime metadata treats `runtime/djinn.json.command` as an override only: normal
 in-tree launches leave it unset so Djinn re-resolves the current in-tree launcher on
-the next run. Explicit `--ui-bin`, `DJINN_UI_BIN`, legacy `DJINN_BUDDY_BIN`, or
-manually-authored runtime commands are preserved as overrides.
+the next run. Explicit `--ui-bin`, `DJINN_UI_BIN`, or manually-authored runtime
+commands are preserved as overrides.
 `djinn session init <name>` and auto-created top-level `djinn ask "..."` sessions
 now create both the folder capsule and a UI session binding up front, writing the
 UI id to `<session>/runtime/djinn.json`. The Djinn UI is part of
@@ -147,7 +146,7 @@ transport. The backend, bridge contract, command resolver, runtime metadata, and
 doctor formatting live under `crates/djinn-cli/src/ui/`; top-level interactive
 UI launch planning and summary sync live there as well. UI/Djinn session
 reconciliation lives in `crates/djinn-cli/src/ui/consolidate.rs`. The current
-bridge JSON contract is documented in [`buddy-bridge-protocol.md`](./buddy-bridge-protocol.md).
+bridge JSON contract is documented in [`djinn-ui-bridge-protocol.md`](./djinn-ui-bridge-protocol.md).
 When `djinn -s <folder-session>` opens a folder session without a UI binding,
 Djinn now asks the UI backend to create one before launch, records the resulting
 UI session id in `runtime/djinn.json`, and launches the UI with that stable id. The
@@ -155,25 +154,21 @@ binding uses the session title from `djinn.toml` when present and uses a valid
 workspace/repo path when available, otherwise the folder-session directory itself.
 The checked-in `tools/buddy/bin/djinn-ui` wrapper is the migration seam for moving
 the forked UI into Djinn while keeping `tools/buddy/` available as the UI's in-repo
-home: it honors `DJINN_TOOLS_UI_TARGET` and legacy `DJINN_TOOLS_BUDDY_TARGET`, then
-tries in-repo UI builds under `tools/buddy/`, then runs
+home: it honors `DJINN_TOOLS_UI_TARGET`, tries in-repo UI builds under `tools/buddy/`, then runs
 `tools/buddy/packages/opencode/src/index.ts` with Bun when the source tree and
 dependencies are present, then tries the in-repo package launcher. It intentionally
 does not fall back to a sibling checkout, `~/.local/bin`, or `buddy` on `PATH`; use
 `DJINN_TOOLS_UI_TARGET` for an explicit temporary override. Set `DJINN_TOOLS_UI_BUN`
-to override the Bun executable used for the source-run path. The older
-`tools/buddy/bin/buddy` wrapper remains as a deprecated alias that delegates to
-`djinn-ui`.
+to override the Bun executable used for the source-run path.
 `make install` installs both `djinn` and the internal `djinn-ui` implementation
-binary, plus a deprecated `buddy` alias for older scripts. It runs `bun install`
+binary. It runs `bun install`
 under `tools/buddy/`, builds the UI from `tools/buddy/packages/opencode`, and
-installs the resulting binary as `$(INSTALL_DIR)/djinn-ui` and
-`$(INSTALL_DIR)/buddy` alongside `$(INSTALL_DIR)/djinn`.
+installs the resulting binary as `$(INSTALL_DIR)/djinn-ui` alongside
+`$(INSTALL_DIR)/djinn`.
 Use `djinn doctor ui` to inspect this resolver without launching the UI. Normal
 output shows the configured resolver candidates and reports `<unavailable>` when no
 configured or in-tree command exists. Add `--session <session>` to include
 `runtime/djinn.json.command` for a specific folder session, or `--json` for scripts.
-Legacy `djinn doctor buddy` remains accepted as an alias.
 When a bound UI session's recorded workspace/repo path no longer exists, Djinn
 promotes the folder capsule to a session-local UI workspace: it removes the stale
 workspace and `[context.repo]` binding from `djinn.toml`, creates a new UI session

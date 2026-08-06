@@ -1,9 +1,0 @@
-#!/bin/sh
-set -eu
-
-# Deprecated repo-local Buddy launcher alias. The canonical implementation
-# binary is djinn-ui; keep this shim while older runtime/buddy.json bindings and
-# user scripts still point at tools/buddy/bin/buddy.
-
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec "$script_dir/djinn-ui" "$@"

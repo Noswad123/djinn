@@ -71,7 +71,6 @@ if (!skipInstall) {
 }
 
 const binaryName = "djinn-ui"
-const legacyBinaryName = "buddy"
 const name = [binaryName, target.os, target.arch].join("-")
 console.log(`building ${name}`)
 await $`mkdir -p dist/${name}/bin`
@@ -116,7 +115,6 @@ await Bun.build({
 })
 
 const binaryPath = `dist/${name}/bin/${binaryName}`
-await $`cp ${binaryPath} dist/${name}/bin/${legacyBinaryName}`
 console.log(`Running smoke test: ${binaryPath} --version`)
 try {
   const versionOutput = await $`${binaryPath} --version`.text()

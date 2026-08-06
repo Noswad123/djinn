@@ -3,22 +3,21 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::cli_args::{DoctorArgs, DoctorBuddyArgs, DoctorCommand};
+use crate::cli_args::{DoctorArgs, DoctorCommand, DoctorUiArgs};
 use crate::session::reference::resolve_session_dir;
 use crate::ui::{
     djinn_source_workspace_root, format_ui_command_doctor_report, probe_ui_bridge_doctor,
-    read_ui_runtime_state, ui_command_doctor_report_from, UiCommandDoctorReport,
-    DJINN_BUDDY_BIN_ENV, DJINN_UI_BIN_ENV,
+    read_ui_runtime_state, ui_command_doctor_report_from, UiCommandDoctorReport, DJINN_UI_BIN_ENV,
 };
 use crate::util::text::output_format;
 
 pub(crate) fn run_doctor(args: DoctorArgs) -> Result<()> {
     match args.command {
-        DoctorCommand::Buddy(args) => doctor_ui(args),
+        DoctorCommand::Ui(args) => doctor_ui(args),
     }
 }
 
-pub(crate) fn doctor_ui(args: DoctorBuddyArgs) -> Result<()> {
+pub(crate) fn doctor_ui(args: DoctorUiArgs) -> Result<()> {
     let report = ui_command_doctor_report(args.session.as_deref())?;
     print!(
         "{}",
@@ -39,7 +38,6 @@ pub(crate) fn ui_command_doctor_report(session: Option<&Path>) -> Result<UiComma
         .flatten();
     let mut report = ui_command_doctor_report_from(
         env::var(DJINN_UI_BIN_ENV).ok(),
-        env::var(DJINN_BUDDY_BIN_ENV).ok(),
         runtime.as_ref().and_then(|state| state.command.clone()),
         Some(&djinn_source_workspace_root()),
         session_dir.as_deref(),

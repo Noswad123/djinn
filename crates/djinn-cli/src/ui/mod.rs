@@ -25,10 +25,8 @@ use crate::session::reference::{
 use crate::util::shell::shell_quote_if_needed as shell_quote;
 use crate::util::text::{ensure_trailing_newline, yes_no};
 
-pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
 pub(crate) const DJINN_UI_BIN_ENV: &str = "DJINN_UI_BIN";
 pub(crate) const IN_TREE_UI_COMMAND: &str = "tools/buddy/bin/djinn-ui";
-const LEGACY_IN_TREE_UI_ALIAS_COMMAND: &str = "tools/buddy/bin/buddy";
 const EXPLICIT_UI_COMMAND_SOURCE: &str = "--ui-bin";
 pub(crate) const UNAVAILABLE_UI_COMMAND_SOURCE: &str = "unavailable";
 
@@ -644,9 +642,7 @@ impl UiSessionBackend for UiBridgeBackend {
 pub(crate) fn resolve_ui_command_resolution(
     previous_runtime: Option<&UiRuntimeState>,
 ) -> Result<UiCommandResolution> {
-    let env_ui_command = env::var(DJINN_UI_BIN_ENV).ok();
-    let env_legacy_command = env::var(DJINN_BUDDY_BIN_ENV).ok();
-    let env_command = env_ui_command.clone().or(env_legacy_command.clone());
+    let env_command = env::var(DJINN_UI_BIN_ENV).ok();
     let runtime_command = previous_runtime.and_then(|state| state.command.clone());
     let workspace_root = djinn_source_workspace_root();
     let in_tree = in_tree_ui_command(&workspace_root);
@@ -658,8 +654,7 @@ pub(crate) fn resolve_ui_command_resolution(
     .map(|command| UiCommandResolution {
         source: ui_command_source(
             Some(command.as_str()),
-            env_ui_command.as_deref(),
-            env_legacy_command.as_deref(),
+            env_command.as_deref(),
             runtime_command.as_deref(),
             in_tree.as_deref(),
         ),
@@ -670,19 +665,20 @@ pub(crate) fn resolve_ui_command_resolution(
 
 pub(crate) fn ui_command_doctor_report_from(
     env_ui_command: Option<String>,
-    env_legacy_command: Option<String>,
     runtime_command: Option<String>,
     workspace_root: Option<&Path>,
     session_dir: Option<&Path>,
     runtime_path: Option<&Path>,
 ) -> UiCommandDoctorReport {
     let in_tree = workspace_root.and_then(in_tree_ui_command);
-    let env_command = env_ui_command.clone().or(env_legacy_command.clone());
-    let command = resolve_ui_command_from(env_command, runtime_command.clone(), workspace_root);
+    let command = resolve_ui_command_from(
+        env_ui_command.clone(),
+        runtime_command.clone(),
+        workspace_root,
+    );
     let source = ui_command_source(
         command.as_deref(),
         env_ui_command.as_deref(),
-        env_legacy_command.as_deref(),
         runtime_command.as_deref(),
         in_tree.as_deref(),
     );
@@ -697,11 +693,6 @@ pub(crate) fn ui_command_doctor_report_from(
             DJINN_UI_BIN_ENV,
             env_ui_command.as_deref(),
             source == DJINN_UI_BIN_ENV,
-        ),
-        ui_command_candidate(
-            DJINN_BUDDY_BIN_ENV,
-            env_legacy_command.as_deref(),
-            source == DJINN_BUDDY_BIN_ENV,
         ),
         ui_command_candidate(
             "runtime/djinn.json.command",
@@ -724,7 +715,7 @@ pub(crate) fn ui_command_doctor_report_from(
         "Session runtime command overrides the in-tree Djinn UI launcher.".to_string()
     } else if source == IN_TREE_UI_COMMAND {
         "Djinn will use its in-tree Djinn UI launcher; the launcher itself does not fall back to an external UI.".to_string()
-    } else if source == DJINN_UI_BIN_ENV || source == DJINN_BUDDY_BIN_ENV {
+    } else if source == DJINN_UI_BIN_ENV {
         "Environment override is active.".to_string()
     } else {
         ui_command_unavailable_message()
@@ -798,7 +789,6 @@ pub(crate) fn probe_ui_bridge_doctor(
 fn ui_command_source(
     command: Option<&str>,
     env_ui_command: Option<&str>,
-    env_legacy_command: Option<&str>,
     runtime_command: Option<&str>,
     in_tree_command: Option<&str>,
 ) -> String {
@@ -811,13 +801,6 @@ fn ui_command_source(
         == Some(command)
     {
         return DJINN_UI_BIN_ENV.to_string();
-    }
-    if env_legacy_command
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        == Some(command)
-    {
-        return DJINN_BUDDY_BIN_ENV.to_string();
     }
     if runtime_command
         .map(str::trim)
@@ -834,7 +817,7 @@ fn ui_command_source(
 
 fn ui_command_unavailable_message() -> String {
     format!(
-        "No Djinn UI command is configured; run `make install` from Djinn so {IN_TREE_UI_COMMAND} exists, or set {DJINN_UI_BIN_ENV} explicitly. Legacy {DJINN_BUDDY_BIN_ENV} is still accepted for now."
+        "No Djinn UI command is configured; run `make install` from Djinn so {IN_TREE_UI_COMMAND} exists, or set {DJINN_UI_BIN_ENV} explicitly."
     )
 }
 
@@ -987,11 +970,7 @@ pub(crate) fn djinn_source_workspace_root() -> PathBuf {
 
 pub(crate) fn in_tree_ui_command(workspace_root: &Path) -> Option<String> {
     let candidate = workspace_root.join(IN_TREE_UI_COMMAND);
-    if candidate.is_file() {
-        return Some(candidate.display().to_string());
-    }
-    let legacy = workspace_root.join(LEGACY_IN_TREE_UI_ALIAS_COMMAND);
-    legacy.is_file().then(|| legacy.display().to_string())
+    candidate.is_file().then(|| candidate.display().to_string())
 }
 
 pub(crate) fn read_ui_runtime_state(path: &Path) -> Result<Option<UiRuntimeState>> {
@@ -1968,19 +1947,19 @@ exit 2
         fs::create_dir_all(root.join("tools/buddy/bin")).unwrap();
         let in_tree = root.join(IN_TREE_UI_COMMAND);
         fs::write(&in_tree, "#!/bin/sh\n").unwrap();
-        let runtime = Some("runtime-buddy --flag".to_string());
+        let runtime = Some("runtime-djinn-ui --flag".to_string());
 
         assert_eq!(
             resolve_ui_command_from(
-                Some("env-buddy --debug".to_string()),
+                Some("env-djinn-ui --debug".to_string()),
                 runtime.clone(),
                 Some(&root),
             ),
-            Some("env-buddy --debug".to_string())
+            Some("env-djinn-ui --debug".to_string())
         );
         assert_eq!(
             resolve_ui_command_from(Some("  ".to_string()), runtime.clone(), Some(&root)),
-            Some("runtime-buddy --flag".to_string())
+            Some("runtime-djinn-ui --flag".to_string())
         );
         assert_eq!(
             resolve_ui_command_from(None, Some("  ".to_string()), Some(&root)),
@@ -1992,12 +1971,12 @@ exit 2
         };
         assert_eq!(in_tree_resolution.runtime_command_override(), None);
         let explicit_resolution = UiCommandResolution {
-            command: "env-buddy --debug".to_string(),
-            source: DJINN_BUDDY_BIN_ENV.to_string(),
+            command: "env-djinn-ui --debug".to_string(),
+            source: DJINN_UI_BIN_ENV.to_string(),
         };
         assert_eq!(
             explicit_resolution.runtime_command_override().as_deref(),
-            Some("env-buddy --debug")
+            Some("env-djinn-ui --debug")
         );
         assert_eq!(
             resolve_ui_command_from(None, None, Some(&root.join("missing-root"))),
@@ -2019,8 +1998,7 @@ exit 2
         let in_tree = root.join(IN_TREE_UI_COMMAND);
         fs::write(&in_tree, "#!/bin/sh\n").unwrap();
 
-        let in_tree_report =
-            ui_command_doctor_report_from(None, None, None, Some(&root), None, None);
+        let in_tree_report = ui_command_doctor_report_from(None, None, Some(&root), None, None);
         assert_eq!(in_tree_report.command, in_tree.display().to_string());
         assert_eq!(in_tree_report.source, IN_TREE_UI_COMMAND);
         assert!(in_tree_report.exists);
@@ -2038,14 +2016,8 @@ exit 2
             .note
             .contains("does not fall back to an external UI"));
 
-        let unavailable_report = ui_command_doctor_report_from(
-            None,
-            None,
-            None,
-            Some(&root.join("missing-root")),
-            None,
-            None,
-        );
+        let unavailable_report =
+            ui_command_doctor_report_from(None, None, Some(&root.join("missing-root")), None, None);
         assert_eq!(unavailable_report.command, "<unavailable>");
         assert_eq!(unavailable_report.source, UNAVAILABLE_UI_COMMAND_SOURCE);
         assert!(!unavailable_report.exists);
@@ -2056,13 +2028,12 @@ exit 2
 
         let runtime_report = ui_command_doctor_report_from(
             None,
-            None,
-            Some("/old/buddy --dev".to_string()),
+            Some("/old/djinn-ui --dev".to_string()),
             Some(&root),
             Some(Path::new("/tmp/session")),
             Some(Path::new("/tmp/session/runtime/djinn.json")),
         );
-        assert_eq!(runtime_report.command, "/old/buddy --dev");
+        assert_eq!(runtime_report.command, "/old/djinn-ui --dev");
         assert_eq!(runtime_report.source, "runtime/djinn.json.command");
         assert_eq!(runtime_report.session_dir.as_deref(), Some("/tmp/session"));
         assert_eq!(
@@ -2074,21 +2045,20 @@ exit 2
         let json = format_ui_command_doctor_report(&runtime_report, OutputFormat::Json).unwrap();
         assert!(json.contains("\"source\": \"runtime/djinn.json.command\""));
 
-        let legacy_env_report = ui_command_doctor_report_from(
-            None,
-            Some("/legacy/buddy".to_string()),
+        let env_report = ui_command_doctor_report_from(
+            Some("/custom/djinn-ui".to_string()),
             None,
             Some(&root),
             None,
             None,
         );
-        assert_eq!(legacy_env_report.command, "/legacy/buddy");
-        assert_eq!(legacy_env_report.source, DJINN_BUDDY_BIN_ENV);
-        assert!(legacy_env_report
+        assert_eq!(env_report.command, "/custom/djinn-ui");
+        assert_eq!(env_report.source, DJINN_UI_BIN_ENV);
+        assert!(env_report
             .candidates
             .iter()
-            .any(|candidate| candidate.source == DJINN_BUDDY_BIN_ENV
-                && candidate.value.as_deref() == Some("/legacy/buddy")
+            .any(|candidate| candidate.source == DJINN_UI_BIN_ENV
+                && candidate.value.as_deref() == Some("/custom/djinn-ui")
                 && candidate.status == "selected"));
 
         let _ = fs::remove_dir_all(&root);
@@ -2129,7 +2099,6 @@ exit 2
 
         let mut report = ui_command_doctor_report_from(
             Some(buddy_bin.display().to_string()),
-            None,
             None,
             None,
             None,
@@ -2188,7 +2157,6 @@ exit 2
 
         let mut report = ui_command_doctor_report_from(
             Some(buddy_bin.display().to_string()),
-            None,
             None,
             None,
             None,
@@ -2431,7 +2399,7 @@ exit 2
     #[test]
     fn ask_auto_folder_session_creates_ui_binding() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-ask-buddy-binding-test-{}",
+            "djinn-ask-ui-binding-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
