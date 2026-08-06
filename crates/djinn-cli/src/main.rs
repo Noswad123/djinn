@@ -2,9 +2,9 @@ use std::io::{self, IsTerminal};
 
 use anyhow::{bail, Result};
 
-#[path = "agent/ask_command.rs"]
+#[path = "commands/agent_ask.rs"]
 mod agent_ask_command;
-#[path = "agent/commands.rs"]
+#[path = "commands/agent.rs"]
 mod agent_commands;
 #[path = "agent/config.rs"]
 mod agent_config;
@@ -29,7 +29,7 @@ mod buddy;
 #[path = "buddy/consolidate.rs"]
 mod buddy_consolidate;
 mod cli_args;
-#[path = "config/commands.rs"]
+#[path = "commands/config.rs"]
 mod config_commands;
 #[path = "config/doctor.rs"]
 mod config_doctor;
@@ -43,7 +43,7 @@ mod config_native;
 mod config_preview;
 #[path = "config/write.rs"]
 mod config_write;
-#[path = "context/commands.rs"]
+#[path = "commands/context.rs"]
 mod context_commands;
 #[path = "auth/copilot.rs"]
 mod copilot_auth;
@@ -51,7 +51,7 @@ mod copilot_auth;
 mod doctor_commands;
 #[path = "util/editor.rs"]
 mod editor;
-#[path = "memory/commands.rs"]
+#[path = "commands/memory.rs"]
 mod memory_commands;
 #[path = "model/completion.rs"]
 mod model_completion;
@@ -83,7 +83,7 @@ mod promotion_validation;
 mod prompt;
 #[path = "session/artifact.rs"]
 mod session_artifact;
-#[path = "session/commands.rs"]
+#[path = "commands/session.rs"]
 mod session_commands;
 #[path = "session/compact.rs"]
 mod session_compact;
@@ -121,7 +121,7 @@ mod session_turns;
 mod session_watch;
 #[path = "util/shell.rs"]
 mod shell;
-#[path = "skills/commands.rs"]
+#[path = "commands/skills.rs"]
 mod skills_commands;
 #[path = "storage/stores.rs"]
 mod stores;
@@ -129,7 +129,7 @@ mod stores;
 mod text;
 #[path = "util/toml.rs"]
 mod toml_util;
-#[path = "tools/commands.rs"]
+#[path = "commands/tools.rs"]
 mod tools_commands;
 #[path = "commands/top_level.rs"]
 mod top_level_commands;
