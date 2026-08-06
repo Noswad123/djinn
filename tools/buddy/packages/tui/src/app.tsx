@@ -9,7 +9,7 @@ import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
 import * as Selection from "./util/selection"
-import { createCliRenderer, MouseButton } from "@opentui/core"
+import { createCliRenderer, MouseButton, type InputRenderable } from "@opentui/core"
 import { RouteProvider, useRoute } from "./context/route"
 import {
   Switch,
@@ -1192,11 +1192,13 @@ function BuddyTabBar(props: {
 function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) {
   const { theme } = useTheme()
   const toast = useToast()
+  const renderer = useRenderer()
   const [filter, setFilter] = createSignal("")
   const [selectedPath, setSelectedPath] = createSignal<string>()
   const [checked, setChecked] = createSignal(new Set<string>())
   const [status, setStatus] = createSignal("Load Djinn folder sessions with djinn session ls --json.")
   const [report, { refetch }] = createResource(loadDjinnSessionReport)
+  let filterInput: InputRenderable | undefined
   const allSessions = createMemo(() => report()?.sessions ?? [])
   const query = createMemo(() => filter().trim().toLowerCase())
   const filteredSessions = createMemo(() =>
@@ -1221,6 +1223,10 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
   const selectedSession = createMemo(() =>
     allSessions().find((session) => session.path === selectedPath()) ?? filteredSessions()[0],
   )
+  const selectedWorkspacePath = createMemo(() => {
+    const session = selectedSession()
+    return session?.repo_path ?? session?.workspace ?? session?.path ?? report()?.root ?? ""
+  })
   const selectedSessionPaths = createMemo(() => {
     const values = Array.from(checked())
     if (values.length > 0) return values
@@ -1255,6 +1261,28 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
     })
   }
 
+  function moveSelection(delta: number) {
+    const items = filteredSessions()
+    if (items.length === 0) return
+    const index = Math.max(0, items.findIndex((session) => session.path === selectedPath()))
+    const next = Math.max(0, Math.min(items.length - 1, index + delta))
+    setSelectedPath(items[next]?.path)
+  }
+
+  function toggleSelectedSession() {
+    const session = selectedSession()
+    if (session) toggleSession(session.path)
+  }
+
+  function openBuddySession(session: DjinnFolderSession) {
+    const id = session.buddy?.buddy_session
+    if (!id) {
+      toast.show({ message: "Selected session has no linked Buddy session", variant: "warning" })
+      return
+    }
+    props.onOpenBuddySession(id)
+  }
+
   async function runAction(label: string, args: string[]) {
     setStatus(`${label}: running djinn ${args.join(" ")}`)
     await runDjinn(args)
@@ -1285,6 +1313,134 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
 
   const candidate = createMemo(() => selectedSession()?.candidates?.entries?.[0])
 
+  function openSelectedCandidate() {
+    const item = candidate()
+    if (!item) return
+    setStatus(`Open candidate: ${item.path}`)
+    void open(item.path).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatus(`Open candidate: ${message}`)
+      toast.show({ title: "Open candidate", message, variant: "error", duration: 5000 })
+    })
+  }
+
+  useKeyboard((evt) => {
+    if (renderer.currentFocusedEditor) return
+    if (evt.ctrl && evt.name === "d") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      moveSelection(10)
+      return
+    }
+    if (evt.ctrl && evt.name === "u") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      moveSelection(-10)
+      return
+    }
+    if (evt.name === "j" || evt.name === "down") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      moveSelection(1)
+      return
+    }
+    if (evt.name === "k" || evt.name === "up") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      moveSelection(-1)
+      return
+    }
+    if (evt.name === "space") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      toggleSelectedSession()
+      return
+    }
+    if (evt.name === "A" || (evt.shift && evt.name === "a")) {
+      evt.preventDefault()
+      evt.stopPropagation()
+      toggleAll()
+      return
+    }
+    if (evt.name === "/") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      filterInput?.focus()
+      return
+    }
+
+    const session = selectedSession()
+    if (!session) return
+    if (evt.name === "return" || evt.name === "b") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      openBuddySession(session)
+      return
+    }
+    if (evt.name === "r") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      void runAndRefresh("Run session", ["session", "run", session.path])
+      return
+    }
+    if (evt.name === "w") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      void runAction("Watch session", ["session", "watch", session.path])
+      return
+    }
+    if (evt.name === "o") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      void runAction("Open summary", ["session", "open", session.path, "summary"])
+      return
+    }
+    if (evt.name === "e") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      void runAction("Edit request", ["session", "open", session.path, "request"])
+      return
+    }
+    if (evt.name === "c") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      void runAction("Open context", ["session", "open", session.path, "context"])
+      return
+    }
+    if (evt.name === "d") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      void runAndRefresh("Discover context", ["session", "context", "discover", session.path])
+      return
+    }
+
+    const item = candidate()
+    if (!item) return
+    if (evt.name === "p") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      openSelectedCandidate()
+      return
+    }
+    if (evt.name === "a") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      void runAndRefresh("Accept candidate", ["session", "accept", session.path, item.id])
+      return
+    }
+    if (evt.name === "m") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      void runAndRefresh("Accept candidate and sync MindWeaver", ["session", "accept", session.path, item.id, "--sync-mindweaver"])
+      return
+    }
+    if (evt.name === "x") {
+      evt.preventDefault()
+      evt.stopPropagation()
+      void runAndRefresh("Deny candidate", ["session", "deny", session.path, item.id])
+    }
+  })
+
   return (
     <box flexGrow={1} minHeight={0} paddingLeft={2} paddingRight={2} paddingTop={1} gap={1}>
       <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
@@ -1304,6 +1460,7 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
       <box flexDirection="row" gap={1} flexShrink={0}>
         <text fg={theme.textMuted}>Filter</text>
         <input
+          ref={(input) => (filterInput = input)}
           placeholder="name, repo, state, path, summary…"
           placeholderColor={theme.textMuted}
           focusedBackgroundColor={theme.backgroundPanel}
@@ -1374,7 +1531,7 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
                     </box>
                     <box flexDirection="row" gap={1} flexShrink={0}>
                       <Show when={session().buddy?.buddy_session}>
-                        {(id) => <text fg={theme.primary} onMouseDown={() => props.onOpenBuddySession(id())}>chat</text>}
+                        {(_) => <text fg={theme.primary} onMouseDown={() => openBuddySession(session())}>chat</text>}
                       </Show>
                       <text fg={theme.primary} onMouseDown={() => void runAndRefresh("Run session", ["session", "run", session().path])}>run</text>
                       <text fg={theme.primary} onMouseDown={() => void runAction("Watch session", ["session", "watch", session().path])}>watch</text>
@@ -1399,7 +1556,7 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
                         <box gap={1} flexShrink={0}>
                           <text fg={theme.text}>Candidate: {item().id} · {item().status}</text>
                           <box flexDirection="row" gap={1}>
-                            <text fg={theme.primary} onMouseDown={() => void open(item().path).catch((error) => toast.error(error))}>open</text>
+                            <text fg={theme.primary} onMouseDown={openSelectedCandidate}>open</text>
                             <text fg={theme.primary} onMouseDown={() => void runAction("Validate candidate", ["session", "validate-candidates", session().path, item().id])}>validate</text>
                             <text fg={theme.primary} onMouseDown={() => void runAndRefresh("Accept candidate", ["session", "accept", session().path, item().id])}>accept</text>
                             <text fg={theme.primary} onMouseDown={() => void runAndRefresh("Accept candidate and sync MindWeaver", ["session", "accept", session().path, item().id, "--sync-mindweaver"])}>accept + mw</text>
@@ -1418,9 +1575,10 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
           </box>
         </Match>
       </Switch>
-      <text fg={theme.textMuted} flexShrink={0}>
-        {truncateMiddle(status(), 180)}
-      </text>
+      <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
+        <text fg={theme.textMuted}>{truncateMiddle(selectedWorkspacePath(), 96)}</text>
+        <text fg={theme.textMuted}>{truncateMiddle(status(), 96)}</text>
+      </box>
     </box>
   )
 }
