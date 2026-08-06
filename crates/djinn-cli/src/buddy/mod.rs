@@ -27,9 +27,9 @@ use crate::util::text::{ensure_trailing_newline, yes_no};
 
 pub(crate) const DJINN_BUDDY_BIN_ENV: &str = "DJINN_BUDDY_BIN";
 pub(crate) const DJINN_UI_BIN_ENV: &str = "DJINN_UI_BIN";
-pub(crate) const IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/djinn-ui";
-const LEGACY_IN_TREE_BUDDY_COMMAND: &str = "tools/buddy/bin/buddy";
-const EXPLICIT_BUDDY_COMMAND_SOURCE: &str = "--ui-bin";
+pub(crate) const IN_TREE_UI_COMMAND: &str = "tools/buddy/bin/djinn-ui";
+const LEGACY_IN_TREE_UI_ALIAS_COMMAND: &str = "tools/buddy/bin/buddy";
+const EXPLICIT_UI_COMMAND_SOURCE: &str = "--ui-bin";
 pub(crate) const UNAVAILABLE_BUDDY_COMMAND_SOURCE: &str = "unavailable";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,7 +93,7 @@ pub(crate) struct UiCommandResolution {
 
 impl UiCommandResolution {
     pub(crate) fn runtime_command_override(&self) -> Option<String> {
-        (self.source != IN_TREE_BUDDY_COMMAND).then(|| self.command.clone())
+        (self.source != IN_TREE_UI_COMMAND).then(|| self.command.clone())
     }
 }
 
@@ -123,7 +123,7 @@ pub(crate) struct SessionUiCaptureArgs {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionUiCaptureReport {
     pub(crate) session_dir: String,
-    pub(crate) buddy_command: String,
+    pub(crate) ui_command: String,
     pub(crate) buddy_session: Option<String>,
     pub(crate) prompt_chars: usize,
     pub(crate) response_chars: usize,
@@ -231,7 +231,7 @@ pub(crate) struct UiBridgeBackend {
 impl UiCliBackend {
     pub(crate) fn resolved(previous_runtime: Option<&BuddyRuntimeState>) -> Result<Self> {
         Ok(Self {
-            resolution: resolve_buddy_command_resolution(previous_runtime)?,
+            resolution: resolve_ui_command_resolution(previous_runtime)?,
         })
     }
 
@@ -239,7 +239,7 @@ impl UiCliBackend {
         Self {
             resolution: UiCommandResolution {
                 command,
-                source: EXPLICIT_BUDDY_COMMAND_SOURCE.to_string(),
+                source: EXPLICIT_UI_COMMAND_SOURCE.to_string(),
             },
         }
     }
@@ -255,7 +255,7 @@ impl UiCliBackend {
     fn execute_bridge_request(&self, request: UiBridgeRequest) -> Result<UiBridgeResponse> {
         match request {
             UiBridgeRequest::LaunchPlain => {
-                let mut command = buddy_process_command(self.command())?;
+                let mut command = ui_process_command(self.command())?;
                 let status = command
                     .status()
                     .with_context(|| format!("launching Djinn UI command `{}`", self.command()))?;
@@ -270,7 +270,7 @@ impl UiCliBackend {
                 cwd,
                 session_dir,
             } => {
-                let mut command = buddy_process_command(self.command())?;
+                let mut command = ui_process_command(self.command())?;
                 if let Some(session) = buddy_session
                     .as_deref()
                     .map(str::trim)
@@ -297,7 +297,7 @@ impl UiCliBackend {
                 buddy_args,
                 prompt,
             } => {
-                let mut command = buddy_process_command(self.command())?;
+                let mut command = ui_process_command(self.command())?;
                 if let Some(session) = buddy_session
                     .as_deref()
                     .map(str::trim)
@@ -337,25 +337,23 @@ impl UiCliBackend {
                 ))
             }
             UiBridgeRequest::ListSessions => {
-                let list: Vec<UiSessionListJsonRecord> = run_buddy_json_command(
-                    self.command(),
-                    &["session", "list", "--format", "json"],
-                )?;
+                let list: Vec<UiSessionListJsonRecord> =
+                    run_ui_json_command(self.command(), &["session", "list", "--format", "json"])?;
                 Ok(UiBridgeResponse::Sessions(
                     list.into_iter()
                         .map(|session| UiSessionListRecord {
                             id: session.id,
                             title: session.title,
                             repo_path: session.directory,
-                            created_at: buddy_millis_to_rfc3339(session.created),
-                            updated_at: buddy_millis_to_rfc3339(session.updated),
+                            created_at: ui_millis_to_rfc3339(session.created),
+                            updated_at: ui_millis_to_rfc3339(session.updated),
                             summary: String::new(),
                         })
                         .collect(),
                 ))
             }
             UiBridgeRequest::CreateSession { title, repo_path } => {
-                Ok(UiBridgeResponse::CreatedSession(run_buddy_json_command(
+                Ok(UiBridgeResponse::CreatedSession(run_ui_json_command(
                     self.command(),
                     &[
                         "session", "create", "--format", "json", "--title", &title, "--repo",
@@ -372,7 +370,7 @@ impl UiCliBackend {
                 Ok(UiBridgeResponse::Session(session))
             }
             UiBridgeRequest::DeleteSession { session_id } => {
-                run_buddy_status_command(self.command(), &["session", "delete", &session_id])?;
+                run_ui_status_command(self.command(), &["session", "delete", &session_id])?;
                 Ok(UiBridgeResponse::DeletedSession(session_id))
             }
         }
@@ -401,7 +399,7 @@ impl UiBridgeBackend {
     }
 
     fn execute_wire_request(&self, request: UiBridgeWireRequest) -> Result<UiBridgeWireResponse> {
-        let mut command = buddy_process_command(self.command())?;
+        let mut command = ui_process_command(self.command())?;
         command.arg("djinn-bridge");
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
@@ -643,7 +641,7 @@ impl UiSessionBackend for UiBridgeBackend {
     }
 }
 
-pub(crate) fn resolve_buddy_command_resolution(
+pub(crate) fn resolve_ui_command_resolution(
     previous_runtime: Option<&BuddyRuntimeState>,
 ) -> Result<UiCommandResolution> {
     let env_ui_command = env::var(DJINN_UI_BIN_ENV).ok();
@@ -651,14 +649,14 @@ pub(crate) fn resolve_buddy_command_resolution(
     let env_command = env_ui_command.clone().or(env_legacy_command.clone());
     let runtime_command = previous_runtime.and_then(|state| state.command.clone());
     let workspace_root = djinn_source_workspace_root();
-    let in_tree = in_tree_buddy_command(&workspace_root);
-    resolve_buddy_command_from(
+    let in_tree = in_tree_ui_command(&workspace_root);
+    resolve_ui_command_from(
         env_command.clone(),
         runtime_command.clone(),
         Some(&workspace_root),
     )
     .map(|command| UiCommandResolution {
-        source: buddy_command_source(
+        source: ui_command_source(
             Some(command.as_str()),
             env_ui_command.as_deref(),
             env_legacy_command.as_deref(),
@@ -667,10 +665,10 @@ pub(crate) fn resolve_buddy_command_resolution(
         ),
         command,
     })
-    .ok_or_else(|| anyhow::anyhow!(buddy_command_unavailable_message()))
+    .ok_or_else(|| anyhow::anyhow!(ui_command_unavailable_message()))
 }
 
-pub(crate) fn buddy_command_doctor_report_from(
+pub(crate) fn ui_command_doctor_report_from(
     env_ui_command: Option<String>,
     env_legacy_command: Option<String>,
     runtime_command: Option<String>,
@@ -678,10 +676,10 @@ pub(crate) fn buddy_command_doctor_report_from(
     session_dir: Option<&Path>,
     runtime_path: Option<&Path>,
 ) -> UiCommandDoctorReport {
-    let in_tree = workspace_root.and_then(in_tree_buddy_command);
+    let in_tree = workspace_root.and_then(in_tree_ui_command);
     let env_command = env_ui_command.clone().or(env_legacy_command.clone());
-    let command = resolve_buddy_command_from(env_command, runtime_command.clone(), workspace_root);
-    let source = buddy_command_source(
+    let command = resolve_ui_command_from(env_command, runtime_command.clone(), workspace_root);
+    let source = ui_command_source(
         command.as_deref(),
         env_ui_command.as_deref(),
         env_legacy_command.as_deref(),
@@ -692,28 +690,28 @@ pub(crate) fn buddy_command_doctor_report_from(
     let (resolved_path, exists, executable) = if source == UNAVAILABLE_BUDDY_COMMAND_SOURCE {
         (None, false, false)
     } else {
-        buddy_command_status(&command)
+        ui_command_status(&command)
     };
     let candidates = vec![
-        buddy_command_candidate(
+        ui_command_candidate(
             DJINN_UI_BIN_ENV,
             env_ui_command.as_deref(),
             source == DJINN_UI_BIN_ENV,
         ),
-        buddy_command_candidate(
+        ui_command_candidate(
             DJINN_BUDDY_BIN_ENV,
             env_legacy_command.as_deref(),
             source == DJINN_BUDDY_BIN_ENV,
         ),
-        buddy_command_candidate(
+        ui_command_candidate(
             "runtime/buddy.json.command",
             runtime_command.as_deref(),
             source == "runtime/buddy.json.command",
         ),
         UiCommandDoctorCandidate {
-            source: IN_TREE_BUDDY_COMMAND.to_string(),
+            source: IN_TREE_UI_COMMAND.to_string(),
             value: in_tree.clone(),
-            status: if source == IN_TREE_BUDDY_COMMAND {
+            status: if source == IN_TREE_UI_COMMAND {
                 "selected".to_string()
             } else if in_tree.is_some() {
                 "available".to_string()
@@ -724,12 +722,12 @@ pub(crate) fn buddy_command_doctor_report_from(
     ];
     let note = if source == "runtime/buddy.json.command" {
         "Session runtime command overrides the in-tree Djinn UI launcher.".to_string()
-    } else if source == IN_TREE_BUDDY_COMMAND {
+    } else if source == IN_TREE_UI_COMMAND {
         "Djinn will use its in-tree Djinn UI launcher; the launcher itself does not fall back to an external UI.".to_string()
     } else if source == DJINN_UI_BIN_ENV || source == DJINN_BUDDY_BIN_ENV {
         "Environment override is active.".to_string()
     } else {
-        buddy_command_unavailable_message()
+        ui_command_unavailable_message()
     };
 
     UiCommandDoctorReport {
@@ -746,7 +744,7 @@ pub(crate) fn buddy_command_doctor_report_from(
     }
 }
 
-pub(crate) fn probe_buddy_bridge_doctor(
+pub(crate) fn probe_ui_bridge_doctor(
     command: &str,
     command_available: bool,
 ) -> UiBridgeDoctorReport {
@@ -797,7 +795,7 @@ pub(crate) fn probe_buddy_bridge_doctor(
     }
 }
 
-fn buddy_command_source(
+fn ui_command_source(
     command: Option<&str>,
     env_ui_command: Option<&str>,
     env_legacy_command: Option<&str>,
@@ -829,18 +827,18 @@ fn buddy_command_source(
         return "runtime/buddy.json.command".to_string();
     }
     if in_tree_command == Some(command) {
-        return IN_TREE_BUDDY_COMMAND.to_string();
+        return IN_TREE_UI_COMMAND.to_string();
     }
     UNAVAILABLE_BUDDY_COMMAND_SOURCE.to_string()
 }
 
-fn buddy_command_unavailable_message() -> String {
+fn ui_command_unavailable_message() -> String {
     format!(
-        "No Djinn UI command is configured; run `make install` from Djinn so {IN_TREE_BUDDY_COMMAND} exists, or set {DJINN_UI_BIN_ENV} explicitly. Legacy {DJINN_BUDDY_BIN_ENV} is still accepted for now."
+        "No Djinn UI command is configured; run `make install` from Djinn so {IN_TREE_UI_COMMAND} exists, or set {DJINN_UI_BIN_ENV} explicitly. Legacy {DJINN_BUDDY_BIN_ENV} is still accepted for now."
     )
 }
 
-fn buddy_command_candidate(
+fn ui_command_candidate(
     source: &str,
     value: Option<&str>,
     selected: bool,
@@ -859,7 +857,7 @@ fn buddy_command_candidate(
     }
 }
 
-fn buddy_command_status(command: &str) -> (Option<PathBuf>, bool, bool) {
+fn ui_command_status(command: &str) -> (Option<PathBuf>, bool, bool) {
     let Some(program) = command.split_whitespace().next() else {
         return (None, false, false);
     };
@@ -876,8 +874,8 @@ fn buddy_command_status(command: &str) -> (Option<PathBuf>, bool, bool) {
     (Some(path), exists, executable)
 }
 
-fn buddy_process_command(buddy_command: &str) -> Result<ProcessCommand> {
-    let mut parts = buddy_command.split_whitespace();
+fn ui_process_command(ui_command: &str) -> Result<ProcessCommand> {
+    let mut parts = ui_command.split_whitespace();
     let Some(program) = parts.next() else {
         bail!("Djinn UI command is empty");
     };
@@ -908,7 +906,7 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
-pub(crate) fn format_buddy_command_doctor_report(
+pub(crate) fn format_ui_command_doctor_report(
     report: &UiCommandDoctorReport,
     format: OutputFormat,
 ) -> Result<String> {
@@ -968,7 +966,7 @@ pub(crate) fn format_buddy_command_doctor_report(
     Ok(lines.join("\n"))
 }
 
-pub(crate) fn resolve_buddy_command_from(
+pub(crate) fn resolve_ui_command_from(
     env_command: Option<String>,
     runtime_command: Option<String>,
     workspace_root: Option<&Path>,
@@ -976,7 +974,7 @@ pub(crate) fn resolve_buddy_command_from(
     env_command
         .filter(|value| !value.trim().is_empty())
         .or_else(|| runtime_command.filter(|value| !value.trim().is_empty()))
-        .or_else(|| workspace_root.and_then(in_tree_buddy_command))
+        .or_else(|| workspace_root.and_then(in_tree_ui_command))
 }
 
 pub(crate) fn djinn_source_workspace_root() -> PathBuf {
@@ -987,12 +985,12 @@ pub(crate) fn djinn_source_workspace_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
-pub(crate) fn in_tree_buddy_command(workspace_root: &Path) -> Option<String> {
-    let candidate = workspace_root.join(IN_TREE_BUDDY_COMMAND);
+pub(crate) fn in_tree_ui_command(workspace_root: &Path) -> Option<String> {
+    let candidate = workspace_root.join(IN_TREE_UI_COMMAND);
     if candidate.is_file() {
         return Some(candidate.display().to_string());
     }
-    let legacy = workspace_root.join(LEGACY_IN_TREE_BUDDY_COMMAND);
+    let legacy = workspace_root.join(LEGACY_IN_TREE_UI_ALIAS_COMMAND);
     legacy.is_file().then(|| legacy.display().to_string())
 }
 
@@ -1014,16 +1012,16 @@ pub(crate) fn write_buddy_runtime_state(path: &Path, state: &BuddyRuntimeState) 
         .with_context(|| format!("writing {}", path.display()))
 }
 
-pub(crate) fn run_plain_buddy_mode() -> Result<()> {
+pub(crate) fn run_plain_ui_mode() -> Result<()> {
     UiBridgeBackend::resolved(None)?.launch_plain()
 }
 
-pub(crate) fn run_top_level_buddy_mode(session: Option<PathBuf>) -> Result<()> {
+pub(crate) fn run_top_level_ui_mode(session: Option<PathBuf>) -> Result<()> {
     if let Some(session) = session {
-        let (session_dir, buddy_session) = resolve_top_level_buddy_session_arg(session)?;
-        return run_top_level_folder_buddy_session(&session_dir, buddy_session);
+        let (session_dir, buddy_session) = resolve_top_level_ui_session_arg(session)?;
+        return run_top_level_folder_ui_session(&session_dir, buddy_session);
     }
-    run_plain_buddy_mode()
+    run_plain_ui_mode()
 }
 
 pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
@@ -1051,8 +1049,8 @@ pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
         return Ok(());
     }
 
-    let (session_dir, resolved_buddy_session) = resolve_top_level_buddy_session_arg(args.dir)?;
-    run_top_level_folder_buddy_session_with_options(
+    let (session_dir, resolved_buddy_session) = resolve_top_level_ui_session_arg(args.dir)?;
+    run_top_level_folder_ui_session_with_options(
         &session_dir,
         resolved_buddy_session,
         args.ui_bin,
@@ -1060,7 +1058,7 @@ pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
     )
 }
 
-pub(crate) fn resolve_top_level_buddy_session_arg(
+pub(crate) fn resolve_top_level_ui_session_arg(
     session: PathBuf,
 ) -> Result<(PathBuf, Option<String>)> {
     let root = default_folder_session_root();
@@ -1072,14 +1070,14 @@ pub(crate) fn resolve_top_level_buddy_session_arg(
     Ok(resolve_existing_folder_session_reference_in_root(&session, &root)?.map_buddy_for_launch())
 }
 
-pub(crate) fn run_top_level_folder_buddy_session(
+pub(crate) fn run_top_level_folder_ui_session(
     session_dir: &Path,
     explicit_buddy_session: Option<String>,
 ) -> Result<()> {
-    run_top_level_folder_buddy_session_with_options(session_dir, explicit_buddy_session, None, &[])
+    run_top_level_folder_ui_session_with_options(session_dir, explicit_buddy_session, None, &[])
 }
 
-pub(crate) fn run_top_level_folder_buddy_session_with_options(
+pub(crate) fn run_top_level_folder_ui_session_with_options(
     session_dir: &Path,
     explicit_buddy_session: Option<String>,
     explicit_ui_bin: Option<String>,
@@ -1095,24 +1093,24 @@ pub(crate) fn run_top_level_folder_buddy_session_with_options(
     } else {
         UiBridgeBackend::resolved(previous_runtime.as_ref())?
     };
-    let behavior = top_level_buddy_session_behavior_with_backend(
+    let behavior = top_level_ui_session_behavior_with_backend(
         session_dir,
         explicit_buddy_session,
         &buddy_backend,
         previous_runtime.clone(),
     )?;
-    run_interactive_session_buddy_with_backend(session_dir, behavior, &buddy_backend, ui_args)
+    run_interactive_session_ui_with_backend(session_dir, behavior, &buddy_backend, ui_args)
 }
 
 #[cfg(test)]
-pub(crate) fn top_level_buddy_session_behavior(
+pub(crate) fn top_level_ui_session_behavior(
     session_dir: &Path,
     explicit_buddy_session: Option<String>,
 ) -> Result<TopLevelUiSessionBehavior> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
     let buddy_backend = UiBridgeBackend::resolved(previous_runtime.as_ref())?;
-    top_level_buddy_session_behavior_with_backend(
+    top_level_ui_session_behavior_with_backend(
         session_dir,
         explicit_buddy_session,
         &buddy_backend,
@@ -1120,7 +1118,7 @@ pub(crate) fn top_level_buddy_session_behavior(
     )
 }
 
-fn top_level_buddy_session_behavior_with_backend(
+fn top_level_ui_session_behavior_with_backend(
     session_dir: &Path,
     explicit_buddy_session: Option<String>,
     buddy_backend: &dyn UiSessionBackend,
@@ -1134,7 +1132,7 @@ fn top_level_buddy_session_behavior_with_backend(
     let manifest = read_folder_session_manifest(session_dir)?;
     let requested_cwd = session_manifest_workspace_path(manifest.as_ref());
     if buddy_session.is_none() && session_dir.is_dir() {
-        let binding = ensure_buddy_session_binding(
+        let binding = ensure_ui_session_binding(
             buddy_backend,
             UiBindingInput {
                 session_dir: session_dir.to_path_buf(),
@@ -1154,7 +1152,7 @@ fn top_level_buddy_session_behavior_with_backend(
         (Some(_), Some(path)) if path.is_dir() => Some(path),
         (Some(id), Some(path)) => {
             clear_folder_session_workspace(session_dir)?;
-            let promoted = promote_stale_buddy_workspace(
+            let promoted = promote_stale_ui_workspace(
                 session_dir,
                 buddy_backend,
                 previous_runtime.as_ref(),
@@ -1173,7 +1171,7 @@ fn top_level_buddy_session_behavior_with_backend(
     Ok(TopLevelUiSessionBehavior { buddy_session, cwd })
 }
 
-pub(crate) fn run_interactive_session_buddy_with_backend<B>(
+pub(crate) fn run_interactive_session_ui_with_backend<B>(
     session_dir: &Path,
     behavior: TopLevelUiSessionBehavior,
     buddy_backend: &B,
@@ -1233,13 +1231,13 @@ where
 
     eprint!(
         "{}",
-        format_interactive_buddy_sync_status(session_dir, summary_sync.as_ref())
+        format_interactive_ui_sync_status(session_dir, summary_sync.as_ref())
     );
 
     Ok(())
 }
 
-pub(crate) fn format_interactive_buddy_sync_status(
+pub(crate) fn format_interactive_ui_sync_status(
     session_dir: &Path,
     summary_sync: Option<&UiInteractiveSummarySync>,
 ) -> String {
@@ -1345,7 +1343,7 @@ pub(crate) fn run_session_ui_capture(
             .as_ref()
             .and_then(|state| state.buddy_session.clone())
     });
-    let buddy_command = buddy_command_hint(
+    let ui_command = ui_command_hint(
         buddy_backend.command(),
         buddy_session.as_deref(),
         &args.ui_args,
@@ -1354,7 +1352,7 @@ pub(crate) fn run_session_ui_capture(
     if args.dry_run {
         return Ok(SessionUiCaptureReport {
             session_dir: session_dir.display().to_string(),
-            buddy_command,
+            ui_command,
             buddy_session,
             prompt_chars: prompt.chars().count(),
             response_chars: 0,
@@ -1386,7 +1384,7 @@ pub(crate) fn run_session_ui_capture(
     let id = manifest
         .as_ref()
         .and_then(|manifest| manifest.session_id.clone())
-        .unwrap_or_else(|| fallback_buddy_session_id(&session_dir));
+        .unwrap_or_else(|| fallback_ui_session_id(&session_dir));
     let meta = folder_session_manifest_meta(&session_dir, manifest.as_ref());
     let event_session = AgentSession {
         id: id.clone(),
@@ -1426,7 +1424,7 @@ pub(crate) fn run_session_ui_capture(
 
     Ok(SessionUiCaptureReport {
         session_dir: session_dir.display().to_string(),
-        buddy_command,
+        ui_command,
         buddy_session,
         prompt_chars: prompt.chars().count(),
         response_chars: response.chars().count(),
@@ -1446,7 +1444,7 @@ pub(crate) fn run_session_ui_capture(
 pub(crate) fn format_session_ui_capture_report(report: &SessionUiCaptureReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!("Djinn UI capture: {}", report.session_dir));
-    lines.push(format!("  command: {}", report.buddy_command));
+    lines.push(format!("  command: {}", report.ui_command));
     if let Some(session) = &report.buddy_session {
         lines.push(format!("  ui session: {session}"));
     }
@@ -1465,11 +1463,7 @@ pub(crate) fn format_session_ui_capture_report(report: &SessionUiCaptureReport) 
     lines.join("\n")
 }
 
-fn buddy_command_hint(
-    buddy_bin: &str,
-    buddy_session: Option<&str>,
-    buddy_args: &[String],
-) -> String {
+fn ui_command_hint(buddy_bin: &str, buddy_session: Option<&str>, buddy_args: &[String]) -> String {
     let mut command = shell_quote(buddy_bin);
     if let Some(session) = buddy_session
         .map(str::trim)
@@ -1486,7 +1480,7 @@ fn buddy_command_hint(
     command
 }
 
-fn fallback_buddy_session_id(session_dir: &Path) -> AgentSessionId {
+fn fallback_ui_session_id(session_dir: &Path) -> AgentSessionId {
     let name = session_dir
         .file_name()
         .and_then(|name| name.to_str())
@@ -1494,7 +1488,7 @@ fn fallback_buddy_session_id(session_dir: &Path) -> AgentSessionId {
     AgentSessionId::new(format!("buddy_{}", safe_folder_session_slug(name)))
 }
 
-pub(crate) fn ensure_buddy_session_binding(
+pub(crate) fn ensure_ui_session_binding(
     buddy_backend: &dyn UiSessionBackend,
     input: UiBindingInput,
 ) -> Result<UiSessionBinding> {
@@ -1506,16 +1500,15 @@ pub(crate) fn ensure_buddy_session_binding(
     {
         return Ok(UiSessionBinding {
             buddy_session: existing.to_string(),
-            repo_path: buddy_binding_repo_path(
+            repo_path: ui_binding_repo_path(
                 &input.session_dir,
                 input.requested_workspace.as_deref(),
             ),
         });
     }
 
-    let title = buddy_binding_title(&input.session_dir, input.title.as_deref());
-    let repo_path =
-        buddy_binding_repo_path(&input.session_dir, input.requested_workspace.as_deref());
+    let title = ui_binding_title(&input.session_dir, input.title.as_deref());
+    let repo_path = ui_binding_repo_path(&input.session_dir, input.requested_workspace.as_deref());
     let repo = repo_path.display().to_string();
     let created = buddy_backend
         .create_session(&title, &repo)
@@ -1551,7 +1544,7 @@ pub(crate) fn ensure_buddy_session_binding(
     })
 }
 
-pub(crate) fn ensure_folder_session_buddy_binding_for_ask(
+pub(crate) fn ensure_folder_session_ui_binding_for_ask(
     session_dir: &Path,
     session: &AgentSession,
     workspace: &Path,
@@ -1559,7 +1552,7 @@ pub(crate) fn ensure_folder_session_buddy_binding_for_ask(
 ) -> Result<UiSessionBinding> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    ensure_buddy_session_binding(
+    ensure_ui_session_binding(
         buddy_backend,
         UiBindingInput {
             session_dir: session_dir.to_path_buf(),
@@ -1575,7 +1568,7 @@ fn nonempty_owned_string(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-pub(crate) fn promote_stale_buddy_workspace(
+pub(crate) fn promote_stale_ui_workspace(
     session_dir: &Path,
     buddy_backend: &dyn UiSessionBackend,
     previous_runtime: Option<&BuddyRuntimeState>,
@@ -1629,7 +1622,7 @@ pub(crate) fn promote_stale_buddy_workspace(
     Ok(created.id)
 }
 
-fn buddy_binding_title(session_dir: &Path, title: Option<&str>) -> String {
+fn ui_binding_title(session_dir: &Path, title: Option<&str>) -> String {
     title
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1643,7 +1636,7 @@ fn buddy_binding_title(session_dir: &Path, title: Option<&str>) -> String {
         .unwrap_or_else(|| "Djinn session".to_string())
 }
 
-fn buddy_binding_repo_path(session_dir: &Path, requested_workspace: Option<&Path>) -> PathBuf {
+fn ui_binding_repo_path(session_dir: &Path, requested_workspace: Option<&Path>) -> PathBuf {
     requested_workspace
         .filter(|path| path.is_dir())
         .map(Path::to_path_buf)
@@ -1729,8 +1722,8 @@ fn ui_bridge_session_record(session: UiBridgeSessionListRecord) -> UiSessionList
         id: session.id,
         title: session.title,
         repo_path: session.directory,
-        created_at: buddy_millis_to_rfc3339(session.created),
-        updated_at: buddy_millis_to_rfc3339(session.updated),
+        created_at: ui_millis_to_rfc3339(session.created),
+        updated_at: ui_millis_to_rfc3339(session.updated),
         summary: String::new(),
     }
 }
@@ -1754,32 +1747,32 @@ pub(crate) struct UiSessionCreateRecord {
     pub(crate) created_at: String,
 }
 
-fn buddy_millis_to_rfc3339(value: i64) -> String {
+fn ui_millis_to_rfc3339(value: i64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value)
         .map(|datetime| datetime.to_rfc3339())
         .unwrap_or_else(|| value.to_string())
 }
 
-fn run_buddy_json_command<T>(buddy_bin: &str, args: &[&str]) -> Result<T>
+fn run_ui_json_command<T>(ui_bin: &str, args: &[&str]) -> Result<T>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let output = run_buddy_output_command(buddy_bin, args)?;
+    let output = run_ui_output_command(ui_bin, args)?;
     serde_json::from_slice(&output.stdout).with_context(|| {
         format!(
             "parsing strict Djinn UI JSON from `{}`",
-            buddy_json_command_hint(buddy_bin, args)
+            ui_json_command_hint(ui_bin, args)
         )
     })
 }
 
-fn run_buddy_status_command(buddy_bin: &str, args: &[&str]) -> Result<()> {
-    let _ = run_buddy_output_command(buddy_bin, args)?;
+fn run_ui_status_command(ui_bin: &str, args: &[&str]) -> Result<()> {
+    let _ = run_ui_output_command(ui_bin, args)?;
     Ok(())
 }
 
-fn run_buddy_output_command(buddy_bin: &str, args: &[&str]) -> Result<std::process::Output> {
-    let mut parts = buddy_bin.split_whitespace();
+fn run_ui_output_command(ui_bin: &str, args: &[&str]) -> Result<std::process::Output> {
+    let mut parts = ui_bin.split_whitespace();
     let Some(program) = parts.next() else {
         bail!("Djinn UI command is empty");
     };
@@ -1790,14 +1783,14 @@ fn run_buddy_output_command(buddy_bin: &str, args: &[&str]) -> Result<std::proce
         .with_context(|| {
             format!(
                 "running Djinn UI command `{}`",
-                buddy_json_command_hint(buddy_bin, args)
+                ui_json_command_hint(ui_bin, args)
             )
         })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         bail!(
             "Djinn UI command `{}` exited with status {}{}",
-            buddy_json_command_hint(buddy_bin, args),
+            ui_json_command_hint(ui_bin, args),
             output.status,
             if stderr.is_empty() {
                 String::new()
@@ -1809,8 +1802,8 @@ fn run_buddy_output_command(buddy_bin: &str, args: &[&str]) -> Result<std::proce
     Ok(output)
 }
 
-fn buddy_json_command_hint(buddy_bin: &str, args: &[&str]) -> String {
-    let mut command = shell_quote(buddy_bin);
+fn ui_json_command_hint(ui_bin: &str, args: &[&str]) -> String {
+    let mut command = shell_quote(ui_bin);
     for arg in args {
         command.push(' ');
         command.push_str(&shell_quote(arg));
@@ -1829,7 +1822,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn buddy_bridge_backend_uses_hidden_json_protocol_for_list_and_create() {
+    fn ui_bridge_backend_uses_hidden_json_protocol_for_list_and_create() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
@@ -1912,7 +1905,7 @@ exit 2
 
     #[test]
     #[cfg(unix)]
-    fn buddy_bridge_backend_falls_back_to_legacy_cli_when_bridge_fails() {
+    fn ui_bridge_backend_falls_back_to_legacy_cli_when_bridge_fails() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
@@ -1979,7 +1972,7 @@ exit 2
     }
 
     #[test]
-    fn buddy_command_resolver_uses_env_runtime_in_tree_then_unavailable() {
+    fn ui_command_resolver_uses_env_runtime_in_tree_then_unavailable() {
         let root = std::env::temp_dir().join(format!(
             "djinn-buddy-command-resolver-test-{}",
             chrono::Local::now()
@@ -1987,12 +1980,12 @@ exit 2
                 .unwrap_or_default()
         ));
         fs::create_dir_all(root.join("tools/buddy/bin")).unwrap();
-        let in_tree = root.join(IN_TREE_BUDDY_COMMAND);
+        let in_tree = root.join(IN_TREE_UI_COMMAND);
         fs::write(&in_tree, "#!/bin/sh\n").unwrap();
         let runtime = Some("runtime-buddy --flag".to_string());
 
         assert_eq!(
-            resolve_buddy_command_from(
+            resolve_ui_command_from(
                 Some("env-buddy --debug".to_string()),
                 runtime.clone(),
                 Some(&root),
@@ -2000,16 +1993,16 @@ exit 2
             Some("env-buddy --debug".to_string())
         );
         assert_eq!(
-            resolve_buddy_command_from(Some("  ".to_string()), runtime.clone(), Some(&root)),
+            resolve_ui_command_from(Some("  ".to_string()), runtime.clone(), Some(&root)),
             Some("runtime-buddy --flag".to_string())
         );
         assert_eq!(
-            resolve_buddy_command_from(None, Some("  ".to_string()), Some(&root)),
+            resolve_ui_command_from(None, Some("  ".to_string()), Some(&root)),
             Some(in_tree.display().to_string())
         );
         let in_tree_resolution = UiCommandResolution {
             command: in_tree.display().to_string(),
-            source: IN_TREE_BUDDY_COMMAND.to_string(),
+            source: IN_TREE_UI_COMMAND.to_string(),
         };
         assert_eq!(in_tree_resolution.runtime_command_override(), None);
         let explicit_resolution = UiCommandResolution {
@@ -2021,7 +2014,7 @@ exit 2
             Some("env-buddy --debug")
         );
         assert_eq!(
-            resolve_buddy_command_from(None, None, Some(&root.join("missing-root"))),
+            resolve_ui_command_from(None, None, Some(&root.join("missing-root"))),
             None
         );
 
@@ -2029,7 +2022,7 @@ exit 2
     }
 
     #[test]
-    fn buddy_doctor_report_explains_selected_source() {
+    fn ui_doctor_report_explains_selected_source() {
         let root = std::env::temp_dir().join(format!(
             "djinn-buddy-doctor-test-{}",
             chrono::Local::now()
@@ -2037,17 +2030,17 @@ exit 2
                 .unwrap_or_default()
         ));
         fs::create_dir_all(root.join("tools/buddy/bin")).unwrap();
-        let in_tree = root.join(IN_TREE_BUDDY_COMMAND);
+        let in_tree = root.join(IN_TREE_UI_COMMAND);
         fs::write(&in_tree, "#!/bin/sh\n").unwrap();
 
         let in_tree_report =
-            buddy_command_doctor_report_from(None, None, None, Some(&root), None, None);
+            ui_command_doctor_report_from(None, None, None, Some(&root), None, None);
         assert_eq!(in_tree_report.command, in_tree.display().to_string());
-        assert_eq!(in_tree_report.source, IN_TREE_BUDDY_COMMAND);
+        assert_eq!(in_tree_report.source, IN_TREE_UI_COMMAND);
         assert!(in_tree_report.exists);
         assert!(!in_tree_report.executable);
         assert!(
-            format_buddy_command_doctor_report(&in_tree_report, OutputFormat::Text)
+            format_ui_command_doctor_report(&in_tree_report, OutputFormat::Text)
                 .unwrap()
                 .contains("source: tools/buddy/bin/djinn-ui")
         );
@@ -2059,7 +2052,7 @@ exit 2
             .note
             .contains("does not fall back to an external UI"));
 
-        let unavailable_report = buddy_command_doctor_report_from(
+        let unavailable_report = ui_command_doctor_report_from(
             None,
             None,
             None,
@@ -2075,7 +2068,7 @@ exit 2
             .note
             .contains("No Djinn UI command is configured"));
 
-        let runtime_report = buddy_command_doctor_report_from(
+        let runtime_report = ui_command_doctor_report_from(
             None,
             None,
             Some("/old/buddy --dev".to_string()),
@@ -2092,10 +2085,10 @@ exit 2
         );
         assert!(runtime_report.note.contains("runtime command overrides"));
 
-        let json = format_buddy_command_doctor_report(&runtime_report, OutputFormat::Json).unwrap();
+        let json = format_ui_command_doctor_report(&runtime_report, OutputFormat::Json).unwrap();
         assert!(json.contains("\"source\": \"runtime/buddy.json.command\""));
 
-        let legacy_env_report = buddy_command_doctor_report_from(
+        let legacy_env_report = ui_command_doctor_report_from(
             None,
             Some("/legacy/buddy".to_string()),
             None,
@@ -2117,7 +2110,7 @@ exit 2
 
     #[test]
     #[cfg(unix)]
-    fn buddy_doctor_reports_bridge_health() {
+    fn ui_doctor_reports_bridge_health() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
@@ -2148,7 +2141,7 @@ exit 2
         permissions.set_mode(0o755);
         fs::set_permissions(&buddy_bin, permissions).unwrap();
 
-        let mut report = buddy_command_doctor_report_from(
+        let mut report = ui_command_doctor_report_from(
             Some(buddy_bin.display().to_string()),
             None,
             None,
@@ -2156,7 +2149,7 @@ exit 2
             None,
             None,
         );
-        report.bridge = Some(probe_buddy_bridge_doctor(
+        report.bridge = Some(probe_ui_bridge_doctor(
             &report.command,
             report.exists && report.executable,
         ));
@@ -2166,10 +2159,10 @@ exit 2
         assert!(bridge.bridge_list_sessions_ok);
         assert!(bridge.fallback_available);
         assert!(bridge.fallback_list_sessions_ok);
-        let text = format_buddy_command_doctor_report(&report, OutputFormat::Text).unwrap();
+        let text = format_ui_command_doctor_report(&report, OutputFormat::Text).unwrap();
         assert!(text.contains("bridge:"));
         assert!(text.contains("status: ok"));
-        let json = format_buddy_command_doctor_report(&report, OutputFormat::Json).unwrap();
+        let json = format_ui_command_doctor_report(&report, OutputFormat::Json).unwrap();
         assert!(json.contains("\"bridge_available\": true"));
 
         let _ = fs::remove_dir_all(&root);
@@ -2177,7 +2170,7 @@ exit 2
 
     #[test]
     #[cfg(unix)]
-    fn buddy_doctor_reports_bridge_failure_with_legacy_fallback() {
+    fn ui_doctor_reports_bridge_failure_with_legacy_fallback() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
@@ -2207,7 +2200,7 @@ exit 2
         permissions.set_mode(0o755);
         fs::set_permissions(&buddy_bin, permissions).unwrap();
 
-        let mut report = buddy_command_doctor_report_from(
+        let mut report = ui_command_doctor_report_from(
             Some(buddy_bin.display().to_string()),
             None,
             None,
@@ -2215,7 +2208,7 @@ exit 2
             None,
             None,
         );
-        report.bridge = Some(probe_buddy_bridge_doctor(
+        report.bridge = Some(probe_ui_bridge_doctor(
             &report.command,
             report.exists && report.executable,
         ));
@@ -2226,9 +2219,9 @@ exit 2
         assert!(bridge.bridge_error.as_deref().unwrap().contains("status"));
         assert!(bridge.fallback_available);
         assert!(bridge.fallback_list_sessions_ok);
-        let text = format_buddy_command_doctor_report(&report, OutputFormat::Text).unwrap();
+        let text = format_ui_command_doctor_report(&report, OutputFormat::Text).unwrap();
         assert!(text.contains("status: unavailable; legacy CLI fallback will be used"));
-        let json = format_buddy_command_doctor_report(&report, OutputFormat::Json).unwrap();
+        let json = format_ui_command_doctor_report(&report, OutputFormat::Json).unwrap();
         assert!(json.contains("\"bridge_available\": false"));
         assert!(json.contains("\"fallback_available\": true"));
 
@@ -2236,7 +2229,7 @@ exit 2
     }
 
     #[test]
-    fn buddy_runtime_omits_command_when_no_override_is_recorded() {
+    fn ui_runtime_omits_command_when_no_override_is_recorded() {
         let root = std::env::temp_dir().join(format!(
             "djinn-buddy-runtime-command-test-{}",
             chrono::Local::now()
@@ -2266,7 +2259,7 @@ exit 2
     }
 
     #[test]
-    fn buddy_session_reference_resolves_to_bound_folder_session() {
+    fn ui_session_reference_resolves_to_bound_folder_session() {
         let root = std::env::temp_dir().join(format!(
             "djinn-buddy-ref-test-{}",
             chrono::Local::now()
@@ -2305,7 +2298,7 @@ exit 2
     }
 
     #[test]
-    fn existing_folder_session_reference_resolves_current_and_stale_buddy_ids() {
+    fn existing_folder_session_reference_resolves_current_and_stale_ui_ids() {
         let root = std::env::temp_dir().join(format!(
             "djinn-session-ref-test-{}",
             chrono::Local::now()
@@ -2396,7 +2389,7 @@ exit 2
     }
 
     #[test]
-    fn ensure_buddy_session_binding_creates_runtime_without_default_command_override() {
+    fn ensure_ui_session_binding_creates_runtime_without_default_command_override() {
         let root = std::env::temp_dir().join(format!(
             "djinn-buddy-ensure-binding-test-{}",
             chrono::Local::now()
@@ -2423,7 +2416,7 @@ exit 2
             creates: creates.clone(),
         };
 
-        let binding = ensure_buddy_session_binding(
+        let binding = ensure_ui_session_binding(
             &backend,
             UiBindingInput {
                 session_dir: session_dir.clone(),
@@ -2453,7 +2446,7 @@ exit 2
     }
 
     #[test]
-    fn ask_auto_folder_session_creates_buddy_binding() {
+    fn ask_auto_folder_session_creates_ui_binding() {
         let root = std::env::temp_dir().join(format!(
             "djinn-ask-buddy-binding-test-{}",
             chrono::Local::now()
@@ -2482,13 +2475,9 @@ exit 2
             creates: creates.clone(),
         };
 
-        let binding = ensure_folder_session_buddy_binding_for_ask(
-            &session_dir,
-            &session,
-            &workspace,
-            &backend,
-        )
-        .unwrap();
+        let binding =
+            ensure_folder_session_ui_binding_for_ask(&session_dir, &session, &workspace, &backend)
+                .unwrap();
 
         assert_eq!(binding.buddy_session, "ses_ask_bound");
         assert_eq!(binding.repo_path, workspace);
@@ -2507,7 +2496,7 @@ exit 2
     }
 
     #[test]
-    fn ask_auto_folder_session_reuses_existing_buddy_binding() {
+    fn ask_auto_folder_session_reuses_existing_ui_binding() {
         let root = std::env::temp_dir().join(format!(
             "djinn-ask-buddy-reuse-test-{}",
             chrono::Local::now()
@@ -2549,13 +2538,9 @@ exit 2
             creates: creates.clone(),
         };
 
-        let binding = ensure_folder_session_buddy_binding_for_ask(
-            &session_dir,
-            &session,
-            &workspace,
-            &backend,
-        )
-        .unwrap();
+        let binding =
+            ensure_folder_session_ui_binding_for_ask(&session_dir, &session, &workspace, &backend)
+                .unwrap();
 
         assert_eq!(binding.buddy_session, "ses_existing_ask");
         assert_eq!(binding.repo_path, workspace);
@@ -2565,7 +2550,7 @@ exit 2
     }
 
     #[test]
-    fn top_level_buddy_session_plans_interactive_resume_even_with_pending_request() {
+    fn top_level_ui_session_plans_interactive_resume_even_with_pending_request() {
         let root = std::env::temp_dir().join(format!(
             "djinn-buddy-behavior-test-{}",
             chrono::Local::now()
@@ -2599,7 +2584,7 @@ exit 2
         )
         .unwrap();
 
-        let behavior = top_level_buddy_session_behavior(&session_dir, None).unwrap();
+        let behavior = top_level_ui_session_behavior(&session_dir, None).unwrap();
         assert_eq!(behavior.buddy_session.as_deref(), Some("ses_resume"));
         assert_eq!(behavior.cwd.as_deref(), Some(workspace.as_path()));
 
@@ -2607,7 +2592,7 @@ exit 2
     }
 
     #[test]
-    fn top_level_buddy_session_auto_binds_unbound_folder_session() {
+    fn top_level_ui_session_auto_binds_unbound_folder_session() {
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
@@ -2656,7 +2641,7 @@ exit 2
         )
         .unwrap();
 
-        let behavior = top_level_buddy_session_behavior(&session_dir, None).unwrap();
+        let behavior = top_level_ui_session_behavior(&session_dir, None).unwrap();
         assert_eq!(behavior.buddy_session.as_deref(), Some("ses_auto_bound"));
         assert_eq!(behavior.cwd.as_deref(), Some(workspace.as_path()));
         assert_eq!(
@@ -2671,7 +2656,7 @@ exit 2
     }
 
     #[test]
-    fn top_level_buddy_session_promotes_stale_bound_workspace() {
+    fn top_level_ui_session_promotes_stale_bound_workspace() {
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
@@ -2721,7 +2706,7 @@ exit 2
         )
         .unwrap();
 
-        let behavior = top_level_buddy_session_behavior(&session_dir, None).unwrap();
+        let behavior = top_level_ui_session_behavior(&session_dir, None).unwrap();
         assert_eq!(behavior.buddy_session.as_deref(), Some("ses_promoted"));
         assert_eq!(behavior.cwd.as_deref(), Some(session_dir.as_path()));
         assert_eq!(
@@ -2747,7 +2732,7 @@ exit 2
     }
 
     #[test]
-    fn session_buddy_captures_final_response_into_folder_session() {
+    fn session_ui_captures_final_response_into_folder_session() {
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
@@ -2826,7 +2811,7 @@ exit 2
     }
 
     #[test]
-    fn interactive_buddy_summary_refresh_uses_latest_event_pair() {
+    fn interactive_ui_summary_refresh_uses_latest_event_pair() {
         let root = std::env::temp_dir().join(format!(
             "djinn-buddy-summary-refresh-test-{}",
             chrono::Local::now()
@@ -2890,19 +2875,19 @@ exit 2
     }
 
     #[test]
-    fn interactive_buddy_sync_status_reports_synced_or_unchanged() {
+    fn interactive_ui_sync_status_reports_synced_or_unchanged() {
         let session_dir = PathBuf::from("/tmp/djinn-session");
         let sync = UiInteractiveSummarySync {
             summary_path: session_dir.join("summary.md"),
             response_chars: 42,
         };
 
-        let synced = format_interactive_buddy_sync_status(&session_dir, Some(&sync));
+        let synced = format_interactive_ui_sync_status(&session_dir, Some(&sync));
         assert!(synced.contains("Djinn UI session completed."));
         assert!(synced.contains("Synced /tmp/djinn-session/summary.md"));
         assert!(synced.contains("42 chars"));
 
-        let unchanged = format_interactive_buddy_sync_status(&session_dir, None);
+        let unchanged = format_interactive_ui_sync_status(&session_dir, None);
         assert!(unchanged.contains("Djinn UI session completed."));
         assert!(unchanged.contains("No valid event pair found in /tmp/djinn-session/events.jsonl"));
         assert!(unchanged.contains("summary.md unchanged"));

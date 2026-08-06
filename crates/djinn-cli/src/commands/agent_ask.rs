@@ -20,7 +20,7 @@ use crate::agent::session_meta::{
 use crate::agent::workspace::{
     load_djinn_config_for_workspace, nonempty_owned_string, resolve_agent_workspace,
 };
-use crate::buddy::{ensure_folder_session_buddy_binding_for_ask, UiBridgeBackend};
+use crate::buddy::{ensure_folder_session_ui_binding_for_ask, UiBridgeBackend};
 use crate::cli_args::{AgentAskArgs, SessionRunArgs};
 use crate::commands::agent::warn_legacy_agent_command;
 use crate::model::completion::complete_openai_messages_with_progress;
@@ -319,7 +319,7 @@ fn agent_ask(
         write_agent_session_toml(session_dir, &session)?;
         if should_auto_folder_session {
             let buddy_backend = UiBridgeBackend::resolved(None)?;
-            ensure_folder_session_buddy_binding_for_ask(
+            ensure_folder_session_ui_binding_for_ask(
                 session_dir,
                 &session,
                 Path::new(&workspace),

@@ -4,9 +4,9 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::buddy::{
-    buddy_command_doctor_report_from, djinn_source_workspace_root,
-    format_buddy_command_doctor_report, probe_buddy_bridge_doctor, read_buddy_runtime_state,
-    UiCommandDoctorReport, DJINN_BUDDY_BIN_ENV, DJINN_UI_BIN_ENV,
+    djinn_source_workspace_root, format_ui_command_doctor_report, probe_ui_bridge_doctor,
+    read_buddy_runtime_state, ui_command_doctor_report_from, UiCommandDoctorReport,
+    DJINN_BUDDY_BIN_ENV, DJINN_UI_BIN_ENV,
 };
 use crate::cli_args::{DoctorArgs, DoctorBuddyArgs, DoctorCommand};
 use crate::session::reference::resolve_session_dir;
@@ -14,20 +14,20 @@ use crate::util::text::output_format;
 
 pub(crate) fn run_doctor(args: DoctorArgs) -> Result<()> {
     match args.command {
-        DoctorCommand::Buddy(args) => doctor_buddy(args),
+        DoctorCommand::Buddy(args) => doctor_ui(args),
     }
 }
 
-pub(crate) fn doctor_buddy(args: DoctorBuddyArgs) -> Result<()> {
-    let report = buddy_command_doctor_report(args.session.as_deref())?;
+pub(crate) fn doctor_ui(args: DoctorBuddyArgs) -> Result<()> {
+    let report = ui_command_doctor_report(args.session.as_deref())?;
     print!(
         "{}",
-        format_buddy_command_doctor_report(&report, output_format(args.format, args.json))?
+        format_ui_command_doctor_report(&report, output_format(args.format, args.json))?
     );
     Ok(())
 }
 
-pub(crate) fn buddy_command_doctor_report(session: Option<&Path>) -> Result<UiCommandDoctorReport> {
+pub(crate) fn ui_command_doctor_report(session: Option<&Path>) -> Result<UiCommandDoctorReport> {
     let session_dir = session.map(resolve_session_dir).transpose()?;
     let runtime_path = session_dir
         .as_ref()
@@ -37,7 +37,7 @@ pub(crate) fn buddy_command_doctor_report(session: Option<&Path>) -> Result<UiCo
         .map(|path| read_buddy_runtime_state(path))
         .transpose()?
         .flatten();
-    let mut report = buddy_command_doctor_report_from(
+    let mut report = ui_command_doctor_report_from(
         env::var(DJINN_UI_BIN_ENV).ok(),
         env::var(DJINN_BUDDY_BIN_ENV).ok(),
         runtime.as_ref().and_then(|state| state.command.clone()),
@@ -45,7 +45,7 @@ pub(crate) fn buddy_command_doctor_report(session: Option<&Path>) -> Result<UiCo
         session_dir.as_deref(),
         runtime_path.as_deref(),
     );
-    report.bridge = Some(probe_buddy_bridge_doctor(
+    report.bridge = Some(probe_ui_bridge_doctor(
         &report.command,
         report.exists && report.executable,
     ));

@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::agent::roles::{resolve_agent_role_selection_from_config, AgentRoleSelection};
 use crate::agent::workspace::clean_unique_paths;
 use crate::buddy::{
-    ensure_buddy_session_binding, read_buddy_runtime_state, UiBindingInput, UiBridgeBackend,
+    ensure_ui_session_binding, read_buddy_runtime_state, UiBindingInput, UiBridgeBackend,
     UiSessionBackend,
 };
 use crate::cli_args::SessionInitArgs;
@@ -176,7 +176,7 @@ pub(crate) fn initialize_folder_session_with_buddy(
     let buddy = if let Some(buddy_backend) = buddy_backend {
         let runtime_path = session_dir.join("runtime/buddy.json");
         let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-        let binding = ensure_buddy_session_binding(
+        let binding = ensure_ui_session_binding(
             buddy_backend,
             UiBindingInput {
                 session_dir: session_dir.clone(),

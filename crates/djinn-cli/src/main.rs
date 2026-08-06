@@ -19,7 +19,7 @@ mod tui;
 mod util;
 
 use auth::openai::run_auth;
-use buddy::run_top_level_buddy_mode;
+use buddy::run_top_level_ui_mode;
 use cli_args::{parse_cli, print_cli_help, Command};
 use commands::agent::{run_agent, run_agents};
 use commands::agent_ask::top_level_ask;
@@ -43,17 +43,17 @@ fn main() -> Result<()> {
         if cli.command.is_some() {
             bail!("-b/--ui opens the Djinn UI and cannot be combined with a Djinn subcommand");
         }
-        return run_top_level_buddy_mode(cli.session);
+        return run_top_level_ui_mode(cli.session);
     }
     if let Some(session) = cli.session {
         if cli.command.is_some() {
             bail!("-s/--session opens a focused Djinn UI session and cannot be combined with a Djinn subcommand unless -b/--ui is also set");
         }
-        return run_top_level_buddy_mode(Some(session));
+        return run_top_level_ui_mode(Some(session));
     }
     let Some(command) = cli.command else {
         if io::stdin().is_terminal() && io::stdout().is_terminal() {
-            return run_top_level_buddy_mode(None);
+            return run_top_level_ui_mode(None);
         }
         print_cli_help()?;
         return Ok(());
@@ -80,6 +80,6 @@ fn main() -> Result<()> {
         Command::Session(args) => run_session(args),
         Command::Agent(args) => run_agent(args),
         Command::Agents(args) => run_agents(args),
-        Command::Tui(_args) => run_top_level_buddy_mode(None),
+        Command::Tui(_args) => run_top_level_ui_mode(None),
     }
 }
