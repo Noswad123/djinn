@@ -318,12 +318,12 @@ fn agent_ask(
         let session = store.load_session(&id)?;
         write_agent_session_toml(session_dir, &session)?;
         if should_auto_folder_session {
-            let buddy_backend = UiBridgeBackend::resolved(None)?;
+            let ui_backend = UiBridgeBackend::resolved(None)?;
             ensure_folder_session_ui_binding_for_ask(
                 session_dir,
                 &session,
                 Path::new(&workspace),
-                &buddy_backend,
+                &ui_backend,
             )?;
         }
     }

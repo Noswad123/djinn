@@ -19,7 +19,7 @@ pub(crate) enum DoctorCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct DoctorBuddyArgs {
-    /// Folder-backed session name or directory whose runtime/buddy.json should be considered.
+    /// Folder-backed session name or directory whose runtime/djinn.json should be considered.
     #[arg(short = 's', long = "session", value_name = "SESSION")]
     pub(crate) session: Option<PathBuf>,
     /// Output format.

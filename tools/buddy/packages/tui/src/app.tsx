@@ -1116,7 +1116,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
             </Match>
             <Match when={activeTab() === "sessions"}>
               <SessionTab
-                onOpenBuddySession={(sessionID) => {
+                onOpenUiSession={(sessionID) => {
                   route.navigate({ type: "session", sessionID })
                   setActiveTab("chat")
                 }}
@@ -1189,7 +1189,7 @@ function BuddyTabBar(props: {
   )
 }
 
-function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) {
+function SessionTab(props: { onOpenUiSession: (sessionID: string) => void }) {
   const { theme } = useTheme()
   const toast = useToast()
   const renderer = useRenderer()
@@ -1274,13 +1274,13 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
     if (session) toggleSession(session.path)
   }
 
-  function openBuddySession(session: DjinnFolderSession) {
-    const id = session.buddy?.buddy_session
+  function openUiSession(session: DjinnFolderSession) {
+    const id = session.ui?.ui_session
     if (!id) {
-      toast.show({ message: "Selected session has no linked Buddy session", variant: "warning" })
+      toast.show({ message: "Selected session has no linked UI session", variant: "warning" })
       return
     }
-    props.onOpenBuddySession(id)
+    props.onOpenUiSession(id)
   }
 
   async function runAction(label: string, args: string[]) {
@@ -1374,7 +1374,7 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
     if (evt.name === "return" || evt.name === "b") {
       evt.preventDefault()
       evt.stopPropagation()
-      openBuddySession(session)
+      openUiSession(session)
       return
     }
     if (evt.name === "r") {
@@ -1530,8 +1530,8 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
                       </Show>
                     </box>
                     <box flexDirection="row" gap={1} flexShrink={0}>
-                      <Show when={session().buddy?.buddy_session}>
-                        {(_) => <text fg={theme.primary} onMouseDown={() => openBuddySession(session())}>chat</text>}
+                      <Show when={session().ui?.ui_session}>
+                        {(_) => <text fg={theme.primary} onMouseDown={() => openUiSession(session())}>chat</text>}
                       </Show>
                       <text fg={theme.primary} onMouseDown={() => void runAndRefresh("Run session", ["session", "run", session().path])}>run</text>
                       <text fg={theme.primary} onMouseDown={() => void runAction("Watch session", ["session", "watch", session().path])}>watch</text>
@@ -1837,8 +1837,8 @@ type DjinnFolderSession = {
     issue_count: number
     issue_codes: string[]
   }
-  buddy?: {
-    buddy_session?: string
+  ui?: {
+    ui_session?: string
     command?: string
     last_run_at?: string
     runtime_path: string

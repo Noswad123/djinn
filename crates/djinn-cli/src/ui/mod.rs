@@ -33,11 +33,11 @@ const EXPLICIT_UI_COMMAND_SOURCE: &str = "--ui-bin";
 pub(crate) const UNAVAILABLE_UI_COMMAND_SOURCE: &str = "unavailable";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct BuddyRuntimeState {
+pub(crate) struct UiRuntimeState {
     #[serde(default)]
-    pub(crate) buddy_session: Option<String>,
+    pub(crate) ui_session: Option<String>,
     #[serde(default)]
-    pub(crate) stale_buddy_sessions: Vec<String>,
+    pub(crate) stale_ui_sessions: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) command: Option<String>,
     #[serde(default)]
@@ -102,12 +102,12 @@ pub(crate) struct UiBindingInput {
     pub(crate) session_dir: PathBuf,
     pub(crate) title: Option<String>,
     pub(crate) requested_workspace: Option<PathBuf>,
-    pub(crate) previous_runtime: Option<BuddyRuntimeState>,
+    pub(crate) previous_runtime: Option<UiRuntimeState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UiSessionBinding {
-    pub(crate) buddy_session: String,
+    pub(crate) ui_session: String,
     pub(crate) repo_path: PathBuf,
 }
 
@@ -115,7 +115,7 @@ pub(crate) struct UiSessionBinding {
 pub(crate) struct SessionUiCaptureArgs {
     pub(crate) dir: PathBuf,
     pub(crate) ui_bin: Option<String>,
-    pub(crate) buddy_session: Option<String>,
+    pub(crate) ui_session: Option<String>,
     pub(crate) ui_args: Vec<String>,
     pub(crate) dry_run: bool,
 }
@@ -124,7 +124,7 @@ pub(crate) struct SessionUiCaptureArgs {
 pub(crate) struct SessionUiCaptureReport {
     pub(crate) session_dir: String,
     pub(crate) ui_command: String,
-    pub(crate) buddy_session: Option<String>,
+    pub(crate) ui_session: Option<String>,
     pub(crate) prompt_chars: usize,
     pub(crate) response_chars: usize,
     pub(crate) summary_path: String,
@@ -140,7 +140,7 @@ pub(crate) struct SessionUiCaptureReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopLevelUiSessionBehavior {
-    pub(crate) buddy_session: Option<String>,
+    pub(crate) ui_session: Option<String>,
     pub(crate) cwd: Option<PathBuf>,
 }
 
@@ -154,14 +154,14 @@ pub(crate) struct UiInteractiveSummarySync {
 enum UiBridgeRequest {
     LaunchPlain,
     LaunchInteractive {
-        buddy_session: Option<String>,
-        buddy_args: Vec<String>,
+        ui_session: Option<String>,
+        ui_args: Vec<String>,
         cwd: Option<PathBuf>,
         session_dir: PathBuf,
     },
     FinalResponse {
-        buddy_session: Option<String>,
-        buddy_args: Vec<String>,
+        ui_session: Option<String>,
+        ui_args: Vec<String>,
         prompt: String,
     },
     ListSessions,
@@ -193,15 +193,15 @@ pub(crate) trait UiLauncher {
     fn launch_plain(&self) -> Result<()>;
     fn launch_interactive_session(
         &self,
-        buddy_session: Option<&str>,
-        buddy_args: &[String],
+        ui_session: Option<&str>,
+        ui_args: &[String],
         cwd: Option<&Path>,
         session_dir: &Path,
     ) -> Result<()>;
     fn final_response(
         &self,
-        buddy_session: Option<&str>,
-        buddy_args: &[String],
+        ui_session: Option<&str>,
+        ui_args: &[String],
         prompt: &str,
     ) -> Result<String>;
 }
@@ -229,7 +229,7 @@ pub(crate) struct UiBridgeBackend {
 }
 
 impl UiCliBackend {
-    pub(crate) fn resolved(previous_runtime: Option<&BuddyRuntimeState>) -> Result<Self> {
+    pub(crate) fn resolved(previous_runtime: Option<&UiRuntimeState>) -> Result<Self> {
         Ok(Self {
             resolution: resolve_ui_command_resolution(previous_runtime)?,
         })
@@ -265,20 +265,20 @@ impl UiCliBackend {
                 Ok(UiBridgeResponse::Unit)
             }
             UiBridgeRequest::LaunchInteractive {
-                buddy_session,
-                buddy_args,
+                ui_session,
+                ui_args,
                 cwd,
                 session_dir,
             } => {
                 let mut command = ui_process_command(self.command())?;
-                if let Some(session) = buddy_session
+                if let Some(session) = ui_session
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                 {
                     command.arg("-s").arg(session);
                 }
-                command.args(&buddy_args);
+                command.args(&ui_args);
                 if let Some(cwd) = cwd {
                     command.current_dir(cwd);
                 }
@@ -293,19 +293,19 @@ impl UiCliBackend {
                 Ok(UiBridgeResponse::Unit)
             }
             UiBridgeRequest::FinalResponse {
-                buddy_session,
-                buddy_args,
+                ui_session,
+                ui_args,
                 prompt,
             } => {
                 let mut command = ui_process_command(self.command())?;
-                if let Some(session) = buddy_session
+                if let Some(session) = ui_session
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                 {
                     command.arg("-s").arg(session);
                 }
-                command.args(buddy_args);
+                command.args(ui_args);
                 command.stdin(Stdio::piped());
                 command.stdout(Stdio::piped());
                 command.stderr(Stdio::piped());
@@ -378,7 +378,7 @@ impl UiCliBackend {
 }
 
 impl UiBridgeBackend {
-    pub(crate) fn resolved(previous_runtime: Option<&BuddyRuntimeState>) -> Result<Self> {
+    pub(crate) fn resolved(previous_runtime: Option<&UiRuntimeState>) -> Result<Self> {
         Ok(Self {
             cli: UiCliBackend::resolved(previous_runtime)?,
         })
@@ -455,14 +455,14 @@ impl UiLauncher for UiCliBackend {
 
     fn launch_interactive_session(
         &self,
-        buddy_session: Option<&str>,
-        buddy_args: &[String],
+        ui_session: Option<&str>,
+        ui_args: &[String],
         cwd: Option<&Path>,
         session_dir: &Path,
     ) -> Result<()> {
         match self.execute_bridge_request(UiBridgeRequest::LaunchInteractive {
-            buddy_session: buddy_session.map(str::to_string),
-            buddy_args: buddy_args.to_vec(),
+            ui_session: ui_session.map(str::to_string),
+            ui_args: ui_args.to_vec(),
             cwd: cwd.map(Path::to_path_buf),
             session_dir: session_dir.to_path_buf(),
         })? {
@@ -473,13 +473,13 @@ impl UiLauncher for UiCliBackend {
 
     fn final_response(
         &self,
-        buddy_session: Option<&str>,
-        buddy_args: &[String],
+        ui_session: Option<&str>,
+        ui_args: &[String],
         prompt: &str,
     ) -> Result<String> {
         match self.execute_bridge_request(UiBridgeRequest::FinalResponse {
-            buddy_session: buddy_session.map(str::to_string),
-            buddy_args: buddy_args.to_vec(),
+            ui_session: ui_session.map(str::to_string),
+            ui_args: ui_args.to_vec(),
             prompt: prompt.to_string(),
         })? {
             UiBridgeResponse::FinalResponse(response) => Ok(response),
@@ -540,22 +540,22 @@ impl UiLauncher for UiBridgeBackend {
 
     fn launch_interactive_session(
         &self,
-        buddy_session: Option<&str>,
-        buddy_args: &[String],
+        ui_session: Option<&str>,
+        ui_args: &[String],
         cwd: Option<&Path>,
         session_dir: &Path,
     ) -> Result<()> {
         self.cli
-            .launch_interactive_session(buddy_session, buddy_args, cwd, session_dir)
+            .launch_interactive_session(ui_session, ui_args, cwd, session_dir)
     }
 
     fn final_response(
         &self,
-        buddy_session: Option<&str>,
-        buddy_args: &[String],
+        ui_session: Option<&str>,
+        ui_args: &[String],
         prompt: &str,
     ) -> Result<String> {
-        self.cli.final_response(buddy_session, buddy_args, prompt)
+        self.cli.final_response(ui_session, ui_args, prompt)
     }
 }
 
@@ -642,7 +642,7 @@ impl UiSessionBackend for UiBridgeBackend {
 }
 
 pub(crate) fn resolve_ui_command_resolution(
-    previous_runtime: Option<&BuddyRuntimeState>,
+    previous_runtime: Option<&UiRuntimeState>,
 ) -> Result<UiCommandResolution> {
     let env_ui_command = env::var(DJINN_UI_BIN_ENV).ok();
     let env_legacy_command = env::var(DJINN_BUDDY_BIN_ENV).ok();
@@ -704,9 +704,9 @@ pub(crate) fn ui_command_doctor_report_from(
             source == DJINN_BUDDY_BIN_ENV,
         ),
         ui_command_candidate(
-            "runtime/buddy.json.command",
+            "runtime/djinn.json.command",
             runtime_command.as_deref(),
-            source == "runtime/buddy.json.command",
+            source == "runtime/djinn.json.command",
         ),
         UiCommandDoctorCandidate {
             source: IN_TREE_UI_COMMAND.to_string(),
@@ -720,7 +720,7 @@ pub(crate) fn ui_command_doctor_report_from(
             },
         },
     ];
-    let note = if source == "runtime/buddy.json.command" {
+    let note = if source == "runtime/djinn.json.command" {
         "Session runtime command overrides the in-tree Djinn UI launcher.".to_string()
     } else if source == IN_TREE_UI_COMMAND {
         "Djinn will use its in-tree Djinn UI launcher; the launcher itself does not fall back to an external UI.".to_string()
@@ -824,7 +824,7 @@ fn ui_command_source(
         .filter(|value| !value.is_empty())
         == Some(command)
     {
-        return "runtime/buddy.json.command".to_string();
+        return "runtime/djinn.json.command".to_string();
     }
     if in_tree_command == Some(command) {
         return IN_TREE_UI_COMMAND.to_string();
@@ -994,7 +994,7 @@ pub(crate) fn in_tree_ui_command(workspace_root: &Path) -> Option<String> {
     legacy.is_file().then(|| legacy.display().to_string())
 }
 
-pub(crate) fn read_buddy_runtime_state(path: &Path) -> Result<Option<BuddyRuntimeState>> {
+pub(crate) fn read_ui_runtime_state(path: &Path) -> Result<Option<UiRuntimeState>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -1004,7 +1004,7 @@ pub(crate) fn read_buddy_runtime_state(path: &Path) -> Result<Option<BuddyRuntim
     ))
 }
 
-pub(crate) fn write_buddy_runtime_state(path: &Path, state: &BuddyRuntimeState) -> Result<()> {
+pub(crate) fn write_ui_runtime_state(path: &Path, state: &UiRuntimeState) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -1018,8 +1018,8 @@ pub(crate) fn run_plain_ui_mode() -> Result<()> {
 
 pub(crate) fn run_top_level_ui_mode(session: Option<PathBuf>) -> Result<()> {
     if let Some(session) = session {
-        let (session_dir, buddy_session) = resolve_top_level_ui_session_arg(session)?;
-        return run_top_level_folder_ui_session(&session_dir, buddy_session);
+        let (session_dir, ui_session) = resolve_top_level_ui_session_arg(session)?;
+        return run_top_level_folder_ui_session(&session_dir, ui_session);
     }
     run_plain_ui_mode()
 }
@@ -1037,7 +1037,7 @@ pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
         let report = run_session_ui_capture(&SessionUiCaptureArgs {
             dir: session_ref.session_dir,
             ui_bin: args.ui_bin.clone(),
-            buddy_session: session_ref.buddy_session,
+            ui_session: session_ref.ui_session,
             ui_args: args.ui_args.clone(),
             dry_run: args.dry_run,
         })?;
@@ -1049,10 +1049,10 @@ pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
         return Ok(());
     }
 
-    let (session_dir, resolved_buddy_session) = resolve_top_level_ui_session_arg(args.dir)?;
+    let (session_dir, resolved_ui_session) = resolve_top_level_ui_session_arg(args.dir)?;
     run_top_level_folder_ui_session_with_options(
         &session_dir,
-        resolved_buddy_session,
+        resolved_ui_session,
         args.ui_bin,
         &args.ui_args,
     )
@@ -1067,25 +1067,25 @@ pub(crate) fn resolve_top_level_ui_session_arg(
         return Ok((session_dir, None));
     }
 
-    Ok(resolve_existing_folder_session_reference_in_root(&session, &root)?.map_buddy_for_launch())
+    Ok(resolve_existing_folder_session_reference_in_root(&session, &root)?.map_ui_for_launch())
 }
 
 pub(crate) fn run_top_level_folder_ui_session(
     session_dir: &Path,
-    explicit_buddy_session: Option<String>,
+    explicit_ui_session: Option<String>,
 ) -> Result<()> {
-    run_top_level_folder_ui_session_with_options(session_dir, explicit_buddy_session, None, &[])
+    run_top_level_folder_ui_session_with_options(session_dir, explicit_ui_session, None, &[])
 }
 
 pub(crate) fn run_top_level_folder_ui_session_with_options(
     session_dir: &Path,
-    explicit_buddy_session: Option<String>,
+    explicit_ui_session: Option<String>,
     explicit_ui_bin: Option<String>,
     ui_args: &[String],
 ) -> Result<()> {
-    let runtime_path = session_dir.join("runtime/buddy.json");
-    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = if let Some(ui_bin) = explicit_ui_bin
+    let runtime_path = session_dir.join("runtime/djinn.json");
+    let previous_runtime = read_ui_runtime_state(&runtime_path)?;
+    let ui_backend = if let Some(ui_bin) = explicit_ui_bin
         .clone()
         .filter(|value| !value.trim().is_empty())
     {
@@ -1095,45 +1095,45 @@ pub(crate) fn run_top_level_folder_ui_session_with_options(
     };
     let behavior = top_level_ui_session_behavior_with_backend(
         session_dir,
-        explicit_buddy_session,
-        &buddy_backend,
+        explicit_ui_session,
+        &ui_backend,
         previous_runtime.clone(),
     )?;
-    run_interactive_session_ui_with_backend(session_dir, behavior, &buddy_backend, ui_args)
+    run_interactive_session_ui_with_backend(session_dir, behavior, &ui_backend, ui_args)
 }
 
 #[cfg(test)]
 pub(crate) fn top_level_ui_session_behavior(
     session_dir: &Path,
-    explicit_buddy_session: Option<String>,
+    explicit_ui_session: Option<String>,
 ) -> Result<TopLevelUiSessionBehavior> {
-    let runtime_path = session_dir.join("runtime/buddy.json");
-    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = UiBridgeBackend::resolved(previous_runtime.as_ref())?;
+    let runtime_path = session_dir.join("runtime/djinn.json");
+    let previous_runtime = read_ui_runtime_state(&runtime_path)?;
+    let ui_backend = UiBridgeBackend::resolved(previous_runtime.as_ref())?;
     top_level_ui_session_behavior_with_backend(
         session_dir,
-        explicit_buddy_session,
-        &buddy_backend,
+        explicit_ui_session,
+        &ui_backend,
         previous_runtime,
     )
 }
 
 fn top_level_ui_session_behavior_with_backend(
     session_dir: &Path,
-    explicit_buddy_session: Option<String>,
-    buddy_backend: &dyn UiSessionBackend,
-    previous_runtime: Option<BuddyRuntimeState>,
+    explicit_ui_session: Option<String>,
+    ui_backend: &dyn UiSessionBackend,
+    previous_runtime: Option<UiRuntimeState>,
 ) -> Result<TopLevelUiSessionBehavior> {
-    let buddy_session = explicit_buddy_session.or_else(|| {
+    let ui_session = explicit_ui_session.or_else(|| {
         previous_runtime
             .as_ref()
-            .and_then(|state| state.buddy_session.clone())
+            .and_then(|state| state.ui_session.clone())
     });
     let manifest = read_folder_session_manifest(session_dir)?;
     let requested_cwd = session_manifest_workspace_path(manifest.as_ref());
-    if buddy_session.is_none() && session_dir.is_dir() {
+    if ui_session.is_none() && session_dir.is_dir() {
         let binding = ensure_ui_session_binding(
-            buddy_backend,
+            ui_backend,
             UiBindingInput {
                 session_dir: session_dir.to_path_buf(),
                 title: manifest
@@ -1144,23 +1144,23 @@ fn top_level_ui_session_behavior_with_backend(
             },
         )?;
         return Ok(TopLevelUiSessionBehavior {
-            buddy_session: Some(binding.buddy_session),
+            ui_session: Some(binding.ui_session),
             cwd: Some(binding.repo_path),
         });
     }
-    let cwd = match (&buddy_session, requested_cwd) {
+    let cwd = match (&ui_session, requested_cwd) {
         (Some(_), Some(path)) if path.is_dir() => Some(path),
         (Some(id), Some(path)) => {
             clear_folder_session_workspace(session_dir)?;
             let promoted = promote_stale_ui_workspace(
                 session_dir,
-                buddy_backend,
+                ui_backend,
                 previous_runtime.as_ref(),
                 id,
                 Some(&path),
             )?;
             return Ok(TopLevelUiSessionBehavior {
-                buddy_session: Some(promoted),
+                ui_session: Some(promoted),
                 cwd: Some(session_dir.to_path_buf()),
             });
         }
@@ -1168,22 +1168,22 @@ fn top_level_ui_session_behavior_with_backend(
         (None, Some(path)) if path.is_dir() => Some(path),
         _ => None,
     };
-    Ok(TopLevelUiSessionBehavior { buddy_session, cwd })
+    Ok(TopLevelUiSessionBehavior { ui_session, cwd })
 }
 
 pub(crate) fn run_interactive_session_ui_with_backend<B>(
     session_dir: &Path,
     behavior: TopLevelUiSessionBehavior,
-    buddy_backend: &B,
+    ui_backend: &B,
     ui_args: &[String],
 ) -> Result<()>
 where
     B: UiLauncher + UiSessionBackend,
 {
-    let runtime_path = session_dir.join("runtime/buddy.json");
-    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    buddy_backend.launch_interactive_session(
-        behavior.buddy_session.as_deref(),
+    let runtime_path = session_dir.join("runtime/djinn.json");
+    let previous_runtime = read_ui_runtime_state(&runtime_path)?;
+    ui_backend.launch_interactive_session(
+        behavior.ui_session.as_deref(),
         ui_args,
         behavior.cwd.as_deref(),
         session_dir,
@@ -1191,7 +1191,7 @@ where
 
     let summary_sync = refresh_folder_summary_from_latest_event(session_dir)?;
 
-    if let Some(buddy_session) = behavior.buddy_session {
+    if let Some(ui_session) = behavior.ui_session {
         let previous_args = previous_runtime
             .as_ref()
             .map(|state| state.args.clone())
@@ -1201,15 +1201,15 @@ where
         } else {
             ui_args.to_vec()
         };
-        write_buddy_runtime_state(
+        write_ui_runtime_state(
             &runtime_path,
-            &BuddyRuntimeState {
-                buddy_session: Some(buddy_session),
-                stale_buddy_sessions: previous_runtime
+            &UiRuntimeState {
+                ui_session: Some(ui_session),
+                stale_ui_sessions: previous_runtime
                     .as_ref()
-                    .map(|state| state.stale_buddy_sessions.clone())
+                    .map(|state| state.stale_ui_sessions.clone())
                     .unwrap_or_default(),
-                command: buddy_backend.runtime_command_override(),
+                command: ui_backend.runtime_command_override(),
                 args: runtime_args,
                 last_run_at: Some(chrono::Utc::now().to_rfc3339()),
                 last_prompt_chars: previous_runtime
@@ -1324,36 +1324,32 @@ pub(crate) fn run_session_ui_capture(
     let session_dir = resolve_session_dir(&args.dir)?;
     let request_path = session_dir.join("request.md");
     let summary_path = session_dir.join("summary.md");
-    let runtime_path = session_dir.join("runtime/buddy.json");
+    let runtime_path = session_dir.join("runtime/djinn.json");
     let prompt = fs::read_to_string(&request_path)
         .with_context(|| format!("reading {}", request_path.display()))?;
     if prompt.trim().is_empty() {
         bail!("request.md is empty; write a request before opening the Djinn UI");
     }
 
-    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend =
+    let previous_runtime = read_ui_runtime_state(&runtime_path)?;
+    let ui_backend =
         if let Some(ui_bin) = args.ui_bin.clone().filter(|value| !value.trim().is_empty()) {
             UiBridgeBackend::explicit(ui_bin)
         } else {
             UiBridgeBackend::resolved(previous_runtime.as_ref())?
         };
-    let buddy_session = args.buddy_session.clone().or_else(|| {
+    let ui_session = args.ui_session.clone().or_else(|| {
         previous_runtime
             .as_ref()
-            .and_then(|state| state.buddy_session.clone())
+            .and_then(|state| state.ui_session.clone())
     });
-    let ui_command = ui_command_hint(
-        buddy_backend.command(),
-        buddy_session.as_deref(),
-        &args.ui_args,
-    );
+    let ui_command = ui_command_hint(ui_backend.command(), ui_session.as_deref(), &args.ui_args);
 
     if args.dry_run {
         return Ok(SessionUiCaptureReport {
             session_dir: session_dir.display().to_string(),
             ui_command,
-            buddy_session,
+            ui_session,
             prompt_chars: prompt.chars().count(),
             response_chars: 0,
             summary_path: summary_path.display().to_string(),
@@ -1369,8 +1365,7 @@ pub(crate) fn run_session_ui_capture(
         });
     }
 
-    let response =
-        buddy_backend.final_response(buddy_session.as_deref(), &args.ui_args, &prompt)?;
+    let response = ui_backend.final_response(ui_session.as_deref(), &args.ui_args, &prompt)?;
     let response = response.trim().to_string();
     if response.is_empty() {
         bail!("Djinn UI returned an empty final response");
@@ -1406,15 +1401,15 @@ pub(crate) fn run_session_ui_capture(
     };
     let events_path = write_folder_session_events_jsonl(&session_dir, &event_session)?;
 
-    write_buddy_runtime_state(
+    write_ui_runtime_state(
         &runtime_path,
-        &BuddyRuntimeState {
-            buddy_session: buddy_session.clone(),
-            stale_buddy_sessions: previous_runtime
+        &UiRuntimeState {
+            ui_session: ui_session.clone(),
+            stale_ui_sessions: previous_runtime
                 .as_ref()
-                .map(|state| state.stale_buddy_sessions.clone())
+                .map(|state| state.stale_ui_sessions.clone())
                 .unwrap_or_default(),
-            command: buddy_backend.runtime_command_override(),
+            command: ui_backend.runtime_command_override(),
             args: args.ui_args.clone(),
             last_run_at: Some(chrono::Utc::now().to_rfc3339()),
             last_prompt_chars: prompt.chars().count(),
@@ -1425,7 +1420,7 @@ pub(crate) fn run_session_ui_capture(
     Ok(SessionUiCaptureReport {
         session_dir: session_dir.display().to_string(),
         ui_command,
-        buddy_session,
+        ui_session,
         prompt_chars: prompt.chars().count(),
         response_chars: response.chars().count(),
         summary_path: summary_path.display().to_string(),
@@ -1445,7 +1440,7 @@ pub(crate) fn format_session_ui_capture_report(report: &SessionUiCaptureReport) 
     let mut lines = Vec::new();
     lines.push(format!("Djinn UI capture: {}", report.session_dir));
     lines.push(format!("  command: {}", report.ui_command));
-    if let Some(session) = &report.buddy_session {
+    if let Some(session) = &report.ui_session {
         lines.push(format!("  ui session: {session}"));
     }
     lines.push(format!("  dry run: {}", yes_no(report.dry_run)));
@@ -1463,16 +1458,13 @@ pub(crate) fn format_session_ui_capture_report(report: &SessionUiCaptureReport) 
     lines.join("\n")
 }
 
-fn ui_command_hint(buddy_bin: &str, buddy_session: Option<&str>, buddy_args: &[String]) -> String {
-    let mut command = shell_quote(buddy_bin);
-    if let Some(session) = buddy_session
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+fn ui_command_hint(ui_bin: &str, ui_session: Option<&str>, ui_args: &[String]) -> String {
+    let mut command = shell_quote(ui_bin);
+    if let Some(session) = ui_session.map(str::trim).filter(|value| !value.is_empty()) {
         command.push_str(" -s ");
         command.push_str(&shell_quote(session));
     }
-    for arg in buddy_args {
+    for arg in ui_args {
         command.push(' ');
         command.push_str(&shell_quote(arg));
     }
@@ -1489,17 +1481,17 @@ fn fallback_ui_session_id(session_dir: &Path) -> AgentSessionId {
 }
 
 pub(crate) fn ensure_ui_session_binding(
-    buddy_backend: &dyn UiSessionBackend,
+    ui_backend: &dyn UiSessionBackend,
     input: UiBindingInput,
 ) -> Result<UiSessionBinding> {
     let previous_runtime = input.previous_runtime.as_ref();
     if let Some(existing) = previous_runtime
-        .and_then(|state| state.buddy_session.as_deref())
+        .and_then(|state| state.ui_session.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         return Ok(UiSessionBinding {
-            buddy_session: existing.to_string(),
+            ui_session: existing.to_string(),
             repo_path: ui_binding_repo_path(
                 &input.session_dir,
                 input.requested_workspace.as_deref(),
@@ -1510,22 +1502,20 @@ pub(crate) fn ensure_ui_session_binding(
     let title = ui_binding_title(&input.session_dir, input.title.as_deref());
     let repo_path = ui_binding_repo_path(&input.session_dir, input.requested_workspace.as_deref());
     let repo = repo_path.display().to_string();
-    let created = buddy_backend
-        .create_session(&title, &repo)
-        .with_context(|| {
-            format!(
-                "creating UI session binding for {}",
-                input.session_dir.display()
-            )
-        })?;
-    write_buddy_runtime_state(
-        &input.session_dir.join("runtime/buddy.json"),
-        &BuddyRuntimeState {
-            buddy_session: Some(created.id.clone()),
-            stale_buddy_sessions: previous_runtime
-                .map(|state| state.stale_buddy_sessions.clone())
+    let created = ui_backend.create_session(&title, &repo).with_context(|| {
+        format!(
+            "creating UI session binding for {}",
+            input.session_dir.display()
+        )
+    })?;
+    write_ui_runtime_state(
+        &input.session_dir.join("runtime/djinn.json"),
+        &UiRuntimeState {
+            ui_session: Some(created.id.clone()),
+            stale_ui_sessions: previous_runtime
+                .map(|state| state.stale_ui_sessions.clone())
                 .unwrap_or_default(),
-            command: buddy_backend.runtime_command_override(),
+            command: ui_backend.runtime_command_override(),
             args: previous_runtime
                 .map(|state| state.args.clone())
                 .unwrap_or_default(),
@@ -1539,7 +1529,7 @@ pub(crate) fn ensure_ui_session_binding(
         },
     )?;
     Ok(UiSessionBinding {
-        buddy_session: created.id,
+        ui_session: created.id,
         repo_path,
     })
 }
@@ -1548,12 +1538,12 @@ pub(crate) fn ensure_folder_session_ui_binding_for_ask(
     session_dir: &Path,
     session: &AgentSession,
     workspace: &Path,
-    buddy_backend: &dyn UiSessionBackend,
+    ui_backend: &dyn UiSessionBackend,
 ) -> Result<UiSessionBinding> {
-    let runtime_path = session_dir.join("runtime/buddy.json");
-    let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
+    let runtime_path = session_dir.join("runtime/djinn.json");
+    let previous_runtime = read_ui_runtime_state(&runtime_path)?;
     ensure_ui_session_binding(
-        buddy_backend,
+        ui_backend,
         UiBindingInput {
             session_dir: session_dir.to_path_buf(),
             title: Some(session.meta.title.clone()).and_then(nonempty_owned_string),
@@ -1570,9 +1560,9 @@ fn nonempty_owned_string(value: String) -> Option<String> {
 
 pub(crate) fn promote_stale_ui_workspace(
     session_dir: &Path,
-    buddy_backend: &dyn UiSessionBackend,
-    previous_runtime: Option<&BuddyRuntimeState>,
-    stale_buddy_session: &str,
+    ui_backend: &dyn UiSessionBackend,
+    previous_runtime: Option<&UiRuntimeState>,
+    stale_ui_session: &str,
     stale_workspace: Option<&Path>,
 ) -> Result<String> {
     let title = session_dir
@@ -1580,33 +1570,29 @@ pub(crate) fn promote_stale_ui_workspace(
         .and_then(|name| name.to_str())
         .unwrap_or("djinn-session");
     let repo = session_dir.display().to_string();
-    let created = buddy_backend
-        .create_session(title, &repo)
-        .with_context(|| {
-            format!(
-                "promoting stale UI binding for {} into session-local workspace {}",
-                stale_workspace
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "<none>".to_string()),
-                session_dir.display()
-            )
-        })?;
+    let created = ui_backend.create_session(title, &repo).with_context(|| {
+        format!(
+            "promoting stale UI binding for {} into session-local workspace {}",
+            stale_workspace
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            session_dir.display()
+        )
+    })?;
 
     let mut stale_ids = previous_runtime
-        .map(|state| state.stale_buddy_sessions.clone())
+        .map(|state| state.stale_ui_sessions.clone())
         .unwrap_or_default();
-    if !stale_buddy_session.trim().is_empty()
-        && !stale_ids.iter().any(|id| id == stale_buddy_session)
-    {
-        stale_ids.push(stale_buddy_session.to_string());
+    if !stale_ui_session.trim().is_empty() && !stale_ids.iter().any(|id| id == stale_ui_session) {
+        stale_ids.push(stale_ui_session.to_string());
     }
 
-    write_buddy_runtime_state(
-        &session_dir.join("runtime/buddy.json"),
-        &BuddyRuntimeState {
-            buddy_session: Some(created.id.clone()),
-            stale_buddy_sessions: stale_ids,
-            command: buddy_backend.runtime_command_override(),
+    write_ui_runtime_state(
+        &session_dir.join("runtime/djinn.json"),
+        &UiRuntimeState {
+            ui_session: Some(created.id.clone()),
+            stale_ui_sessions: stale_ids,
+            command: ui_backend.runtime_command_override(),
             args: previous_runtime
                 .map(|state| state.args.clone())
                 .unwrap_or_default(),
@@ -1817,7 +1803,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::session::reference::{
-        resolve_buddy_session_reference_in_root, resolve_existing_folder_session_reference_in_root,
+        resolve_existing_folder_session_reference_in_root, resolve_ui_session_reference_in_root,
     };
 
     #[test]
@@ -2074,19 +2060,19 @@ exit 2
             Some("/old/buddy --dev".to_string()),
             Some(&root),
             Some(Path::new("/tmp/session")),
-            Some(Path::new("/tmp/session/runtime/buddy.json")),
+            Some(Path::new("/tmp/session/runtime/djinn.json")),
         );
         assert_eq!(runtime_report.command, "/old/buddy --dev");
-        assert_eq!(runtime_report.source, "runtime/buddy.json.command");
+        assert_eq!(runtime_report.source, "runtime/djinn.json.command");
         assert_eq!(runtime_report.session_dir.as_deref(), Some("/tmp/session"));
         assert_eq!(
             runtime_report.runtime_path.as_deref(),
-            Some("/tmp/session/runtime/buddy.json")
+            Some("/tmp/session/runtime/djinn.json")
         );
         assert!(runtime_report.note.contains("runtime command overrides"));
 
         let json = format_ui_command_doctor_report(&runtime_report, OutputFormat::Json).unwrap();
-        assert!(json.contains("\"source\": \"runtime/buddy.json.command\""));
+        assert!(json.contains("\"source\": \"runtime/djinn.json.command\""));
 
         let legacy_env_report = ui_command_doctor_report_from(
             None,
@@ -2236,12 +2222,12 @@ exit 2
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
         ));
-        let runtime_path = root.join("runtime/buddy.json");
-        write_buddy_runtime_state(
+        let runtime_path = root.join("runtime/djinn.json");
+        write_ui_runtime_state(
             &runtime_path,
-            &BuddyRuntimeState {
-                buddy_session: Some("ses_default_in_tree".to_string()),
-                stale_buddy_sessions: Vec::new(),
+            &UiRuntimeState {
+                ui_session: Some("ses_default_in_tree".to_string()),
+                stale_ui_sessions: Vec::new(),
                 command: None,
                 args: Vec::new(),
                 last_run_at: None,
@@ -2269,9 +2255,9 @@ exit 2
         let session_dir = root.join("from-buddy");
         fs::create_dir_all(session_dir.join("runtime")).unwrap();
         fs::write(
-            session_dir.join("runtime/buddy.json"),
+            session_dir.join("runtime/djinn.json"),
             serde_json::json!({
-                "buddy_session": "ses_boundBuddy123",
+                "ui_session": "ses_boundBuddy123",
                 "command": "buddy",
                 "args": [],
                 "last_run_at": null,
@@ -2283,7 +2269,7 @@ exit 2
         .unwrap();
 
         let resolved =
-            resolve_buddy_session_reference_in_root(&root, Path::new("ses_boundBuddy123")).unwrap();
+            resolve_ui_session_reference_in_root(&root, Path::new("ses_boundBuddy123")).unwrap();
 
         assert_eq!(
             resolved,
@@ -2291,7 +2277,7 @@ exit 2
         );
 
         let missing =
-            resolve_buddy_session_reference_in_root(&root, Path::new("ses_missing")).unwrap();
+            resolve_ui_session_reference_in_root(&root, Path::new("ses_missing")).unwrap();
         assert_eq!(missing, None);
 
         let _ = fs::remove_dir_all(&root);
@@ -2308,10 +2294,10 @@ exit 2
         let session_dir = root.join("from-buddy");
         fs::create_dir_all(session_dir.join("runtime")).unwrap();
         fs::write(
-            session_dir.join("runtime/buddy.json"),
+            session_dir.join("runtime/djinn.json"),
             serde_json::json!({
-                "buddy_session": "ses_currentBuddy123",
-                "stale_buddy_sessions": ["ses_staleBuddy123"]
+                "ui_session": "ses_currentBuddy123",
+                "stale_ui_sessions": ["ses_staleBuddy123"]
             })
             .to_string(),
         )
@@ -2329,26 +2315,23 @@ exit 2
         .unwrap();
 
         assert_eq!(current.session_dir, session_dir);
-        assert_eq!(
-            current.buddy_session.as_deref(),
-            Some("ses_currentBuddy123")
-        );
+        assert_eq!(current.ui_session.as_deref(), Some("ses_currentBuddy123"));
         assert_eq!(stale.session_dir, session_dir);
-        assert_eq!(stale.buddy_session.as_deref(), Some("ses_currentBuddy123"));
+        assert_eq!(stale.ui_session.as_deref(), Some("ses_currentBuddy123"));
 
         let _ = fs::remove_dir_all(&root);
     }
 
     #[derive(Clone)]
-    struct TestBuddyBackend {
+    struct TestUiBackend {
         runtime_command_override: Option<String>,
         create_id: String,
         creates: Arc<Mutex<Vec<(String, String)>>>,
     }
 
-    impl UiSessionBackend for TestBuddyBackend {
+    impl UiSessionBackend for TestUiBackend {
         fn command(&self) -> &str {
-            "in-tree-buddy"
+            "in-tree-ui"
         }
 
         fn runtime_command_override(&self) -> Option<String> {
@@ -2403,14 +2386,14 @@ exit 2
         fs::write(
             session_dir.join("djinn.toml"),
             format!(
-                "title = \"Custom Buddy Title\"\nworkspace = {}\n",
+                "title = \"Custom UI Title\"\nworkspace = {}\n",
                 serde_json::to_string(&workspace.display().to_string()).unwrap()
             ),
         )
         .unwrap();
         let manifest = read_folder_session_manifest(&session_dir).unwrap();
         let creates = Arc::new(Mutex::new(Vec::new()));
-        let backend = TestBuddyBackend {
+        let backend = TestUiBackend {
             runtime_command_override: None,
             create_id: "ses_auto_bound".to_string(),
             creates: creates.clone(),
@@ -2429,16 +2412,16 @@ exit 2
         )
         .unwrap();
 
-        assert_eq!(binding.buddy_session, "ses_auto_bound");
+        assert_eq!(binding.ui_session, "ses_auto_bound");
         assert_eq!(binding.repo_path, workspace);
         assert_eq!(
             creates.lock().unwrap().as_slice(),
             &[(
-                "Custom Buddy Title".to_string(),
+                "Custom UI Title".to_string(),
                 binding.repo_path.display().to_string()
             )]
         );
-        let runtime = fs::read_to_string(session_dir.join("runtime/buddy.json")).unwrap();
+        let runtime = fs::read_to_string(session_dir.join("runtime/djinn.json")).unwrap();
         assert!(runtime.contains("ses_auto_bound"));
         assert!(!runtime.contains("command"));
 
@@ -2469,7 +2452,7 @@ exit 2
             events: Vec::new(),
         };
         let creates = Arc::new(Mutex::new(Vec::new()));
-        let backend = TestBuddyBackend {
+        let backend = TestUiBackend {
             runtime_command_override: None,
             create_id: "ses_ask_bound".to_string(),
             creates: creates.clone(),
@@ -2479,7 +2462,7 @@ exit 2
             ensure_folder_session_ui_binding_for_ask(&session_dir, &session, &workspace, &backend)
                 .unwrap();
 
-        assert_eq!(binding.buddy_session, "ses_ask_bound");
+        assert_eq!(binding.ui_session, "ses_ask_bound");
         assert_eq!(binding.repo_path, workspace);
         assert_eq!(
             creates.lock().unwrap().as_slice(),
@@ -2488,7 +2471,7 @@ exit 2
                 binding.repo_path.display().to_string()
             )]
         );
-        let runtime = fs::read_to_string(session_dir.join("runtime/buddy.json")).unwrap();
+        let runtime = fs::read_to_string(session_dir.join("runtime/djinn.json")).unwrap();
         assert!(runtime.contains("ses_ask_bound"));
         assert!(!runtime.contains("command"));
 
@@ -2507,11 +2490,11 @@ exit 2
         let session_dir = root.join("session");
         fs::create_dir_all(&workspace).unwrap();
         fs::create_dir_all(session_dir.join("runtime")).unwrap();
-        write_buddy_runtime_state(
-            &session_dir.join("runtime/buddy.json"),
-            &BuddyRuntimeState {
-                buddy_session: Some("ses_existing_ask".to_string()),
-                stale_buddy_sessions: Vec::new(),
+        write_ui_runtime_state(
+            &session_dir.join("runtime/djinn.json"),
+            &UiRuntimeState {
+                ui_session: Some("ses_existing_ask".to_string()),
+                stale_ui_sessions: Vec::new(),
                 command: None,
                 args: Vec::new(),
                 last_run_at: None,
@@ -2532,7 +2515,7 @@ exit 2
             events: Vec::new(),
         };
         let creates = Arc::new(Mutex::new(Vec::new()));
-        let backend = TestBuddyBackend {
+        let backend = TestUiBackend {
             runtime_command_override: None,
             create_id: "ses_should_not_create".to_string(),
             creates: creates.clone(),
@@ -2542,7 +2525,7 @@ exit 2
             ensure_folder_session_ui_binding_for_ask(&session_dir, &session, &workspace, &backend)
                 .unwrap();
 
-        assert_eq!(binding.buddy_session, "ses_existing_ask");
+        assert_eq!(binding.ui_session, "ses_existing_ask");
         assert_eq!(binding.repo_path, workspace);
         assert!(creates.lock().unwrap().is_empty());
 
@@ -2571,9 +2554,9 @@ exit 2
         .unwrap();
         fs::write(session_dir.join("request.md"), "pending prompt\n").unwrap();
         fs::write(
-            session_dir.join("runtime/buddy.json"),
+            session_dir.join("runtime/djinn.json"),
             serde_json::json!({
-                "buddy_session": "ses_resume",
+                "ui_session": "ses_resume",
                 "command": "buddy",
                 "args": [],
                 "last_run_at": null,
@@ -2585,7 +2568,7 @@ exit 2
         .unwrap();
 
         let behavior = top_level_ui_session_behavior(&session_dir, None).unwrap();
-        assert_eq!(behavior.buddy_session.as_deref(), Some("ses_resume"));
+        assert_eq!(behavior.ui_session.as_deref(), Some("ses_resume"));
         assert_eq!(behavior.cwd.as_deref(), Some(workspace.as_path()));
 
         let _ = fs::remove_dir_all(&root);
@@ -2629,7 +2612,7 @@ exit 2
         )
         .unwrap();
         fs::write(
-            session_dir.join("runtime/buddy.json"),
+            session_dir.join("runtime/djinn.json"),
             serde_json::json!({
                 "command": buddy_bin.display().to_string(),
                 "args": [],
@@ -2642,13 +2625,13 @@ exit 2
         .unwrap();
 
         let behavior = top_level_ui_session_behavior(&session_dir, None).unwrap();
-        assert_eq!(behavior.buddy_session.as_deref(), Some("ses_auto_bound"));
+        assert_eq!(behavior.ui_session.as_deref(), Some("ses_auto_bound"));
         assert_eq!(behavior.cwd.as_deref(), Some(workspace.as_path()));
         assert_eq!(
             fs::read_to_string(&create_log).unwrap(),
             format!("Auto Bound Session|{}\n", workspace.display())
         );
-        let runtime = fs::read_to_string(session_dir.join("runtime/buddy.json")).unwrap();
+        let runtime = fs::read_to_string(session_dir.join("runtime/djinn.json")).unwrap();
         assert!(runtime.contains("ses_auto_bound"));
         assert!(runtime.contains(&buddy_bin.display().to_string()));
 
@@ -2693,9 +2676,9 @@ exit 2
         )
         .unwrap();
         fs::write(
-            session_dir.join("runtime/buddy.json"),
+            session_dir.join("runtime/djinn.json"),
             serde_json::json!({
-                "buddy_session": "ses_stale",
+                "ui_session": "ses_stale",
                 "command": buddy_bin.display().to_string(),
                 "args": [],
                 "last_run_at": null,
@@ -2707,7 +2690,7 @@ exit 2
         .unwrap();
 
         let behavior = top_level_ui_session_behavior(&session_dir, None).unwrap();
-        assert_eq!(behavior.buddy_session.as_deref(), Some("ses_promoted"));
+        assert_eq!(behavior.ui_session.as_deref(), Some("ses_promoted"));
         assert_eq!(behavior.cwd.as_deref(), Some(session_dir.as_path()));
         assert_eq!(
             fs::read_to_string(&create_log).unwrap(),
@@ -2717,12 +2700,11 @@ exit 2
         assert!(!manifest.contains("workspace ="));
         assert!(!manifest.contains("[context.repo]"));
         assert!(!manifest.contains(&missing_workspace.display().to_string()));
-        let runtime = fs::read_to_string(session_dir.join("runtime/buddy.json")).unwrap();
+        let runtime = fs::read_to_string(session_dir.join("runtime/djinn.json")).unwrap();
         assert!(runtime.contains("ses_promoted"));
         assert!(runtime.contains("ses_stale"));
 
-        let resolved =
-            resolve_buddy_session_reference_in_root(&root, Path::new("ses_stale")).unwrap();
+        let resolved = resolve_ui_session_reference_in_root(&root, Path::new("ses_stale")).unwrap();
         assert_eq!(
             resolved,
             Some((session_dir.clone(), "ses_promoted".to_string()))
@@ -2773,7 +2755,7 @@ exit 2
         let report = run_session_ui_capture(&SessionUiCaptureArgs {
             dir: dir.clone(),
             ui_bin: Some(buddy_bin.display().to_string()),
-            buddy_session: Some("bud_test".to_string()),
+            ui_session: Some("bud_test".to_string()),
             ui_args: vec!["--final".to_string()],
             dry_run: false,
         })
@@ -2783,7 +2765,7 @@ exit 2
         assert!(report.wrote_summary);
         assert!(report.appended_events);
         assert!(report.cleared_request);
-        assert_eq!(report.buddy_session.as_deref(), Some("bud_test"));
+        assert_eq!(report.ui_session.as_deref(), Some("bud_test"));
         assert_eq!(fs::read_to_string(dir.join("request.md")).unwrap(), "");
         assert_eq!(
             fs::read_to_string(dir.join("summary.md")).unwrap(),
@@ -2802,7 +2784,7 @@ exit 2
         assert_eq!(events.lines().count(), 2);
         assert!(events.contains("Please answer from Buddy."));
         assert!(events.contains("Buddy final response."));
-        let runtime = fs::read_to_string(dir.join("runtime/buddy.json")).unwrap();
+        let runtime = fs::read_to_string(dir.join("runtime/djinn.json")).unwrap();
         assert!(runtime.contains("bud_test"));
         assert!(runtime.contains("--final"));
         assert!(format_session_ui_capture_report(&report).contains("Djinn UI capture:"));

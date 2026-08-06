@@ -263,10 +263,10 @@ mod tests {
         fs::create_dir_all(from.join("runtime")).unwrap();
         fs::write(from.join("summary.md"), "summary\n").unwrap();
         fs::write(
-            from.join("runtime/buddy.json"),
+            from.join("runtime/djinn.json"),
             serde_json::json!({
-                "buddy_session": "ses_renameBuddy123",
-                "stale_buddy_sessions": []
+                "ui_session": "ses_renameBuddy123",
+                "stale_ui_sessions": []
             })
             .to_string(),
         )
@@ -296,8 +296,8 @@ mod tests {
         assert!(report.renamed);
         assert!(!from.exists());
         assert!(to.join("summary.md").exists());
-        assert!(to.join("runtime/buddy.json").exists());
-        assert!(fs::read_to_string(to.join("runtime/buddy.json"))
+        assert!(to.join("runtime/djinn.json").exists());
+        assert!(fs::read_to_string(to.join("runtime/djinn.json"))
             .unwrap()
             .contains("ses_renameBuddy123"));
 

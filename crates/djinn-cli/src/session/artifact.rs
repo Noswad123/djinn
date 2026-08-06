@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_session_open_resolves_buddy_session_id() {
+    fn folder_session_open_resolves_ui_session_id() {
         let root = std::env::temp_dir().join(format!(
             "djinn-session-open-buddy-test-{}",
             chrono::Local::now()
@@ -200,10 +200,10 @@ mod tests {
         fs::create_dir_all(dir.join("runtime")).unwrap();
         fs::write(dir.join("summary.md"), "summary\n").unwrap();
         fs::write(
-            dir.join("runtime/buddy.json"),
+            dir.join("runtime/djinn.json"),
             r#"{
-  "buddy_session": "ses_openBuddy123",
-  "stale_buddy_sessions": []
+  "ui_session": "ses_openBuddy123",
+  "stale_ui_sessions": []
 }
 "#,
         )

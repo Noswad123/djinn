@@ -87,7 +87,7 @@ Djinn UI by default, and `djinn tui` remains a deprecated alias. Use
 turns, and `djinn session watch` to follow lifecycle status. `djinn session init
 <name>` and new auto-created top-level `djinn ask "..."` sessions create both the
 folder capsule and the UI session binding recorded in
-`runtime/buddy.json`; the Djinn UI is expected to ship with Djinn, so these
+`runtime/djinn.json`; the Djinn UI is expected to ship with Djinn, so these
 creation paths fail if that binding cannot be created or reused. `djinn --ui` is
 the explicit UI launch spelling; `djinn -b`, `djinn -b -s <ref>`, and
 `djinn -bs <ref>` remain deprecated aliases for the same UI launch path.
@@ -96,7 +96,7 @@ folder-session UI experience. Core
 existing-session entry points such as `djinn -s`, `session open`, `session status`,
 `session watch`, `session run`, `session chat`, and `session rm`
 resolve folder-session names/paths plus current or stale UI ids already recorded
-in `runtime/buddy.json`. Use `djinn session chat <ref> --capture-request` to send
+in `runtime/djinn.json`. Use `djinn session chat <ref> --capture-request` to send
 `request.md` to the Djinn UI on stdin and capture the UI's final response back into
 `summary.md` and `events.jsonl`; plain UI/chat mode resumes the UI interactively
 instead. When the UI is launched through `djinn -s <ref>` or

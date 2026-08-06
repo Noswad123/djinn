@@ -20,7 +20,7 @@ use crate::session::status::{
 use crate::session::turns::{
     read_folder_session_event_turns, read_folder_session_turns, FolderSessionTurnDigest,
 };
-use crate::ui::read_buddy_runtime_state;
+use crate::ui::read_ui_runtime_state;
 use crate::util::text::{non_empty_string, truncate_table_cell};
 
 pub(crate) fn session_ls(args: SessionLsArgs) -> Result<()> {
@@ -65,7 +65,8 @@ pub(crate) struct FolderSessionSummary {
     pub(crate) summary_preview: Option<String>,
     pub(crate) turn_count: usize,
     pub(crate) event_health: FolderSessionEventHealth,
-    pub(crate) buddy: Option<FolderSessionBuddySummary>,
+    #[serde(rename = "ui")]
+    pub(crate) ui: Option<FolderSessionUiSummary>,
     pub(crate) latest_turn: Option<SessionStatusTurnReport>,
     pub(crate) candidates: Option<SessionStatusCandidateReport>,
     pub(crate) next_action: Option<String>,
@@ -74,8 +75,8 @@ pub(crate) struct FolderSessionSummary {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct FolderSessionBuddySummary {
-    pub(crate) buddy_session: Option<String>,
+pub(crate) struct FolderSessionUiSummary {
+    pub(crate) ui_session: Option<String>,
     pub(crate) command: Option<String>,
     pub(crate) last_run_at: Option<String>,
     pub(crate) runtime_path: String,
@@ -161,7 +162,7 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         event_turns.len()
     };
     let event_health = folder_session_event_health(path)?;
-    let buddy = folder_session_buddy_summary(path)?;
+    let ui = folder_session_ui_summary(path)?;
     let latest_turn = event_turns
         .last()
         .map(session_status_turn_report)
@@ -204,7 +205,7 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
         summary_preview: folder_session_summary_preview(path, &event_turns),
         turn_count,
         event_health,
-        buddy,
+        ui,
         latest_turn,
         candidates,
         next_action,
@@ -213,13 +214,13 @@ fn folder_session_summary(path: &Path) -> Result<FolderSessionSummary> {
     })
 }
 
-fn folder_session_buddy_summary(path: &Path) -> Result<Option<FolderSessionBuddySummary>> {
-    let runtime_path = path.join("runtime/buddy.json");
-    let Some(runtime) = read_buddy_runtime_state(&runtime_path)? else {
+fn folder_session_ui_summary(path: &Path) -> Result<Option<FolderSessionUiSummary>> {
+    let runtime_path = path.join("runtime/djinn.json");
+    let Some(runtime) = read_ui_runtime_state(&runtime_path)? else {
         return Ok(None);
     };
-    Ok(Some(FolderSessionBuddySummary {
-        buddy_session: runtime.buddy_session,
+    Ok(Some(FolderSessionUiSummary {
+        ui_session: runtime.ui_session,
         command: runtime.command,
         last_run_at: runtime.last_run_at,
         runtime_path: runtime_path.display().to_string(),
@@ -406,7 +407,7 @@ pub(crate) fn format_folder_session_ls(report: &SessionLsReport) -> String {
                 "  {:<20} {:<12} {:<34} {}",
                 truncate_table_cell(&updated, 20),
                 truncate_table_cell(&state, 12),
-                folder_session_buddy_label(session.buddy.as_ref()),
+                folder_session_ui_label(session.ui.as_ref()),
                 format!(
                     "{}{}",
                     session.reference_name,
@@ -430,9 +431,8 @@ pub(crate) fn format_folder_session_ls(report: &SessionLsReport) -> String {
     lines.join("\n")
 }
 
-fn folder_session_buddy_label(buddy: Option<&FolderSessionBuddySummary>) -> String {
-    buddy
-        .and_then(|buddy| buddy.buddy_session.as_deref())
+fn folder_session_ui_label(ui: Option<&FolderSessionUiSummary>) -> String {
+    ui.and_then(|ui| ui.ui_session.as_deref())
         .filter(|session| !session.trim().is_empty())
         .unwrap_or("-")
         .to_string()
@@ -518,10 +518,10 @@ mod tests {
         fs::write(alpha.join("turns/turn-a/response.md"), "response\n").unwrap();
         fs::create_dir_all(alpha.join("runtime")).unwrap();
         fs::write(
-            alpha.join("runtime/buddy.json"),
+            alpha.join("runtime/djinn.json"),
             r#"{
-  "buddy_session": "bud_alpha",
-  "command": "buddy-dev",
+  "ui_session": "ui_alpha",
+  "command": "djinn-ui-dev",
   "last_run_at": "2026-08-01T12:00:00Z",
   "last_prompt_chars": 7,
   "last_response_chars": 8
@@ -631,17 +631,17 @@ mod tests {
         assert_eq!(report.sessions[3].turn_count, 1);
         assert_eq!(
             report.sessions[3]
-                .buddy
+                .ui
                 .as_ref()
-                .and_then(|buddy| buddy.buddy_session.as_deref()),
-            Some("bud_alpha")
+                .and_then(|ui| ui.ui_session.as_deref()),
+            Some("ui_alpha")
         );
         assert_eq!(
             report.sessions[3]
-                .buddy
+                .ui
                 .as_ref()
-                .and_then(|buddy| buddy.command.as_deref()),
-            Some("buddy-dev")
+                .and_then(|ui| ui.command.as_deref()),
+            Some("djinn-ui-dev")
         );
         assert!(report.sessions[0].event_health.ready);
         assert_eq!(report.sessions[0].event_health.event_turn_count, 1);
@@ -674,7 +674,7 @@ mod tests {
         assert!(text.contains("UI ID"));
         assert!(!text.contains("TURNS"));
         assert!(!text.contains("EVENTS"));
-        assert!(text.contains("bud_alpha"));
+        assert!(text.contains("ui_alpha"));
         assert!(!text.contains("ready:1/2"));
         assert!(text.contains("running/bac…"));
         assert!(text.contains("alpha"));
@@ -692,8 +692,8 @@ mod tests {
         assert_eq!(json["sessions"][3]["lifecycle"]["state"], "running");
         assert_eq!(json["sessions"][0]["event_health"]["event_turn_count"], 1);
         assert_eq!(json["sessions"][3]["turn_count"], 1);
-        assert_eq!(json["sessions"][3]["buddy"]["buddy_session"], "bud_alpha");
-        assert_eq!(json["sessions"][3]["buddy"]["command"], "buddy-dev");
+        assert_eq!(json["sessions"][3]["ui"]["ui_session"], "ui_alpha");
+        assert_eq!(json["sessions"][3]["ui"]["command"], "djinn-ui-dev");
         assert_eq!(json["sessions"][3]["latest_turn"]["id"], "turn-a");
         assert_eq!(json["groups"][0]["repo"], "repo-a");
         assert_eq!(json["groups"][0]["sessions"][0]["name"], "gamma");
@@ -706,8 +706,8 @@ mod tests {
             "background"
         );
         assert_eq!(
-            json["groups"][1]["sessions"][0]["buddy"]["buddy_session"],
-            "bud_alpha"
+            json["groups"][1]["sessions"][0]["ui"]["ui_session"],
+            "ui_alpha"
         );
         assert_eq!(json["groups"][0]["sessions"][2]["display_name"], "session");
         assert_eq!(

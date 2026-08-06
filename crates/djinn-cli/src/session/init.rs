@@ -14,7 +14,7 @@ use crate::session::context::{discover_folder_session_context, SessionContextDis
 use crate::session::manifest::{read_folder_session_manifest, toml_string};
 use crate::session::reference::resolve_session_dir;
 use crate::ui::{
-    ensure_ui_session_binding, read_buddy_runtime_state, UiBindingInput, UiBridgeBackend,
+    ensure_ui_session_binding, read_ui_runtime_state, UiBindingInput, UiBridgeBackend,
     UiSessionBackend,
 };
 
@@ -31,7 +31,8 @@ pub(crate) struct SessionInitReport {
     pub(crate) model: String,
     pub(crate) workspace: String,
     pub(crate) repo_link: Option<SessionRepoLinkReport>,
-    pub(crate) buddy: Option<SessionInitBuddyReport>,
+    #[serde(rename = "ui")]
+    pub(crate) ui: Option<SessionInitUiReport>,
     pub(crate) discovered_context: Option<SessionContextDiscoverReport>,
     pub(crate) config_sources: Vec<String>,
     pub(crate) precedence: Vec<String>,
@@ -40,8 +41,8 @@ pub(crate) struct SessionInitReport {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct SessionInitBuddyReport {
-    pub(crate) buddy_session: String,
+pub(crate) struct SessionInitUiReport {
+    pub(crate) ui_session: String,
     pub(crate) repo_path: String,
     pub(crate) runtime_path: String,
 }
@@ -53,8 +54,8 @@ pub(crate) struct SessionRepoLinkReport {
 }
 
 pub(crate) fn session_init(args: SessionInitArgs) -> Result<()> {
-    let buddy_backend = UiBridgeBackend::resolved(None)?;
-    let report = initialize_folder_session_with_buddy(&args, Some(&buddy_backend))?;
+    let ui_backend = UiBridgeBackend::resolved(None)?;
+    let report = initialize_folder_session_with_ui(&args, Some(&ui_backend))?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -68,9 +69,9 @@ pub(crate) fn session_init(args: SessionInitArgs) -> Result<()> {
         if let Some(repo_link) = &report.repo_link {
             println!("  repo link: {} -> {}", repo_link.path, repo_link.target);
         }
-        if let Some(buddy) = &report.buddy {
-            println!("  ui session: {}", buddy.buddy_session);
-            println!("  ui repo: {}", buddy.repo_path);
+        if let Some(ui) = &report.ui {
+            println!("  ui session: {}", ui.ui_session);
+            println!("  ui repo: {}", ui.repo_path);
         }
         if let Some(discovered) = &report.discovered_context {
             let created = discovered.links.iter().filter(|link| link.created).count();
@@ -90,12 +91,12 @@ pub(crate) fn session_init(args: SessionInitArgs) -> Result<()> {
 
 #[cfg(test)]
 pub(crate) fn initialize_folder_session(args: &SessionInitArgs) -> Result<SessionInitReport> {
-    initialize_folder_session_with_buddy(args, None)
+    initialize_folder_session_with_ui(args, None)
 }
 
-pub(crate) fn initialize_folder_session_with_buddy(
+pub(crate) fn initialize_folder_session_with_ui(
     args: &SessionInitArgs,
-    buddy_backend: Option<&dyn UiSessionBackend>,
+    ui_backend: Option<&dyn UiSessionBackend>,
 ) -> Result<SessionInitReport> {
     let session_dir = resolve_session_dir(&args.dir)?;
     fs::create_dir_all(&session_dir)
@@ -173,11 +174,11 @@ pub(crate) fn initialize_folder_session_with_buddy(
     } else {
         None
     };
-    let buddy = if let Some(buddy_backend) = buddy_backend {
-        let runtime_path = session_dir.join("runtime/buddy.json");
-        let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
+    let ui = if let Some(ui_backend) = ui_backend {
+        let runtime_path = session_dir.join("runtime/djinn.json");
+        let previous_runtime = read_ui_runtime_state(&runtime_path)?;
         let binding = ensure_ui_session_binding(
-            buddy_backend,
+            ui_backend,
             UiBindingInput {
                 session_dir: session_dir.clone(),
                 title: None,
@@ -185,8 +186,8 @@ pub(crate) fn initialize_folder_session_with_buddy(
                 previous_runtime,
             },
         )?;
-        Some(SessionInitBuddyReport {
-            buddy_session: binding.buddy_session,
+        Some(SessionInitUiReport {
+            ui_session: binding.ui_session,
             repo_path: binding.repo_path.display().to_string(),
             runtime_path: runtime_path.display().to_string(),
         })
@@ -206,7 +207,7 @@ pub(crate) fn initialize_folder_session_with_buddy(
         model,
         workspace: workspace.display().to_string(),
         repo_link,
-        buddy,
+        ui,
         discovered_context,
         config_sources: config_report.checked_paths,
         precedence: vec![
@@ -470,15 +471,15 @@ mod tests {
     use crate::ui::{UiSessionCreateRecord, UiSessionListRecord};
 
     #[derive(Clone)]
-    struct TestBuddyBackend {
+    struct TestUiBackend {
         runtime_command_override: Option<String>,
         create_id: String,
         creates: Arc<Mutex<Vec<(String, String)>>>,
     }
 
-    impl UiSessionBackend for TestBuddyBackend {
+    impl UiSessionBackend for TestUiBackend {
         fn command(&self) -> &str {
-            "in-tree-buddy"
+            "in-tree-ui"
         }
 
         fn runtime_command_override(&self) -> Option<String> {
@@ -614,9 +615,9 @@ mod tests {
     }
 
     #[test]
-    fn session_init_can_create_buddy_binding() {
+    fn session_init_can_create_ui_binding() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-session-init-buddy-test-{}",
+            "djinn-session-init-ui-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -625,7 +626,7 @@ mod tests {
         let repo = root.join("repo");
         fs::create_dir_all(&repo).unwrap();
         let creates = Arc::new(Mutex::new(Vec::new()));
-        let backend = TestBuddyBackend {
+        let backend = TestUiBackend {
             runtime_command_override: None,
             create_id: "ses_init_bound".to_string(),
             creates: creates.clone(),
@@ -641,14 +642,14 @@ mod tests {
             force: false,
             json: false,
         };
-        let report = initialize_folder_session_with_buddy(&args, Some(&backend)).unwrap();
+        let report = initialize_folder_session_with_ui(&args, Some(&backend)).unwrap();
 
-        let runtime_path = dir.join("runtime/buddy.json");
+        let runtime_path = dir.join("runtime/djinn.json");
         assert!(runtime_path.exists());
         assert_eq!(
-            report.buddy,
-            Some(SessionInitBuddyReport {
-                buddy_session: "ses_init_bound".to_string(),
+            report.ui,
+            Some(SessionInitUiReport {
+                ui_session: "ses_init_bound".to_string(),
                 repo_path: repo.canonicalize().unwrap().display().to_string(),
                 runtime_path: runtime_path.display().to_string(),
             })

@@ -5,18 +5,18 @@ use anyhow::{bail, Context, Result};
 use djinn_memory::AgentSessionId;
 use sha2::{Digest, Sha256};
 
-use crate::ui::read_buddy_runtime_state;
+use crate::ui::read_ui_runtime_state;
 use crate::util::prompt::prompt_title;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FolderSessionReferenceResolution {
     pub(crate) session_dir: PathBuf,
-    pub(crate) buddy_session: Option<String>,
+    pub(crate) ui_session: Option<String>,
 }
 
 impl FolderSessionReferenceResolution {
-    pub(crate) fn map_buddy_for_launch(self) -> (PathBuf, Option<String>) {
-        (self.session_dir, self.buddy_session)
+    pub(crate) fn map_ui_for_launch(self) -> (PathBuf, Option<String>) {
+        (self.session_dir, self.ui_session)
     }
 }
 
@@ -95,15 +95,14 @@ pub(crate) fn resolve_existing_folder_session_reference_in_root(
         }
         return Ok(FolderSessionReferenceResolution {
             session_dir,
-            buddy_session: None,
+            ui_session: None,
         });
     }
 
-    if let Some((session_dir, buddy_session)) = resolve_buddy_session_reference_in_root(root, dir)?
-    {
+    if let Some((session_dir, ui_session)) = resolve_ui_session_reference_in_root(root, dir)? {
         return Ok(FolderSessionReferenceResolution {
             session_dir,
-            buddy_session: Some(buddy_session),
+            ui_session: Some(ui_session),
         });
     }
 
@@ -118,7 +117,7 @@ pub(crate) fn resolve_existing_folder_session_dir(dir: &Path) -> Result<PathBuf>
     Ok(resolve_existing_folder_session_reference(dir)?.session_dir)
 }
 
-pub(crate) fn resolve_buddy_session_reference_in_root(
+pub(crate) fn resolve_ui_session_reference_in_root(
     root: &Path,
     reference: &Path,
 ) -> Result<Option<(PathBuf, String)>> {
@@ -145,25 +144,25 @@ pub(crate) fn resolve_buddy_session_reference_in_root(
         if !path.is_dir() {
             continue;
         }
-        let runtime_path = path.join("runtime/buddy.json");
-        let Some(runtime) = read_buddy_runtime_state(&runtime_path)? else {
+        let runtime_path = path.join("runtime/djinn.json");
+        let Some(runtime) = read_ui_runtime_state(&runtime_path)? else {
             continue;
         };
-        let Some(buddy_session) = runtime
-            .buddy_session
+        let Some(ui_session) = runtime
+            .ui_session
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
         else {
             continue;
         };
-        let matches_current = buddy_session == reference;
+        let matches_current = ui_session == reference;
         let matches_stale = runtime
-            .stale_buddy_sessions
+            .stale_ui_sessions
             .iter()
             .any(|id| id.trim() == reference);
         if matches_current || matches_stale {
-            matches.push((path, buddy_session.to_string()));
+            matches.push((path, ui_session.to_string()));
         }
     }
     matches.sort_by(|a, b| a.0.cmp(&b.0));

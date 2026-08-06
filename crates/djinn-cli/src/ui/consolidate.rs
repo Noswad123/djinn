@@ -13,8 +13,7 @@ use crate::session::reference::{
     default_folder_session_root, folder_session_reference_name, safe_folder_session_slug,
 };
 use crate::ui::{
-    write_buddy_runtime_state, BuddyRuntimeState, UiBridgeBackend, UiSessionBackend,
-    UiSessionListRecord,
+    write_ui_runtime_state, UiBridgeBackend, UiRuntimeState, UiSessionBackend, UiSessionListRecord,
 };
 use crate::util::text::{ensure_trailing_newline, non_empty_string, yes_no};
 
@@ -24,11 +23,11 @@ pub(crate) struct SessionConsolidateReport {
     pub(crate) ui_command: String,
     pub(crate) dry_run: bool,
     pub(crate) total_djinn_sessions: usize,
-    pub(crate) total_buddy_sessions: usize,
+    pub(crate) total_ui_sessions: usize,
     pub(crate) already_bound: usize,
     pub(crate) matched_existing: usize,
-    pub(crate) created_buddy_sessions: usize,
-    pub(crate) adopted_buddy_sessions: usize,
+    pub(crate) created_ui_sessions: usize,
+    pub(crate) adopted_ui_sessions: usize,
     pub(crate) entries: Vec<SessionConsolidateEntry>,
 }
 
@@ -37,7 +36,7 @@ pub(crate) struct SessionConsolidateEntry {
     pub(crate) action: String,
     pub(crate) session_name: Option<String>,
     pub(crate) session_dir: Option<String>,
-    pub(crate) buddy_session: Option<String>,
+    pub(crate) ui_session: Option<String>,
     pub(crate) note: String,
 }
 
@@ -45,50 +44,46 @@ pub(crate) fn consolidate_sessions_in_root(
     root: &Path,
     args: &SessionConsolidateArgs,
 ) -> Result<SessionConsolidateReport> {
-    let buddy_backend =
+    let ui_backend =
         if let Some(ui_bin) = args.ui_bin.clone().filter(|value| !value.trim().is_empty()) {
             UiBridgeBackend::explicit(ui_bin)
         } else {
             UiBridgeBackend::resolved(None)?
         };
-    let ui_sessions = buddy_backend.list_sessions()?;
+    let ui_sessions = ui_backend.list_sessions()?;
     let folder_report = list_folder_sessions_in_root(root, None)?;
     let mut entries = Vec::new();
-    let mut used_buddy_ids = BTreeSet::new();
-    let mut created_buddy_sessions = 0usize;
+    let mut used_ui_ids = BTreeSet::new();
+    let mut created_ui_sessions = 0usize;
     let mut matched_existing = 0usize;
     let mut already_bound = 0usize;
 
     for session in &folder_report.sessions {
-        if let Some(buddy) = &session.buddy {
-            if let Some(id) = buddy
-                .buddy_session
-                .as_deref()
-                .filter(|id| !id.trim().is_empty())
-            {
-                used_buddy_ids.insert(id.to_string());
+        if let Some(ui) = &session.ui {
+            if let Some(id) = ui.ui_session.as_deref().filter(|id| !id.trim().is_empty()) {
+                used_ui_ids.insert(id.to_string());
                 already_bound += 1;
                 entries.push(SessionConsolidateEntry {
                     action: "already_bound".to_string(),
                     session_name: Some(session.reference_name.clone()),
                     session_dir: Some(session.path.clone()),
-                    buddy_session: Some(id.to_string()),
-                    note: "Folder session already has runtime/buddy.json binding.".to_string(),
+                    ui_session: Some(id.to_string()),
+                    note: "Folder session already has runtime/djinn.json binding.".to_string(),
                 });
                 continue;
             }
         }
 
-        if let Some(buddy) = deterministic_ui_match(session, &ui_sessions, &used_buddy_ids) {
-            used_buddy_ids.insert(buddy.id.clone());
+        if let Some(ui) = deterministic_ui_match(session, &ui_sessions, &used_ui_ids) {
+            used_ui_ids.insert(ui.id.clone());
             matched_existing += 1;
             if !args.dry_run {
-                write_buddy_runtime_state(
-                    &PathBuf::from(&session.path).join("runtime/buddy.json"),
-                    &BuddyRuntimeState {
-                        buddy_session: Some(buddy.id.clone()),
-                        stale_buddy_sessions: Vec::new(),
-                        command: buddy_backend.runtime_command_override(),
+                write_ui_runtime_state(
+                    &PathBuf::from(&session.path).join("runtime/djinn.json"),
+                    &UiRuntimeState {
+                        ui_session: Some(ui.id.clone()),
+                        stale_ui_sessions: Vec::new(),
+                        command: ui_backend.runtime_command_override(),
                         args: Vec::new(),
                         last_run_at: None,
                         last_prompt_chars: 0,
@@ -98,14 +93,14 @@ pub(crate) fn consolidate_sessions_in_root(
             }
             entries.push(SessionConsolidateEntry {
                 action: if args.dry_run {
-                    "would_match_existing_buddy"
+                    "would_match_existing_ui"
                 } else {
-                    "matched_existing_buddy"
+                    "matched_existing_ui"
                 }
                 .to_string(),
                 session_name: Some(session.reference_name.clone()),
                 session_dir: Some(session.path.clone()),
-                buddy_session: Some(buddy.id.clone()),
+                ui_session: Some(ui.id.clone()),
                 note: "Matched by normalized session title/name and repo path when known."
                     .to_string(),
             });
@@ -115,18 +110,18 @@ pub(crate) fn consolidate_sessions_in_root(
             let created = if args.dry_run {
                 None
             } else {
-                let created = buddy_backend.create_session(&title, &repo)?;
-                used_buddy_ids.insert(created.id.clone());
+                let created = ui_backend.create_session(&title, &repo)?;
+                used_ui_ids.insert(created.id.clone());
                 Some(created)
             };
-            let buddy_session = created.as_ref().map(|created| created.id.clone());
-            if let Some(id) = &buddy_session {
-                write_buddy_runtime_state(
-                    &PathBuf::from(&session.path).join("runtime/buddy.json"),
-                    &BuddyRuntimeState {
-                        buddy_session: Some(id.clone()),
-                        stale_buddy_sessions: Vec::new(),
-                        command: buddy_backend.runtime_command_override(),
+            let ui_session = created.as_ref().map(|created| created.id.clone());
+            if let Some(id) = &ui_session {
+                write_ui_runtime_state(
+                    &PathBuf::from(&session.path).join("runtime/djinn.json"),
+                    &UiRuntimeState {
+                        ui_session: Some(id.clone()),
+                        stale_ui_sessions: Vec::new(),
+                        command: ui_backend.runtime_command_override(),
                         args: Vec::new(),
                         last_run_at: None,
                         last_prompt_chars: 0,
@@ -134,17 +129,17 @@ pub(crate) fn consolidate_sessions_in_root(
                     },
                 )?;
             }
-            created_buddy_sessions += 1;
+            created_ui_sessions += 1;
             entries.push(SessionConsolidateEntry {
                 action: if args.dry_run {
-                    "would_create_buddy_for_folder"
+                    "would_create_ui_for_folder"
                 } else {
-                    "created_buddy_for_folder"
+                    "created_ui_for_folder"
                 }
                 .to_string(),
                 session_name: Some(session.reference_name.clone()),
                 session_dir: Some(session.path.clone()),
-                buddy_session,
+                ui_session,
                 note: if args.dry_run {
                     "No deterministic UI session match; dry-run would create a new UI session."
                 } else {
@@ -155,50 +150,50 @@ pub(crate) fn consolidate_sessions_in_root(
         }
     }
 
-    let mut adopted_buddy_sessions = 0usize;
-    for buddy in &ui_sessions {
-        if used_buddy_ids.contains(&buddy.id) {
+    let mut adopted_ui_sessions = 0usize;
+    for ui in &ui_sessions {
+        if used_ui_ids.contains(&ui.id) {
             continue;
         }
-        let folder_dir = ui_adopted_folder_path(root, buddy)?;
+        let folder_dir = ui_adopted_folder_path(root, ui)?;
         if !args.dry_run {
             create_folder_session_from_ui(
                 root,
                 &folder_dir,
-                buddy,
-                buddy_backend.runtime_command_override(),
+                ui,
+                ui_backend.runtime_command_override(),
             )?;
         }
-        adopted_buddy_sessions += 1;
+        adopted_ui_sessions += 1;
         entries.push(SessionConsolidateEntry {
             action: if args.dry_run {
-                "would_adopt_buddy_session"
+                "would_adopt_ui_session"
             } else {
-                "adopted_buddy_session"
+                "adopted_ui_session"
             }
             .to_string(),
             session_name: Some(folder_session_reference_name(
                 folder_dir
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .unwrap_or(&buddy.title),
+                    .unwrap_or(&ui.title),
             )),
             session_dir: Some(folder_dir.display().to_string()),
-            buddy_session: Some(buddy.id.clone()),
+            ui_session: Some(ui.id.clone()),
             note: "UI session had no Djinn folder binding; created a folder capsule.".to_string(),
         });
     }
 
     Ok(SessionConsolidateReport {
         root: root.display().to_string(),
-        ui_command: buddy_backend.command().to_string(),
+        ui_command: ui_backend.command().to_string(),
         dry_run: args.dry_run,
         total_djinn_sessions: folder_report.sessions.len(),
-        total_buddy_sessions: ui_sessions.len(),
+        total_ui_sessions: ui_sessions.len(),
         already_bound,
         matched_existing,
-        created_buddy_sessions,
-        adopted_buddy_sessions,
+        created_ui_sessions: created_ui_sessions,
+        adopted_ui_sessions: adopted_ui_sessions,
         entries,
     })
 }
@@ -216,8 +211,8 @@ pub(crate) fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
 
 fn deterministic_ui_match<'a>(
     session: &FolderSessionSummary,
-    buddy_sessions: &'a [UiSessionListRecord],
-    used_buddy_ids: &BTreeSet<String>,
+    ui_sessions: &'a [UiSessionListRecord],
+    used_ui_ids: &BTreeSet<String>,
 ) -> Option<&'a UiSessionListRecord> {
     let folder_titles = [
         normalize_session_match_key(&session.display_name),
@@ -225,19 +220,19 @@ fn deterministic_ui_match<'a>(
         normalize_session_match_key(&session.name),
     ];
     let folder_repo = session.repo_path.as_deref().map(normalize_repo_match_key);
-    let matches = buddy_sessions
+    let matches = ui_sessions
         .iter()
-        .filter(|buddy| !used_buddy_ids.contains(&buddy.id))
-        .filter(|buddy| {
-            let buddy_title = normalize_session_match_key(&buddy.title);
+        .filter(|ui| !used_ui_ids.contains(&ui.id))
+        .filter(|ui| {
+            let ui_title = normalize_session_match_key(&ui.title);
             folder_titles
                 .iter()
-                .any(|title| !title.is_empty() && *title == buddy_title)
+                .any(|title| !title.is_empty() && *title == ui_title)
         })
-        .filter(|buddy| {
+        .filter(|ui| {
             if let Some(folder_repo) = &folder_repo {
-                let buddy_repo = normalize_repo_match_key(&buddy.repo_path);
-                buddy_repo.is_empty() || *folder_repo == buddy_repo
+                let ui_repo = normalize_repo_match_key(&ui.repo_path);
+                ui_repo.is_empty() || *folder_repo == ui_repo
             } else {
                 true
             }
@@ -267,11 +262,11 @@ fn ui_repo_for_folder_session(session: &FolderSessionSummary) -> String {
         .to_string()
 }
 
-fn ui_adopted_folder_path(root: &Path, buddy: &UiSessionListRecord) -> Result<PathBuf> {
+fn ui_adopted_folder_path(root: &Path, ui: &UiSessionListRecord) -> Result<PathBuf> {
     let base = format!(
         "{}-{}",
-        safe_folder_session_slug(&buddy.title),
-        safe_folder_session_slug(&buddy.id)
+        safe_folder_session_slug(&ui.title),
+        safe_folder_session_slug(&ui.id)
     );
     let mut candidate = root.join(&base);
     let mut suffix = 2usize;
@@ -285,29 +280,29 @@ fn ui_adopted_folder_path(root: &Path, buddy: &UiSessionListRecord) -> Result<Pa
 fn create_folder_session_from_ui(
     _root: &Path,
     folder_dir: &Path,
-    buddy: &UiSessionListRecord,
+    ui: &UiSessionListRecord,
     runtime_command_override: Option<String>,
 ) -> Result<()> {
     fs::create_dir_all(folder_dir).with_context(|| format!("creating {}", folder_dir.display()))?;
-    let session_id = AgentSessionId::new(format!("buddy_{}", safe_folder_session_slug(&buddy.id)));
-    write_ui_adopted_manifest(folder_dir, &session_id, buddy)?;
+    let session_id = AgentSessionId::new(format!("buddy_{}", safe_folder_session_slug(&ui.id)));
+    write_ui_adopted_manifest(folder_dir, &session_id, ui)?;
     fs::write(folder_dir.join("request.md"), "")
         .with_context(|| format!("writing {}/request.md", folder_dir.display()))?;
     fs::write(
         folder_dir.join("summary.md"),
-        ensure_trailing_newline(&buddy.summary),
+        ensure_trailing_newline(&ui.summary),
     )
     .with_context(|| format!("writing {}/summary.md", folder_dir.display()))?;
-    write_buddy_runtime_state(
-        &folder_dir.join("runtime/buddy.json"),
-        &BuddyRuntimeState {
-            buddy_session: Some(buddy.id.clone()),
-            stale_buddy_sessions: Vec::new(),
+    write_ui_runtime_state(
+        &folder_dir.join("runtime/djinn.json"),
+        &UiRuntimeState {
+            ui_session: Some(ui.id.clone()),
+            stale_ui_sessions: Vec::new(),
             command: runtime_command_override,
             args: Vec::new(),
-            last_run_at: non_empty_string(&buddy.updated_at),
+            last_run_at: non_empty_string(&ui.updated_at),
             last_prompt_chars: 0,
-            last_response_chars: buddy.summary.chars().count(),
+            last_response_chars: ui.summary.chars().count(),
         },
     )
 }
@@ -315,23 +310,20 @@ fn create_folder_session_from_ui(
 fn write_ui_adopted_manifest(
     folder_dir: &Path,
     session_id: &AgentSessionId,
-    buddy: &UiSessionListRecord,
+    ui: &UiSessionListRecord,
 ) -> Result<()> {
     let mut output = String::new();
     output.push_str(&format!(
         "session_id = {}\n",
         toml_string(session_id.as_str())?
     ));
-    output.push_str(&format!(
-        "created_at = {}\n",
-        toml_string(&buddy.created_at)?
-    ));
-    output.push_str(&format!("title = {}\n", toml_string(&buddy.title)?));
-    output.push_str(&format!("workspace = {}\n", toml_string(&buddy.repo_path)?));
+    output.push_str(&format!("created_at = {}\n", toml_string(&ui.created_at)?));
+    output.push_str(&format!("title = {}\n", toml_string(&ui.title)?));
+    output.push_str(&format!("workspace = {}\n", toml_string(&ui.repo_path)?));
     output.push_str("profile = \"default\"\n");
     output.push_str("source = \"buddy\"\n");
     output.push_str("\n[context.repo]\n");
-    output.push_str(&format!("path = {}\n", toml_string(&buddy.repo_path)?));
+    output.push_str(&format!("path = {}\n", toml_string(&ui.repo_path)?));
     fs::write(folder_dir.join("djinn.toml"), output)
         .with_context(|| format!("writing {}/djinn.toml", folder_dir.display()))
 }
@@ -342,16 +334,16 @@ pub(crate) fn format_session_consolidate_report(report: &SessionConsolidateRepor
     lines.push(format!("  dry run: {}", yes_no(report.dry_run)));
     lines.push(format!("  ui command: {}", report.ui_command));
     lines.push(format!("  djinn folders: {}", report.total_djinn_sessions));
-    lines.push(format!("  buddy sessions: {}", report.total_buddy_sessions));
+    lines.push(format!("  ui sessions: {}", report.total_ui_sessions));
     lines.push(format!("  already bound: {}", report.already_bound));
     lines.push(format!("  matched existing: {}", report.matched_existing));
     lines.push(format!(
-        "  created buddy sessions: {}",
-        report.created_buddy_sessions
+        "  created ui sessions: {}",
+        report.created_ui_sessions
     ));
     lines.push(format!(
-        "  adopted buddy sessions: {}",
-        report.adopted_buddy_sessions
+        "  adopted ui sessions: {}",
+        report.adopted_ui_sessions
     ));
     if report.entries.is_empty() {
         lines.push("  entries: none".to_string());
@@ -363,7 +355,7 @@ pub(crate) fn format_session_consolidate_report(report: &SessionConsolidateRepor
                 entry.action,
                 entry.session_name.as_deref().unwrap_or("-"),
                 entry
-                    .buddy_session
+                    .ui_session
                     .as_deref()
                     .map(|id| format!(" -> {id}"))
                     .unwrap_or_default(),
@@ -437,16 +429,16 @@ mod tests {
 
         assert!(dry_run.dry_run);
         assert_eq!(dry_run.total_djinn_sessions, 2);
-        assert_eq!(dry_run.total_buddy_sessions, 2);
+        assert_eq!(dry_run.total_ui_sessions, 2);
         assert_eq!(dry_run.matched_existing, 1);
-        assert_eq!(dry_run.created_buddy_sessions, 1);
-        assert_eq!(dry_run.adopted_buddy_sessions, 1);
+        assert_eq!(dry_run.created_ui_sessions, 1);
+        assert_eq!(dry_run.adopted_ui_sessions, 1);
         assert!(dry_run
             .entries
             .iter()
-            .any(|entry| entry.action == "would_match_existing_buddy"
-                && entry.buddy_session.as_deref() == Some("bud_alpha")));
-        assert!(!alpha.join("runtime/buddy.json").exists());
+            .any(|entry| entry.action == "would_match_existing_ui"
+                && entry.ui_session.as_deref() == Some("bud_alpha")));
+        assert!(!alpha.join("runtime/djinn.json").exists());
         assert!(!create_log.exists());
 
         let report = consolidate_sessions_in_root(
@@ -461,12 +453,12 @@ mod tests {
 
         assert!(!report.dry_run);
         assert_eq!(report.matched_existing, 1);
-        assert_eq!(report.created_buddy_sessions, 1);
-        assert_eq!(report.adopted_buddy_sessions, 1);
-        assert!(fs::read_to_string(alpha.join("runtime/buddy.json"))
+        assert_eq!(report.created_ui_sessions, 1);
+        assert_eq!(report.adopted_ui_sessions, 1);
+        assert!(fs::read_to_string(alpha.join("runtime/djinn.json"))
             .unwrap()
             .contains("bud_alpha"));
-        assert!(fs::read_to_string(beta.join("runtime/buddy.json"))
+        assert!(fs::read_to_string(beta.join("runtime/djinn.json"))
             .unwrap()
             .contains("bud_created_beta"));
         assert_eq!(
@@ -476,10 +468,10 @@ mod tests {
         let orphan = root.join("orphan_buddy-bud_orphan");
         assert!(orphan.join("djinn.toml").exists());
         assert!(orphan.join("summary.md").exists());
-        assert!(fs::read_to_string(orphan.join("runtime/buddy.json"))
+        assert!(fs::read_to_string(orphan.join("runtime/djinn.json"))
             .unwrap()
             .contains("bud_orphan"));
-        assert!(format_session_consolidate_report(&report).contains("created_buddy_for_folder"));
+        assert!(format_session_consolidate_report(&report).contains("created_ui_for_folder"));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -902,7 +902,7 @@ The first non-interactive agent slice is implemented as:
     explicit context. The repo appears as a symlink under `context/<repo-name>`
     and is recorded in `djinn.toml` as a live reference, not as a command to
     ingest the whole tree. `session init` also creates or reuses the Buddy session
-    binding immediately and writes it to `runtime/buddy.json`; Buddy is expected to
+    binding immediately and writes it to `runtime/djinn.json`; Buddy is expected to
     ship with Djinn, so init fails if that binding cannot be established. Safe
     context discovery runs during linked-repo init by default and can be skipped
     with `--no-discover-context`.
@@ -911,7 +911,7 @@ The first non-interactive agent slice is implemented as:
     creates a native Djinn session by default using the effective global +
     repo-local config for the current workspace. When top-level `djinn ask` creates
     a new cache-backed folder capsule, it also creates or reuses the Buddy binding
-    before the model call and records it in `runtime/buddy.json`. `--session-id`
+    before the model call and records it in `runtime/djinn.json`. `--session-id`
     appends a turn to an existing native session. `--session-dir` reads/writes the
     folder-backed capsule and, when its `djinn.toml` already records a
     `session_id`, resumes that existing native session; otherwise a successful ask
@@ -1012,7 +1012,7 @@ The first non-interactive agent slice is implemented as:
     folder-backed sessions. Existing-session entry points, including `djinn -s`,
     `session chat`, `session watch`, and other session subcommands, share a central
     resolver for bare cache names, explicit paths, and current or stale Buddy ids
-    recorded in `runtime/buddy.json`; missing refs fail before opening editors or
+    recorded in `runtime/djinn.json`; missing refs fail before opening editors or
     launching workers. `session open` opens `summary.md` by default. Supported
     targets are `summary`, `request`, `context`, `compacted`, `turns`, `manifest`,
     and `repo`; `repo` resolves through `[context.repo]` in `djinn.toml` or a
@@ -1031,7 +1031,7 @@ The first non-interactive agent slice is implemented as:
     `djinn session rename <ref> <new-name>` is the targeted rename path for
     cache-backed folder sessions. It resolves `<ref>` with the shared folder/Buddy
     resolver, only writes inside the cache session root, rejects path-like or
-    existing target names, and moves `runtime/buddy.json` plus all artifacts with
+    existing target names, and moves `runtime/djinn.json` plus all artifacts with
     the folder instead of rewriting Buddy ids.
 76. Plain top-level `djinn ask "..."` creates and projects a cache-backed folder
     session automatically, using a prompt slug plus native session id under the

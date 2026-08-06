@@ -7,7 +7,7 @@ use crate::cli_args::{DoctorArgs, DoctorBuddyArgs, DoctorCommand};
 use crate::session::reference::resolve_session_dir;
 use crate::ui::{
     djinn_source_workspace_root, format_ui_command_doctor_report, probe_ui_bridge_doctor,
-    read_buddy_runtime_state, ui_command_doctor_report_from, UiCommandDoctorReport,
+    read_ui_runtime_state, ui_command_doctor_report_from, UiCommandDoctorReport,
     DJINN_BUDDY_BIN_ENV, DJINN_UI_BIN_ENV,
 };
 use crate::util::text::output_format;
@@ -31,10 +31,10 @@ pub(crate) fn ui_command_doctor_report(session: Option<&Path>) -> Result<UiComma
     let session_dir = session.map(resolve_session_dir).transpose()?;
     let runtime_path = session_dir
         .as_ref()
-        .map(|session_dir| session_dir.join("runtime/buddy.json"));
+        .map(|session_dir| session_dir.join("runtime/djinn.json"));
     let runtime = runtime_path
         .as_ref()
-        .map(|path| read_buddy_runtime_state(path))
+        .map(|path| read_ui_runtime_state(path))
         .transpose()?
         .flatten();
     let mut report = ui_command_doctor_report_from(

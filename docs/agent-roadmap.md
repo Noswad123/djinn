@@ -52,7 +52,7 @@ Design criteria:
   than hard-coding every action in UI code.
 - While in the Buddy chat interface, provide an action to open/inspect the bound
   Djinn session folder so users can see `request.md`, `summary.md`, `events.jsonl`,
-  `runtime/buddy.json`, and context/artifact files without leaving the workflow.
+  `runtime/djinn.json`, and context/artifact files without leaving the workflow.
 - Provide a chat action/slash command to summon the current `request.md` contents
   into the next prompt. This should insert or stage the file contents explicitly;
   it should not silently mutate `request.md` or send it without user confirmation.
