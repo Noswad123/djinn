@@ -30,7 +30,7 @@ pub(crate) const DJINN_UI_BIN_ENV: &str = "DJINN_UI_BIN";
 pub(crate) const IN_TREE_UI_COMMAND: &str = "tools/buddy/bin/djinn-ui";
 const LEGACY_IN_TREE_UI_ALIAS_COMMAND: &str = "tools/buddy/bin/buddy";
 const EXPLICIT_UI_COMMAND_SOURCE: &str = "--ui-bin";
-pub(crate) const UNAVAILABLE_BUDDY_COMMAND_SOURCE: &str = "unavailable";
+pub(crate) const UNAVAILABLE_UI_COMMAND_SOURCE: &str = "unavailable";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct BuddyRuntimeState {
@@ -687,7 +687,7 @@ pub(crate) fn ui_command_doctor_report_from(
         in_tree.as_deref(),
     );
     let command = command.unwrap_or_else(|| "<unavailable>".to_string());
-    let (resolved_path, exists, executable) = if source == UNAVAILABLE_BUDDY_COMMAND_SOURCE {
+    let (resolved_path, exists, executable) = if source == UNAVAILABLE_UI_COMMAND_SOURCE {
         (None, false, false)
     } else {
         ui_command_status(&command)
@@ -803,7 +803,7 @@ fn ui_command_source(
     in_tree_command: Option<&str>,
 ) -> String {
     let Some(command) = command else {
-        return UNAVAILABLE_BUDDY_COMMAND_SOURCE.to_string();
+        return UNAVAILABLE_UI_COMMAND_SOURCE.to_string();
     };
     if env_ui_command
         .map(str::trim)
@@ -829,7 +829,7 @@ fn ui_command_source(
     if in_tree_command == Some(command) {
         return IN_TREE_UI_COMMAND.to_string();
     }
-    UNAVAILABLE_BUDDY_COMMAND_SOURCE.to_string()
+    UNAVAILABLE_UI_COMMAND_SOURCE.to_string()
 }
 
 fn ui_command_unavailable_message() -> String {
@@ -2061,7 +2061,7 @@ exit 2
             None,
         );
         assert_eq!(unavailable_report.command, "<unavailable>");
-        assert_eq!(unavailable_report.source, UNAVAILABLE_BUDDY_COMMAND_SOURCE);
+        assert_eq!(unavailable_report.source, UNAVAILABLE_UI_COMMAND_SOURCE);
         assert!(!unavailable_report.exists);
         assert!(!unavailable_report.executable);
         assert!(unavailable_report

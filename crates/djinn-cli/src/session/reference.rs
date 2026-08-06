@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use djinn_memory::AgentSessionId;
 use sha2::{Digest, Sha256};
 
-use crate::buddy::read_buddy_runtime_state;
+use crate::ui::read_buddy_runtime_state;
 use crate::util::prompt::prompt_title;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -5,7 +5,6 @@ use anyhow::{Context, Result};
 use djinn_memory::AgentSession;
 use serde::Serialize;
 
-use crate::buddy::read_buddy_runtime_state;
 use crate::cli_args::SessionLsArgs;
 use crate::session::events::validate_folder_session_events;
 use crate::session::manifest::read_folder_session_manifest;
@@ -21,6 +20,7 @@ use crate::session::status::{
 use crate::session::turns::{
     read_folder_session_event_turns, read_folder_session_turns, FolderSessionTurnDigest,
 };
+use crate::ui::read_buddy_runtime_state;
 use crate::util::text::{non_empty_string, truncate_table_cell};
 
 pub(crate) fn session_ls(args: SessionLsArgs) -> Result<()> {

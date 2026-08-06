@@ -7,16 +7,16 @@ use serde::Serialize;
 
 use crate::agent::roles::{resolve_agent_role_selection_from_config, AgentRoleSelection};
 use crate::agent::workspace::clean_unique_paths;
-use crate::buddy::{
-    ensure_ui_session_binding, read_buddy_runtime_state, UiBindingInput, UiBridgeBackend,
-    UiSessionBackend,
-};
 use crate::cli_args::SessionInitArgs;
 use crate::config::native::{default_djinn_config_path, load_djinn_config_from_paths};
 use crate::model::resolution::resolve_agent_model_from_config;
 use crate::session::context::{discover_folder_session_context, SessionContextDiscoverReport};
 use crate::session::manifest::{read_folder_session_manifest, toml_string};
 use crate::session::reference::resolve_session_dir;
+use crate::ui::{
+    ensure_ui_session_binding, read_buddy_runtime_state, UiBindingInput, UiBridgeBackend,
+    UiSessionBackend,
+};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct SessionInitReport {
@@ -467,7 +467,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    use crate::buddy::{UiSessionCreateRecord, UiSessionListRecord};
+    use crate::ui::{UiSessionCreateRecord, UiSessionListRecord};
 
     #[derive(Clone)]
     struct TestBuddyBackend {

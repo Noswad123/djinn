@@ -6,15 +6,15 @@ use anyhow::{Context, Result};
 use djinn_memory::AgentSessionId;
 use serde::Serialize;
 
-use crate::buddy::{
-    write_buddy_runtime_state, BuddyRuntimeState, UiBridgeBackend, UiSessionBackend,
-    UiSessionListRecord,
-};
 use crate::cli_args::SessionConsolidateArgs;
 use crate::session::list::{list_folder_sessions_in_root, FolderSessionSummary};
 use crate::session::manifest::toml_string;
 use crate::session::reference::{
     default_folder_session_root, folder_session_reference_name, safe_folder_session_slug,
+};
+use crate::ui::{
+    write_buddy_runtime_state, BuddyRuntimeState, UiBridgeBackend, UiSessionBackend,
+    UiSessionListRecord,
 };
 use crate::util::text::{ensure_trailing_newline, non_empty_string, yes_no};
 

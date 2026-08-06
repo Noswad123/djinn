@@ -144,9 +144,9 @@ Interactive launches and final-response capture still delegate to the in-tree UI
 launcher. Feature code calls backend operations instead of assembling UI CLI
 subcommands directly, keeping the integration ready for a future in-process
 transport. The backend, bridge contract, command resolver, runtime metadata, and
-doctor formatting live under `crates/djinn-cli/src/buddy/`; top-level interactive
+doctor formatting live under `crates/djinn-cli/src/ui/`; top-level interactive
 UI launch planning and summary sync live there as well. UI/Djinn session
-reconciliation lives in `crates/djinn-cli/src/buddy/consolidate.rs`. The current
+reconciliation lives in `crates/djinn-cli/src/ui/consolidate.rs`. The current
 bridge JSON contract is documented in [`buddy-bridge-protocol.md`](./buddy-bridge-protocol.md).
 When `djinn -s <folder-session>` opens a folder session without a UI binding,
 Djinn now asks the UI backend to create one before launch, records the resulting

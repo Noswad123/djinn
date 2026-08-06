@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::buddy::session_chat;
 use crate::cli_args::{
     SessionChatArgs, SessionContextDiscoverArgs, SessionDecisionArgs, SessionOpenArgs,
     SessionRunArgs, SessionValidateCandidatesArgs, SessionWatchArgs,
@@ -27,6 +26,7 @@ use crate::session::status::{
     latest_promotion_generation_response_path, SessionStatusCandidateEntry,
 };
 use crate::session::watch::session_watch;
+use crate::ui::session_chat;
 use crate::util::editor::{default_editor, open_editor_path};
 use crate::util::shell::shell_quote;
 use crate::DEFAULT_AGENT_MAX_TOOL_ROUNDS;

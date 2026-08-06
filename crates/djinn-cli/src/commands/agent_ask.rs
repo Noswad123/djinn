@@ -20,7 +20,6 @@ use crate::agent::session_meta::{
 use crate::agent::workspace::{
     load_djinn_config_for_workspace, nonempty_owned_string, resolve_agent_workspace,
 };
-use crate::buddy::{ensure_folder_session_ui_binding_for_ask, UiBridgeBackend};
 use crate::cli_args::{AgentAskArgs, SessionRunArgs};
 use crate::commands::agent::warn_legacy_agent_command;
 use crate::model::completion::complete_openai_messages_with_progress;
@@ -44,6 +43,7 @@ use crate::session::run_support::{
     background_progress_phase, session_run_background, touch_background_run_marker_from_env,
 };
 use crate::storage::stores::agent_session_store;
+use crate::ui::{ensure_folder_session_ui_binding_for_ask, UiBridgeBackend};
 use crate::util::editor::open_editor_path;
 use crate::util::prompt::{prompt_title, resolve_agent_request_prompt};
 

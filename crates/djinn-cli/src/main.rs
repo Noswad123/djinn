@@ -4,7 +4,6 @@ use anyhow::{bail, Result};
 
 mod agent;
 mod auth;
-mod buddy;
 mod cli_args;
 mod commands;
 mod config;
@@ -16,10 +15,10 @@ mod runtime;
 mod session;
 mod storage;
 mod tui;
+mod ui;
 mod util;
 
 use auth::openai::run_auth;
-use buddy::run_top_level_ui_mode;
 use cli_args::{parse_cli, print_cli_help, Command};
 use commands::agent::{run_agent, run_agents};
 use commands::agent_ask::top_level_ask;
@@ -30,6 +29,7 @@ use commands::top_level::{
     run_accept, run_add, run_clear, run_index, run_ingest, run_list, run_open, run_reject,
     run_review, run_rm, run_scan, run_search, run_show, run_switch,
 };
+use ui::run_top_level_ui_mode;
 
 pub(crate) const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
 const BACKGROUND_RUN_UNRESPONSIVE_SECONDS: i64 = 30 * 60;

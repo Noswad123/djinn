@@ -3,13 +3,13 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::buddy::{
+use crate::cli_args::{DoctorArgs, DoctorBuddyArgs, DoctorCommand};
+use crate::session::reference::resolve_session_dir;
+use crate::ui::{
     djinn_source_workspace_root, format_ui_command_doctor_report, probe_ui_bridge_doctor,
     read_buddy_runtime_state, ui_command_doctor_report_from, UiCommandDoctorReport,
     DJINN_BUDDY_BIN_ENV, DJINN_UI_BIN_ENV,
 };
-use crate::cli_args::{DoctorArgs, DoctorBuddyArgs, DoctorCommand};
-use crate::session::reference::resolve_session_dir;
 use crate::util::text::output_format;
 
 pub(crate) fn run_doctor(args: DoctorArgs) -> Result<()> {

@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 
-use crate::buddy::{consolidate::session_consolidate, session_chat};
 use crate::cli_args::{SessionArgs, SessionCommand, SessionOpenArgs, TuiArgs, TuiView};
 use crate::commands::agent_ask::session_run;
 use crate::promotion::cleanup::session_cleanup;
@@ -21,6 +20,7 @@ use crate::session::transcript::session_transcript;
 use crate::session::tui::run_folder_session_tui;
 use crate::session::watch::session_watch;
 use crate::tui::dashboard::run_tui;
+use crate::ui::{consolidate::session_consolidate, session_chat};
 
 pub(crate) fn run_session(args: SessionArgs) -> Result<()> {
     match args.command {
