@@ -1,10 +1,10 @@
 APP_NAME = djinn
 BIN_DIR = ./bin
 INSTALL_DIR ?= $(HOME)/.local/bin
-BUDDY_ROOT = ./tools/buddy
-BUDDY_PACKAGE = $(BUDDY_ROOT)/packages/opencode
+DJINN_UI_ROOT = ./clients/djinn-ui
+DJINN_UI_PACKAGE = $(DJINN_UI_ROOT)/packages/opencode
 
-.PHONY: build check fmt install install-djinn buddy-deps build-buddy install-buddy legacy-go-build
+.PHONY: build check fmt install install-djinn ui-deps build-ui install-ui legacy-go-build
 
 build:
 	@echo "🔨 Building Rust $(APP_NAME)..."
@@ -16,7 +16,7 @@ check:
 fmt:
 	cargo fmt --all
 
-install: install-djinn install-buddy
+install: install-djinn install-ui
 
 install-djinn: build
 	@echo "📦 Installing to $(INSTALL_DIR)/$(APP_NAME)"
@@ -27,23 +27,23 @@ install-djinn: build
 	fi
 	@echo "✅ Installed. Run with: $(APP_NAME)"
 
-buddy-deps:
+ui-deps:
 	@if ! command -v bun >/dev/null 2>&1; then \
-		echo "bun is required to install the Djinn UI from $(BUDDY_ROOT)" >&2; \
+		echo "bun is required to install the Djinn UI from $(DJINN_UI_ROOT)" >&2; \
 		exit 1; \
 	fi
-	bun install --cwd "$(BUDDY_ROOT)"
+	bun install --cwd "$(DJINN_UI_ROOT)"
 
-build-buddy: buddy-deps
-	@echo "🔨 Building Djinn UI from $(BUDDY_PACKAGE)..."
-	bun run --cwd "$(BUDDY_PACKAGE)" build --skip-install --skip-embed-web-ui
+build-ui: ui-deps
+	@echo "🔨 Building Djinn UI from $(DJINN_UI_PACKAGE)..."
+	bun run --cwd "$(DJINN_UI_PACKAGE)" build --skip-install --skip-embed-web-ui
 
-install-buddy: build-buddy
+install-ui: build-ui
 	@echo "📦 Installing Djinn UI to $(INSTALL_DIR)/djinn-ui"
 	@mkdir -p "$(INSTALL_DIR)"
 	@set -eu; \
 	found=; \
-	for candidate in "$(BUDDY_PACKAGE)"/dist/djinn-ui-*/bin/djinn-ui "$(BUDDY_ROOT)"/dist/djinn-ui-*/bin/djinn-ui; do \
+	for candidate in "$(DJINN_UI_PACKAGE)"/dist/djinn-ui-*/bin/djinn-ui "$(DJINN_UI_ROOT)"/dist/djinn-ui-*/bin/djinn-ui; do \
 		if [ -x "$$candidate" ]; then \
 			install -m 0755 "$$candidate" "$(INSTALL_DIR)/djinn-ui"; \
 			found=1; \
@@ -51,7 +51,7 @@ install-buddy: build-buddy
 		fi; \
 	done; \
 	if [ "$$found" = "" ]; then \
-		echo "Djinn UI build output not found under $(BUDDY_PACKAGE)/dist" >&2; \
+		echo "Djinn UI build output not found under $(DJINN_UI_PACKAGE)/dist" >&2; \
 		exit 1; \
 	fi
 	@if command -v xattr >/dev/null 2>&1; then \

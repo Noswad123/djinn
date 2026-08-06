@@ -252,7 +252,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_rename_moves_cache_folder_and_preserves_buddy_runtime() {
+    fn session_rename_moves_cache_folder_and_preserves_ui_runtime() {
         let root = std::env::temp_dir().join(format!(
             "djinn-session-rename-test-{}",
             chrono::Local::now()
@@ -265,27 +265,23 @@ mod tests {
         fs::write(
             from.join("runtime/djinn.json"),
             serde_json::json!({
-                "ui_session": "ses_renameBuddy123",
+                "ui_session": "ses_renameUi123",
                 "stale_ui_sessions": []
             })
             .to_string(),
         )
         .unwrap();
 
-        let dry = rename_folder_session_in_root(
-            Path::new("ses_renameBuddy123"),
-            "new-session",
-            &root,
-            true,
-        )
-        .unwrap();
+        let dry =
+            rename_folder_session_in_root(Path::new("ses_renameUi123"), "new-session", &root, true)
+                .unwrap();
         assert!(dry.dry_run);
         assert!(dry.renamed);
         assert!(from.exists());
         assert!(!root.join("new-session").exists());
 
         let report = rename_folder_session_in_root(
-            Path::new("ses_renameBuddy123"),
+            Path::new("ses_renameUi123"),
             "new-session",
             &root,
             false,
@@ -299,7 +295,7 @@ mod tests {
         assert!(to.join("runtime/djinn.json").exists());
         assert!(fs::read_to_string(to.join("runtime/djinn.json"))
             .unwrap()
-            .contains("ses_renameBuddy123"));
+            .contains("ses_renameUi123"));
 
         let _ = fs::remove_dir_all(&root);
     }

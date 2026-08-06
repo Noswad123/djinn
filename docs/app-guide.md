@@ -120,9 +120,9 @@ lower-level UI command without launching the UI or mutating session files.
 Djinn resolves the UI command in one place: explicit `--ui-bin` where a subcommand
 has one, then `DJINN_UI_BIN`, then `runtime/djinn.json.command` for
 session-scoped launches, then the in-tree
-`tools/buddy/bin/djinn-ui` launcher. If none of those sources is available, UI
-launch paths fail with an explicit setup error; Djinn does not fall back to a bare
-`buddy` on `PATH`.
+`clients/djinn-ui/bin/djinn-ui` launcher. If none of those sources is available, UI
+launch paths fail with an explicit setup error; Djinn does not fall back to bare
+commands on `PATH`.
 New runtime metadata treats `runtime/djinn.json.command` as an override only: normal
 in-tree launches leave it unset so Djinn re-resolves the current in-tree launcher on
 the next run. Explicit `--ui-bin`, `DJINN_UI_BIN`, or manually-authored runtime
@@ -152,17 +152,17 @@ Djinn now asks the UI backend to create one before launch, records the resulting
 UI session id in `runtime/djinn.json`, and launches the UI with that stable id. The
 binding uses the session title from `djinn.toml` when present and uses a valid
 workspace/repo path when available, otherwise the folder-session directory itself.
-The checked-in `tools/buddy/bin/djinn-ui` wrapper is the migration seam for moving
-the forked UI into Djinn while keeping `tools/buddy/` available as the UI's in-repo
-home: it honors `DJINN_TOOLS_UI_TARGET`, tries in-repo UI builds under `tools/buddy/`, then runs
-`tools/buddy/packages/opencode/src/index.ts` with Bun when the source tree and
+The checked-in `clients/djinn-ui/bin/djinn-ui` wrapper is the migration seam for moving
+the forked UI into Djinn while keeping `clients/djinn-ui/` available as the UI's in-repo
+home: it honors `DJINN_UI_TARGET`, tries in-repo UI builds under `clients/djinn-ui/`, then runs
+`clients/djinn-ui/packages/opencode/src/index.ts` with Bun when the source tree and
 dependencies are present, then tries the in-repo package launcher. It intentionally
-does not fall back to a sibling checkout, `~/.local/bin`, or `buddy` on `PATH`; use
-`DJINN_TOOLS_UI_TARGET` for an explicit temporary override. Set `DJINN_TOOLS_UI_BUN`
+does not fall back to a sibling checkout, `~/.local/bin`, or bare commands on `PATH`; use
+`DJINN_UI_TARGET` for an explicit temporary override. Set `DJINN_UI_BUN`
 to override the Bun executable used for the source-run path.
 `make install` installs both `djinn` and the internal `djinn-ui` implementation
 binary. It runs `bun install`
-under `tools/buddy/`, builds the UI from `tools/buddy/packages/opencode`, and
+under `clients/djinn-ui/`, builds the UI from `clients/djinn-ui/packages/opencode`, and
 installs the resulting binary as `$(INSTALL_DIR)/djinn-ui` alongside
 `$(INSTALL_DIR)/djinn`.
 Use `djinn doctor ui` to inspect this resolver without launching the UI. Normal

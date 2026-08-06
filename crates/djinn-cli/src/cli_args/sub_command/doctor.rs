@@ -59,6 +59,6 @@ mod tests {
         assert_eq!(args.session.as_deref(), Some(Path::new("rebrand-opencode")));
         assert!(args.json);
 
-        assert!(Cli::try_parse_from(["djinn", "doctor", "buddy"]).is_err());
+        assert!(Cli::try_parse_from(["djinn", "doctor", "legacy-ui"]).is_err());
     }
 }

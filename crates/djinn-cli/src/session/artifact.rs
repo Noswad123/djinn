@@ -37,9 +37,9 @@ pub(crate) fn resolve_folder_session_open_target(
 pub(crate) fn resolve_folder_session_open_target_in_root(
     dir: &Path,
     target: SessionOpenTarget,
-    buddy_lookup_root: &Path,
+    ui_lookup_root: &Path,
 ) -> Result<PathBuf> {
-    let session_dir = resolve_folder_session_open_dir_in_root(dir, buddy_lookup_root)?;
+    let session_dir = resolve_folder_session_open_dir_in_root(dir, ui_lookup_root)?;
     let path = match target {
         SessionOpenTarget::Summary => session_dir.join("summary.md"),
         SessionOpenTarget::Request => session_dir.join("request.md"),
@@ -69,9 +69,9 @@ pub(crate) fn fallback_folder_session_open_target(
 
 pub(crate) fn resolve_folder_session_open_dir_in_root(
     dir: &Path,
-    buddy_lookup_root: &Path,
+    ui_lookup_root: &Path,
 ) -> Result<PathBuf> {
-    Ok(resolve_existing_folder_session_reference_in_root(dir, buddy_lookup_root)?.session_dir)
+    Ok(resolve_existing_folder_session_reference_in_root(dir, ui_lookup_root)?.session_dir)
 }
 
 pub(crate) fn resolve_folder_session_repo_open_target(session_dir: &Path) -> Result<PathBuf> {
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn folder_session_open_resolves_ui_session_id() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-session-open-buddy-test-{}",
+            "djinn-session-open-ui-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -202,7 +202,7 @@ mod tests {
         fs::write(
             dir.join("runtime/djinn.json"),
             r#"{
-  "ui_session": "ses_openBuddy123",
+  "ui_session": "ses_openUi123",
   "stale_ui_sessions": []
 }
 "#,
@@ -211,7 +211,7 @@ mod tests {
 
         assert_eq!(
             resolve_folder_session_open_target_in_root(
-                Path::new("ses_openBuddy123"),
+                Path::new("ses_openUi123"),
                 SessionOpenTarget::Summary,
                 &root,
             )

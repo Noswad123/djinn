@@ -1335,9 +1335,9 @@ mod tests {
         fs::write(
             dir.join("events.jsonl"),
             concat!(
-                "{\"event_id\":\"buddy:user_message:msg_1\",\"type\":\"user_message\",\"content\":\"question\"}\n",
-                "{\"event_id\":\"buddy:assistant_message:msg_2\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
-                "{\"event_id\":\"buddy:user_message:msg_1\",\"type\":\"checkpoint\",\"label\":\"duplicate envelope\"}\n",
+                "{\"event_id\":\"ui:user_message:msg_1\",\"type\":\"user_message\",\"content\":\"question\"}\n",
+                "{\"event_id\":\"ui:assistant_message:msg_2\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+                "{\"event_id\":\"ui:user_message:msg_1\",\"type\":\"checkpoint\",\"label\":\"duplicate envelope\"}\n",
             ),
         )
         .unwrap();
@@ -1374,8 +1374,8 @@ mod tests {
         fs::write(
             ok.join("events.jsonl"),
             concat!(
-                "{\"event_id\":\"buddy:user_message:msg_ok_1\",\"type\":\"user_message\",\"content\":\"question\"}\n",
-                "{\"event_id\":\"buddy:assistant_message:msg_ok_2\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+                "{\"event_id\":\"ui:user_message:msg_ok_1\",\"type\":\"user_message\",\"content\":\"question\"}\n",
+                "{\"event_id\":\"ui:assistant_message:msg_ok_2\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
             ),
         )
         .unwrap();
@@ -1383,9 +1383,9 @@ mod tests {
         fs::write(
             duplicate.join("events.jsonl"),
             concat!(
-                "{\"event_id\":\"buddy:user_message:msg_dup\",\"type\":\"user_message\",\"content\":\"question\"}\n",
-                "{\"event_id\":\"buddy:assistant_message:msg_dup_reply\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
-                "{\"event_id\":\"buddy:user_message:msg_dup\",\"type\":\"checkpoint\",\"label\":\"duplicate\"}\n",
+                "{\"event_id\":\"ui:user_message:msg_dup\",\"type\":\"user_message\",\"content\":\"question\"}\n",
+                "{\"event_id\":\"ui:assistant_message:msg_dup_reply\",\"type\":\"assistant_message\",\"content\":\"answer\"}\n",
+                "{\"event_id\":\"ui:user_message:msg_dup\",\"type\":\"checkpoint\",\"label\":\"duplicate\"}\n",
             ),
         )
         .unwrap();

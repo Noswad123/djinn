@@ -134,7 +134,7 @@ pub(crate) struct SessionChatArgs {
     /// Folder-backed session name, path, or UI session id to open in interactive Djinn UI chat.
     #[arg(value_name = "SESSION")]
     pub(crate) dir: PathBuf,
-    /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, runtime binding, then tools/buddy/bin/djinn-ui.
+    /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, runtime binding, then clients/djinn-ui/bin/djinn-ui.
     #[arg(long = "ui-bin", value_name = "UI_COMMAND")]
     pub(crate) ui_bin: Option<String>,
     /// Extra argument to pass through to the Djinn UI. Repeat for multiple args.
@@ -156,7 +156,7 @@ pub(crate) struct SessionConsolidateArgs {
     /// Preview reconciliation without creating UI sessions, folders, or bindings.
     #[arg(long)]
     pub(crate) dry_run: bool,
-    /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, then tools/buddy/bin/djinn-ui.
+    /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, then clients/djinn-ui/bin/djinn-ui.
     #[arg(long = "ui-bin", value_name = "UI_COMMAND")]
     pub(crate) ui_bin: Option<String>,
     /// Output JSON instead of text.
@@ -572,7 +572,7 @@ mod tests {
             "djinn",
             "session",
             "chat",
-            "ses_chatBuddy123",
+            "ses_chatUi123",
             "--ui-bin",
             "djinn-ui --dev",
             "--ui-arg",
@@ -585,7 +585,7 @@ mod tests {
         let Some(SessionCommand::Chat(args)) = args.command else {
             panic!("expected session chat command");
         };
-        assert_eq!(args.dir, PathBuf::from("ses_chatBuddy123"));
+        assert_eq!(args.dir, PathBuf::from("ses_chatUi123"));
         assert_eq!(args.ui_bin.as_deref(), Some("djinn-ui --dev"));
         assert_eq!(args.ui_args, vec!["--trace"]);
 
@@ -647,7 +647,7 @@ mod tests {
         assert!(args.command.is_none());
         assert_eq!(args.dir, Some(PathBuf::from("bap-questions")));
 
-        assert!(Cli::try_parse_from(["djinn", "session", "buddy", "bap-questions"]).is_err());
+        assert!(Cli::try_parse_from(["djinn", "session", "legacy-ui", "bap-questions"]).is_err());
         assert!(Cli::try_parse_from(["djinn", "share", "chats"]).is_err());
     }
 }

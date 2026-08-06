@@ -26,7 +26,7 @@ use crate::util::shell::shell_quote_if_needed as shell_quote;
 use crate::util::text::{ensure_trailing_newline, yes_no};
 
 pub(crate) const DJINN_UI_BIN_ENV: &str = "DJINN_UI_BIN";
-pub(crate) const IN_TREE_UI_COMMAND: &str = "tools/buddy/bin/djinn-ui";
+pub(crate) const IN_TREE_UI_COMMAND: &str = "clients/djinn-ui/bin/djinn-ui";
 const EXPLICIT_UI_COMMAND_SOURCE: &str = "--ui-bin";
 pub(crate) const UNAVAILABLE_UI_COMMAND_SOURCE: &str = "unavailable";
 
@@ -1456,7 +1456,7 @@ fn fallback_ui_session_id(session_dir: &Path) -> AgentSessionId {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("folder-session");
-    AgentSessionId::new(format!("buddy_{}", safe_folder_session_slug(name)))
+    AgentSessionId::new(format!("ui_{}", safe_folder_session_slug(name)))
 }
 
 pub(crate) fn ensure_ui_session_binding(
@@ -1791,14 +1791,14 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-bridge-test-{}",
+            "djinn-ui-bridge-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
         ));
         fs::create_dir_all(&root).unwrap();
         let request_log = root.join("bridge-requests.jsonl");
-        let buddy_bin = root.join("buddy-bridge.sh");
+        let ui_bin = root.join("djinn-ui-bridge.sh");
         let script = r#"#!/bin/sh
 if [ "$1" = "djinn-bridge" ]; then
   request=$(cat)
@@ -1806,25 +1806,25 @@ if [ "$1" = "djinn-bridge" ]; then
   case "$request" in
     *list_sessions*)
       cat <<'JSON'
-{"type":"sessions","sessions":[{"id":"bud_bridge","title":"Bridge Session","updated":0,"created":0,"projectId":"project-bridge","directory":"/tmp/bridge"}]}
+{"type":"sessions","sessions":[{"id":"ui_bridge","title":"Bridge Session","updated":0,"created":0,"projectId":"project-bridge","directory":"/tmp/bridge"}]}
 JSON
       exit 0
       ;;
     *get_session*)
       cat <<'JSON'
-{"type":"session","session":{"id":"bud_bridge","title":"Bridge Session","updated":0,"created":0,"projectId":"project-bridge","directory":"/tmp/bridge"}}
+{"type":"session","session":{"id":"ui_bridge","title":"Bridge Session","updated":0,"created":0,"projectId":"project-bridge","directory":"/tmp/bridge"}}
 JSON
       exit 0
       ;;
     *create_session*)
       cat <<'JSON'
-{"type":"created_session","session":{"id":"bud_created_bridge","title":"Created Through Bridge","repo_path":"/tmp/created","created_at":"2026-08-01T12:00:00Z"}}
+{"type":"created_session","session":{"id":"ui_created_bridge","title":"Created Through Bridge","repo_path":"/tmp/created","created_at":"2026-08-01T12:00:00Z"}}
 JSON
       exit 0
       ;;
     *delete_session*)
       cat <<'JSON'
-{"type":"deleted_session","session_id":"bud_created_bridge"}
+{"type":"deleted_session","session_id":"ui_created_bridge"}
 JSON
       exit 0
       ;;
@@ -1834,26 +1834,26 @@ printf 'legacy fallback unexpectedly used: %s\n' "$*" >&2
 exit 2
 "#
         .replace("__REQUEST_LOG__", &request_log.display().to_string());
-        fs::write(&buddy_bin, script).unwrap();
-        let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+        fs::write(&ui_bin, script).unwrap();
+        let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(&buddy_bin, permissions).unwrap();
+        fs::set_permissions(&ui_bin, permissions).unwrap();
 
-        let backend = UiBridgeBackend::explicit(buddy_bin.display().to_string());
+        let backend = UiBridgeBackend::explicit(ui_bin.display().to_string());
         let sessions = backend.list_sessions().unwrap();
-        let fetched = backend.get_session("bud_bridge").unwrap();
+        let fetched = backend.get_session("ui_bridge").unwrap();
         let created = backend
             .create_session("Created Through Bridge", "/tmp/created")
             .unwrap();
-        backend.delete_session("bud_created_bridge").unwrap();
+        backend.delete_session("ui_created_bridge").unwrap();
 
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].id, "bud_bridge");
+        assert_eq!(sessions[0].id, "ui_bridge");
         assert_eq!(sessions[0].repo_path, "/tmp/bridge");
         assert_eq!(sessions[0].created_at, "1970-01-01T00:00:00+00:00");
-        assert_eq!(fetched.id, "bud_bridge");
+        assert_eq!(fetched.id, "ui_bridge");
         assert_eq!(fetched.title, "Bridge Session");
-        assert_eq!(created.id, "bud_created_bridge");
+        assert_eq!(created.id, "ui_created_bridge");
         assert_eq!(created.repo_path, "/tmp/created");
 
         let requests = fs::read_to_string(&request_log).unwrap();
@@ -1863,7 +1863,7 @@ exit 2
         assert!(requests.contains(r#""type":"delete_session""#));
         assert!(requests.contains(r#""title":"Created Through Bridge""#));
         assert!(requests.contains(r#""repo_path":"/tmp/created""#));
-        assert!(requests.contains(r#""session_id":"bud_created_bridge""#));
+        assert!(requests.contains(r#""session_id":"ui_created_bridge""#));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -1874,14 +1874,14 @@ exit 2
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-bridge-fallback-test-{}",
+            "djinn-ui-bridge-fallback-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
         ));
         fs::create_dir_all(&root).unwrap();
         let fallback_log = root.join("fallback-log.txt");
-        let buddy_bin = root.join("buddy-fallback.sh");
+        let ui_bin = root.join("djinn-ui-fallback.sh");
         let script = r#"#!/bin/sh
 if [ "$1" = "djinn-bridge" ]; then
   echo bridge unavailable >&2
@@ -1890,47 +1890,47 @@ fi
 if [ "$1" = "session" ] && [ "$2" = "list" ] && [ "$3" = "--format" ] && [ "$4" = "json" ]; then
   printf 'legacy-list\n' >> '__FALLBACK_LOG__'
   cat <<'JSON'
-[{"id":"bud_legacy","title":"Legacy Session","updated":0,"created":0,"projectId":"project-legacy","directory":"/tmp/legacy"}]
+[{"id":"ui_legacy","title":"Legacy Session","updated":0,"created":0,"projectId":"project-legacy","directory":"/tmp/legacy"}]
 JSON
   exit 0
 fi
 if [ "$1" = "session" ] && [ "$2" = "create" ]; then
   printf 'legacy-create:%s:%s\n' "$6" "$8" >> '__FALLBACK_LOG__'
-  printf '{"id":"bud_legacy_created","title":"%s","repo_path":"%s","created_at":"2026-08-01T12:00:00Z"}\n' "$6" "$8"
+  printf '{"id":"ui_legacy_created","title":"%s","repo_path":"%s","created_at":"2026-08-01T12:00:00Z"}\n' "$6" "$8"
   exit 0
 fi
 if [ "$1" = "session" ] && [ "$2" = "delete" ]; then
   printf 'legacy-delete:%s\n' "$3" >> '__FALLBACK_LOG__'
   exit 0
 fi
-echo unexpected buddy args: "$@" >&2
+echo unexpected ui args: "$@" >&2
 exit 2
 "#
         .replace("__FALLBACK_LOG__", &fallback_log.display().to_string());
-        fs::write(&buddy_bin, script).unwrap();
-        let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+        fs::write(&ui_bin, script).unwrap();
+        let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(&buddy_bin, permissions).unwrap();
+        fs::set_permissions(&ui_bin, permissions).unwrap();
 
-        let backend = UiBridgeBackend::explicit(buddy_bin.display().to_string());
+        let backend = UiBridgeBackend::explicit(ui_bin.display().to_string());
         let sessions = backend.list_sessions().unwrap();
-        let fetched = backend.get_session("bud_legacy").unwrap();
+        let fetched = backend.get_session("ui_legacy").unwrap();
         let created = backend
             .create_session("Fallback Title", "/tmp/fallback")
             .unwrap();
-        backend.delete_session("bud_legacy_created").unwrap();
+        backend.delete_session("ui_legacy_created").unwrap();
 
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].id, "bud_legacy");
+        assert_eq!(sessions[0].id, "ui_legacy");
         assert_eq!(sessions[0].repo_path, "/tmp/legacy");
-        assert_eq!(fetched.id, "bud_legacy");
+        assert_eq!(fetched.id, "ui_legacy");
         assert_eq!(fetched.title, "Legacy Session");
-        assert_eq!(created.id, "bud_legacy_created");
+        assert_eq!(created.id, "ui_legacy_created");
         assert_eq!(created.title, "Fallback Title");
         assert_eq!(created.repo_path, "/tmp/fallback");
         assert_eq!(
             fs::read_to_string(&fallback_log).unwrap(),
-            "legacy-list\nlegacy-list\nlegacy-create:Fallback Title:/tmp/fallback\nlegacy-delete:bud_legacy_created\n"
+            "legacy-list\nlegacy-list\nlegacy-create:Fallback Title:/tmp/fallback\nlegacy-delete:ui_legacy_created\n"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -1939,12 +1939,12 @@ exit 2
     #[test]
     fn ui_command_resolver_uses_env_runtime_in_tree_then_unavailable() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-command-resolver-test-{}",
+            "djinn-ui-command-resolver-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
         ));
-        fs::create_dir_all(root.join("tools/buddy/bin")).unwrap();
+        fs::create_dir_all(root.join("clients/djinn-ui/bin")).unwrap();
         let in_tree = root.join(IN_TREE_UI_COMMAND);
         fs::write(&in_tree, "#!/bin/sh\n").unwrap();
         let runtime = Some("runtime-djinn-ui --flag".to_string());
@@ -1989,12 +1989,12 @@ exit 2
     #[test]
     fn ui_doctor_report_explains_selected_source() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-doctor-test-{}",
+            "djinn-ui-doctor-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
         ));
-        fs::create_dir_all(root.join("tools/buddy/bin")).unwrap();
+        fs::create_dir_all(root.join("clients/djinn-ui/bin")).unwrap();
         let in_tree = root.join(IN_TREE_UI_COMMAND);
         fs::write(&in_tree, "#!/bin/sh\n").unwrap();
 
@@ -2006,12 +2006,12 @@ exit 2
         assert!(
             format_ui_command_doctor_report(&in_tree_report, OutputFormat::Text)
                 .unwrap()
-                .contains("source: tools/buddy/bin/djinn-ui")
+                .contains("source: clients/djinn-ui/bin/djinn-ui")
         );
-        assert!(!in_tree_report
+        assert!(in_tree_report
             .candidates
             .iter()
-            .any(|candidate| candidate.source == "buddy"));
+            .all(|candidate| !candidate.source.trim().is_empty()));
         assert!(in_tree_report
             .note
             .contains("does not fall back to an external UI"));
@@ -2070,15 +2070,15 @@ exit 2
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-doctor-bridge-test-{}",
+            "djinn-ui-doctor-bridge-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
         ));
         fs::create_dir_all(&root).unwrap();
-        let buddy_bin = root.join("buddy-bridge-ok.sh");
+        let ui_bin = root.join("djinn-ui-bridge-ok.sh");
         fs::write(
-            &buddy_bin,
+            &ui_bin,
             r#"#!/bin/sh
 if [ "$1" = "djinn-bridge" ]; then
   cat >/dev/null
@@ -2093,12 +2093,12 @@ exit 2
 "#,
         )
         .unwrap();
-        let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+        let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(&buddy_bin, permissions).unwrap();
+        fs::set_permissions(&ui_bin, permissions).unwrap();
 
         let mut report = ui_command_doctor_report_from(
-            Some(buddy_bin.display().to_string()),
+            Some(ui_bin.display().to_string()),
             None,
             None,
             None,
@@ -2129,15 +2129,15 @@ exit 2
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-doctor-bridge-fallback-test-{}",
+            "djinn-ui-doctor-bridge-fallback-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
         ));
         fs::create_dir_all(&root).unwrap();
-        let buddy_bin = root.join("buddy-bridge-fallback.sh");
+        let ui_bin = root.join("djinn-ui-bridge-fallback.sh");
         fs::write(
-            &buddy_bin,
+            &ui_bin,
             r#"#!/bin/sh
 if [ "$1" = "djinn-bridge" ]; then
   echo bridge unavailable >&2
@@ -2151,12 +2151,12 @@ exit 2
 "#,
         )
         .unwrap();
-        let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+        let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(&buddy_bin, permissions).unwrap();
+        fs::set_permissions(&ui_bin, permissions).unwrap();
 
         let mut report = ui_command_doctor_report_from(
-            Some(buddy_bin.display().to_string()),
+            Some(ui_bin.display().to_string()),
             None,
             None,
             None,
@@ -2185,7 +2185,7 @@ exit 2
     #[test]
     fn ui_runtime_omits_command_when_no_override_is_recorded() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-runtime-command-test-{}",
+            "djinn-ui-runtime-command-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -2215,18 +2215,18 @@ exit 2
     #[test]
     fn ui_session_reference_resolves_to_bound_folder_session() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-ref-test-{}",
+            "djinn-ui-ref-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
         ));
-        let session_dir = root.join("from-buddy");
+        let session_dir = root.join("from-ui");
         fs::create_dir_all(session_dir.join("runtime")).unwrap();
         fs::write(
             session_dir.join("runtime/djinn.json"),
             serde_json::json!({
-                "ui_session": "ses_boundBuddy123",
-                "command": "buddy",
+                "ui_session": "ses_boundUi123",
+                "command": "djinn-ui",
                 "args": [],
                 "last_run_at": null,
                 "last_prompt_chars": 0,
@@ -2237,11 +2237,11 @@ exit 2
         .unwrap();
 
         let resolved =
-            resolve_ui_session_reference_in_root(&root, Path::new("ses_boundBuddy123")).unwrap();
+            resolve_ui_session_reference_in_root(&root, Path::new("ses_boundUi123")).unwrap();
 
         assert_eq!(
             resolved,
-            Some((session_dir.clone(), "ses_boundBuddy123".to_string()))
+            Some((session_dir.clone(), "ses_boundUi123".to_string()))
         );
 
         let missing =
@@ -2259,33 +2259,29 @@ exit 2
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
         ));
-        let session_dir = root.join("from-buddy");
+        let session_dir = root.join("from-ui");
         fs::create_dir_all(session_dir.join("runtime")).unwrap();
         fs::write(
             session_dir.join("runtime/djinn.json"),
             serde_json::json!({
-                "ui_session": "ses_currentBuddy123",
-                "stale_ui_sessions": ["ses_staleBuddy123"]
+                "ui_session": "ses_currentUi123",
+                "stale_ui_sessions": ["ses_staleUi123"]
             })
             .to_string(),
         )
         .unwrap();
 
-        let current = resolve_existing_folder_session_reference_in_root(
-            Path::new("ses_currentBuddy123"),
-            &root,
-        )
-        .unwrap();
-        let stale = resolve_existing_folder_session_reference_in_root(
-            Path::new("ses_staleBuddy123"),
-            &root,
-        )
-        .unwrap();
+        let current =
+            resolve_existing_folder_session_reference_in_root(Path::new("ses_currentUi123"), &root)
+                .unwrap();
+        let stale =
+            resolve_existing_folder_session_reference_in_root(Path::new("ses_staleUi123"), &root)
+                .unwrap();
 
         assert_eq!(current.session_dir, session_dir);
-        assert_eq!(current.ui_session.as_deref(), Some("ses_currentBuddy123"));
+        assert_eq!(current.ui_session.as_deref(), Some("ses_currentUi123"));
         assert_eq!(stale.session_dir, session_dir);
-        assert_eq!(stale.ui_session.as_deref(), Some("ses_currentBuddy123"));
+        assert_eq!(stale.ui_session.as_deref(), Some("ses_currentUi123"));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2342,7 +2338,7 @@ exit 2
     #[test]
     fn ensure_ui_session_binding_creates_runtime_without_default_command_override() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-ensure-binding-test-{}",
+            "djinn-ui-ensure-binding-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -2449,7 +2445,7 @@ exit 2
     #[test]
     fn ask_auto_folder_session_reuses_existing_ui_binding() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-ask-buddy-reuse-test-{}",
+            "djinn-ask-ui-reuse-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -2503,7 +2499,7 @@ exit 2
     #[test]
     fn top_level_ui_session_plans_interactive_resume_even_with_pending_request() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-behavior-test-{}",
+            "djinn-ui-behavior-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -2525,7 +2521,7 @@ exit 2
             session_dir.join("runtime/djinn.json"),
             serde_json::json!({
                 "ui_session": "ses_resume",
-                "command": "buddy",
+                "command": "djinn-ui",
                 "args": [],
                 "last_run_at": null,
                 "last_prompt_chars": 0,
@@ -2548,7 +2544,7 @@ exit 2
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-auto-bind-test-{}",
+            "djinn-ui-auto-bind-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -2558,18 +2554,18 @@ exit 2
         fs::create_dir_all(&workspace).unwrap();
         fs::create_dir_all(session_dir.join("runtime")).unwrap();
         let create_log = root.join("create-log.txt");
-        let buddy_bin = root.join("buddy-json.sh");
+        let ui_bin = root.join("djinn-ui-json.sh");
         fs::write(
-            &buddy_bin,
-            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ses_auto_bound\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected buddy args: \"$@\" >&2\nexit 2\n"
+            &ui_bin,
+            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ses_auto_bound\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected ui args: \"$@\" >&2\nexit 2\n"
                 .replace("__CREATE_LOG__", &create_log.display().to_string()),
         )
         .unwrap();
         #[cfg(unix)]
         {
-            let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+            let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
             permissions.set_mode(0o755);
-            fs::set_permissions(&buddy_bin, permissions).unwrap();
+            fs::set_permissions(&ui_bin, permissions).unwrap();
         }
         fs::write(
             session_dir.join("djinn.toml"),
@@ -2582,7 +2578,7 @@ exit 2
         fs::write(
             session_dir.join("runtime/djinn.json"),
             serde_json::json!({
-                "command": buddy_bin.display().to_string(),
+                "command": ui_bin.display().to_string(),
                 "args": [],
                 "last_run_at": null,
                 "last_prompt_chars": 0,
@@ -2601,7 +2597,7 @@ exit 2
         );
         let runtime = fs::read_to_string(session_dir.join("runtime/djinn.json")).unwrap();
         assert!(runtime.contains("ses_auto_bound"));
-        assert!(runtime.contains(&buddy_bin.display().to_string()));
+        assert!(runtime.contains(&ui_bin.display().to_string()));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2612,7 +2608,7 @@ exit 2
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-stale-workspace-test-{}",
+            "djinn-ui-stale-workspace-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -2621,18 +2617,18 @@ exit 2
         let session_dir = root.join("session");
         fs::create_dir_all(session_dir.join("runtime")).unwrap();
         let create_log = root.join("create-log.txt");
-        let buddy_bin = root.join("buddy-json.sh");
+        let ui_bin = root.join("djinn-ui-json.sh");
         fs::write(
-            &buddy_bin,
-            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ses_promoted\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected buddy args: \"$@\" >&2\nexit 2\n"
+            &ui_bin,
+            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ses_promoted\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected ui args: \"$@\" >&2\nexit 2\n"
                 .replace("__CREATE_LOG__", &create_log.display().to_string()),
         )
         .unwrap();
         #[cfg(unix)]
         {
-            let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+            let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
             permissions.set_mode(0o755);
-            fs::set_permissions(&buddy_bin, permissions).unwrap();
+            fs::set_permissions(&ui_bin, permissions).unwrap();
         }
         fs::write(
             session_dir.join("djinn.toml"),
@@ -2647,7 +2643,7 @@ exit 2
             session_dir.join("runtime/djinn.json"),
             serde_json::json!({
                 "ui_session": "ses_stale",
-                "command": buddy_bin.display().to_string(),
+                "command": ui_bin.display().to_string(),
                 "args": [],
                 "last_run_at": null,
                 "last_prompt_chars": 0,
@@ -2687,7 +2683,7 @@ exit 2
         use std::os::unix::fs::PermissionsExt;
 
         let dir = std::env::temp_dir().join(format!(
-            "djinn-buddy-session-test-{}",
+            "djinn-ui-session-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -2695,19 +2691,19 @@ exit 2
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("djinn.toml"),
-            "session_id = \"agt_buddy\"\ntitle = \"Buddy Test\"\nworkspace = \"/tmp/workspace\"\n",
+            "session_id = \"agt_ui\"\ntitle = \"UI Test\"\nworkspace = \"/tmp/workspace\"\n",
         )
         .unwrap();
-        fs::write(dir.join("request.md"), "Please answer from Buddy.\n").unwrap();
+        fs::write(dir.join("request.md"), "Please answer from Djinn UI.\n").unwrap();
         fs::write(dir.join("summary.md"), "old summary\n").unwrap();
 
         let prompt_seen = dir.join("prompt-seen.txt");
         let args_seen = dir.join("args-seen.txt");
-        let buddy_bin = dir.join("buddy-test.sh");
+        let ui_bin = dir.join("djinn-ui-test.sh");
         fs::write(
-            &buddy_bin,
+            &ui_bin,
             format!(
-                "#!/bin/sh\ncat > '{}'\nprintf '%s\\n' \"$@\" > '{}'\nprintf 'Buddy final response.\\n'\n",
+                "#!/bin/sh\ncat > '{}'\nprintf '%s\\n' \"$@\" > '{}'\nprintf 'Djinn UI final response.\\n'\n",
                 prompt_seen.display(),
                 args_seen.display()
             ),
@@ -2715,15 +2711,15 @@ exit 2
         .unwrap();
         #[cfg(unix)]
         {
-            let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+            let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
             permissions.set_mode(0o755);
-            fs::set_permissions(&buddy_bin, permissions).unwrap();
+            fs::set_permissions(&ui_bin, permissions).unwrap();
         }
 
         let report = run_session_ui_capture(&SessionUiCaptureArgs {
             dir: dir.clone(),
-            ui_bin: Some(buddy_bin.display().to_string()),
-            ui_session: Some("bud_test".to_string()),
+            ui_bin: Some(ui_bin.display().to_string()),
+            ui_session: Some("ui_test".to_string()),
             ui_args: vec!["--final".to_string()],
             dry_run: false,
         })
@@ -2733,27 +2729,27 @@ exit 2
         assert!(report.wrote_summary);
         assert!(report.appended_events);
         assert!(report.cleared_request);
-        assert_eq!(report.ui_session.as_deref(), Some("bud_test"));
+        assert_eq!(report.ui_session.as_deref(), Some("ui_test"));
         assert_eq!(fs::read_to_string(dir.join("request.md")).unwrap(), "");
         assert_eq!(
             fs::read_to_string(dir.join("summary.md")).unwrap(),
-            "Buddy final response.\n"
+            "Djinn UI final response.\n"
         );
         assert_eq!(
             fs::read_to_string(&prompt_seen).unwrap(),
-            "Please answer from Buddy.\n"
+            "Please answer from Djinn UI.\n"
         );
         assert_eq!(
             fs::read_to_string(&args_seen).unwrap(),
-            "-s\nbud_test\n--final\n"
+            "-s\nui_test\n--final\n"
         );
 
         let events = fs::read_to_string(dir.join("events.jsonl")).unwrap();
         assert_eq!(events.lines().count(), 2);
-        assert!(events.contains("Please answer from Buddy."));
-        assert!(events.contains("Buddy final response."));
+        assert!(events.contains("Please answer from Djinn UI."));
+        assert!(events.contains("Djinn UI final response."));
         let runtime = fs::read_to_string(dir.join("runtime/djinn.json")).unwrap();
-        assert!(runtime.contains("bud_test"));
+        assert!(runtime.contains("ui_test"));
         assert!(runtime.contains("--final"));
         assert!(format_session_ui_capture_report(&report).contains("Djinn UI capture:"));
 
@@ -2763,7 +2759,7 @@ exit 2
     #[test]
     fn interactive_ui_summary_refresh_uses_latest_event_pair() {
         let root = std::env::temp_dir().join(format!(
-            "djinn-buddy-summary-refresh-test-{}",
+            "djinn-ui-summary-refresh-test-{}",
             chrono::Local::now()
                 .timestamp_nanos_opt()
                 .unwrap_or_default()
@@ -2771,7 +2767,7 @@ exit 2
         let session_dir = root.join("session");
         fs::create_dir_all(&session_dir).unwrap();
         fs::write(session_dir.join("summary.md"), "stale summary\n").unwrap();
-        let id = AgentSessionId::new("agt_buddy_summary_refresh");
+        let id = AgentSessionId::new("agt_ui_summary_refresh");
         let events = vec![
             AgentSessionEvent::with_session(
                 id.clone(),

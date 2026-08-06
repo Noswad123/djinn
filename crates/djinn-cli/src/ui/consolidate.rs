@@ -284,7 +284,7 @@ fn create_folder_session_from_ui(
     runtime_command_override: Option<String>,
 ) -> Result<()> {
     fs::create_dir_all(folder_dir).with_context(|| format!("creating {}", folder_dir.display()))?;
-    let session_id = AgentSessionId::new(format!("buddy_{}", safe_folder_session_slug(&ui.id)));
+    let session_id = AgentSessionId::new(format!("ui_{}", safe_folder_session_slug(&ui.id)));
     write_ui_adopted_manifest(folder_dir, &session_id, ui)?;
     fs::write(folder_dir.join("request.md"), "")
         .with_context(|| format!("writing {}/request.md", folder_dir.display()))?;
@@ -321,7 +321,7 @@ fn write_ui_adopted_manifest(
     output.push_str(&format!("title = {}\n", toml_string(&ui.title)?));
     output.push_str(&format!("workspace = {}\n", toml_string(&ui.repo_path)?));
     output.push_str("profile = \"default\"\n");
-    output.push_str("source = \"buddy\"\n");
+    output.push_str("source = \"ui\"\n");
     output.push_str("\n[context.repo]\n");
     output.push_str(&format!("path = {}\n", toml_string(&ui.repo_path)?));
     fs::write(folder_dir.join("djinn.toml"), output)
@@ -403,25 +403,25 @@ mod tests {
         fs::write(beta.join("summary.md"), "beta summary\n").unwrap();
 
         let create_log = root.join("create-log.txt");
-        let buddy_bin = root.join("buddy-json.sh");
+        let ui_bin = root.join("djinn-ui-json.sh");
         fs::write(
-            &buddy_bin,
-            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"--format\" ] && [ \"$4\" = \"json\" ]; then\n  cat <<'JSON'\n[{\"id\":\"bud_alpha\",\"title\":\"Alpha\",\"updated\":1785599577905,\"created\":1785081429401,\"projectId\":\"project-a\",\"directory\":\"/tmp/repo-a\"},{\"id\":\"bud_orphan\",\"title\":\"Orphan Buddy\",\"updated\":1785595306273,\"created\":1785595040658,\"projectId\":\"project-b\",\"directory\":\"/tmp/repo-b\"}]\nJSON\n  exit 0\nfi\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"bud_created_beta\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected buddy args: \"$@\" >&2\nexit 2\n"
+            &ui_bin,
+            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"--format\" ] && [ \"$4\" = \"json\" ]; then\n  cat <<'JSON'\n[{\"id\":\"ui_alpha\",\"title\":\"Alpha\",\"updated\":1785599577905,\"created\":1785081429401,\"projectId\":\"project-a\",\"directory\":\"/tmp/repo-a\"},{\"id\":\"ui_orphan\",\"title\":\"Orphan UI\",\"updated\":1785595306273,\"created\":1785595040658,\"projectId\":\"project-b\",\"directory\":\"/tmp/repo-b\"}]\nJSON\n  exit 0\nfi\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ui_created_beta\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected ui args: \"$@\" >&2\nexit 2\n"
                 .replace("__CREATE_LOG__", &create_log.display().to_string()),
         )
         .unwrap();
         #[cfg(unix)]
         {
-            let mut permissions = fs::metadata(&buddy_bin).unwrap().permissions();
+            let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
             permissions.set_mode(0o755);
-            fs::set_permissions(&buddy_bin, permissions).unwrap();
+            fs::set_permissions(&ui_bin, permissions).unwrap();
         }
 
         let dry_run = consolidate_sessions_in_root(
             &root,
             &SessionConsolidateArgs {
                 dry_run: true,
-                ui_bin: Some(buddy_bin.display().to_string()),
+                ui_bin: Some(ui_bin.display().to_string()),
                 json: false,
             },
         )
@@ -437,7 +437,7 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.action == "would_match_existing_ui"
-                && entry.ui_session.as_deref() == Some("bud_alpha")));
+                && entry.ui_session.as_deref() == Some("ui_alpha")));
         assert!(!alpha.join("runtime/djinn.json").exists());
         assert!(!create_log.exists());
 
@@ -445,7 +445,7 @@ mod tests {
             &root,
             &SessionConsolidateArgs {
                 dry_run: false,
-                ui_bin: Some(buddy_bin.display().to_string()),
+                ui_bin: Some(ui_bin.display().to_string()),
                 json: false,
             },
         )
@@ -457,20 +457,20 @@ mod tests {
         assert_eq!(report.adopted_ui_sessions, 1);
         assert!(fs::read_to_string(alpha.join("runtime/djinn.json"))
             .unwrap()
-            .contains("bud_alpha"));
+            .contains("ui_alpha"));
         assert!(fs::read_to_string(beta.join("runtime/djinn.json"))
             .unwrap()
-            .contains("bud_created_beta"));
+            .contains("ui_created_beta"));
         assert_eq!(
             fs::read_to_string(&create_log).unwrap(),
             "beta|/tmp/repo-c\n"
         );
-        let orphan = root.join("orphan_buddy-bud_orphan");
+        let orphan = root.join("orphan_ui-ui_orphan");
         assert!(orphan.join("djinn.toml").exists());
         assert!(orphan.join("summary.md").exists());
         assert!(fs::read_to_string(orphan.join("runtime/djinn.json"))
             .unwrap()
-            .contains("bud_orphan"));
+            .contains("ui_orphan"));
         assert!(format_session_consolidate_report(&report).contains("created_ui_for_folder"));
 
         let _ = fs::remove_dir_all(&root);

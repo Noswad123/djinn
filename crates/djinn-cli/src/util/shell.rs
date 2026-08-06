@@ -35,8 +35,8 @@ mod tests {
     #[test]
     fn shell_quote_if_needed_leaves_safe_words_readable() {
         assert_eq!(
-            shell_quote_if_needed("tools/buddy/bin/djinn-ui"),
-            "tools/buddy/bin/djinn-ui"
+            shell_quote_if_needed("clients/djinn-ui/bin/djinn-ui"),
+            "clients/djinn-ui/bin/djinn-ui"
         );
         assert_eq!(
             shell_quote_if_needed("path with spaces"),
