@@ -1199,15 +1199,6 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
   const [status, setStatus] = createSignal("Load Djinn folder sessions with djinn session ls --json.")
   const [report, { refetch }] = createResource(loadDjinnSessionReport)
   const allSessions = createMemo(() => report()?.sessions ?? [])
-  const selectedSession = createMemo(() =>
-    allSessions().find((session) => session.path === selectedPath()) ?? filteredSessions()[0],
-  )
-  const selectedSessionPaths = createMemo(() => {
-    const values = Array.from(checked())
-    if (values.length > 0) return values
-    const session = selectedSession()
-    return session ? [session.path] : []
-  })
   const query = createMemo(() => filter().trim().toLowerCase())
   const filteredSessions = createMemo(() =>
     allSessions()
@@ -1228,6 +1219,15 @@ function SessionTab(props: { onOpenBuddySession: (sessionID: string) => void }) 
       })
       .toSorted(compareDjinnSessions),
   )
+  const selectedSession = createMemo(() =>
+    allSessions().find((session) => session.path === selectedPath()) ?? filteredSessions()[0],
+  )
+  const selectedSessionPaths = createMemo(() => {
+    const values = Array.from(checked())
+    if (values.length > 0) return values
+    const session = selectedSession()
+    return session ? [session.path] : []
+  })
 
   createEffect(() => {
     const first = filteredSessions()[0]
