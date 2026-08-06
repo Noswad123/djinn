@@ -136,7 +136,7 @@ pub(crate) struct SessionChatArgs {
     pub(crate) dir: PathBuf,
     /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, legacy DJINN_BUDDY_BIN, runtime binding, then tools/buddy/bin/djinn-ui.
     #[arg(long = "ui-bin", alias = "buddy-bin", value_name = "UI_COMMAND")]
-    pub(crate) buddy_bin: Option<String>,
+    pub(crate) ui_bin: Option<String>,
     /// Extra argument to pass through to the Djinn UI. Repeat for multiple args.
     #[arg(
         long = "ui-arg",
@@ -144,7 +144,7 @@ pub(crate) struct SessionChatArgs {
         value_name = "UI_ARG",
         allow_hyphen_values = true
     )]
-    pub(crate) buddy_args: Vec<String>,
+    pub(crate) ui_args: Vec<String>,
     /// Send request.md to the Djinn UI and capture the final response instead of opening interactive chat.
     #[arg(long = "capture-request", visible_alias = "capture")]
     pub(crate) capture_request: bool,
@@ -163,7 +163,7 @@ pub(crate) struct SessionConsolidateArgs {
     pub(crate) dry_run: bool,
     /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, legacy DJINN_BUDDY_BIN, then tools/buddy/bin/djinn-ui.
     #[arg(long = "ui-bin", alias = "buddy-bin", value_name = "UI_COMMAND")]
-    pub(crate) buddy_bin: Option<String>,
+    pub(crate) ui_bin: Option<String>,
     /// Output JSON instead of text.
     #[arg(long)]
     pub(crate) json: bool,
@@ -591,8 +591,8 @@ mod tests {
             panic!("expected session chat command");
         };
         assert_eq!(args.dir, PathBuf::from("ses_chatBuddy123"));
-        assert_eq!(args.buddy_bin.as_deref(), Some("djinn-ui --dev"));
-        assert_eq!(args.buddy_args, vec!["--trace"]);
+        assert_eq!(args.ui_bin.as_deref(), Some("djinn-ui --dev"));
+        assert_eq!(args.ui_args, vec!["--trace"]);
 
         let cli = Cli::try_parse_from([
             "djinn",
@@ -611,8 +611,8 @@ mod tests {
         let Some(SessionCommand::Chat(args)) = args.command else {
             panic!("expected session chat command");
         };
-        assert_eq!(args.buddy_bin.as_deref(), Some("legacy-buddy"));
-        assert_eq!(args.buddy_args, vec!["--legacy"]);
+        assert_eq!(args.ui_bin.as_deref(), Some("legacy-buddy"));
+        assert_eq!(args.ui_args, vec!["--legacy"]);
 
         let cli = Cli::try_parse_from([
             "djinn",

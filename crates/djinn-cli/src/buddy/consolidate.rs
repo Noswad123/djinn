@@ -45,15 +45,12 @@ pub(crate) fn consolidate_sessions_in_root(
     root: &Path,
     args: &SessionConsolidateArgs,
 ) -> Result<SessionConsolidateReport> {
-    let buddy_backend = if let Some(buddy_bin) = args
-        .buddy_bin
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-    {
-        BuddyBridgeBackend::explicit(buddy_bin)
-    } else {
-        BuddyBridgeBackend::resolved(None)?
-    };
+    let buddy_backend =
+        if let Some(ui_bin) = args.ui_bin.clone().filter(|value| !value.trim().is_empty()) {
+            BuddyBridgeBackend::explicit(ui_bin)
+        } else {
+            BuddyBridgeBackend::resolved(None)?
+        };
     let buddy_sessions = buddy_backend.list_sessions()?;
     let folder_report = list_folder_sessions_in_root(root, None)?;
     let mut entries = Vec::new();
@@ -433,7 +430,7 @@ mod tests {
             &root,
             &SessionConsolidateArgs {
                 dry_run: true,
-                buddy_bin: Some(buddy_bin.display().to_string()),
+                ui_bin: Some(buddy_bin.display().to_string()),
                 json: false,
             },
         )
@@ -457,7 +454,7 @@ mod tests {
             &root,
             &SessionConsolidateArgs {
                 dry_run: false,
-                buddy_bin: Some(buddy_bin.display().to_string()),
+                ui_bin: Some(buddy_bin.display().to_string()),
                 json: false,
             },
         )

@@ -114,9 +114,9 @@ pub(crate) struct BuddySessionBinding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionBuddyRunArgs {
     pub(crate) dir: PathBuf,
-    pub(crate) buddy_bin: Option<String>,
+    pub(crate) ui_bin: Option<String>,
     pub(crate) buddy_session: Option<String>,
-    pub(crate) buddy_args: Vec<String>,
+    pub(crate) ui_args: Vec<String>,
     pub(crate) dry_run: bool,
 }
 
@@ -1041,9 +1041,9 @@ pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
         let session_ref = resolve_existing_folder_session_reference(&args.dir)?;
         let report = run_session_buddy(&SessionBuddyRunArgs {
             dir: session_ref.session_dir,
-            buddy_bin: args.buddy_bin.clone(),
+            ui_bin: args.ui_bin.clone(),
             buddy_session: session_ref.buddy_session,
-            buddy_args: args.buddy_args.clone(),
+            ui_args: args.ui_args.clone(),
             dry_run: args.dry_run,
         })?;
         if args.json {
@@ -1058,8 +1058,8 @@ pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
     run_top_level_folder_buddy_session_with_options(
         &session_dir,
         resolved_buddy_session,
-        args.buddy_bin,
-        &args.buddy_args,
+        args.ui_bin,
+        &args.ui_args,
     )
 }
 
@@ -1085,16 +1085,16 @@ pub(crate) fn run_top_level_folder_buddy_session(
 pub(crate) fn run_top_level_folder_buddy_session_with_options(
     session_dir: &Path,
     explicit_buddy_session: Option<String>,
-    explicit_buddy_bin: Option<String>,
-    buddy_args: &[String],
+    explicit_ui_bin: Option<String>,
+    ui_args: &[String],
 ) -> Result<()> {
     let runtime_path = session_dir.join("runtime/buddy.json");
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = if let Some(buddy_bin) = explicit_buddy_bin
+    let buddy_backend = if let Some(ui_bin) = explicit_ui_bin
         .clone()
         .filter(|value| !value.trim().is_empty())
     {
-        BuddyBridgeBackend::explicit(buddy_bin)
+        BuddyBridgeBackend::explicit(ui_bin)
     } else {
         BuddyBridgeBackend::resolved(previous_runtime.as_ref())?
     };
@@ -1104,7 +1104,7 @@ pub(crate) fn run_top_level_folder_buddy_session_with_options(
         &buddy_backend,
         previous_runtime.clone(),
     )?;
-    run_interactive_session_buddy_with_backend(session_dir, behavior, &buddy_backend, buddy_args)
+    run_interactive_session_buddy_with_backend(session_dir, behavior, &buddy_backend, ui_args)
 }
 
 #[cfg(test)]
@@ -1180,7 +1180,7 @@ pub(crate) fn run_interactive_session_buddy_with_backend<B>(
     session_dir: &Path,
     behavior: TopLevelBuddySessionBehavior,
     buddy_backend: &B,
-    buddy_args: &[String],
+    ui_args: &[String],
 ) -> Result<()>
 where
     B: BuddyLauncher + BuddySessionBackend,
@@ -1189,7 +1189,7 @@ where
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
     buddy_backend.launch_interactive_session(
         behavior.buddy_session.as_deref(),
-        buddy_args,
+        ui_args,
         behavior.cwd.as_deref(),
         session_dir,
     )?;
@@ -1201,10 +1201,10 @@ where
             .as_ref()
             .map(|state| state.args.clone())
             .unwrap_or_default();
-        let runtime_args = if buddy_args.is_empty() {
+        let runtime_args = if ui_args.is_empty() {
             previous_args
         } else {
-            buddy_args.to_vec()
+            ui_args.to_vec()
         };
         write_buddy_runtime_state(
             &runtime_path,
@@ -1335,15 +1335,12 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
     }
 
     let previous_runtime = read_buddy_runtime_state(&runtime_path)?;
-    let buddy_backend = if let Some(buddy_bin) = args
-        .buddy_bin
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-    {
-        BuddyBridgeBackend::explicit(buddy_bin)
-    } else {
-        BuddyBridgeBackend::resolved(previous_runtime.as_ref())?
-    };
+    let buddy_backend =
+        if let Some(ui_bin) = args.ui_bin.clone().filter(|value| !value.trim().is_empty()) {
+            BuddyBridgeBackend::explicit(ui_bin)
+        } else {
+            BuddyBridgeBackend::resolved(previous_runtime.as_ref())?
+        };
     let buddy_session = args.buddy_session.clone().or_else(|| {
         previous_runtime
             .as_ref()
@@ -1352,7 +1349,7 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
     let buddy_command = buddy_command_hint(
         buddy_backend.command(),
         buddy_session.as_deref(),
-        &args.buddy_args,
+        &args.ui_args,
     );
 
     if args.dry_run {
@@ -1376,7 +1373,7 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
     }
 
     let response =
-        buddy_backend.final_response(buddy_session.as_deref(), &args.buddy_args, &prompt)?;
+        buddy_backend.final_response(buddy_session.as_deref(), &args.ui_args, &prompt)?;
     let response = response.trim().to_string();
     if response.is_empty() {
         bail!("Buddy returned an empty final response");
@@ -1421,7 +1418,7 @@ pub(crate) fn run_session_buddy(args: &SessionBuddyRunArgs) -> Result<SessionBud
                 .map(|state| state.stale_buddy_sessions.clone())
                 .unwrap_or_default(),
             command: buddy_backend.runtime_command_override(),
-            args: args.buddy_args.clone(),
+            args: args.ui_args.clone(),
             last_run_at: Some(chrono::Utc::now().to_rfc3339()),
             last_prompt_chars: prompt.chars().count(),
             last_response_chars: response.chars().count(),
@@ -2791,9 +2788,9 @@ exit 2
 
         let report = run_session_buddy(&SessionBuddyRunArgs {
             dir: dir.clone(),
-            buddy_bin: Some(buddy_bin.display().to_string()),
+            ui_bin: Some(buddy_bin.display().to_string()),
             buddy_session: Some("bud_test".to_string()),
-            buddy_args: vec!["--final".to_string()],
+            ui_args: vec!["--final".to_string()],
             dry_run: false,
         })
         .unwrap();

@@ -83,8 +83,8 @@ fn handle_folder_session_tui_action(
         }),
         djinn_tui::FolderSessionAction::Buddy => session_chat(SessionChatArgs {
             dir: session_dir,
-            buddy_bin: None,
-            buddy_args: Vec::new(),
+            ui_bin: None,
+            ui_args: Vec::new(),
             capture_request: false,
             dry_run: false,
             json: false,
