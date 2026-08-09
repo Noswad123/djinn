@@ -86,6 +86,7 @@ import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
+import { djinnSessionListActionLine, djinnSessionListTitle } from "./djinn/session-list"
 
 registerOpencodeSpinner()
 
@@ -1480,9 +1481,10 @@ function SessionTab(props: { onOpenUiSession: (sessionID: string) => void }) {
           <box flexGrow={1} minHeight={0} flexDirection="row" gap={1}>
             <box flexGrow={1} minHeight={0} gap={1}>
               <For each={filteredSessions()} fallback={<text fg={theme.textMuted}>No Djinn sessions match.</text>}>
-                {(session, index) => {
+                {(session) => {
                   const active = () => session.path === selectedSession()?.path
                   const checkedLabel = () => (checked().has(session.path) ? "[x]" : "[ ]")
+                  const actionLine = () => djinnSessionListActionLine(session)
                   return (
                     <box
                       flexDirection="row"
@@ -1495,18 +1497,12 @@ function SessionTab(props: { onOpenUiSession: (sessionID: string) => void }) {
                       <text fg={checked().has(session.path) ? theme.primary : theme.textMuted} onMouseDown={() => toggleSession(session.path)}>
                         {checkedLabel()}
                       </text>
-                      <text fg={theme.textMuted} flexShrink={0}>
-                        {String(index() + 1).padStart(2, " ")}
-                      </text>
                       <box flexGrow={1} minWidth={0}>
                         <text fg={active() ? theme.text : theme.text} wrapMode="none">
-                          {sessionStateBadge(session)} {truncateMiddle(session.display_name || session.name, 66)}
+                          {truncateMiddle(djinnSessionListTitle(session), 88)}
                         </text>
-                        <text fg={theme.textMuted} wrapMode="none">
-                          {sessionListMetadata(session)}
-                        </text>
-                        <Show when={session.next_action}>
-                          {(action) => <text fg={theme.warning}>Action: {truncateMiddle(action(), 80)}</text>}
+                        <Show when={actionLine()}>
+                          {(action) => <text fg={theme.warning}>{truncateMiddle(action(), 88)}</text>}
                         </Show>
                       </box>
                     </box>
@@ -1886,13 +1882,6 @@ async function runDjinn(args: string[]) {
 
 function compareDjinnSessions(left: DjinnFolderSession, right: DjinnFolderSession) {
   return sessionRepoLabel(left).localeCompare(sessionRepoLabel(right)) || (right.updated_at ?? "").localeCompare(left.updated_at ?? "") || left.display_name.localeCompare(right.display_name)
-}
-
-function sessionListMetadata(session: DjinnFolderSession) {
-  const mode = session.lifecycle.mode ?? "-"
-  const updated = session.updated_at ?? session.modified_at ?? "unknown"
-  const candidates = session.candidates ? ` · candidates ${candidateStatus(session.candidates)}` : ""
-  return `${mode} · ${session.turn_count} turns · events ${eventHealthLabel(session.event_health)}${candidates} · updated ${updated}`
 }
 
 function sessionRepoLabel(session: DjinnFolderSession) {

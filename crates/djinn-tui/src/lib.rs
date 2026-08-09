@@ -2321,30 +2321,11 @@ impl SessionsApp {
                         format!("▾ {group}"),
                         title_style(),
                     ))),
-                    SessionListRow::Session(idx) => {
-                        let session = &self.sessions[*idx];
-                        let checkbox = if self.checked.contains(&session.path) {
-                            "[x] "
-                        } else {
-                            "[ ] "
-                        };
-                        let mut lines = vec![
-                            Line::from(vec![
-                                Span::styled(checkbox, dim_style()),
-                                Span::styled(session_state_badge(session), dim_style()),
-                                Span::raw(" "),
-                                Span::styled(session.name.clone(), title_style()),
-                            ]),
-                            Line::from(Span::styled(session_list_metadata(session), dim_style())),
-                        ];
-                        if let Some(next) = session.next_action.as_deref() {
-                            lines.push(Line::from(vec![
-                                Span::styled("Action: ", title_style()),
-                                Span::raw(next.to_string()),
-                            ]));
-                        }
-                        ListItem::new(lines)
-                    }
+                    SessionListRow::Session(idx) => ListItem::new(session_list_item_lines(
+                        &self.sessions[*idx],
+                        self.checked.contains(&self.sessions[*idx].path),
+                        body[0].width,
+                    )),
                 })
                 .collect::<Vec<_>>()
         };
@@ -2386,18 +2367,66 @@ impl SessionsApp {
     }
 }
 
-fn session_list_metadata(session: &SessionRecord) -> String {
-    let mode = session.mode.as_deref().unwrap_or("-");
-    let updated = session.updated_at.as_deref().unwrap_or("unknown");
-    let candidates = session
-        .candidate_status
+fn session_list_item_lines(
+    session: &SessionRecord,
+    checked: bool,
+    area_width: u16,
+) -> Vec<Line<'static>> {
+    let available_width = session_list_content_width(area_width);
+    let checkbox = if checked { "[x] " } else { "[ ] " };
+    let name_width = available_width
+        .saturating_sub(checkbox.chars().count())
+        .max(8);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(checkbox.to_string(), dim_style()),
+        Span::styled(truncate_line_to_width(&session.name, name_width), title_style()),
+    ])];
+    if let Some(next) = session
+        .next_action
         .as_deref()
-        .map(|status| format!(" · candidates {status}"))
-        .unwrap_or_default();
-    format!(
-        "{} · {} turns · events {}{} · updated {}",
-        mode, session.turn_count, session.event_health, candidates, updated
-    )
+        .filter(|next| !next.trim().is_empty())
+    {
+        let label = "Action: ";
+        let action_width = available_width
+            .saturating_sub(label.chars().count())
+            .max(8);
+        lines.push(Line::from(vec![
+            Span::styled(label.to_string(), title_style()),
+            Span::raw(truncate_line_to_width(
+                &session_list_action_summary(next),
+                action_width,
+            )),
+        ]));
+    }
+    lines
+}
+
+fn session_list_content_width(area_width: u16) -> usize {
+    usize::from(area_width).saturating_sub(4).max(8)
+}
+
+fn session_list_action_summary(next_action: &str) -> String {
+    let summary = next_action
+        .split_once(':')
+        .map(|(summary, _)| summary)
+        .unwrap_or(next_action)
+        .trim();
+    summary.replace("request.md", "request")
+}
+
+fn truncate_line_to_width(value: &str, max_chars: usize) -> String {
+    let max_chars = max_chars.max(1);
+    let line = value.lines().next().unwrap_or(value).trim();
+    let mut chars = line.chars();
+    let truncated = chars
+        .by_ref()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
 }
 
 fn selected_session_row_position(selected: usize, rows: &[SessionListRow]) -> Option<usize> {
@@ -3417,6 +3446,18 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
+    fn line_text(lines: Vec<Line<'static>>) -> Vec<String> {
+        lines
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
     #[test]
     fn fuzzy_match_matches_subsequence_case_insensitive() {
         assert!(fuzzy_match("ocd", "OpenCode Debug Session"));
@@ -3997,10 +4038,18 @@ mod tests {
         assert!(preview.contains("memory-001 [memory] accepted"));
         assert!(preview.contains("evidence /tmp/repo-review/summary.md"));
         assert!(preview.contains("Latest answer preview"));
-        assert!(
-            session_list_metadata(app.selected_session().unwrap()).contains("candidates 3 total")
-        );
-        assert!(session_list_metadata(app.selected_session().unwrap()).contains("events ready:2/5"));
+        let item_lines = line_text(session_list_item_lines(
+            app.selected_session().unwrap(),
+            false,
+            48,
+        ));
+        assert_eq!(item_lines[0], "[ ] repo-review");
+        assert_eq!(item_lines[1], "Action: edit request or run again");
+        assert!(!item_lines.iter().any(|line| line.contains("paused")));
+        assert!(!item_lines.iter().any(|line| line.contains("Updated")));
+        assert!(!item_lines.iter().any(|line| line.contains("Events")));
+        assert!(!item_lines.iter().any(|line| line.contains("Candidates")));
+        assert!(!item_lines.iter().any(|line| line.contains("2 turns")));
         assert!(app.selected_sessions().is_empty());
         app.toggle_selected();
         assert_eq!(app.selected_sessions().len(), 1);
@@ -4011,6 +4060,40 @@ mod tests {
         event_app.filter_push('/');
         event_app.filter_push('5');
         assert_eq!(event_app.visible_indices(), vec![0]);
+    }
+
+    #[test]
+    fn session_list_item_truncates_long_names_and_shows_short_action() {
+        let session = SessionRecord {
+            name: "djinn_session_awaiting_action-ses_0423dec6dffeg3dv0boqitlyvs".to_string(),
+            reference_name: "djinn_session_awaiting_action-ses_0423dec6dffeg3dv0boqitlyvs".to_string(),
+            path: "/tmp/djinn-session".to_string(),
+            state: "not_started".to_string(),
+            mode: None,
+            updated_at: Some("2026-08-01T14:37:20.658+00:00".to_string()),
+            repo_path: None,
+            summary_preview: None,
+            turn_count: 0,
+            event_health: "missing".to_string(),
+            candidate_status: None,
+            candidate_details: Vec::new(),
+            candidate_entries: Vec::new(),
+            next_action: Some(
+                "run request.md: djinn session run /Users/jdawson/.cache/djinn/sessions/djinn_session_awaiting_action-ses_0423dec6dffeg3dv0boqitlyvs"
+                    .to_string(),
+            ),
+        };
+
+        let lines = line_text(session_list_item_lines(&session, false, 36));
+
+        assert_eq!(lines[0], "[ ] djinn_session_awaiting_acti…");
+        assert_eq!(lines[1], "Action: run request");
+        assert!(!lines.iter().any(|line| line.contains("draft")));
+        assert!(!lines.iter().any(|line| line.contains("Updated")));
+        assert!(!lines.iter().any(|line| line.contains("Events")));
+        assert!(!lines.iter().any(|line| line.contains("djinn session run")));
+        assert!(!lines.iter().any(|line| line.contains("0 turns")));
+        assert!(!lines[0].starts_with("[ ] 1"));
     }
 
     #[test]
