@@ -2,14 +2,6 @@ import { EOL } from "os"
 import { Schema } from "effect"
 import { logo as glyphs } from "./logo"
 
-const wordmark = [
-  `                         `,
-  `█▀▀▄ █  █ █▀▀▄ █▀▀▄ █  █`,
-  `█▀▀▄ █  █ █  █ █  █ █  █`,
-  `▀▀▀  ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀█`,
-  `                    ▀▀▀ `,
-]
-
 export class CancelledError extends Schema.TaggedErrorClass<CancelledError>()("UICancelledError", {}) {}
 
 export const Style = {
@@ -49,9 +41,9 @@ export function empty() {
 export function logo(pad?: string) {
   if (!process.stdout.isTTY && !process.stderr.isTTY) {
     const result = []
-    for (const row of wordmark) {
+    for (const [index, row] of glyphs.left.entries()) {
       if (pad) result.push(pad)
-      result.push(row)
+      result.push(row, " ", glyphs.right[index] ?? "")
       result.push(EOL)
     }
     return result.join("").trimEnd()

@@ -23,6 +23,8 @@ import type { RunSplashTheme } from "./theme"
 
 export const SPLASH_TITLE_LIMIT = 50
 export const SPLASH_TITLE_FALLBACK = "Untitled session"
+export const SPLASH_ENTRY_LABEL = "Djinn UI"
+export const SPLASH_CONTINUE_COMMAND = "djinn -s"
 
 type SplashInput = {
   title: string | undefined
@@ -194,7 +196,7 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
       })
     }
 
-    push(lines, body_left, top, "OpenCode", right, undefined, TextAttributes.BOLD)
+    push(lines, body_left, top, SPLASH_ENTRY_LABEL, right, undefined, TextAttributes.BOLD)
     if (input.detail) {
       push(
         lines,
@@ -234,7 +236,7 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
       lines,
       body_left + label.length,
       top + 1,
-      `opencode --mini -s ${meta.session_id}`,
+      `${SPLASH_CONTINUE_COMMAND} ${meta.session_id}`,
       right,
       undefined,
       TextAttributes.BOLD,
