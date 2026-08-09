@@ -13,16 +13,18 @@ use serde::{Deserialize, Serialize};
 use djinn_agent::PermissionRequest;
 use djinn_memory::{AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId};
 
-use crate::cli_args::{OutputFormat, SessionChatArgs};
+use crate::cli_args::{OutputFormat, SessionChatArgs, SessionInitArgs};
 use crate::session::events::read_event_turn_pairs;
+use crate::session::init::initialize_folder_session_with_ui;
 use crate::session::manifest::{
     folder_session_manifest_meta, read_folder_session_manifest, session_manifest_workspace_path,
 };
 use crate::session::projection::write_folder_session_events_jsonl;
 use crate::session::reference::{
-    default_folder_session_root, resolve_existing_folder_session_reference,
-    resolve_existing_folder_session_reference_in_root, resolve_session_dir,
-    resolve_session_dir_in_root, safe_folder_session_slug,
+    default_folder_session_root, is_named_folder_session_reference,
+    resolve_existing_folder_session_reference, resolve_existing_folder_session_reference_in_root,
+    resolve_session_dir, resolve_session_dir_in_root, resolve_ui_session_reference_in_root,
+    safe_folder_session_slug,
 };
 use crate::util::shell::shell_quote_if_needed as shell_quote;
 use crate::util::text::{ensure_trailing_newline, yes_no};
@@ -1144,13 +1146,62 @@ pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
 pub(crate) fn resolve_top_level_ui_session_arg(
     session: PathBuf,
 ) -> Result<(PathBuf, Option<String>)> {
+    resolve_or_initialize_top_level_ui_session_arg(session)
+}
+
+fn resolve_or_initialize_top_level_ui_session_arg(
+    session: PathBuf,
+) -> Result<(PathBuf, Option<String>)> {
     let root = default_folder_session_root();
+    resolve_or_initialize_top_level_ui_session_arg_in_root(session, &root)
+}
+
+fn resolve_or_initialize_top_level_ui_session_arg_in_root(
+    session: PathBuf,
+    root: &Path,
+) -> Result<(PathBuf, Option<String>)> {
     let session_dir = resolve_session_dir_in_root(&session, &root)?;
     if session_dir.exists() {
         return Ok((session_dir, None));
     }
 
-    Ok(resolve_existing_folder_session_reference_in_root(&session, &root)?.map_ui_for_launch())
+    if let Some((session_dir, ui_session)) = resolve_ui_session_reference_in_root(root, &session)? {
+        return Ok((session_dir, Some(ui_session)));
+    }
+
+    if looks_like_ui_session_reference(&session) {
+        return Ok(
+            resolve_existing_folder_session_reference_in_root(&session, root)?.map_ui_for_launch(),
+        );
+    }
+
+    initialize_missing_interactive_folder_session(&session_dir)?;
+    Ok((session_dir, None))
+}
+
+fn initialize_missing_interactive_folder_session(session_dir: &Path) -> Result<()> {
+    initialize_folder_session_with_ui(
+        &SessionInitArgs {
+            dir: session_dir.to_path_buf(),
+            link_repo: None,
+            no_discover_context: false,
+            profile: "default".to_string(),
+            agent: None,
+            model: None,
+            force: false,
+            json: false,
+        },
+        None,
+    )?;
+    Ok(())
+}
+
+fn looks_like_ui_session_reference(session: &Path) -> bool {
+    is_named_folder_session_reference(session)
+        && session
+            .to_str()
+            .map(str::trim)
+            .is_some_and(|value| value.starts_with("ses_") || value.starts_with("ui_"))
 }
 
 pub(crate) fn run_top_level_folder_ui_session(
@@ -2712,6 +2763,63 @@ exit 2
         let behavior = top_level_ui_session_behavior(&session_dir, None).unwrap();
         assert_eq!(behavior.ui_session.as_deref(), Some("ses_resume"));
         assert_eq!(behavior.cwd.as_deref(), Some(workspace.as_path()));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn top_level_ui_session_arg_initializes_missing_folder_session() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-ui-missing-folder-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let workspace = root.join("workspace");
+        let session_dir = root.join("new-chat");
+        fs::create_dir_all(&workspace).unwrap();
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&workspace).unwrap();
+
+        let result = resolve_or_initialize_top_level_ui_session_arg_in_root(
+            session_dir.clone(),
+            &root.join("cache"),
+        );
+        std::env::set_current_dir(original_cwd).unwrap();
+        let (resolved, ui_session) = result.unwrap();
+
+        assert_eq!(resolved, session_dir);
+        assert_eq!(ui_session, None);
+        assert!(resolved.join("djinn.toml").is_file());
+        assert!(resolved.join("request.md").is_file());
+        assert!(resolved.join("summary.md").is_file());
+        assert!(resolved.join("context/djinn-context.md").is_file());
+        assert!(fs::read_to_string(resolved.join("djinn.toml"))
+            .unwrap()
+            .contains(&workspace.display().to_string()));
+        assert!(!resolved.join("runtime/djinn.json").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn top_level_ui_session_arg_does_not_initialize_missing_ui_session_id() {
+        let root = std::env::temp_dir().join(format!(
+            "djinn-ui-missing-id-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        let error = resolve_or_initialize_top_level_ui_session_arg_in_root(
+            PathBuf::from("ses_missing"),
+            &root,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("folder session does not exist"));
+        assert!(!root.join("ses_missing").exists());
 
         let _ = fs::remove_dir_all(&root);
     }
