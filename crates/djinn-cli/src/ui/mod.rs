@@ -5,10 +5,12 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use djinn_agent::PermissionRequest;
 use djinn_memory::{AgentSession, AgentSessionEvent, AgentSessionEventKind, AgentSessionId};
 
 use crate::cli_args::{OutputFormat, SessionChatArgs};
@@ -88,6 +90,20 @@ pub(crate) struct UiCommandDoctorCandidate {
 pub(crate) struct UiCommandResolution {
     pub(crate) command: String,
     pub(crate) source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UiPermissionApprovalDecision {
+    Allow,
+    AllowSession { resources: Vec<String> },
+    Deny,
+}
+
+#[derive(Debug, Deserialize)]
+struct UiPermissionApprovalResponse {
+    decision: String,
+    #[serde(default)]
+    resources: Vec<String>,
 }
 
 impl UiCommandResolution {
@@ -802,6 +818,71 @@ pub(crate) fn probe_ui_bridge_doctor(
         fallback_available,
         fallback_list_sessions_ok,
         fallback_error,
+    }
+}
+
+pub(crate) fn run_ui_permission_approval(
+    request: &PermissionRequest,
+) -> Result<UiPermissionApprovalDecision> {
+    let resolution = resolve_ui_command_resolution(None)?;
+    let temp_dir = env::temp_dir().join(format!(
+        "djinn-ui-approval-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default()
+    ));
+    fs::create_dir_all(&temp_dir).context("creating Djinn UI approval temp directory")?;
+    let request_path = temp_dir.join("request.json");
+    let response_path = temp_dir.join("response.json");
+    let result = run_ui_permission_approval_from(
+        &resolution.command,
+        request,
+        &request_path,
+        &response_path,
+    );
+    let _ = fs::remove_file(&request_path);
+    let _ = fs::remove_file(&response_path);
+    let _ = fs::remove_dir(&temp_dir);
+    result
+}
+
+fn run_ui_permission_approval_from(
+    ui_command: &str,
+    request: &PermissionRequest,
+    request_path: &Path,
+    response_path: &Path,
+) -> Result<UiPermissionApprovalDecision> {
+    fs::write(request_path, serde_json::to_vec_pretty(request)?)
+        .context("writing Djinn UI permission approval request")?;
+    let mut command = ui_process_command(ui_command)?;
+    command
+        .arg("djinn-approval")
+        .arg("--request")
+        .arg(request_path)
+        .arg("--response")
+        .arg(response_path);
+    let status = command.status().with_context(|| {
+        format!(
+            "launching Djinn UI permission approval command `{}`",
+            shell_quote(ui_command)
+        )
+    })?;
+    if !status.success() {
+        bail!("Djinn UI permission approval exited with status {status}");
+    }
+    let response: UiPermissionApprovalResponse = serde_json::from_slice(
+        &fs::read(response_path).context("reading Djinn UI permission approval response")?,
+    )
+    .context("parsing Djinn UI permission approval response")?;
+    match response.decision.as_str() {
+        "allow" => Ok(UiPermissionApprovalDecision::Allow),
+        "allow_session" => Ok(UiPermissionApprovalDecision::AllowSession {
+            resources: response.resources,
+        }),
+        "deny" => Ok(UiPermissionApprovalDecision::Deny),
+        other => bail!("unexpected Djinn UI permission approval decision: {other}"),
     }
 }
 
@@ -1807,6 +1888,80 @@ mod tests {
     use crate::session::reference::{
         resolve_existing_folder_session_reference_in_root, resolve_ui_session_reference_in_root,
     };
+
+    #[test]
+    #[cfg(unix)]
+    fn ui_permission_approval_uses_hidden_response_file_protocol() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "djinn-ui-approval-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let ui_bin = root.join("djinn-ui-approval.sh");
+        let request_path = root.join("request.json");
+        let response_path = root.join("response.json");
+        let seen_request = root.join("seen-request.json");
+        let script = r#"#!/bin/sh
+if [ "$1" != "djinn-approval" ]; then
+  exit 2
+fi
+shift
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --request)
+      request="$2"
+      shift 2
+      ;;
+    --response)
+      response="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cp "$request" '__SEEN_REQUEST__'
+cat > "$response" <<'JSON'
+{"decision":"allow_session","resources":["/tmp/work/a.txt"]}
+JSON
+"#
+        .replace("__SEEN_REQUEST__", &seen_request.display().to_string());
+        fs::write(&ui_bin, script).unwrap();
+        let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&ui_bin, permissions).unwrap();
+
+        let decision = run_ui_permission_approval_from(
+            &ui_bin.display().to_string(),
+            &PermissionRequest {
+                action: "apply_patch".to_string(),
+                description: "patch".to_string(),
+                metadata: serde_json::json!({
+                    "preview": [{"path": "/tmp/work/a.txt", "relative_path": "a.txt"}]
+                }),
+            },
+            &request_path,
+            &response_path,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            UiPermissionApprovalDecision::AllowSession {
+                resources: vec!["/tmp/work/a.txt".to_string()]
+            }
+        );
+        assert!(fs::read_to_string(seen_request)
+            .unwrap()
+            .contains(r#""description": "patch""#));
+
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     #[cfg(unix)]

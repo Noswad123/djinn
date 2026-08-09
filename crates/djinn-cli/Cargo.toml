@@ -22,7 +22,6 @@ djinn-memory = { path = "../djinn-memory" }
 djinn-opencode = { path = "../djinn-opencode" }
 djinn-skills = { path = "../djinn-skills" }
 djinn-tools = { path = "../djinn-tools" }
-djinn-tui = { path = "../djinn-tui" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

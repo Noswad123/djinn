@@ -7,6 +7,8 @@ use async_trait::async_trait;
 use djinn_agent::{PermissionDecision, PermissionGate, PermissionRequest};
 use serde_json::Value;
 
+use crate::ui::{run_ui_permission_approval, UiPermissionApprovalDecision};
+
 #[derive(Debug, Default)]
 pub(crate) struct TerminalPermissionGate {
     session_scopes: Mutex<Vec<TerminalApprovalScope>>,
@@ -107,29 +109,53 @@ impl PermissionGate for TerminalPermissionGate {
             return Ok(decision);
         }
         self.report_permission_blocked(&request);
-        if request
-            .metadata
-            .get("preview")
-            .and_then(Value::as_array)
-            .is_some()
-            && io::stdin().is_terminal()
-            && io::stdout().is_terminal()
-        {
-            let decision = match djinn_tui::run_approval_dialog(request.metadata.clone())? {
-                djinn_tui::ApprovalDecision::ApproveAll => PermissionDecision::Allow,
-                djinn_tui::ApprovalDecision::ApprovePaths(paths) => {
-                    PermissionDecision::AllowPaths { paths }
-                }
-                djinn_tui::ApprovalDecision::ApproveAllForSession(paths)
-                | djinn_tui::ApprovalDecision::ApprovePathsForSession(paths) => {
-                    self.remember_resources_for_session(&request, paths.clone());
-                    PermissionDecision::AllowPaths { paths }
-                }
-                djinn_tui::ApprovalDecision::Deny => PermissionDecision::Deny,
-            };
-            self.report_permission_resolved();
-            return Ok(decision);
+        if io::stdin().is_terminal() && io::stdout().is_terminal() {
+            if let Ok(decision) = run_ui_permission_approval(&request) {
+                let decision = self.permission_decision_from_ui(&request, decision);
+                self.report_permission_resolved();
+                return Ok(decision);
+            }
         }
+        let decision = self.read_text_permission_decision(&request)?;
+        self.report_permission_resolved();
+        Ok(decision)
+    }
+}
+
+impl TerminalPermissionGate {
+    fn permission_decision_from_ui(
+        &self,
+        request: &PermissionRequest,
+        decision: UiPermissionApprovalDecision,
+    ) -> PermissionDecision {
+        match decision {
+            UiPermissionApprovalDecision::Allow => PermissionDecision::Allow,
+            UiPermissionApprovalDecision::AllowSession { resources } => {
+                let resources = if resources.is_empty() {
+                    approval_resources_from_metadata(&request.metadata)
+                } else {
+                    resources
+                };
+                self.remember_resources_for_session(request, resources.clone());
+                if request
+                    .metadata
+                    .get("preview")
+                    .and_then(Value::as_array)
+                    .is_some()
+                {
+                    PermissionDecision::AllowPaths { paths: resources }
+                } else {
+                    PermissionDecision::AllowResources { resources }
+                }
+            }
+            UiPermissionApprovalDecision::Deny => PermissionDecision::Deny,
+        }
+    }
+
+    fn read_text_permission_decision(
+        &self,
+        request: &PermissionRequest,
+    ) -> Result<PermissionDecision> {
         eprintln!("\nPermission approval required: {}", request.description);
         eprint!("{}", format_permission_preview(&request.metadata)?);
         eprint!("Approve this request? [y]es once, [s]ession, [N]o: ");
@@ -155,7 +181,6 @@ impl PermissionGate for TerminalPermissionGate {
         } else {
             PermissionDecision::Deny
         };
-        self.report_permission_resolved();
         Ok(decision)
     }
 }

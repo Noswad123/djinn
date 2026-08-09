@@ -52,21 +52,6 @@ pub(crate) fn resolve_folder_session_open_target_in_root(
     Ok(path)
 }
 
-pub(crate) fn fallback_folder_session_open_target(
-    session_dir: &Path,
-    target: SessionOpenTarget,
-) -> PathBuf {
-    match target {
-        SessionOpenTarget::Summary => session_dir.join("summary.md"),
-        SessionOpenTarget::Request => session_dir.join("request.md"),
-        SessionOpenTarget::Context => session_dir.join("context"),
-        SessionOpenTarget::Compacted => session_dir.join("context/compacted.md"),
-        SessionOpenTarget::Turns => session_dir.join("turns"),
-        SessionOpenTarget::Manifest => session_dir.join("djinn.toml"),
-        SessionOpenTarget::Repo => session_dir.join("repo"),
-    }
-}
-
 pub(crate) fn resolve_folder_session_open_dir_in_root(
     dir: &Path,
     ui_lookup_root: &Path,

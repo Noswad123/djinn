@@ -37,9 +37,8 @@ OpenCode-derived UI and is the preferred place to carry OpenCode-like layout, ke
 flow, command palette behavior, chat ergonomics, and visual polish. Djinn's Rust
 code owns the local runtime, folder-session files, CLI commands, policy, stores,
 and projections; the Djinn UI presents and invokes those capabilities through explicit
-bridge/API seams. The Rust `djinn-tui` may remain as a lightweight dashboard,
-debug/status surface, or fallback, but it should not try to clone Djinn UI/OpenCode's
-full look and feel.
+bridge/API seams. The retired Rust `djinn-tui` surface should not be restored;
+new interactive dashboard work belongs in Djinn UI.
 
 Djinn UI interaction direction:
 
@@ -497,12 +496,9 @@ Ask/preview direction:
   stdin/stderr are terminals, allowing humans to approve `ask`-gated patches in
   the one-shot CLI path. The terminal prompt renders the full structured patch
   preview, including hunk context, removals, additions, and move destinations.
-- `djinn-tui` now has reusable approval-preview state and hunk rendering helpers
-  that parse the same structured preview payload, track selected files, and
-  render file-level hunk lines for a future Ratatui approval dialog.
-- A first Ratatui approval dialog is available for terminal-backed permission
-  gates. It supports file navigation, preview scrolling, hunk-line filtering,
-  and explicit approve/deny actions over the structured patch preview payload.
+- The retired Ratatui approval dialog has been replaced by the terminal-backed
+  prompt for CLI permission flows; richer interactive approval UX belongs in
+  Djinn UI.
   The dialog also supports scoped per-file decisions: users can mark specific
   preview files and approve only those paths, approve all files in the current
   request, or remember marked/all preview paths for the current agent process.
@@ -642,9 +638,9 @@ The first non-interactive agent slice is implemented as:
     approval, ready for future interactive permission UX.
 11. Optional `PermissionGate` approval for `apply_patch`, including a terminal
     prompt in non-JSON `djinn agent ask` sessions with full hunk rendering.
-12. Reusable `djinn-tui` approval-preview state/rendering helpers for a future
-    scrollable Ratatui permission dialog.
-13. A Ratatui approval dialog used by terminal-backed `PermissionGate` flows.
+12. Retired Ratatui approval helpers/dialog; terminal-backed `PermissionGate`
+    flows use the text prompt, and richer approval UX belongs in Djinn UI.
+13. Reserved for future Djinn UI permission flow work.
 14. Default-on `write_file` and `edit_file` tools for direct file mutations via
     the shared reversible mutation pipeline. `write_file` creates or replaces
     UTF-8 text files while preserving exact content; `edit_file` performs

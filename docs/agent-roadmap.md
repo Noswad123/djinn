@@ -56,8 +56,8 @@ Design criteria:
 - Provide a chat action/slash command to summon the current `request.md` contents
   into the next prompt. This should insert or stage the file contents explicitly;
   it should not silently mutate `request.md` or send it without user confirmation.
-- Keep Rust `djinn-tui` as a lightweight/debug/fallback dashboard unless a future
-  slice explicitly retires it.
+- Keep Djinn UI as the sole interactive dashboard; Rust CLI flows should expose
+  text/JSON commands and route interactive views through Djinn UI.
 
 Ready implementation slices:
 
@@ -260,12 +260,11 @@ Use checks proportional to the change. For common roadmap items:
 cargo fmt --check
 cargo test -p djinn-cli <focused-filter>
 cargo test -p djinn-memory <focused-filter>
-cargo test -p djinn-tui <focused-filter>
 git diff --check
 ```
 
 For cross-crate agent/runtime changes, prefer:
 
 ```bash
-cargo test -p djinn-agent -p djinn-memory -p djinn-tui -p djinn-cli
+cargo test -p djinn-agent -p djinn-memory -p djinn-cli
 ```

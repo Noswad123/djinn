@@ -396,7 +396,6 @@ crates/djinn-memory/               # memories, suggestions, and follow-up artifa
 crates/djinn-opencode/             # OpenCode adapter
 crates/djinn-skills/               # skill discovery and lifecycle
 crates/djinn-tools/                # tool discovery and indexing
-crates/djinn-tui/                  # ratatui dashboard
 docs/                              # detailed docs
 legacy/go/                         # original Go implementation
 ```

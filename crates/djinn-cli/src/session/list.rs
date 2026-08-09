@@ -239,22 +239,6 @@ fn folder_session_event_health(path: &Path) -> Result<FolderSessionEventHealth> 
     })
 }
 
-pub(crate) fn folder_session_event_health_label(health: &FolderSessionEventHealth) -> String {
-    if health.ready {
-        format!("ready:{}/{}", health.event_turn_count, health.event_count)
-    } else if !health.events_exists {
-        "missing".to_string()
-    } else if let Some(code) = health.issue_codes.first() {
-        if health.issue_count > 1 {
-            format!("{code}+{}", health.issue_count - 1)
-        } else {
-            code.clone()
-        }
-    } else {
-        "not_ready".to_string()
-    }
-}
-
 fn folder_session_summary_order(
     left: &FolderSessionSummary,
     right: &FolderSessionSummary,

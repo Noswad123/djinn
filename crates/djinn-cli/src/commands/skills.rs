@@ -6,7 +6,6 @@ use djinn_skills::{
 
 use crate::cli_args::{AddSkillArgs, ListSkillsArgs, OutputFormat, RmSkillArgs, ShowSkillArgs};
 use crate::commands::context::context_store;
-use crate::util::editor::open_editor_at;
 use crate::util::text::output_format;
 
 pub(crate) fn list_skills(args: ListSkillsArgs) -> Result<()> {
@@ -74,10 +73,6 @@ pub(crate) fn rm_skill(args: RmSkillArgs) -> Result<()> {
         removed.path.display()
     );
     Ok(())
-}
-
-pub(crate) fn open_skill_entry(entry: &SkillRecord, editor: Option<String>) -> Result<()> {
-    open_editor_at(&entry.path, 1, editor)
 }
 
 pub(crate) fn skill_store() -> SkillStore {

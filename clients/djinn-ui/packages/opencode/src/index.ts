@@ -31,6 +31,7 @@ import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
 import { UpstreamCommand } from "./cli/cmd/upstream"
 import { DjinnBridgeCommand, runDjinnBridgeCommand } from "./cli/cmd/djinn-bridge"
+import { DjinnApprovalCommand, runDjinnApprovalCommand } from "./cli/cmd/djinn-approval"
 
 const args = hideBin(process.argv)
 const cliName = "djinn-ui"
@@ -84,6 +85,7 @@ const cli = yargs(args)
   .command(AcpCommand)
   .command(McpCommand)
   .command(DjinnBridgeCommand)
+  .command(DjinnApprovalCommand)
   .command(TuiThreadCommand)
   .command(AttachCommand)
   .command(RunCommand)
@@ -121,7 +123,18 @@ const cli = yargs(args)
   .strict()
 
 try {
-  if (args[0] === "djinn-bridge") {
+  if (args[0] === "djinn-approval") {
+    Heap.start()
+    process.env.AGENT = "1"
+    process.env.OPENCODE = "1"
+    process.env.OPENCODE_PID = String(process.pid)
+    const requestFlag = args.indexOf("--request")
+    const responseFlag = args.indexOf("--response")
+    if (requestFlag === -1 || responseFlag === -1 || !args[requestFlag + 1] || !args[responseFlag + 1]) {
+      throw new Error("djinn-approval requires --request and --response")
+    }
+    await runDjinnApprovalCommand(args[requestFlag + 1], args[responseFlag + 1])
+  } else if (args[0] === "djinn-bridge") {
     Heap.start()
     process.env.AGENT = "1"
     process.env.OPENCODE = "1"
