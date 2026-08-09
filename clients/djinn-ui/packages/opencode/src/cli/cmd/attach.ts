@@ -4,6 +4,14 @@ import { errorMessage } from "@opencode-ai/tui/util/error"
 import { validateSession } from "../tui/validate-session"
 import { ServerAuth } from "@/server/auth"
 
+type DjinnTab = "chat" | "sessions" | "memories" | "suggestions" | "skills" | "tools"
+
+const djinnTabs = ["chat", "sessions", "memories", "suggestions", "skills", "tools"] as const
+
+function resolveDjinnTab(value: string | undefined): DjinnTab | undefined {
+  return djinnTabs.find((tab) => tab === value)
+}
+
 export const AttachCommand = cmd({
   command: "attach <url>",
   describe: "attach to a running Djinn UI server",
@@ -58,6 +66,11 @@ export const AttachCommand = cmd({
       .option("replay-limit", {
         type: "number",
         describe: "cap visible mini replay to the newest N messages",
+      })
+      .option("djinn-tab", {
+        type: "string",
+        choices: ["chat", "sessions", "memories", "suggestions", "skills", "tools"] as const,
+        hidden: true,
       }),
   handler: async (args) => {
     if (args.replay === true) {
@@ -139,6 +152,7 @@ export const AttachCommand = cmd({
           continue: args.continue,
           sessionID: args.session,
           fork: args.fork,
+          djinnTab: resolveDjinnTab(args.djinnTab ?? process.env.DJINN_UI_INITIAL_TAB),
         },
         directory,
         headers,

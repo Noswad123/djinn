@@ -2379,7 +2379,10 @@ fn session_list_item_lines(
         .max(8);
     let mut lines = vec![Line::from(vec![
         Span::styled(checkbox.to_string(), dim_style()),
-        Span::styled(truncate_line_to_width(&session.name, name_width), title_style()),
+        Span::styled(
+            truncate_line_to_width(&session.name, name_width),
+            title_style(),
+        ),
     ])];
     if let Some(next) = session
         .next_action
@@ -2387,9 +2390,7 @@ fn session_list_item_lines(
         .filter(|next| !next.trim().is_empty())
     {
         let label = "Action: ";
-        let action_width = available_width
-            .saturating_sub(label.chars().count())
-            .max(8);
+        let action_width = available_width.saturating_sub(label.chars().count()).max(8);
         lines.push(Line::from(vec![
             Span::styled(label.to_string(), title_style()),
             Span::raw(truncate_line_to_width(

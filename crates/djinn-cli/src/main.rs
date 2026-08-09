@@ -14,12 +14,11 @@ mod promotion;
 mod runtime;
 mod session;
 mod storage;
-mod tui;
 mod ui;
 mod util;
 
 use auth::openai::run_auth;
-use cli_args::{parse_cli, print_cli_help, Command};
+use cli_args::{parse_cli, print_cli_help, Command, TuiView};
 use commands::agent::{run_agent, run_agents};
 use commands::agent_ask::top_level_ask;
 use commands::config::run_config;
@@ -29,7 +28,7 @@ use commands::top_level::{
     run_accept, run_add, run_clear, run_index, run_ingest, run_list, run_open, run_reject,
     run_review, run_rm, run_scan, run_search, run_show, run_switch,
 };
-use ui::run_top_level_ui_mode;
+use ui::{run_plain_ui_mode_with_initial_tab, run_top_level_ui_mode};
 
 pub(crate) const DEFAULT_AGENT_MAX_TOOL_ROUNDS: usize = 128;
 const BACKGROUND_RUN_UNRESPONSIVE_SECONDS: i64 = 30 * 60;
@@ -43,7 +42,10 @@ fn main() -> Result<()> {
         if cli.command.is_some() {
             bail!("-b/--ui opens the Djinn UI and cannot be combined with a Djinn subcommand");
         }
-        return run_top_level_ui_mode(cli.session);
+        return match cli.session {
+            Some(session) => run_top_level_ui_mode(Some(session)),
+            None => run_plain_ui_mode_with_initial_tab("sessions"),
+        };
     }
     if let Some(session) = cli.session {
         if cli.command.is_some() {
@@ -53,7 +55,7 @@ fn main() -> Result<()> {
     }
     let Some(command) = cli.command else {
         if io::stdin().is_terminal() && io::stdout().is_terminal() {
-            return run_top_level_ui_mode(None);
+            return run_plain_ui_mode_with_initial_tab("sessions");
         }
         print_cli_help()?;
         return Ok(());
@@ -80,6 +82,16 @@ fn main() -> Result<()> {
         Command::Session(args) => run_session(args),
         Command::Agent(args) => run_agent(args),
         Command::Agents(args) => run_agents(args),
-        Command::Tui(_args) => run_top_level_ui_mode(None),
+        Command::Tui(args) => run_plain_ui_mode_with_initial_tab(tui_initial_tab(args.view)),
+    }
+}
+
+fn tui_initial_tab(view: TuiView) -> &'static str {
+    match view {
+        TuiView::Tools => "tools",
+        TuiView::Sessions => "sessions",
+        TuiView::Memories => "memories",
+        TuiView::Suggestions => "suggestions",
+        TuiView::Skills => "skills",
     }
 }

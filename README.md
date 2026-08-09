@@ -81,10 +81,12 @@ djinn session run repo-review
 djinn session watch repo-review
 ```
 
-Folder-backed sessions are the canonical interactive workflow. `djinn` opens the
-Djinn UI by default, and `djinn tui` remains a deprecated alias. Use
-`djinn -s <session>` for a specific folder session, `djinn session run` to execute
-turns, and `djinn session watch` to follow lifecycle status. `djinn session init
+Folder-backed sessions are the canonical interactive workflow. `djinn` and bare
+`djinn session` open the Djinn UI Sessions dashboard by default; `djinn tui
+<view>` remains a deprecated alias that routes to the matching Djinn UI tab. Use
+`djinn -s <session>` or `djinn session <session>` for a specific folder session,
+`djinn session run` to execute turns, and `djinn session watch` to follow lifecycle
+status. `djinn session init
 <name>` and new auto-created top-level `djinn ask "..."` sessions create both the
 folder capsule and the UI session binding recorded in
 `runtime/djinn.json`; the Djinn UI is expected to ship with Djinn, so these

@@ -1114,11 +1114,11 @@ The first non-interactive agent slice is implemented as:
     `.env*`, `*.db`, `.pytest_cache/**`, and `.ruff_cache/**` are ignored by
     default. Repo-local Djinn config may tune include/exclude/index/ingest rules,
     but the defaults should work in mixed OpenCode/Copilot/Cursor/Claude repos.
-84. The session dashboard TUI uses terse entry points and calls folder-backed
-    session capsules **Sessions**. `djinn` with no arguments opens the
-    dashboard Sessions tab, fed from the same cache scan/status projection as
-    `djinn session ls`. `djinn session <name-or-path>` opens a focused session
-    view backed by the same status projection. The focused view provides
+84. The Djinn UI dashboard uses terse entry points and calls folder-backed
+    session capsules **Sessions**. `djinn` and bare `djinn session` open the
+    Djinn UI Sessions tab, fed from the same cache scan/status projection as
+    `djinn session ls`. `djinn session <name-or-path>` opens a focused Djinn UI
+    session. The focused view provides
     first-pass shortcuts for run, watch, open summary, edit request, open
     context, and discover context by delegating to the existing CLI commands
     after leaving the alternate screen. Verbose `djinn tui` or
@@ -1128,7 +1128,7 @@ The first non-interactive agent slice is implemented as:
     opening artifacts, and eventually polling active/background runs. The Sessions
     dashboard groups cache-backed sessions by linked repo, shows scannable
     lifecycle badges, and surfaces next-action hints in the list/preview for
-    quick triage before opening a focused view. The TUI
+    quick triage before opening a focused view. The Djinn UI
     should consume the same status projection as `djinn session status`,
     `djinn session ls`, and `djinn session watch <session>` rather than
     maintaining a separate status model. Folder-backed background runs write

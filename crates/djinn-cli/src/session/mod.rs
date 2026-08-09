@@ -13,6 +13,5 @@ pub(crate) mod remove;
 pub(crate) mod run_support;
 pub(crate) mod status;
 pub(crate) mod transcript;
-pub(crate) mod tui;
 pub(crate) mod turns;
 pub(crate) mod watch;

@@ -89,10 +89,11 @@ conversation count, and response preview; `turns/` is only consulted when no val
 event pairs are available. The default text `djinn session ls` table stays compact:
 repo grouping, updated time, lifecycle state, UI id, name, and summary preview.
 
-For direct interactive work, run `djinn`; use `djinn -s <ref>` to open a specific
-folder session in the Djinn UI. `djinn --ui` is the explicit UI launch spelling;
-`djinn -b` and the clustered short form `djinn -bs <ref>` remain deprecated aliases
-for the same UI launch path.
+For direct interactive work, run `djinn` or bare `djinn session` to open the
+Djinn UI Sessions dashboard; use `djinn -s <ref>` or `djinn session <ref>` to open
+a specific folder session in the Djinn UI. `djinn --ui` is the explicit UI launch
+spelling; `djinn -b` and the clustered short form `djinn -bs <ref>` remain
+deprecated aliases for the same UI launch path.
 Use `djinn session chat <ref>` when you want the same interactive chat experience
 but prefer an explicit subcommand over `-s`. Core
 existing-session entry points (`djinn -s`, `session open`, `session status`,

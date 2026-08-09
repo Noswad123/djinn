@@ -26,6 +26,7 @@ use crate::util::shell::shell_quote_if_needed as shell_quote;
 use crate::util::text::{ensure_trailing_newline, yes_no};
 
 pub(crate) const DJINN_UI_BIN_ENV: &str = "DJINN_UI_BIN";
+pub(crate) const DJINN_UI_INITIAL_TAB_ENV: &str = "DJINN_UI_INITIAL_TAB";
 pub(crate) const IN_TREE_UI_COMMAND: &str = "clients/djinn-ui/bin/djinn-ui";
 const EXPLICIT_UI_COMMAND_SOURCE: &str = "--ui-bin";
 pub(crate) const UNAVAILABLE_UI_COMMAND_SOURCE: &str = "unavailable";
@@ -250,6 +251,20 @@ impl UiCliBackend {
         self.resolution.runtime_command_override()
     }
 
+    fn launch_plain_with_initial_tab(&self, initial_tab: Option<&str>) -> Result<()> {
+        let mut command = ui_process_command(self.command())?;
+        if let Some(tab) = initial_tab.filter(|value| !value.trim().is_empty()) {
+            command.env(DJINN_UI_INITIAL_TAB_ENV, tab);
+        }
+        let status = command
+            .status()
+            .with_context(|| format!("launching Djinn UI command `{}`", self.command()))?;
+        if !status.success() {
+            bail!("Djinn UI exited with status {status}");
+        }
+        Ok(())
+    }
+
     fn execute_bridge_request(&self, request: UiBridgeRequest) -> Result<UiBridgeResponse> {
         match request {
             UiBridgeRequest::LaunchPlain => {
@@ -394,6 +409,10 @@ impl UiBridgeBackend {
 
     fn runtime_command_override(&self) -> Option<String> {
         self.cli.runtime_command_override()
+    }
+
+    fn launch_plain_with_initial_tab(&self, initial_tab: Option<&str>) -> Result<()> {
+        self.cli.launch_plain_with_initial_tab(initial_tab)
     }
 
     fn execute_wire_request(&self, request: UiBridgeWireRequest) -> Result<UiBridgeWireResponse> {
@@ -993,6 +1012,10 @@ pub(crate) fn write_ui_runtime_state(path: &Path, state: &UiRuntimeState) -> Res
 
 pub(crate) fn run_plain_ui_mode() -> Result<()> {
     UiBridgeBackend::resolved(None)?.launch_plain()
+}
+
+pub(crate) fn run_plain_ui_mode_with_initial_tab(initial_tab: &str) -> Result<()> {
+    UiBridgeBackend::resolved(None)?.launch_plain_with_initial_tab(Some(initial_tab))
 }
 
 pub(crate) fn run_top_level_ui_mode(session: Option<PathBuf>) -> Result<()> {

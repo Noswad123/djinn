@@ -451,7 +451,8 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const [pasteSummaryEnabled, setPasteSummaryEnabled] = createSignal(
     kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary),
   )
-  const [activeTab, setActiveTab] = createSignal<AppTabID>("chat")
+  const args = useArgs()
+  const [activeTab, setActiveTab] = createSignal<AppTabID>(validAppTab(args.djinnTab) ?? "chat")
   const tabs = createMemo(() => djinnTabs)
 
   const activeTabIndex = createMemo(() => Math.max(0, tabs().findIndex((tab) => tab.id === activeTab())))
@@ -496,7 +497,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     }
   })
 
-  const args = useArgs()
   onMount(() => {
     batch(() => {
       if (args.agent) local.agent.set(args.agent)
@@ -1937,4 +1937,8 @@ function isControlCharacter(value: string) {
 
 function titlecase(value: string) {
   return value.slice(0, 1).toUpperCase() + value.slice(1)
+}
+
+function validAppTab(value: string | undefined): AppTabID | undefined {
+  return djinnTabs.some((tab) => tab.id === value) ? (value as AppTabID) : undefined
 }

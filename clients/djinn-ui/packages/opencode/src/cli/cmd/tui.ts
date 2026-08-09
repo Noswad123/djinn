@@ -20,6 +20,13 @@ declare global {
 }
 
 type RpcClient = ReturnType<typeof Rpc.client<typeof rpc>>
+type DjinnTab = "chat" | "sessions" | "memories" | "suggestions" | "skills" | "tools"
+
+const djinnTabs = ["chat", "sessions", "memories", "suggestions", "skills", "tools"] as const
+
+function resolveDjinnTab(value: string | undefined): DjinnTab | undefined {
+  return djinnTabs.find((tab) => tab === value)
+}
 
 function createWorkerFetch(client: RpcClient): typeof fetch {
   const fn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -139,6 +146,11 @@ export const TuiThreadCommand = cmd({
       })
       .option("demo", {
         type: "boolean",
+        hidden: true,
+      })
+      .option("djinn-tab", {
+        type: "string",
+        choices: ["chat", "sessions", "memories", "suggestions", "skills", "tools"] as const,
         hidden: true,
       }),
   handler: async (args) => {
@@ -292,6 +304,7 @@ export const TuiThreadCommand = cmd({
               prompt,
               fork: args.fork,
               auto: args.auto || args.yolo || args["dangerously-skip-permissions"],
+              djinnTab: resolveDjinnTab(args.djinnTab ?? process.env.DJINN_UI_INITIAL_TAB),
             },
           }),
         )

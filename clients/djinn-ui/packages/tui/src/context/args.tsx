@@ -8,6 +8,7 @@ export interface Args {
   sessionID?: string
   fork?: boolean
   auto?: boolean
+  djinnTab?: "chat" | "sessions" | "memories" | "suggestions" | "skills" | "tools"
 }
 
 export const { use: useArgs, provider: ArgsProvider } = createSimpleContext({
