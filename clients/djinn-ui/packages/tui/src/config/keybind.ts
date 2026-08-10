@@ -56,7 +56,7 @@ export const Definitions = {
   app_toggle_session_directory_filter: keybind("none", "Toggle session directory filtering"),
   tab_next: keybind("tab", "Move to next tab"),
   tab_previous: keybind("shift+tab", "Move to previous tab"),
-  command_list: keybind("ctrl+p", "List available commands"),
+  command_list: keybind("ctrl+shift+p", "List available commands"),
   help_show: keybind("none", "Open help dialog"),
   docs_open: keybind("none", "Open documentation"),
   diff_open: keybind("none", "Open diff viewer"),
@@ -228,7 +228,7 @@ export const Definitions = {
   plugin_manager: keybind("none", "Open plugin manager dialog"),
   plugin_install: keybind("none", "Install plugin"),
 
-  which_key_toggle: keybind("ctrl+alt+k", "Toggle which-key panel"),
+  which_key_toggle: keybind("ctrl+p", "Toggle which-key panel"),
   which_key_layout_toggle: keybind("ctrl+alt+shift+k", "Switch which-key layout"),
   which_key_pending_toggle: keybind("ctrl+alt+shift+p", "Toggle which-key pending preview"),
   which_key_group_previous: keybind("ctrl+alt+left,ctrl+alt+[", "Previous which-key group"),

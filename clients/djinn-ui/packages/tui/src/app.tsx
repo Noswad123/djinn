@@ -1,4 +1,4 @@
-import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { registerOpencodeSpinner } from "./component/register-spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
@@ -1194,6 +1194,7 @@ function SessionTab(props: { onOpenUiSession: (sessionID: string) => void }) {
   const { theme } = useTheme()
   const toast = useToast()
   const renderer = useRenderer()
+  const dimensions = useTerminalDimensions()
   const [filter, setFilter] = createSignal("")
   const [selectedPath, setSelectedPath] = createSignal<string>()
   const [checked, setChecked] = createSignal(new Set<string>())
@@ -1234,6 +1235,7 @@ function SessionTab(props: { onOpenUiSession: (sessionID: string) => void }) {
     const session = selectedSession()
     return session ? [session.path] : []
   })
+  const previewWidth = createMemo(() => Math.max(16, Math.min(Math.floor(dimensions().width * 0.6), dimensions().width - 24)))
 
   createEffect(() => {
     const first = filteredSessions()[0]
@@ -1325,120 +1327,95 @@ function SessionTab(props: { onOpenUiSession: (sessionID: string) => void }) {
     })
   }
 
-  useKeyboard((evt) => {
-    if (renderer.currentFocusedEditor) return
-    if (evt.ctrl && evt.name === "d") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      moveSelection(10)
-      return
-    }
-    if (evt.ctrl && evt.name === "u") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      moveSelection(-10)
-      return
-    }
-    if (evt.name === "j" || evt.name === "down") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      moveSelection(1)
-      return
-    }
-    if (evt.name === "k" || evt.name === "up") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      moveSelection(-1)
-      return
-    }
-    if (evt.name === "space") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      toggleSelectedSession()
-      return
-    }
-    if (evt.name === "A" || (evt.shift && evt.name === "a")) {
-      evt.preventDefault()
-      evt.stopPropagation()
-      toggleAll()
-      return
-    }
-    if (evt.name === "/") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      filterInput?.focus()
-      return
-    }
-
+  useBindings(() => {
     const session = selectedSession()
-    if (!session) return
-    if (evt.name === "return" || evt.name === "b") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      openUiSession(session)
-      return
-    }
-    if (evt.name === "r") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      void runAndRefresh("Run session", ["session", "run", session.path])
-      return
-    }
-    if (evt.name === "w") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      void runAction("Watch session", ["session", "watch", session.path])
-      return
-    }
-    if (evt.name === "o") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      void runAction("Open summary", ["session", "open", session.path, "summary"])
-      return
-    }
-    if (evt.name === "e") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      void runAction("Edit request", ["session", "open", session.path, "request"])
-      return
-    }
-    if (evt.name === "c") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      void runAction("Open context", ["session", "open", session.path, "context"])
-      return
-    }
-    if (evt.name === "d") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      void runAndRefresh("Discover context", ["session", "context", "discover", session.path])
-      return
-    }
-
     const item = candidate()
-    if (!item) return
-    if (evt.name === "p") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      openSelectedCandidate()
-      return
-    }
-    if (evt.name === "a") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      void runAndRefresh("Accept candidate", ["session", "accept", session.path, item.id])
-      return
-    }
-    if (evt.name === "m") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      void runAndRefresh("Accept candidate and sync MindWeaver", ["session", "accept", session.path, item.id, "--sync-mindweaver"])
-      return
-    }
-    if (evt.name === "x") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      void runAndRefresh("Deny candidate", ["session", "deny", session.path, item.id])
+
+    return {
+      enabled: () => renderer.currentFocusedEditor === null,
+      bindings: [
+        { key: "down", desc: "Next session", group: "Sessions", cmd: () => moveSelection(1) },
+        { key: "j", desc: "Next session", group: "Sessions", cmd: () => moveSelection(1) },
+        { key: "up", desc: "Previous session", group: "Sessions", cmd: () => moveSelection(-1) },
+        { key: "k", desc: "Previous session", group: "Sessions", cmd: () => moveSelection(-1) },
+        { key: "ctrl+d", desc: "Jump down sessions", group: "Sessions", cmd: () => moveSelection(10) },
+        { key: "ctrl+u", desc: "Jump up sessions", group: "Sessions", cmd: () => moveSelection(-10) },
+        { key: "space", desc: "Toggle selected session", group: "Sessions", cmd: toggleSelectedSession },
+        { key: "shift+a", desc: "Toggle all filtered sessions", group: "Sessions", cmd: toggleAll },
+        { key: "/", desc: "Focus session filter", group: "Sessions", cmd: () => filterInput?.focus() },
+        ...(session
+          ? [
+              { key: "return", desc: "Open linked chat session", group: "Sessions", cmd: () => openUiSession(session) },
+              { key: "b", desc: "Open linked chat session", group: "Sessions", cmd: () => openUiSession(session) },
+              {
+                key: "r",
+                desc: "Run session",
+                group: "Sessions",
+                cmd: () => void runAndRefresh("Run session", ["session", "run", session.path]),
+              },
+              {
+                key: "w",
+                desc: "Watch session",
+                group: "Sessions",
+                cmd: () => void runAction("Watch session", ["session", "watch", session.path]),
+              },
+              {
+                key: "o",
+                desc: "Open summary",
+                group: "Sessions",
+                cmd: () => void runAction("Open summary", ["session", "open", session.path, "summary"]),
+              },
+              {
+                key: "e",
+                desc: "Edit request",
+                group: "Sessions",
+                cmd: () => void runAction("Edit request", ["session", "open", session.path, "request"]),
+              },
+              {
+                key: "c",
+                desc: "Open context",
+                group: "Sessions",
+                cmd: () => void runAction("Open context", ["session", "open", session.path, "context"]),
+              },
+              {
+                key: "d",
+                desc: "Discover context",
+                group: "Sessions",
+                cmd: () => void runAndRefresh("Discover context", ["session", "context", "discover", session.path]),
+              },
+            ]
+          : []),
+        ...(session && item
+          ? [
+              { key: "p", desc: "Open candidate", group: "Candidate", cmd: openSelectedCandidate },
+              {
+                key: "a",
+                desc: "Accept candidate",
+                group: "Candidate",
+                cmd: () => void runAndRefresh("Accept candidate", ["session", "accept", session.path, item.id]),
+              },
+              {
+                key: "m",
+                desc: "Accept candidate and sync MindWeaver",
+                group: "Candidate",
+                cmd: () =>
+                  void runAndRefresh("Accept candidate and sync MindWeaver", [
+                    "session",
+                    "accept",
+                    session.path,
+                    item.id,
+                    "--sync-mindweaver",
+                  ]),
+              },
+              {
+                key: "x",
+                desc: "Deny candidate",
+                group: "Candidate",
+                cmd: () => void runAndRefresh("Deny candidate", ["session", "deny", session.path, item.id]),
+              },
+            ]
+          : []),
+      ],
     }
   })
 
@@ -1478,7 +1455,7 @@ function SessionTab(props: { onOpenUiSession: (sessionID: string) => void }) {
           {(error) => <text fg={theme.error}>{String(error())}</text>}
         </Match>
         <Match when={true}>
-          <box flexGrow={1} minHeight={0} flexDirection="row" gap={1}>
+          <box flexGrow={1} minHeight={0} flexDirection="row" gap={2}>
             <box flexGrow={1} minHeight={0} gap={1}>
               <For each={filteredSessions()} fallback={<text fg={theme.textMuted}>No Djinn sessions match.</text>}>
                 {(session) => {
@@ -1510,7 +1487,7 @@ function SessionTab(props: { onOpenUiSession: (sessionID: string) => void }) {
                 }}
               </For>
             </box>
-            <box flexGrow={1} minHeight={0} gap={1}>
+            <box width={previewWidth()} flexShrink={0} minHeight={0} gap={1}>
               <Show when={selectedSession()} fallback={<text fg={theme.textMuted}>Select a session for preview and actions.</text>}>
                 {(session) => (
                   <>
@@ -1616,32 +1593,17 @@ function ToolsTab() {
     setSelectedKey(toolKey(items[next]!))
   }
 
-  useKeyboard((evt) => {
-    if (renderer.currentFocusedEditor) return
-    if (evt.name === "j") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      moveSelection(1)
-      return
-    }
-    if (evt.name === "k") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      moveSelection(-1)
-      return
-    }
-    if (evt.ctrl && evt.name === "d") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      moveSelection(10)
-      return
-    }
-    if (evt.ctrl && evt.name === "u") {
-      evt.preventDefault()
-      evt.stopPropagation()
-      moveSelection(-10)
-    }
-  })
+  useBindings(() => ({
+    enabled: () => renderer.currentFocusedEditor === null,
+    bindings: [
+      { key: "down", desc: "Next tool", group: "Tools", cmd: () => moveSelection(1) },
+      { key: "j", desc: "Next tool", group: "Tools", cmd: () => moveSelection(1) },
+      { key: "up", desc: "Previous tool", group: "Tools", cmd: () => moveSelection(-1) },
+      { key: "k", desc: "Previous tool", group: "Tools", cmd: () => moveSelection(-1) },
+      { key: "ctrl+d", desc: "Jump down tools", group: "Tools", cmd: () => moveSelection(10) },
+      { key: "ctrl+u", desc: "Jump up tools", group: "Tools", cmd: () => moveSelection(-10) },
+    ],
+  }))
 
   async function openTool(tool: DjinnToolEntry) {
     setStatus(`Open ${tool.path}:${tool.line}`)
