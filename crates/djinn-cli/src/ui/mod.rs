@@ -1103,7 +1103,7 @@ pub(crate) fn run_plain_ui_mode_with_initial_tab(initial_tab: &str) -> Result<()
 
 pub(crate) fn run_top_level_ui_mode(session: Option<PathBuf>) -> Result<()> {
     if let Some(session) = session {
-        let (session_dir, ui_session) = resolve_top_level_ui_session_arg(session)?;
+        let (session_dir, ui_session) = resolve_or_adopt_top_level_ui_session_arg(session, None)?;
         return run_top_level_folder_ui_session(&session_dir, ui_session);
     }
     run_plain_ui_mode()
@@ -1134,26 +1134,14 @@ pub(crate) fn session_chat(args: SessionChatArgs) -> Result<()> {
         return Ok(());
     }
 
-    let (session_dir, resolved_ui_session) = resolve_top_level_ui_session_arg(args.dir)?;
+    let (session_dir, resolved_ui_session) =
+        resolve_or_adopt_top_level_ui_session_arg(args.dir, args.ui_bin.as_deref())?;
     run_top_level_folder_ui_session_with_options(
         &session_dir,
         resolved_ui_session,
         args.ui_bin,
         &args.ui_args,
     )
-}
-
-pub(crate) fn resolve_top_level_ui_session_arg(
-    session: PathBuf,
-) -> Result<(PathBuf, Option<String>)> {
-    resolve_or_initialize_top_level_ui_session_arg(session)
-}
-
-fn resolve_or_initialize_top_level_ui_session_arg(
-    session: PathBuf,
-) -> Result<(PathBuf, Option<String>)> {
-    let root = default_folder_session_root();
-    resolve_or_initialize_top_level_ui_session_arg_in_root(session, &root)
 }
 
 fn resolve_or_initialize_top_level_ui_session_arg_in_root(
@@ -1177,6 +1165,52 @@ fn resolve_or_initialize_top_level_ui_session_arg_in_root(
 
     initialize_missing_interactive_folder_session(&session_dir)?;
     Ok((session_dir, None))
+}
+
+fn resolve_or_adopt_top_level_ui_session_arg(
+    session: PathBuf,
+    explicit_ui_bin: Option<&str>,
+) -> Result<(PathBuf, Option<String>)> {
+    let root = default_folder_session_root();
+    resolve_or_adopt_top_level_ui_session_arg_in_root(session, &root, explicit_ui_bin)
+}
+
+fn resolve_or_adopt_top_level_ui_session_arg_in_root(
+    session: PathBuf,
+    root: &Path,
+    explicit_ui_bin: Option<&str>,
+) -> Result<(PathBuf, Option<String>)> {
+    match resolve_or_initialize_top_level_ui_session_arg_in_root(session.clone(), root) {
+        Ok(resolved) => Ok(resolved),
+        Err(original_error) if looks_like_ui_session_reference(&session) => {
+            let Some(ui_session_id) = session.to_str().map(str::trim).filter(|id| !id.is_empty())
+            else {
+                return Err(original_error);
+            };
+            let ui_backend = if let Some(ui_bin) = explicit_ui_bin
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                UiBridgeBackend::explicit(ui_bin.to_string())
+            } else {
+                UiBridgeBackend::resolved(None)?
+            };
+            let adopted =
+                consolidate::adopt_ui_session_by_id_in_root(root, &ui_backend, ui_session_id)
+                    .with_context(|| {
+                        format!(
+                            "adopting unbound UI session `{}` into folder session root {}",
+                            ui_session_id,
+                            root.display()
+                        )
+                    })?;
+            if let Some(session_dir) = adopted {
+                return Ok((session_dir, Some(ui_session_id.to_string())));
+            }
+            Err(original_error)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn initialize_missing_interactive_folder_session(session_dir: &Path) -> Result<()> {
@@ -2820,6 +2854,68 @@ exit 2
 
         assert!(error.to_string().contains("folder session does not exist"));
         assert!(!root.join("ses_missing").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn top_level_ui_session_arg_adopts_unbound_ui_session_id() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "djinn-ui-adopt-id-test-{}",
+            chrono::Local::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let ui_bin = root.join("djinn-ui-bridge.sh");
+        let bridge_response = serde_json::json!({
+            "type": "sessions",
+            "sessions": [{
+                "id": "ses_plainChat123",
+                "title": "Plain Chat",
+                "updated": 1785201849000i64,
+                "created": 1785201800000i64,
+                "projectId": "project-1",
+                "directory": workspace.display().to_string(),
+            }]
+        })
+        .to_string();
+        fs::write(
+            &ui_bin,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"djinn-bridge\" ]; then\n  cat >/dev/null\n  printf '%s\\n' '{}'\n  exit 0\nfi\necho unexpected ui args: \"$@\" >&2\nexit 2\n",
+                bridge_response
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&ui_bin, permissions).unwrap();
+
+        let (session_dir, ui_session) = resolve_or_adopt_top_level_ui_session_arg_in_root(
+            PathBuf::from("ses_plainChat123"),
+            &root.join("sessions"),
+            Some(&ui_bin.display().to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(ui_session.as_deref(), Some("ses_plainChat123"));
+        assert!(session_dir.is_dir());
+        assert_eq!(
+            session_dir.file_name().and_then(|name| name.to_str()),
+            Some("plain_chat-ses_plainchat123")
+        );
+        let manifest = fs::read_to_string(session_dir.join("djinn.toml")).unwrap();
+        assert!(manifest.contains("title = \"Plain Chat\""));
+        assert!(manifest.contains("source = \"ui\""));
+        assert!(manifest.contains(&workspace.display().to_string()));
+        let runtime = fs::read_to_string(session_dir.join("runtime/djinn.json")).unwrap();
+        assert!(runtime.contains("ses_plainChat123"));
+        assert!(runtime.contains(&ui_bin.display().to_string()));
 
         let _ = fs::remove_dir_all(&root);
     }

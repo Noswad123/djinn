@@ -10,6 +10,17 @@ Source repositories inspected on 2026-07-21:
 - OpenCode: `/Users/jdawson/Projects/opencode`
 - Djinn target docs/crates: `/Users/jdawson/Projects/djinn`
 
+OpenCode feature audit checkpoint:
+
+- Last audited OpenCode branch/commit: `dev` at
+  `70b4ca8c181e4c1ac6d8993b86249d824487ec65`.
+- Audit date: 2026-09-04.
+- Scope: scanned OpenCode commits since 2026-06-01, focusing on `feat*` commits
+  and the delta after Djinn UI's observed OpenCode baseline around `1.18.4`.
+- Conclusion: no game-breaking Djinn gaps were identified. Future audits should
+  start from the checkpoint commit above and look for newly-added OpenCode
+  features worth porting, explicitly adopting, deferring, or rejecting.
+
 Use this as the menu for a later product decision pass: keep, defer, reject, or
 delegate each capability.
 

@@ -87,10 +87,11 @@ Folder-backed sessions are the canonical interactive workflow. `djinn` and bare
 `djinn -s <session>` or `djinn session <session>` for a specific folder session,
 `djinn session run` to execute turns, and `djinn session watch` to follow lifecycle
 status. `djinn session init
-<name>` and new auto-created top-level `djinn ask "..."` sessions create both the
+<name>`, new auto-created top-level `djinn ask "..."` sessions, and new sessions
+started from the Djinn UI chat create both the
 folder capsule and the UI session binding recorded in
 `runtime/djinn.json`; the Djinn UI is expected to ship with Djinn, so these
-creation paths fail if that binding cannot be created or reused. `djinn --ui` is
+creation paths create or reuse a binding. `djinn --ui` is
 the explicit UI launch spelling; `djinn -b`, `djinn -b -s <ref>`, and
 `djinn -bs <ref>` remain deprecated aliases for the same UI launch path.
 `djinn session chat <ref>` is the explicit interactive chat spelling for the same
@@ -98,7 +99,10 @@ folder-session UI experience. Core
 existing-session entry points such as `djinn -s`, `session open`, `session status`,
 `session watch`, `session run`, `session chat`, and `session rm`
 resolve folder-session names/paths plus current or stale UI ids already recorded
-in `runtime/djinn.json`. Use `djinn session chat <ref> --capture-request` to send
+in `runtime/djinn.json`. If `djinn -s <ui-session-id>` or `djinn session chat
+<ui-session-id>` points at a UI-only chat that is not yet recorded, Djinn adopts it
+on first launch by creating a folder capsule bound to that UI session id. Use
+`djinn session chat <ref> --capture-request` to send
 `request.md` to the Djinn UI on stdin and capture the UI's final response back into
 `summary.md` and `events.jsonl`; plain UI/chat mode resumes the UI interactively
 instead. When the UI is launched through `djinn -s <ref>` or

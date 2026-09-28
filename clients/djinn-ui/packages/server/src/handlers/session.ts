@@ -67,13 +67,22 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.create",
         Effect.fn(function* (ctx) {
+          const created = yield* session.create({
+            id: ctx.payload.id,
+            agent: ctx.payload.agent,
+            model: ctx.payload.model,
+            location: ctx.payload.location ?? { directory: AbsolutePath.make(process.cwd()) },
+          })
+          yield* adoptDjinnFolderSession(created).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("failed to adopt Djinn UI session into folder capsule", {
+                sessionID: created.id,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            ),
+          )
           return {
-            data: yield* session.create({
-              id: ctx.payload.id,
-              agent: ctx.payload.agent,
-              model: ctx.payload.model,
-              location: ctx.payload.location ?? { directory: AbsolutePath.make(process.cwd()) },
-            }),
+            data: created,
           }
         }),
       )
@@ -383,3 +392,37 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       )
   }),
 )
+
+function adoptDjinnFolderSession(info: SessionV2.Info) {
+  return Effect.tryPromise({
+    try: async () => {
+      const proc = Bun.spawn(
+        [
+          process.env.DJINN_BIN ?? "djinn",
+          "session",
+          "adopt-ui",
+          "--id",
+          info.id,
+          "--title",
+          info.title || "New session",
+          "--repo",
+          info.location.directory,
+          "--created-at",
+          new Date(DateTime.toEpochMillis(info.time.created)).toISOString(),
+          "--updated-at",
+          new Date(DateTime.toEpochMillis(info.time.updated)).toISOString(),
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      )
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ])
+      if (exitCode !== 0) {
+        throw new Error(stderr.trim() || stdout.trim() || `djinn session adopt-ui exited ${exitCode}`)
+      }
+    },
+    catch: (error) => error,
+  })
+}

@@ -32,6 +32,9 @@ pub(crate) enum SessionCommand {
     Chat(SessionChatArgs),
     /// Reconcile Djinn folder sessions and Djinn UI sessions.
     Consolidate(SessionConsolidateArgs),
+    /// Adopt a Djinn UI session into a folder-backed session capsule.
+    #[command(name = "adopt-ui", hide = true)]
+    AdoptUi(SessionAdoptUiArgs),
     /// Poll a folder-backed session until it is no longer running.
     Watch(SessionWatchArgs),
     /// Deterministically compact turn request/response evidence into context/compacted.md.
@@ -159,6 +162,31 @@ pub(crate) struct SessionConsolidateArgs {
     /// Djinn UI executable/command. Defaults to DJINN_UI_BIN, then clients/djinn-ui/bin/djinn-ui.
     #[arg(long = "ui-bin", value_name = "UI_COMMAND")]
     pub(crate) ui_bin: Option<String>,
+    /// Output JSON instead of text.
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SessionAdoptUiArgs {
+    /// Djinn UI session id to bind.
+    #[arg(long)]
+    pub(crate) id: String,
+    /// Djinn UI session title.
+    #[arg(long)]
+    pub(crate) title: String,
+    /// Repository/workspace path recorded by the Djinn UI session.
+    #[arg(long = "repo", value_name = "PATH")]
+    pub(crate) repo_path: String,
+    /// UI session creation time as RFC3339 or epoch string.
+    #[arg(long = "created-at")]
+    pub(crate) created_at: Option<String>,
+    /// UI session update time as RFC3339 or epoch string.
+    #[arg(long = "updated-at")]
+    pub(crate) updated_at: Option<String>,
+    /// Optional summary text to seed summary.md.
+    #[arg(long)]
+    pub(crate) summary: Option<String>,
     /// Output JSON instead of text.
     #[arg(long)]
     pub(crate) json: bool,

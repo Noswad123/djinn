@@ -2,15 +2,16 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use djinn_memory::AgentSessionId;
 use serde::Serialize;
 
-use crate::cli_args::SessionConsolidateArgs;
+use crate::cli_args::{SessionAdoptUiArgs, SessionConsolidateArgs};
 use crate::session::list::{list_folder_sessions_in_root, FolderSessionSummary};
 use crate::session::manifest::toml_string;
 use crate::session::reference::{
-    default_folder_session_root, folder_session_reference_name, safe_folder_session_slug,
+    default_folder_session_root, folder_session_reference_name,
+    resolve_ui_session_reference_in_root, safe_folder_session_slug,
 };
 use crate::ui::{
     write_ui_runtime_state, UiBridgeBackend, UiRuntimeState, UiSessionBackend, UiSessionListRecord,
@@ -38,6 +39,14 @@ pub(crate) struct SessionConsolidateEntry {
     pub(crate) session_dir: Option<String>,
     pub(crate) ui_session: Option<String>,
     pub(crate) note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct SessionAdoptUiReport {
+    pub(crate) session_dir: String,
+    pub(crate) ui_session: String,
+    pub(crate) title: String,
+    pub(crate) repo_path: String,
 }
 
 pub(crate) fn consolidate_sessions_in_root(
@@ -209,6 +218,48 @@ pub(crate) fn session_consolidate(args: SessionConsolidateArgs) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn session_adopt_ui(args: SessionAdoptUiArgs) -> Result<()> {
+    let id = args.id.trim().to_string();
+    if id.is_empty() {
+        bail!("--id is required");
+    }
+    let title = args.title.trim().to_string();
+    if title.is_empty() {
+        bail!("--title is required");
+    }
+    let repo_path = args.repo_path.trim().to_string();
+    if repo_path.is_empty() {
+        bail!("--repo is required");
+    }
+
+    let ui = UiSessionListRecord {
+        id,
+        title,
+        repo_path,
+        created_at: args
+            .created_at
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        updated_at: args
+            .updated_at
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        summary: args.summary.unwrap_or_default(),
+    };
+    let session_dir = adopt_ui_session_record_in_root(&default_folder_session_root(), &ui, None)?;
+    let report = SessionAdoptUiReport {
+        session_dir: session_dir.display().to_string(),
+        ui_session: ui.id,
+        title: ui.title,
+        repo_path: ui.repo_path,
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("{}", report.session_dir);
+    }
+    Ok(())
+}
+
 fn deterministic_ui_match<'a>(
     session: &FolderSessionSummary,
     ui_sessions: &'a [UiSessionListRecord],
@@ -275,6 +326,41 @@ fn ui_adopted_folder_path(root: &Path, ui: &UiSessionListRecord) -> Result<PathB
         suffix += 1;
     }
     Ok(candidate)
+}
+
+pub(crate) fn adopt_ui_session_by_id_in_root(
+    root: &Path,
+    ui_backend: &dyn UiSessionBackend,
+    ui_session_id: &str,
+) -> Result<Option<PathBuf>> {
+    let ui_session_id = ui_session_id.trim();
+    if ui_session_id.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(ui) = ui_backend
+        .list_sessions()?
+        .into_iter()
+        .find(|session| session.id == ui_session_id)
+    else {
+        return Ok(None);
+    };
+
+    adopt_ui_session_record_in_root(root, &ui, ui_backend.runtime_command_override()).map(Some)
+}
+
+pub(crate) fn adopt_ui_session_record_in_root(
+    root: &Path,
+    ui: &UiSessionListRecord,
+    runtime_command_override: Option<String>,
+) -> Result<PathBuf> {
+    if let Some((session_dir, _)) = resolve_ui_session_reference_in_root(root, Path::new(&ui.id))? {
+        return Ok(session_dir);
+    }
+
+    let folder_dir = ui_adopted_folder_path(root, ui)?;
+    create_folder_session_from_ui(root, &folder_dir, ui, runtime_command_override)?;
+    Ok(folder_dir)
 }
 
 fn create_folder_session_from_ui(

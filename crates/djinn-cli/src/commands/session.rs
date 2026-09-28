@@ -19,8 +19,8 @@ use crate::session::status::session_status;
 use crate::session::transcript::session_transcript;
 use crate::session::watch::session_watch;
 use crate::ui::{
-    consolidate::session_consolidate, run_plain_ui_mode_with_initial_tab, run_top_level_ui_mode,
-    session_chat,
+    consolidate::{session_adopt_ui, session_consolidate},
+    run_plain_ui_mode_with_initial_tab, run_top_level_ui_mode, session_chat,
 };
 
 pub(crate) fn run_session(args: SessionArgs) -> Result<()> {
@@ -47,6 +47,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Run(args) => session_run(args),
         SessionCommand::Chat(args) => session_chat(args),
         SessionCommand::Consolidate(args) => session_consolidate(args),
+        SessionCommand::AdoptUi(args) => session_adopt_ui(args),
         SessionCommand::Watch(args) => session_watch(args),
         SessionCommand::Compact(args) => session_compact(args),
         SessionCommand::Promote(args) => session_promote(args),
