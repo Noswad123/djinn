@@ -1,4 +1,5 @@
 # Djinn
+![Djinn](img/djinn.png)
 
 Djinn is a local-first companion for OpenCode and other AI coding agents. It
 connects local tools, AI sessions, reviewed memory, reusable skills, and lightweight
