@@ -13,6 +13,8 @@ pub(crate) struct AgentArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum AgentCommand {
+    /// Deprecated alias for `djinn -s <session>`.
+    Chat(AgentChatArgs),
     /// Inspect discovered agent profiles and models.
     Config(AgentConfigArgs),
     /// Inspect built-in agent runtime tools.
@@ -23,6 +25,13 @@ pub(crate) enum AgentCommand {
     FileHistory(AgentFileHistoryArgs),
     /// Deprecated alias for top-level `djinn ask`.
     Ask(AgentAskArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AgentChatArgs {
+    /// Session id to resume in the Djinn UI. Prefer `djinn -s <session>`.
+    #[arg(long, value_name = "SESSION")]
+    pub(crate) resume: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -391,6 +400,18 @@ mod tests {
             "5",
         ])
         .is_err());
+    }
+
+    #[test]
+    fn parses_legacy_agent_chat_resume_alias() {
+        let cli = Cli::try_parse_from(["djinn", "agent", "chat", "--resume", "ses_123"]).unwrap();
+        let Some(Command::Agent(agent_args)) = cli.command else {
+            panic!("expected agent command");
+        };
+        let AgentCommand::Chat(args) = agent_args.command else {
+            panic!("expected agent chat command");
+        };
+        assert_eq!(args.resume, PathBuf::from("ses_123"));
     }
 
     #[test]

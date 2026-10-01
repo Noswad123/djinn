@@ -28,10 +28,15 @@ use crate::model::resolution::{
     agent_model_options, agent_profile_options, resolve_agent_model,
     resolve_agent_model_from_config, resolve_agent_profile,
 };
+use crate::ui::run_top_level_ui_mode;
 use crate::util::text::output_format;
 
 pub(crate) fn run_agent(args: AgentArgs) -> Result<()> {
     match args.command {
+        AgentCommand::Chat(args) => {
+            warn_legacy_agent_command("agent chat --resume", Some("use `djinn -s <session>`"));
+            run_top_level_ui_mode(Some(args.resume))
+        }
         AgentCommand::Config(args) => {
             warn_legacy_agent_command(
                 "agent config",
