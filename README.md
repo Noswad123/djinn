@@ -238,6 +238,22 @@ are read only by explicit doctor/import adapter commands. OpenCode and Copilot
 exports can preview or write supported fields; exports refuse to overwrite
 existing files unless `--force` is passed.
 
+Manage MCP servers through the bundled Djinn UI/OpenCode-compatible MCP surface:
+
+```bash
+djinn mcp list
+djinn mcp auth atlassian
+djinn mcp add <name> --url https://example.com/mcp
+djinn mcp logout atlassian
+```
+
+`djinn mcp ...` delegates to the resolved Djinn UI command, so it supports the
+same MCP server names and OAuth flows as the UI while Djinn's native MCP runtime
+model is still evolving. Known hosted providers can be bootstrapped by name;
+`djinn mcp auth atlassian` automatically adds the Atlassian Rovo MCP endpoint
+(`https://mcp.atlassian.com/v2/mcp`) before starting OAuth when an `atlassian`
+MCP server is not already configured.
+
 Work in folder-backed sessions:
 
 ```bash

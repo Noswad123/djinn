@@ -229,7 +229,10 @@ These are intentionally out of scope until a concrete need appears.
 
 ### MCP
 
-Blocked until there is a workflow that requires MCP. When unblocked, revisit:
+Partially unblocked for user-facing auth/server management through
+`djinn mcp ...`, which delegates to the bundled Djinn UI/OpenCode-compatible MCP
+command. Native Djinn runtime MCP is still deferred. Before exposing MCP tools in
+the Rust agent runtime, revisit:
 
 - stdio vs SSE support;
 - config format;

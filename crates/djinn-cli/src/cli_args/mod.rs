@@ -72,6 +72,8 @@ pub(crate) enum Command {
     Doctor(DoctorArgs),
     /// Manage provider credentials.
     Auth(AuthArgs),
+    /// Manage MCP servers and OAuth credentials through Djinn UI compatibility.
+    Mcp(McpArgs),
     /// Ask Djinn from a new or existing session without the legacy agent prefix.
     Ask(AgentAskArgs),
     /// Manage folder-backed Djinn work sessions.

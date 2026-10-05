@@ -23,6 +23,7 @@ use commands::agent::{run_agent, run_agents};
 use commands::agent_ask::top_level_ask;
 use commands::config::run_config;
 use commands::doctor::run_doctor;
+use commands::mcp::run_mcp;
 use commands::session::run_session;
 use commands::top_level::{
     run_accept, run_add, run_clear, run_index, run_ingest, run_list, run_open, run_reject,
@@ -78,6 +79,7 @@ fn main() -> Result<()> {
         Command::Config(args) => run_config(args),
         Command::Doctor(args) => run_doctor(args),
         Command::Auth(args) => run_auth(args),
+        Command::Mcp(args) => run_mcp(args),
         Command::Ask(args) => top_level_ask(args),
         Command::Session(args) => run_session(args),
         Command::Agent(args) => run_agent(args),

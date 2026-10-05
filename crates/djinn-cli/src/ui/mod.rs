@@ -850,6 +850,34 @@ pub(crate) fn run_ui_permission_approval(
     result
 }
 
+pub(crate) fn run_ui_mcp_command(args: &[String]) -> Result<()> {
+    let resolution = resolve_ui_command_resolution(None)?;
+    let mut command = ui_process_command(&resolution.command)?;
+    command.arg("mcp").args(args);
+    let status = command.status().with_context(|| {
+        format!(
+            "launching Djinn UI MCP command `{}`",
+            ui_mcp_command_hint(&resolution.command, args)
+        )
+    })?;
+    if !status.success() {
+        bail!(
+            "Djinn UI MCP command `{}` exited with status {status}",
+            ui_mcp_command_hint(&resolution.command, args)
+        );
+    }
+    Ok(())
+}
+
+fn ui_mcp_command_hint(ui_command: &str, args: &[String]) -> String {
+    let mut command = format!("{} mcp", shell_quote(ui_command));
+    for arg in args {
+        command.push(' ');
+        command.push_str(&shell_quote(arg));
+    }
+    command
+}
+
 fn run_ui_permission_approval_from(
     ui_command: &str,
     request: &PermissionRequest,

@@ -15,6 +15,7 @@ async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
 clap.workspace = true
+dirs.workspace = true
 djinn-agent = { path = "../djinn-agent" }
 djinn-contexts = { path = "../djinn-contexts" }
 djinn-core = { path = "../djinn-core" }
