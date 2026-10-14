@@ -74,6 +74,9 @@ pub(crate) fn show_tool(args: ToolLookupArgs) -> Result<()> {
     } else {
         println!("# {}\n", entry.name);
         println!("{}\n", entry.description);
+        if let Some(url) = &entry.url {
+            println!("URL: {url}\n");
+        }
         println!("Source: {}:{}\n", entry.path.display(), entry.line);
         println!("## Preview\n");
         println!("```text\n{}\n```", entry.preview);
@@ -195,6 +198,7 @@ fn write_tools_index(roots: &[PathBuf], entries: &[ToolEntry], index_path: &Path
         .map(|entry| djinn_core::IndexEntry {
             name: entry.name.clone(),
             description: entry.description.clone(),
+            url: entry.url.clone(),
             path: entry.path.to_string_lossy().replace('\\', "/"),
             line: entry.line,
         })
@@ -209,4 +213,47 @@ fn write_tools_index(roots: &[PathBuf], entries: &[ToolEntry], index_path: &Path
     let mut rendered = serde_json::to_vec_pretty(&payload)?;
     rendered.push(b'\n');
     djinn_core::write_if_changed(index_path, &rendered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn tools_index_writer_propagates_urls_and_is_idempotent() {
+        let root = env::temp_dir().join(format!(
+            "djinn-cli-tools-{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("catalog.lua");
+        fs::write(&source, "-- @name: linked\n-- @description: website\n-- @url: https://example.com\n-- @end\n-- @name: legacy\n-- @description: no website\n-- @end\n").unwrap();
+        let roots = vec![root.clone()];
+        let entries = scan_tools(&roots).unwrap();
+        let index_path = root.join("index.json");
+        assert!(write_tools_index(&roots, &entries, &index_path).unwrap());
+        let bytes = fs::read(&index_path).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["count"], 2);
+        assert!(payload["entries"][0].get("url").is_none());
+        assert_eq!(payload["entries"][1]["url"], "https://example.com");
+        assert_eq!(
+            payload["entries"][1]["path"],
+            source.to_string_lossy().as_ref()
+        );
+        assert!(!write_tools_index(&roots, &entries, &index_path).unwrap());
+        assert_eq!(fs::read(&index_path).unwrap(), bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

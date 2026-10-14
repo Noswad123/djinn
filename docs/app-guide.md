@@ -53,10 +53,30 @@ Djinn scans `.zsh`, `.sh`, and `.lua` files for inline tags:
 ```sh
 # @name: gs
 # @description: Git status shortcut
+# @url: https://git-scm.com/docs/git-status
 gs() {
   git status -sb
 }
 # @end
+```
+
+`@name:` and `@description:` define an entry; `@url:` is optional metadata.
+The URL can appear before or after the description, anywhere after the name
+and before the next `@name:` or `@end`. Surrounding whitespace is trimmed;
+empty URLs are ignored and the first nonempty URL wins. URLs are never inferred
+and discovering or showing a tool does not launch its website. Text
+`djinn show tool` displays the URL when present; list, search, show, and index
+JSON include `url` only when present. Indexes retain schema version 1.
+
+Comment-only catalogs are supported too: an entry does not need executable
+code. Keep catalogs in a supported `.sh`, `.zsh`, or `.lua` file under a tool
+root, using `#` for shell comments or `--` for Lua comments:
+
+```lua
+-- @name: Rust Book
+-- @url: https://doc.rust-lang.org/book/
+-- @description: Rust language reference and learning guide
+-- @end
 ```
 
 Useful commands:

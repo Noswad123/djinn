@@ -87,6 +87,7 @@ import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-wi
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { djinnSessionListActionLine, djinnSessionListTitle } from "./djinn/session-list"
+import { toolPreview } from "./djinn/tool-preview"
 
 registerOpencodeSpinner()
 
@@ -1694,13 +1695,16 @@ function ToolsTab() {
                       <Show when={tool().description}>
                         {(description) => <text fg={theme.textMuted}>{description()}</text>}
                       </Show>
+                      <Show when={tool().url}>
+                        {(url) => <text fg={theme.textMuted}>URL: {url()}</text>}
+                      </Show>
                       <text fg={theme.textMuted}>Source: {tool().path}:{tool().line}</text>
                       <box flexDirection="row" gap={1}>
                         <text fg={theme.primary} onMouseDown={() => void openTool(tool())}>open source</text>
                       </box>
                     </box>
                     <box flexGrow={1} minHeight={0} border borderStyle="rounded" borderColor={theme.border} paddingLeft={1} paddingRight={1}>
-                      <text fg={theme.text}>{toolPreview(tool())}</text>
+                      <text fg={theme.text}>{toolPreview(tool().preview)}</text>
                     </box>
                   </>
                 )}
@@ -1730,6 +1734,7 @@ function DashboardPlaceholderTab(props: { tab: Exclude<AppTabID, "chat" | "sessi
 type DjinnToolEntry = {
   name: string
   description: string
+  url?: string
   path: string
   line: number
   preview: string
@@ -1744,27 +1749,6 @@ async function loadDjinnTools() {
 
 function toolKey(tool: DjinnToolEntry) {
   return `${tool.name}\0${tool.path}\0${tool.line}`
-}
-
-function toolPreview(tool: DjinnToolEntry) {
-  return sanitizePreview(`${stripToolMetadataLines(tool.preview)}`)
-}
-
-function stripToolMetadataLines(preview: string) {
-  return preview
-    .split("\n")
-    .filter((line) => {
-      const trimmed = line.trimStart()
-      return ![
-        "# @name:",
-        "# @description:",
-        "// @name:",
-        "// @description:",
-        "-- @name:",
-        "-- @description:",
-      ].some((prefix) => trimmed.startsWith(prefix))
-    })
-    .join("\n")
 }
 
 type DjinnSessionReport = {
@@ -1882,19 +1866,6 @@ function truncateMiddle(value: string, max: number) {
   if (value.length <= max) return value
   const half = Math.floor((max - 1) / 2)
   return `${value.slice(0, half)}…${value.slice(value.length - half)}`
-}
-
-function sanitizePreview(value: string) {
-  return value
-    .split("")
-    .filter((ch) => ch === "\n" || ch === "\t" || !isControlCharacter(ch))
-    .join("")
-    .replaceAll("\t", " ")
-}
-
-function isControlCharacter(value: string) {
-  const code = value.charCodeAt(0)
-  return code < 32 || code === 127
 }
 
 function titlecase(value: string) {
