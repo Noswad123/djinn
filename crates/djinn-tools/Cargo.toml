@@ -10,4 +10,5 @@ anyhow.workspace = true
 djinn-core = { path = "../djinn-core" }
 serde.workspace = true
 serde_json.workspace = true
+toml_edit.workspace = true
 walkdir.workspace = true

@@ -254,6 +254,45 @@ mod tests {
         );
         assert!(!write_tools_index(&roots, &entries, &index_path).unwrap());
         assert_eq!(fs::read(&index_path).unwrap(), bytes);
+
+        let packages = root.join("packages");
+        fs::create_dir(&packages).unwrap();
+        let catalog = packages.join("apps.toml");
+        fs::write(&catalog, "# apps\n[[apps]]\nname = 'linked'\ndescription = 'catalog website'\nurl = ' https://example.com/app '\n\n[[apps]]\nname = 'Alpha'\ndescription = 'no URL'\n").unwrap();
+        // Overlapping roots intentionally retain duplicates, just like tagged sources.
+        let roots = vec![root.clone(), packages.clone()];
+        let entries = scan_tools(&roots).unwrap();
+        assert_eq!(entries.len(), 6);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Alpha", "Alpha", "legacy", "linked", "linked", "linked"]
+        );
+        assert_eq!(resolve_tool(&entries, "Alpha").unwrap().path, catalog);
+        assert!(write_tools_index(&roots, &entries, &index_path).unwrap());
+        let bytes = fs::read(&index_path).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["count"], 6);
+        assert_eq!(payload["root"], format_roots(&roots));
+        for (indexed, entry) in payload["entries"].as_array().unwrap().iter().zip(&entries) {
+            assert_eq!(indexed["path"], entry.path.to_string_lossy().as_ref());
+            assert_eq!(indexed["line"], entry.line);
+            assert_eq!(
+                indexed.get("url").and_then(|value| value.as_str()),
+                entry.url.as_deref()
+            );
+        }
+        let app = entries
+            .iter()
+            .find(|entry| entry.description == "catalog website")
+            .unwrap();
+        assert_eq!(app.url.as_deref(), Some("https://example.com/app"));
+        assert_eq!(app.line, 2);
+        assert!(!write_tools_index(&roots, &entries, &index_path).unwrap());
+        assert_eq!(fs::read(&index_path).unwrap(), bytes);
         fs::remove_dir_all(root).unwrap();
     }
 }

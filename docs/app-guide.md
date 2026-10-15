@@ -68,16 +68,34 @@ and discovering or showing a tool does not launch its website. Text
 `djinn show tool` displays the URL when present; list, search, show, and index
 JSON include `url` only when present. Indexes retain schema version 1.
 
-Comment-only catalogs are supported too: an entry does not need executable
-code. Keep catalogs in a supported `.sh`, `.zsh`, or `.lua` file under a tool
-root, using `#` for shell comments or `--` for Lua comments:
+App and website catalogs use TOML. Create `packages/apps.toml` under a tool
+root (or scan the `packages` directory itself):
 
-```lua
--- @name: Rust Book
--- @url: https://doc.rust-lang.org/book/
--- @description: Rust language reference and learning guide
--- @end
+```toml
+[[apps]]
+name = "Rust Book"
+description = "Rust language reference and learning guide"
+url = "https://doc.rust-lang.org/book/"
+
+[[apps]]
+name = "Local utility"
+description = "An app without a website"
 ```
+
+Each `[[apps]]` record requires nonblank `name` and `description` strings;
+`url` is an optional string, trimmed with blank URLs omitted. Required strings
+retain their TOML-decoded whitespace. Unknown fields (including top-level
+fields) and invalid types are errors, reported with the catalog path. Empty or
+missing catalogs are fine. Standard TOML escapes, Unicode, and multiline strings
+are supported.
+
+Only files named `apps.toml` immediately inside a directory named `packages`
+are recognized as catalogs, independently of shell extension filters. Other TOML
+files are not scanned by default. Existing traversal exclusions still apply.
+Catalog entries and tagged tools are sorted together; duplicate names are kept.
+Source locations point to the catalog's one-based `[[apps]]` header line, and
+previews preserve source text from that header up to the next record (or EOF).
+Existing shell/Lua tags, including `@url:`, remain supported.
 
 Useful commands:
 
