@@ -45,8 +45,12 @@ export const KitsuneAgentStatePlugin: PluginInstance = async () => {
     event: async ({ event }) => {
       const eventType = event.type as string
       const properties = eventProperties(event.properties)
-      const sessionID = sessionIDFromProperties(properties)
-      const info = objectProperty(properties, "info")
+      // Session lifecycle events carry identity in info, while status and
+      // decision events carry sessionID. Other info payloads may be messages.
+      const info = ["session.created", "session.updated", "session.deleted"].includes(eventType)
+        ? objectProperty(properties, "info")
+        : undefined
+      const sessionID = sessionIDFromProperties(properties) ?? stringProperty(info, "id")
       const childSessionID = stringProperty(info, "id")
 
       if (childSessionID && stringProperty(info, "parentID")) childSessions.add(childSessionID)
@@ -79,8 +83,13 @@ export const KitsuneAgentStatePlugin: PluginInstance = async () => {
           return
         case "permission.asked":
         case "question.asked":
-        case "session.error":
           await reportState("blocked", sessionID)
+          return
+        // Errors are surfaced by Djinn, not decisions awaiting user input.
+        // In particular, a late/sessionless error must not turn completed work
+        // red. Execution lifecycle events remain authoritative for completion;
+        // ignoring errors also preserves any genuine pending decision.
+        case "session.error":
           return
         case "session.idle":
           await reportState("idle", sessionID)
