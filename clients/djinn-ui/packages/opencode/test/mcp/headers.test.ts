@@ -20,6 +20,7 @@ const serve = Effect.acquireRelease(
     })
     await protocol.connect(transport)
     const http = Bun.serve({
+      hostname: "127.0.0.1",
       port: 0,
       fetch(request) {
         requests.push(new Headers(request.headers))
@@ -39,6 +40,93 @@ const serve = Effect.acquireRelease(
 )
 
 describe("mcp.headers", () => {
+  it.instance("retains ordered transport failures without response or header secrets", () =>
+    Effect.gen(function* () {
+      const requests: string[] = []
+      const server = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(request) {
+              requests.push(request.method)
+              return new Response("body-secret Bearer header-secret oauth-secret", {
+                status: request.method === "POST" ? 502 : 405,
+                headers: { "X-Secret": "response-header-secret" },
+              })
+            },
+          }),
+        ),
+        (server) => Effect.promise(() => server.stop(true)),
+      )
+      const mcp = yield* MCP.Service
+      const result = yield* mcp.add("unavailable", {
+        type: "remote",
+        url: server.url.toString(),
+        headers: { Authorization: "Bearer header-secret" },
+        oauth: { clientId: "test-client", clientSecret: "oauth-secret" },
+      })
+      expect(result.status).toEqual({
+        unavailable: { status: "failed", error: "StreamableHTTP: HTTP 502; SSE: HTTP 405" },
+      })
+      expect(requests).toEqual(["POST", "GET"])
+    }),
+  )
+
+  it.instance("reports connected when SSE fallback succeeds", () =>
+    Effect.gen(function* () {
+      const protocol = new Server({ name: "fallback", version: "1.0.0" }, { capabilities: {} })
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+        enableJsonResponse: true,
+      })
+      yield* Effect.promise(() => protocol.connect(transport))
+      let stream: ReadableStreamDefaultController<Uint8Array>
+      const requests: string[] = []
+      const http = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            async fetch(request) {
+              requests.push(`${request.method} ${new URL(request.url).pathname}`)
+              if (request.method === "GET") {
+                return new Response(
+                  new ReadableStream({
+                    start(controller) {
+                      stream = controller
+                      stream.enqueue(new TextEncoder().encode("event: endpoint\ndata: /messages\n\n"))
+                    },
+                  }),
+                  { headers: { "Content-Type": "text/event-stream" } },
+                )
+              }
+              if (new URL(request.url).pathname !== "/messages") return new Response("unavailable", { status: 502 })
+              // Bridge legacy SSE messages to the SDK's JSON-response server.
+              const headers = new Headers(request.headers)
+              headers.set("Accept", "application/json, text/event-stream")
+              if (transport.sessionId) headers.set("mcp-session-id", transport.sessionId)
+              const response = await transport.handleRequest(new Request(request, { headers }))
+              if (response.status === 200) {
+                stream.enqueue(new TextEncoder().encode(`event: message\ndata: ${await response.text()}\n\n`))
+              }
+              return new Response(null, { status: 202 })
+            },
+          }),
+        ),
+        (server) =>
+          Effect.promise(async () => {
+            await server.stop(true)
+            await protocol.close()
+          }),
+      )
+      const mcp = yield* MCP.Service
+      const result = yield* mcp.add("fallback", { type: "remote", url: http.url.toString(), oauth: false })
+      expect(result.status).toEqual({ fallback: { status: "connected" } })
+      expect(requests.slice(0, 3)).toEqual(["POST /", "GET /", "POST /messages"])
+    }),
+  )
+
   it.instance("headers are passed to transports when oauth is enabled (default)", () =>
     Effect.gen(function* () {
       const server = yield* serve

@@ -5,6 +5,19 @@ Djinn is a local-first companion for OpenCode and other AI coding agents. It
 connects local tools, AI sessions, reviewed memory, reusable skills, and lightweight
 contexts into one practical workflow.
 
+[APP_BOUNDARIES.md](APP_BOUNDARIES.md) records the 2026-10-22 target decision:
+Djinn owns native execution and policy, with no core dependency on Coven or
+Kitsune; optional integration starts with observing/grouping existing sessions.
+
+Initial Kitsune observation, explicit participant groups/display roles, and a
+foreground generic-annotation publisher are implemented in Coven; optional
+[contract/quick start](../coven/GROUPS_CONTRACT.md), not a Djinn dependency. Only the
+Kitsune presentation adapter is supported in v1; native group status/scheduling,
+automatic following, and extraction are not shipped. Kitsune/user own border space,
+rendering, clipping, source priority, and expiry. Labels establish no native
+identity/lifecycle or terminal input/start/stop permission; display roles do not
+change Djinn policy/personas/configuration. Djinn's native UI and policy remain independent.
+
 ```text
 Tools → Sessions → Memories → Suggestions → Skills
 ```
@@ -37,6 +50,25 @@ is the Rust rewrite.
 ## Build and install
 
 Prerequisite: Rust/Cargo.
+
+The UI dependency step uses `bun install --frozen-lockfile`. Keep native-asset
+patch registrations aligned with the exact dependency versions and `bun.lock`;
+installing must not silently select a new dependency graph. The FFF 0.9.4 and
+Photon 0.3.4 patches support native-library/WASM embedding in compiled Bun builds.
+
+To check those patches independently of a full UI/Homebrew build, run from
+`clients/djinn-ui/packages/opencode` with Python 3.12+, Git, and Bun:
+
+```sh
+python3 script/verify-install-patches.py --bun /absolute/path/to/bun --temp-parent /path/to/scratch
+```
+
+This downloads public npm artifacts, verifies their lockfile SHA-512 values before
+extraction, checks patch roundtrips, and runs compiled image/native-search fixtures
+with isolated HOME/XDG paths. It does not use the workspace's `node_modules`.
+It retains the printed fixture directory for inspection; remove that directory
+when finished. Run without Python optimization. Validation covered Bun 1.3.14 and
+1.4.4 on macOS arm64, not a full UI build or every target platform.
 
 ```bash
 make build

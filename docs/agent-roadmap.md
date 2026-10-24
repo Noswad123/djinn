@@ -113,6 +113,22 @@ Additional folder-session ready slices:
 
 ### Coven-led orchestration and Djinn worker primitives
 
+Near-term boundary: [APP_BOUNDARIES.md](../APP_BOUNDARIES.md) takes precedence over
+the execution backlog below. Initial explicit single-endpoint Kitsune observation
+is implemented in Coven only; extraction, grouping, and annotations are not shipped.
+Next characterize generic surfaces before extraction, design separate optional
+annotations, and group existing sessions before further worker/worktree work.
+This does not supersede Djinn's unrelated native UI/MCP priorities.
+
+Annotations are user-enabled, source-owned bounded text badges/labels/group hints/
+progress for existing panes/workspaces, useful to build/test/export services as
+well as agent coordinators. Kitsune/user own layout, space, rendering, clipping,
+and quotas; define conflict policy/expiry and hide/mark unknown absent, malformed,
+incompatible, or disconnected input without stale active status or terminal loss.
+No arbitrary panels, embedded apps/scripts, unrequested UI space, or terminal
+input/start/stop grants; labels confer no agent/group identity. No plugin framework,
+daemon, new external schema, or return endpoint is implemented.
+
 The user-facing product direction is **not** manual child-session management.
 For broad goals, Coven should act as the lead-agent orchestration layer: detect
 parallelizable subtasks, launch workers, monitor progress, collect worker

@@ -40,6 +40,7 @@ const mcpTest = testEffect(
 const serveOAuthMcp = Effect.acquireRelease(
   Effect.promise(async () => {
     const requests: Array<{ pathname: string; headers: Headers }> = []
+    const failures = { connection: false, token: false }
     const protocol = new Server({ name: "oauth-browser", version: "1.0.0" }, { capabilities: { tools: {} } })
     protocol.setRequestHandler(ListToolsRequestSchema, () => Promise.resolve({ tools: [] }))
     const transport = new WebStandardStreamableHTTPServerTransport({
@@ -57,6 +58,7 @@ const serveOAuthMcp = Effect.acquireRelease(
 
         if (url.pathname === "/mcp") {
           if (request.headers.get("authorization") === "Bearer test-access-token") {
+            if (failures.connection) return new Response("secret upstream body", { status: 502 })
             return transport.handleRequest(request)
           }
           return new Response("Unauthorized", {
@@ -104,6 +106,11 @@ const serveOAuthMcp = Effect.acquireRelease(
         }
 
         if (url.pathname === "/token") {
+          if (failures.token)
+            return Response.json(
+              { error: "invalid_grant", error_description: "secret OAuth response" },
+              { status: 400 },
+            )
           return Response.json({ access_token: "test-access-token", token_type: "Bearer", scope: "mcp" })
         }
 
@@ -112,6 +119,7 @@ const serveOAuthMcp = Effect.acquireRelease(
     })
 
     return {
+      failures,
       requests,
       url: new URL("/mcp", http.url).toString(),
       close: async () => {
@@ -152,6 +160,34 @@ const addServer = Effect.fnUntraced(function* (name: string, url: string, header
   expect(result.status).toMatchObject({ [name]: { status: "needs_auth" } })
   return mcp
 })
+
+mcpTest.instance("stored credentials survive a post-OAuth connection failure", () =>
+  Effect.gen(function* () {
+    yield* withCallbackStop
+    const server = yield* serveOAuthMcp
+    yield* trackBrowserOpen(server.url)
+    const mcp = yield* addServer("post-auth-failure", server.url)
+    server.failures.connection = true
+    const status = yield* awaitWithTimeout(mcp.authenticate("post-auth-failure"), "OAuth did not finish", "5 seconds")
+    expect(status).toEqual({ status: "failed", error: "StreamableHTTP: HTTP 502; SSE: HTTP 502" })
+    const auth = yield* McpAuth.Service
+    const stored = yield* auth.getForUrl("post-auth-failure", server.url)
+    expect(stored?.tokens?.accessToken).toBe("test-access-token")
+    expect(yield* mcp.getAuthStatus("post-auth-failure")).toBe("authenticated")
+  }),
+)
+
+mcpTest.instance("OAuth completion failure never exposes the token response", () =>
+  Effect.gen(function* () {
+    yield* withCallbackStop
+    const server = yield* serveOAuthMcp
+    yield* trackBrowserOpen(server.url)
+    const mcp = yield* addServer("token-failure", server.url)
+    server.failures.token = true
+    const status = yield* awaitWithTimeout(mcp.authenticate("token-failure"), "OAuth did not finish", "5 seconds")
+    expect(status).toEqual({ status: "failed", error: "OAuth completion failed: Connection failed" })
+  }),
+)
 
 mcpTest.instance("BrowserOpenFailed event is published when browser launch fails", () =>
   Effect.gen(function* () {

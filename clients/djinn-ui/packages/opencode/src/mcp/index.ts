@@ -34,6 +34,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
 import { McpEvent } from "@opencode-ai/schema/mcp-event"
 import { McpBrowser } from "./browser"
+import { safeMcpError } from "./error"
 
 const DEFAULT_TIMEOUT = 30_000
 const CLIENT_OPTIONS = {
@@ -285,6 +286,7 @@ const layer = Layer.effect(
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
       let lastStatus: Status | undefined
+      const failures: string[] = []
 
       for (const { name, transport } of transports) {
         const result = yield* connectTransport(transport, connectTimeout).pipe(
@@ -322,7 +324,8 @@ const layer = Layer.effect(
               }
             }
 
-            lastStatus = { status: "failed" as const, error: lastError.message }
+            failures.push(`${name}: ${safeMcpError(error)}`)
+            lastStatus = { status: "failed" as const, error: failures.join("; ") }
             return Effect.void
           }),
         )
@@ -409,7 +412,7 @@ const layer = Layer.effect(
         if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt
         const error = Cause.squash(cause)
         return Effect.succeed<CreateResult>({
-          status: { status: "failed", error: error instanceof Error ? error.message : String(error) },
+          status: { status: "failed", error: safeMcpError(error) },
         })
       }),
     )
@@ -925,7 +928,7 @@ const layer = Layer.effect(
         catch: (error) => error,
       }).pipe(
         Effect.match({
-          onFailure: (error) => (error instanceof Error ? error.message : String(error)),
+          onFailure: (error) => safeMcpError(error),
           onSuccess: () => undefined,
         }),
       )

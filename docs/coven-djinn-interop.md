@@ -1,5 +1,51 @@
 # Coven / Djinn Interop Proposal
 
+## Current direction — 2026-10-22
+
+[APP_BOUNDARIES.md](../APP_BOUNDARIES.md) supersedes this proposal's implementation
+order and defines the accepted target. Start with Kitsune inspection and behavior
+characterization, extract the smallest read-only discovery/status path into Coven,
+then optional generic Kitsune decoration and grouping **existing** sessions.
+Worker execution/worktrees follow later; no scheduler, daemon, plugin framework,
+or native admission design is prerequisite for observation/grouping.
+
+Current implementation: Coven has single-endpoint Kitsune observation, explicit
+participant groups/display roles, and a foreground publisher through Kitsune's
+generic opt-in terminal annotations. See the optional
+[Coven contract/quick start](../../coven/GROUPS_CONTRACT.md), not a Djinn dependency.
+Native references may be absent or persisted observations, not verified fresh
+identity/lifecycle. Roles do not change Djinn policy/personas/configuration. Native
+group status/scheduling, automatic following, and agent-feature extraction are not
+shipped; the older execution/event bridge below remains speculative.
+
+Djinn retains native execution/config/tools/policy/transcripts/results with no
+core dependency on Coven or Kitsune. Coven owns cross-runtime observations with
+provenance, job/group membership, participant roles/assignments, and job progress.
+Djinn is the first adapter, not a required universal agent model. Native identity,
+roles, groups, and optional presentation refs stay distinct; no one-to-one
+pane/session mapping or pane-only agent identity is assumed.
+
+The event schema, fixtures, commands, grant handling, and replay examples below
+are **older speculative bridge design**, not a shipped API or required first
+integration. Native execution-bridge transport and its capability boundary remain
+undecided; this does not negate the implemented generic Kitsune annotation path.
+Section-local words such as “required” apply only to that proposal.
+Execution/cancel/policy changes need separately supported, explicitly authorized
+adapters; read-only reporting/display provides no such permission.
+
+In particular, Coven's current observational logs/events are not secretly replay
+authority: latest fact events alone cannot reconstruct authoritative orchestration
+or approval. Explicit task-ledger/preparation contracts retain their limited
+authority; native Djinn event-history behavior is separate. Existing Coven safety
+contracts remain valid and old preparations must never auto-execute. Runtime
+activity is not job acceptance, pane presence is not success, and screen matches
+are heuristic evidence rather than lifecycle truth.
+
+Missing/unreachable/incompatible Coven must not break Djinn native operation or
+Kitsune startup/terminal work. Optional badges become hidden/unknown when stale,
+never stale active status. Kitsune still has built-in agent integrations during
+transition; the target boundary does not claim they are already removed.
+
 This document fleshes out the proposed boundary between Djinn as an agent
 runtime and Coven as a multi-agent orchestration workspace.
 
@@ -358,7 +404,7 @@ The parent/user then chooses whether to:
 - dismiss the notification;
 - explicitly import the full transcript.
 
-## First implementation slice
+## Older proposed first implementation slice (deferred)
 
 The smallest useful bridge should be file-backed and replayable:
 

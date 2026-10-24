@@ -1,6 +1,6 @@
 import { cmd } from "./cmd"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { effectCmd } from "../effect-cmd"
+import { effectCmd, fail } from "../effect-cmd"
 import { Cause } from "effect"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
@@ -9,6 +9,7 @@ import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js"
 import * as prompts from "@clack/prompts"
 import { UI } from "../ui"
 import { MCP } from "../../mcp"
+import { safeMcpError } from "../../mcp/error"
 import { McpAuth } from "../../mcp/auth"
 import { McpOAuthProvider } from "../../mcp/oauth-provider"
 import { Config } from "@/config/config"
@@ -89,6 +90,25 @@ function authState() {
       { concurrency: "unbounded" },
     )
     return { config, auth }
+  })
+}
+
+export function checkAuthentication(serverName: string, status: MCP.Status) {
+  return Effect.gen(function* () {
+    if (status.status === "connected") return
+    if (status.status === "needs_client_registration") return yield* fail(status.error)
+    if (status.status === "failed" && status.error.startsWith("OAuth completion failed:"))
+      return yield* fail(`Authentication failed: ${status.error}`)
+    if (status.status === "needs_auth") return yield* fail("Authentication required")
+    const mcp = yield* MCP.Service
+    const auth = yield* mcp.getAuthStatus(serverName)
+    if (auth !== "not_authenticated") {
+      return yield* fail(
+        "Stored OAuth credentials are present, but the MCP connection failed" +
+          (status.status === "failed" ? `: ${status.error}` : ""),
+      )
+    }
+    return yield* fail("MCP connection failed" + (status.status === "failed" ? `: ${status.error}` : ""))
   })
 }
 
@@ -185,7 +205,7 @@ export const McpAuthCommand = effectCmd({
     const mcpServers = config.mcp ?? {}
     const servers = oauthServers(config)
 
-    if (servers.length === 0) {
+    if (servers.length === 0 && !args.name) {
       prompts.log.warn("No OAuth-capable MCP servers configured")
       prompts.log.info("Remote MCP servers support OAuth by default. Add a remote server in opencode.json:")
       prompts.log.info(`
@@ -195,8 +215,7 @@ export const McpAuthCommand = effectCmd({
       "url": "https://example.com/mcp"
     }
   }`)
-      prompts.outro("Done")
-      return
+      return yield* fail("No OAuth-capable MCP servers configured")
     }
 
     let serverName = args.name
@@ -226,15 +245,11 @@ export const McpAuthCommand = effectCmd({
 
     const serverConfig = mcpServers[serverName]
     if (!serverConfig) {
-      prompts.log.error(`MCP server not found: ${serverName}`)
-      prompts.outro("Done")
-      return
+      return yield* fail(`MCP server not found: ${serverName}`)
     }
 
     if (!isMcpRemote(serverConfig) || serverConfig.oauth === false) {
-      prompts.log.error(`MCP server ${serverName} is not an OAuth-capable remote server`)
-      prompts.outro("Done")
-      return
+      return yield* fail(`MCP server ${serverName} is not an OAuth-capable remote server`)
     }
 
     // Check if already authenticated
@@ -256,22 +271,32 @@ export const McpAuthCommand = effectCmd({
     const spinner = prompts.spinner()
     spinner.start("Starting OAuth flow...")
 
-    yield* MCP.Service.use((mcp) =>
+    const status = yield* MCP.Service.use((mcp) =>
       mcp.authenticate(serverName, (url) => {
         spinner.stop("Authorize in your browser:")
         prompts.log.info(url)
         spinner.start("Waiting for authorization...")
       }),
     ).pipe(
-      Effect.tap((status) =>
-        Effect.sync(() => {
-          if (status.status === "connected") {
-            spinner.stop("Authentication successful!")
-          } else if (status.status === "needs_client_registration") {
-            spinner.stop("Authentication failed", 1)
-            prompts.log.error(status.error)
-            prompts.log.info("Add clientId to your MCP server config:")
-            prompts.log.info(`
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt
+        const error = Cause.squash(cause)
+        if (error instanceof UI.CancelledError) {
+          spinner.stop("Cancelled")
+          return Effect.die(error)
+        }
+        spinner.stop("MCP setup failed", 1)
+        return fail(`MCP setup failed: ${safeMcpError(error)}`)
+      }),
+    )
+
+    if (status.status === "connected") {
+      spinner.stop("Authentication successful!")
+    } else {
+      spinner.stop("MCP connection not established", 1)
+      if (status.status === "needs_client_registration") {
+        prompts.log.info("Add clientId to your MCP server config:")
+        prompts.log.info(`
   "mcp": {
     "${serverName}": {
       "type": "remote",
@@ -282,22 +307,9 @@ export const McpAuthCommand = effectCmd({
       }
     }
   }`)
-          } else if (status.status === "failed") {
-            spinner.stop("Authentication failed", 1)
-            prompts.log.error(status.error)
-          } else {
-            spinner.stop("Unexpected status: " + status.status, 1)
-          }
-        }),
-      ),
-      Effect.catchCause((cause) =>
-        Effect.sync(() => {
-          spinner.stop("Authentication failed", 1)
-          const error = Cause.squash(cause)
-          prompts.log.error(error instanceof Error ? error.message : String(error))
-        }),
-      ),
-    )
+      }
+    }
+    yield* checkAuthentication(serverName, status)
 
     prompts.outro("Done")
   }),

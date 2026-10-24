@@ -32,7 +32,7 @@ ui-deps:
 		echo "bun is required to install the Djinn UI from $(DJINN_UI_ROOT)" >&2; \
 		exit 1; \
 	fi
-	bun install --cwd "$(DJINN_UI_ROOT)"
+	bun install --frozen-lockfile --cwd "$(DJINN_UI_ROOT)"
 
 build-ui: ui-deps
 	@echo "🔨 Building Djinn UI from $(DJINN_UI_PACKAGE)..."

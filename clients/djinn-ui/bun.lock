@@ -1062,6 +1062,7 @@
     "protobufjs",
   ],
   "patchedDependencies": {
+    "@ff-labs/fff-bun@0.9.4": "patches/@ff-labs%2Ffff-bun@0.9.4.patch",
     "solid-js@1.9.10": "patches/solid-js@1.9.10.patch",
     "@pierre/trees@1.0.0-beta.4": "patches/@pierre%2Ftrees@1.0.0-beta.4.patch",
     "pacote@21.5.0": "patches/pacote@21.5.0.patch",
