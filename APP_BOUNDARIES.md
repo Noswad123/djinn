@@ -28,6 +28,13 @@ agent-aware features. This decision does not claim those features are removed.
 
 ## API / Interfaces
 
+The first native persisted-evidence slice is implemented:
+[`djinn session observe ABS_FOLDER --json`](docs/session-observation.md).
+It reads only root manifest/events from an explicit folder, with no core Coven
+dependency. Recorded lifecycle is not live status, job completion, policy admission
+or dispatch authority. Existing status/list/watch semantics are unchanged and are
+never an observation fallback.
+
 Target dependency direction: Coven adapters consume supported native runtime and
 multiplexer capabilities. Optional Djinn reporting and generic Kitsune decoration
 are external integration edges, not core or installation dependencies.

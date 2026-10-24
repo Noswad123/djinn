@@ -6,6 +6,7 @@ pub(crate) mod init;
 pub(crate) mod list;
 pub(crate) mod manifest;
 pub(crate) mod native;
+pub(crate) mod observe;
 pub(crate) mod projection;
 pub(crate) mod reference;
 pub(crate) mod registry;
