@@ -9,8 +9,11 @@ import { Heap } from "@/cli/heap"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+import { LiveObservationPublisher } from "@/session/live-observation-publisher"
+import { withPublisherClosing } from "./worker-lifecycle"
 
 Heap.start()
+const liveObservation = LiveObservationPublisher.start({ warn: (message) => console.warn(message) })
 
 const onUnhandledRejection = (_error: unknown) => {}
 
@@ -68,10 +71,15 @@ export const rpc = {
     )
   },
   async shutdown() {
-    await InstanceRuntime.disposeAllInstances()
-    if (server) await server.stop(true)
-    process.off("unhandledRejection", onUnhandledRejection)
-    process.off("uncaughtException", onUncaughtException)
+    await withPublisherClosing(
+      () => liveObservation.close(),
+      async () => {
+        await InstanceRuntime.disposeAllInstances()
+        if (server) await server.stop(true)
+        process.off("unhandledRejection", onUnhandledRejection)
+        process.off("uncaughtException", onUncaughtException)
+      },
+    )
   },
 }
 

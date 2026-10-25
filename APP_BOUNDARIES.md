@@ -28,6 +28,12 @@ agent-aware features. This decision does not claim those features are removed.
 
 ## API / Interfaces
 
+The separate [live observation v1](docs/live-observation.md) source is implemented
+for optional startup opt-in in a new legacy full-TUI worker build. Private,
+UUID-pinned heartbeat files establish only short-lived runner busy evidence,
+never idle, health, readiness or completion. Coven's reader does not start/restart
+apps or integrate this evidence with groups/dispatch; persisted observation stays separate.
+
 The first native persisted-evidence slice is implemented:
 [`djinn session observe ABS_FOLDER --json`](docs/session-observation.md).
 It reads only root manifest/events from an explicit folder, with no core Coven
