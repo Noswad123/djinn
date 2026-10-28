@@ -42,6 +42,8 @@ is the Rust rewrite.
 
 ## Documentation
 
+- [Numen adapter](docs/numen.md) — optional local owning-Worker interactive
+  activity and response outcomes; setup, privacy, live-cue limits and checks.
 - [Live observation v1](docs/live-observation.md) — optional new full-TUI worker
   startup opt-in; short-lived legacy busy evidence only, never idle or completion.
 - [Persisted session observation](docs/session-observation.md) — explicit

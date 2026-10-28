@@ -3,11 +3,12 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Runner } from "@/effect/runner"
 import { BackgroundJob } from "@/background/job"
-import { Effect, Latch, Layer, Scope, Context, type Exit } from "effect"
+import { Cause, Effect, Exit, Latch, Layer, Scope, Context } from "effect"
 import { Session } from "./session"
 import { SessionID } from "./schema"
 import { SessionStatus } from "./status"
 import { defaultRegistry } from "./live-observation"
+import { RunLifecycle } from "./run-lifecycle"
 
 export interface Interface {
   readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
@@ -16,6 +17,7 @@ export interface Interface {
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
     work: Effect.Effect<SessionV1.WithParts>,
+    resultEligible?: () => boolean,
   ) => Effect.Effect<SessionV1.WithParts>
   readonly startShell: (
     sessionID: SessionID,
@@ -32,27 +34,48 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const background = yield* BackgroundJob.Service
     const status = yield* SessionStatus.Service
+    const lifecycle = yield* RunLifecycle.Service
 
     const state = yield* InstanceState.make(
-      Effect.fn("SessionRunState.state")(function* () {
+      Effect.fn("SessionRunState.state")(function* (ctx) {
         // Deregister before scoped interruption, retaining its precedence over
         // the existing manual runner cleanup (shell fibers are caller-owned).
         const parent = yield* Scope.Scope
         const scope = yield* Scope.fork(parent)
         const runners = new Map<SessionID, Runner.Runner<SessionV1.WithParts>>()
+        const owners = new Map<string, RunLifecycle.Event>()
+        const lifetime = { closing: false }
         const observation = defaultRegistry.registerInstance()
         yield* Effect.addFinalizer(
           Effect.fnUntraced(function* (exit: Exit.Exit<unknown, unknown>) {
+            lifetime.closing = true
             observation.close()
+            yield* Effect.forEach(runners.values(), (runner) => runner.prepareTeardown, { discard: true })
             yield* Scope.close(scope, exit)
-            yield* Effect.forEach(runners.values(), (runner) => runner.cancel, {
+            yield* Effect.forEach(runners.values(), (runner) => runner.cancelWithReason("teardown"), {
               concurrency: "unbounded",
               discard: true,
             })
             runners.clear()
+            // Caller-owned shells can outlive their removed runner and this scope.
+            // Terminally abandon them now; late raw exits must not publish twice.
+            for (const event of owners.values()) {
+              lifecycle.publish({ ...event, phase: "settled", outcome: "abandoned" })
+              owners.delete(event.runID)
+            }
           }),
         )
-        return { runners, scope, observation }
+        return {
+          runners,
+          owners,
+          lifetime,
+          scope,
+          observation,
+          directory: ctx.directory,
+          projectID: ctx.project.id,
+          instanceID: crypto.randomUUID(),
+          order: 0,
+        }
       }),
     )
 
@@ -63,9 +86,41 @@ const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const existing = data.runners.get(sessionID)
       if (existing) return existing
+      const publish = (
+        owner: Runner.Owner,
+        phase: RunLifecycle.Event["phase"],
+        outcome?: RunLifecycle.Event["outcome"],
+      ) => {
+        const event = data.owners.get(owner.runID)
+        if (!event) return
+        try {
+          lifecycle.publish({ ...event, phase, outcome })
+        } finally {
+          if (phase === "settled") data.owners.delete(owner.runID)
+        }
+      }
       const next = Runner.make<SessionV1.WithParts>(data.scope, {
+        onAccepted: (owner) => {
+          data.owners.set(owner.runID, {
+            directory: data.directory,
+            workspaceID: owner.context?.workspaceID,
+            projectID: data.projectID,
+            instanceID: data.instanceID,
+            sessionID,
+            runID: owner.runID,
+            kind: owner.kind,
+            order: ++data.order,
+            phase: "owned",
+          })
+          publish(owner, "owned")
+        },
+        onSettled: (owner, exit, reason) => {
+          publish(owner, "settled", responseOutcome(owner, exit, reason))
+        },
         onIdle: Effect.gen(function* () {
+          if (next.busy) return
           registration.remove()
+          if (data.runners.get(sessionID) !== next) return
           data.runners.delete(sessionID)
           yield* status.set(sessionID, { type: "idle" })
         }),
@@ -74,6 +129,7 @@ const layer = Layer.effect(
       })
       const registration = data.observation.track(sessionID, next)
       data.runners.set(sessionID, next)
+      if (data.lifetime.closing) yield* next.prepareTeardown
       return next
     })
 
@@ -98,8 +154,11 @@ const layer = Layer.effect(
       sessionID: SessionID,
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
+      resultEligible?: () => boolean,
     ) {
-      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(work)
+      const current = yield* runner(sessionID, onInterrupt)
+      const workspaceID = yield* InstanceState.workspaceID
+      return yield* current.ensureRunning(work, { workspaceID, resultEligible })
     })
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (
@@ -108,8 +167,10 @@ const layer = Layer.effect(
       work: Effect.Effect<SessionV1.WithParts>,
       ready?: Latch.Latch,
     ) {
-      return yield* (yield* runner(sessionID, onInterrupt))
-        .startShell(work, ready)
+      const current = yield* runner(sessionID, onInterrupt)
+      const workspaceID = yield* InstanceState.workspaceID
+      return yield* current
+        .startShell(work, ready, { workspaceID })
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
     })
 
@@ -155,6 +216,38 @@ function busyError(sessionID: SessionID) {
   return new Session.BusyError({ sessionID })
 }
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [BackgroundJob.node, SessionStatus.node] })
+export function responseOutcome(
+  owner: Runner.Owner,
+  exit: Exit.Exit<SessionV1.WithParts>,
+  reason?: Runner.CancelReason,
+): RunLifecycle.Event["outcome"] {
+  if (Exit.isFailure(exit)) {
+    if (Cause.hasDies(exit.cause)) return "failed"
+    if (reason === "user") return "cancelled"
+    return Cause.hasInterruptsOnly(exit.cause) ? "abandoned" : "failed"
+  }
+  let eligible = false
+  try {
+    eligible = owner.context?.resultEligible?.() ?? true
+  } catch {}
+  if (!eligible) return reason === "user" ? "cancelled" : reason === "teardown" ? "abandoned" : undefined
+  const info = exit.value.info
+  if (owner.kind === "response" && info.role === "assistant" && info.error && info.error.name !== "MessageAbortedError")
+    return "failed"
+  if (reason === "user") return "cancelled"
+  if (owner.kind === "shell") return reason === "teardown" ? "abandoned" : undefined
+  if (info.role === "assistant" && info.error) return "abandoned"
+  if (reason === "teardown") return "abandoned"
+  if (info.role !== "assistant") return
+  if (info.summary) return
+  if (info.time.completed === undefined || !info.finish || info.finish === "tool-calls") return
+  return "completed"
+}
+
+export const node = LayerNode.make({
+  service: Service,
+  layer,
+  deps: [BackgroundJob.node, SessionStatus.node, RunLifecycle.node],
+})
 
 export * as SessionRunState from "./run-state"

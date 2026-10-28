@@ -37,6 +37,7 @@ import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
+import { RunLifecycle } from "../../src/session/run-lifecycle"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionV2 } from "@opencode-ai/core/session"
@@ -204,6 +205,7 @@ const promptRoot = LayerNode.group([
   BackgroundJob.node,
   SessionStatus.node,
   SessionRunState.node,
+  RunLifecycle.node,
   Database.node,
   EventV2Bridge.node,
   Question.node,
@@ -527,6 +529,66 @@ it.instance("loop calls LLM and returns assistant message", () =>
     const parts = result.parts.filter((p) => p.type === "text")
     expect(parts.some((p) => p.type === "text" && p.text === "world")).toBe(true)
     expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
+it.instance("completed prompt followed by a no-op loop does not complete a second response", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const lifecycle = yield* RunLifecycle.Service
+    const chat = yield* sessions.create({ title: "Response freshness" })
+    const events: RunLifecycle.Event[] = []
+    const off = lifecycle.subscribe((event) => {
+      if (event.sessionID === chat.id) events.push(event)
+    })
+    yield* Effect.addFinalizer(() => Effect.sync(off))
+    yield* llm.text("new response")
+    const first = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      parts: [{ type: "text", text: "hello" }],
+    })
+    expect(events.map((event) => event.phase)).toEqual(["owned", "settled"])
+    expect(events[1].outcome).toBe("completed")
+    const second = yield* prompt.loop({ sessionID: chat.id })
+    expect(second.info.id).toBe(first.info.id)
+    expect(events.map((event) => event.phase)).toEqual(["owned", "settled", "owned", "settled"])
+    expect(events[3].outcome).toBeUndefined()
+    expect(events[3].order).toBe(events[2].order)
+    expect(events[2].order).toBeGreaterThan(events[0].order)
+    expect(events.filter((event) => event.outcome === "completed")).toHaveLength(1)
+    expect(yield* llm.hits).toHaveLength(1)
+    expect(lifecycle.current(events[2])).toBeUndefined()
+  }),
+)
+
+it.instance("no-op loop over failed history does not report a new response failure", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const lifecycle = yield* RunLifecycle.Service
+    const chat = yield* sessions.create({ title: "Historical failure" })
+    const seeded = yield* seed(chat.id, { finish: "stop" })
+    yield* sessions.updateMessage({
+      ...seeded.assistant,
+      time: { ...seeded.assistant.time, completed: Date.now() },
+      error: new SessionV1.OutputLengthError({}).toObject(),
+    })
+    const events: RunLifecycle.Event[] = []
+    const off = lifecycle.subscribe((event) => {
+      if (event.sessionID === chat.id) events.push(event)
+    })
+    yield* Effect.addFinalizer(() => Effect.sync(off))
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(result.info.id).toBe(seeded.assistant.id)
+    expect(result.info.role === "assistant" && result.info.error?.name).toBe("MessageOutputLengthError")
+    expect(events.map((event) => event.phase)).toEqual(["owned", "settled"])
+    expect(events[1].outcome).toBeUndefined()
+    expect(yield* llm.hits).toHaveLength(0)
+    expect(lifecycle.current(events[0])).toBeUndefined()
   }),
 )
 

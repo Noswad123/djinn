@@ -9,6 +9,203 @@ const waitForState = <A, E>(runner: Runner.Runner<A, E>, tag: Runner.State<A, E>
   }).pipe(Effect.timeout("1 second"))
 
 describe("Runner", () => {
+  for (const kind of ["response", "shell"] as const) {
+    it.live(
+      `settlement observer replacement prevents stale ${kind} idle cleanup`,
+      Effect.gen(function* () {
+        const scope = yield* Scope.Scope
+        const done = yield* Deferred.make<string>()
+        const replacements: Fiber.Fiber<string>[] = []
+        let idles = 0
+        const runner = Runner.make<string>(scope, {
+          onIdle: Effect.sync(() => {
+            idles += 1
+          }),
+          onSettled: () => {
+            if (replacements.length > 0) return
+            replacements.push(Effect.runFork(runner.ensureRunning(Deferred.await(done))))
+          },
+        })
+        if (kind === "response") yield* runner.ensureRunning(Effect.succeed("first"))
+        if (kind === "shell") yield* runner.startShell(Effect.succeed("first"))
+        expect(replacements).toHaveLength(1)
+        expect(runner.busy).toBe(true)
+        expect(idles).toBe(0)
+        yield* Deferred.succeed(done, "replacement")
+        expect(yield* Fiber.join(replacements[0])).toBe("replacement")
+        expect(idles).toBe(1)
+      }),
+    )
+  }
+
+  it.live(
+    "owner callbacks arbitrate joins once and survive observer exceptions",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<string>()
+      const owned: Runner.Owner[] = []
+      const exits: Exit.Exit<string, never>[] = []
+      const runner = Runner.make<string>(scope, {
+        onAccepted: (owner) => {
+          owned.push(owner)
+          throw new Error("observer")
+        },
+        onSettled: (owner, exit) => {
+          expect(owner.runID).toBe(owned[0].runID)
+          exits.push(exit)
+          throw new Error("observer")
+        },
+      })
+      const a = yield* runner
+        .ensureRunning(Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))))
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      const b = yield* runner
+        .ensureRunning(Effect.die("joined work must not run"))
+        .pipe(Effect.forkChild({ startImmediately: true }))
+      yield* Deferred.succeed(release, "ok")
+      expect(yield* Fiber.join(a)).toBe("ok")
+      expect(yield* Fiber.join(b)).toBe("ok")
+      expect(owned).toHaveLength(1)
+      expect(exits).toHaveLength(1)
+      expect(Exit.isSuccess(exits[0])).toBe(true)
+    }),
+  )
+
+  for (const cancel of [false, true]) {
+    it.live(
+      `pending owner retains identity through ${cancel ? "cancel before start" : "shell handoff"}`,
+      Effect.gen(function* () {
+        const scope = yield* Scope.Scope
+        const shellReady = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<string>()
+        const owned: Runner.Owner[] = []
+        const settlements: { owner: Runner.Owner; reason?: Runner.CancelReason }[] = []
+        const context = { workspaceID: "response" }
+        let ran = false
+        const runner = Runner.make<string>(scope, {
+          onInterrupt: Effect.succeed("fallback"),
+          onAccepted: (owner) => {
+            owned.push(owner)
+          },
+          onSettled: (owner, _exit, reason) => {
+            settlements.push({ owner, reason })
+          },
+        })
+        const shell = yield* runner
+          .startShell(
+            Deferred.succeed(shellReady, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            undefined,
+            { workspaceID: "shell" },
+          )
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(shellReady)
+        const response = yield* runner
+          .ensureRunning(
+            Effect.sync(() => {
+              ran = true
+              return "response"
+            }),
+            context,
+          )
+          .pipe(Effect.forkChild({ startImmediately: true }))
+        yield* waitForState(runner, "ShellThenRun")
+        const pending = runner.state
+        if (pending._tag !== "ShellThenRun") throw new Error("missing pending")
+        const id = pending.run.id
+        const runID = pending.run.owner.runID
+        context.workspaceID = "changed after admission"
+        if (cancel) yield* runner.cancel
+        if (!cancel) yield* Deferred.succeed(release, "shell")
+        expect(yield* Fiber.join(response)).toBe(cancel ? "fallback" : "response")
+        yield* Fiber.join(shell)
+        expect(ran).toBe(!cancel)
+        expect(owned.map((owner) => owner.kind)).toEqual(["shell", "response"])
+        expect(owned[1].runID).toBe(runID)
+        expect(owned[0].context?.workspaceID).toBe("shell")
+        expect(owned[1].context?.workspaceID).toBe("response")
+        expect(settlements.filter((entry) => entry.owner.runID === runID)).toHaveLength(1)
+        expect(settlements.find((entry) => entry.owner.runID === runID)?.reason).toBe(cancel ? "user" : undefined)
+        expect(id).toBeGreaterThan(0)
+      }),
+    )
+  }
+
+  for (const reason of ["user", "teardown"] as const) {
+    it.live(
+      `raw owner exit is not successful fallback (${reason})`,
+      Effect.gen(function* () {
+        const scope = yield* Scope.Scope
+        const ready = yield* Deferred.make<void>()
+        const settlements: { exit: Exit.Exit<string>; reason?: Runner.CancelReason }[] = []
+        const runner = Runner.make<string>(scope, {
+          onInterrupt: Effect.succeed("fallback"),
+          onSettled: (_owner, exit, provenance) => {
+            settlements.push({ exit, reason: provenance })
+          },
+        })
+        const run = yield* runner
+          .ensureRunning(Deferred.succeed(ready, undefined).pipe(Effect.andThen(Effect.never)))
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(ready)
+        yield* runner.cancelWithReason(reason)
+        expect(yield* Fiber.join(run)).toBe("fallback")
+        expect(settlements).toHaveLength(1)
+        expect(Exit.isFailure(settlements[0].exit)).toBe(true)
+        expect(settlements[0].reason).toBe(reason)
+      }),
+    )
+  }
+
+  it.live(
+    "late old settlement retains identity and cannot settle replacement",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const ready = yield* Deferred.make<void>()
+      const cleanup = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const replacementReady = yield* Deferred.make<void>()
+      const replacementDone = yield* Deferred.make<string>()
+      const events: string[] = []
+      const runner = Runner.make<string>(scope, {
+        onInterrupt: Effect.succeed("fallback"),
+        onAccepted: (owner) => {
+          events.push(`owned:${owner.runID}`)
+        },
+        onSettled: (owner) => {
+          events.push(`settled:${owner.runID}`)
+        },
+      })
+      const a = yield* runner
+        .ensureRunning(
+          Deferred.succeed(ready, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.ensuring(Deferred.succeed(cleanup, undefined).pipe(Effect.andThen(Deferred.await(release)))),
+          ),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(ready)
+      const stop = yield* runner.cancel.pipe(Effect.forkChild)
+      yield* Deferred.await(cleanup)
+      const b = yield* runner
+        .ensureRunning(
+          Deferred.succeed(replacementReady, undefined).pipe(Effect.andThen(Deferred.await(replacementDone))),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(replacementReady)
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(stop)
+      expect(runner.busy).toBe(true)
+      expect(events).toHaveLength(3)
+      expect(events[2]).toBe(events[0].replace("owned:", "settled:"))
+      yield* Deferred.succeed(replacementDone, "new")
+      expect(yield* Fiber.join(b)).toBe("new")
+      expect(yield* Fiber.join(a)).toBe("fallback")
+      expect(events[3]).toBe(events[1].replace("owned:", "settled:"))
+    }),
+  )
+
   // --- ensureRunning semantics ---
 
   it.live(

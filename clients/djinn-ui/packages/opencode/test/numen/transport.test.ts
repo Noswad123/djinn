@@ -1,10 +1,9 @@
 import { expect, test } from "bun:test"
-import { chmod, chown, lstat, mkdir, rename, symlink, writeFile } from "node:fs/promises"
+import { chmod, chown, lstat, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import os from "node:os"
 import { join } from "node:path"
 import { NumenTransport, type Activity } from "../../src/numen/transport"
-import { tmpdir } from "../fixture/fixture"
 
 type Frame = {
   version: number
@@ -12,12 +11,16 @@ type Frame = {
   source?: string
   instance?: string
   activities: (Activity & { sequence: number })[]
+  activity?: string
+  state?: Activity["state"]
+  sequence?: number
 }
 type Received = { frame: Frame; raw: string; socket: Socket; connection: number }
 const ack = '{"version":1,"ok":true}\n'
 
 async function fixture(reply: (message: Received) => void = (message) => void message.socket.write(ack)) {
-  const temp = await tmpdir()
+  const directory = await mkdtemp("/var/folders/4x/vb2wqbds6_x1sh38zt3l17vc0000gq/T/opencode/n-")
+  const temp = { path: directory, [Symbol.asyncDispose]: () => rm(directory, { recursive: true, force: true }) }
   await chmod(temp.path, 0o700)
   const path = join(temp.path, "s")
   const messages: Received[] = []
@@ -112,7 +115,7 @@ test("coalesces to the newest replacement behind a single bounded ACK", async ()
   expect(peer.messages).toHaveLength(1)
   registration.socket.write(ack)
   const update = await peer.wait(2)
-  expect(update.frame.activities[0]).toMatchObject({ sequence: 51, summary: "Newest 49" })
+  expect(update.frame.activities[0]).toMatchObject({ sequence: 2, summary: "Newest 49" })
   update.socket.write(ack.slice(0, 10))
   await Bun.sleep(5)
   update.socket.write(ack.slice(10))
@@ -146,7 +149,8 @@ test("reconnect keeps identity and registers only the current authoritative snap
   expect(second.frame.type).toBe("source.register")
   expect(second.frame.instance).toBe(first.frame.instance)
   expect(second.frame.instance).toMatch(/^[0-9a-f-]{36}$/)
-  expect(second.frame.activities).toEqual([{ activity: "new", sequence: 1, state: "idle", summary: "Latest" }])
+  expect(second.frame.activities).toMatchObject([{ activity: "new", state: "idle", summary: "Latest" }])
+  expect(second.frame.activities[0].sequence).toBeGreaterThan(0)
   producer.close()
   peer.producer()
   expect((await peer.wait(3)).frame.instance).not.toBe(first.frame.instance)
@@ -206,7 +210,7 @@ test("sanitizes UTF-8 metadata, IDs and states, including blank summary clears",
   producer.replace([
     { activity: "bad/id", state: "working" },
     { activity: "x".repeat(97), state: "working" },
-    { activity: "terminal", state: "failed" as Activity["state"] },
+    { activity: "invalid", state: "unknown" as Activity["state"] },
     {
       activity: "a".repeat(96),
       state: "working",
@@ -342,4 +346,280 @@ test("invalid socket paths and instance IDs fail closed", async () => {
   await Bun.sleep(60)
   expect(peer.sockets).toHaveLength(0)
   expect((await lstat(peer.path)).isSocket()).toBe(true)
+})
+
+test("enforces the 100-byte UTF-8 path guard on an existing private socket", async () => {
+  await using peer = await fixture()
+  const bytes = 101 - Buffer.byteLength(peer.directory) - 1
+  const long = join(peer.directory, "\u00e9".repeat(Math.floor(bytes / 2)) + (bytes % 2 ? "s" : ""))
+  expect(Buffer.byteLength(long)).toBe(101)
+  await rename(peer.path, long)
+  peer.producer({ socket: long })
+  await Bun.sleep(60)
+  expect(peer.sockets).toHaveLength(0)
+  expect((await lstat(long)).isSocket()).toBe(true)
+  const boundary = join(peer.directory, "s".repeat(100 - Buffer.byteLength(peer.directory) - 1))
+  await rename(long, boundary)
+  peer.producer({ socket: boundary })
+  expect((await peer.wait(1)).frame.type).toBe("source.register")
+})
+
+test("registration-inflight and offline transitions only update authoritative state", async () => {
+  await using peer = await fixture(() => {})
+  const producer = peer.producer({ retryMs: 40 })
+  producer.transition({ activity: "chat", state: "working" })
+  const registration = await peer.wait(1)
+  producer.transition({ activity: "chat", state: "succeeded" })
+  registration.socket.write(ack)
+  const snapshot = await peer.wait(2)
+  expect(snapshot.frame.type).toBe("source.snapshot")
+  expect(snapshot.frame.activities[0]).toMatchObject({ state: "succeeded", sequence: 2 })
+  snapshot.socket.destroy()
+  await new Promise<void>((resolve) => snapshot.socket.once("close", resolve))
+  producer.transition({ activity: "chat", state: "cancelled" })
+  const reconnect = await peer.wait(3)
+  expect(reconnect.frame.type).toBe("source.register")
+  expect(reconnect.frame.activities[0].state).toBe("cancelled")
+  expect(peer.messages.some((message) => message.frame.type === "activity.state")).toBe(false)
+})
+
+for (const terminal of ["succeeded", "failed", "cancelled"] as const) {
+  test(`preserves rapid working/${terminal} turns ahead of snapshots and removal`, async () => {
+    await using peer = await fixture((message) => {
+      if (message.frame.type === "source.register") message.socket.write(ack)
+    })
+    const producer = peer.producer()
+    await peer.wait(1)
+    producer.replace([{ activity: "chat", state: "idle" }])
+    const held = await peer.wait(2)
+    for (let i = 0; i < 2; i++) {
+      producer.transition({ activity: "chat", state: "working", summary: `Turn ${i}` })
+      producer.transition({ activity: "chat", state: terminal, summary: `Turn ${i}` })
+      producer.replace([{ activity: "chat", state: terminal, summary: `Turn ${i}` }])
+    }
+    producer.replace([])
+    expect(peer.messages).toHaveLength(2)
+    held.socket.write(ack)
+    for (let i = 0; i < 4; i++) {
+      const event = await peer.wait(3 + i)
+      expect(event.frame).toMatchObject({
+        type: "activity.state",
+        activity: "chat",
+        state: i % 2 === 0 ? "working" : terminal,
+        sequence: i + 2,
+        summary: `Turn ${Math.floor(i / 2)}`,
+      })
+      expect(event.frame.source).toBeUndefined()
+      expect(event.frame.instance).toBeUndefined()
+      event.socket.write(ack)
+    }
+    const removal = await peer.wait(7)
+    expect(removal.frame).toMatchObject({ type: "source.snapshot", activities: [] })
+  })
+}
+
+for (const failure of ["disconnect", "NACK", "timeout"] as const) {
+  test(`lost terminal ACK (${failure}) retires queued events without replay`, async () => {
+    await using peer = await fixture((message) => {
+      if (message.frame.type !== "activity.state") message.socket.write(ack)
+    })
+    const producer = peer.producer({ ackTimeoutMs: 40 })
+    await peer.wait(1)
+    producer.replace([{ activity: "chat", state: "working" }])
+    await peer.wait(2)
+    producer.transition({ activity: "chat", state: "succeeded" })
+    const terminal = await peer.wait(3)
+    producer.transition({ activity: "chat", state: "working" })
+    producer.transition({ activity: "chat", state: "failed" })
+    if (failure === "disconnect") terminal.socket.destroy()
+    if (failure === "NACK") terminal.socket.write('{"version":1,"ok":false,"error":"private diagnostic"}\n')
+    const reconnect = await peer.wait(4)
+    expect(reconnect.connection).toBe(2)
+    expect(reconnect.frame.type).toBe("source.register")
+    expect(reconnect.frame.activities[0]).toMatchObject({ state: "failed", sequence: 3 })
+    await Bun.sleep(60)
+    expect(peer.messages.filter((message) => message.frame.type === "activity.state")).toHaveLength(1)
+  })
+}
+
+test("queue overflow fails closed and reconnects with latest state only", async () => {
+  await using peer = await fixture((message) => {
+    if (message.frame.type === "source.register") message.socket.write(ack)
+  })
+  const producer = peer.producer()
+  await peer.wait(1)
+  producer.replace([{ activity: "chat", state: "idle" }])
+  await peer.wait(2)
+  for (let i = 0; i < 33; i++) producer.transition({ activity: "chat", state: i % 2 ? "working" : "succeeded" })
+  const reconnect = await peer.wait(3)
+  expect(reconnect.connection).toBe(2)
+  expect(reconnect.frame.type).toBe("source.register")
+  expect(reconnect.frame.activities[0].state).toBe("succeeded")
+  expect(peer.messages.some((message) => message.frame.type === "activity.state")).toBe(false)
+})
+
+test("queue fits 32 events in order and expired suffix recovers through snapshot", async () => {
+  await using peer = await fixture((message) => {
+    if (message.frame.type === "source.register") message.socket.write(ack)
+  })
+  const producer = peer.producer({ ackTimeoutMs: 500 })
+  await peer.wait(1)
+  producer.replace([{ activity: "chat", state: "idle" }])
+  let held = await peer.wait(2)
+  for (let i = 0; i < 32; i++) producer.transition({ activity: "chat", state: i % 2 ? "succeeded" : "working" })
+  for (let i = 0; i < 5; i++) {
+    // Hold each ACK below its deadline while the FIFO's two-second lifetime elapses.
+    await Bun.sleep(430)
+    held.socket.write(ack)
+    held = await peer.wait(3 + i)
+    if (i < 4)
+      expect(held.frame).toMatchObject({
+        type: "activity.state",
+        state: i % 2 ? "succeeded" : "working",
+        sequence: i + 2,
+      })
+  }
+  expect(held.frame.type).toBe("source.snapshot")
+  expect(held.frame.activities[0]).toMatchObject({ state: "succeeded", sequence: 6 })
+  expect(peer.sockets).toHaveLength(1)
+})
+
+test("all 32 queued events retain order and the final snapshot reflects a new run", async () => {
+  await using peer = await fixture((message) => {
+    if (message.frame.type === "source.register") message.socket.write(ack)
+  })
+  const producer = peer.producer()
+  await peer.wait(1)
+  producer.replace([{ activity: "chat", state: "idle" }])
+  const held = await peer.wait(2)
+  for (let i = 0; i < 32; i++) producer.transition({ activity: "chat", state: i % 2 ? "succeeded" : "working" })
+  producer.replace([{ activity: "chat", state: "working" }])
+  held.socket.write(ack)
+  for (let i = 0; i < 32; i++) {
+    const event = await peer.wait(3 + i)
+    expect(event.frame).toMatchObject({
+      type: "activity.state",
+      state: i % 2 ? "succeeded" : "working",
+      sequence: i + 2,
+    })
+    event.socket.write(ack)
+  }
+  expect((await peer.wait(35)).frame).toMatchObject({
+    type: "source.snapshot",
+    activities: [{ activity: "chat", state: "working", sequence: 34 }],
+  })
+  expect(peer.sockets).toHaveLength(1)
+})
+
+test("live admission respects the acknowledged 16-active baseline before snapshot removal", async () => {
+  await using peer = await fixture((message) => {
+    if (message.frame.type === "source.register") message.socket.write(ack)
+  })
+  const producer = peer.producer()
+  producer.replace(Array.from({ length: 16 }, (_, i) => ({ activity: `chat-${i}`, state: "working" })))
+  await peer.wait(1)
+  producer.replace([])
+  const held = await peer.wait(2)
+  producer.transition({ activity: "new", state: "working" })
+  producer.transition({ activity: "new", state: "failed" })
+  held.socket.write(ack)
+  const event = await peer.wait(3)
+  // The removal ACK freed the baseline slot; neither queued record was overtaken.
+  expect(event.frame).toMatchObject({ type: "activity.state", activity: "new", state: "working", sequence: 1 })
+  event.socket.write(ack)
+  const terminal = await peer.wait(4)
+  expect(terminal.frame).toMatchObject({ type: "activity.state", activity: "new", state: "failed", sequence: 2 })
+})
+
+for (const type of ["source.register", "source.snapshot"] as const) {
+  test(`rejects a sealed token from a retired ${type} generation after reconnect ACK`, async () => {
+    await using peer = await fixture((message) => {
+      if (type === "source.snapshot" && message.connection === 1 && message.frame.type === "source.register") {
+        message.socket.write(ack)
+      }
+    })
+    const producer = peer.producer()
+    let old = await peer.wait(1)
+    if (type === "source.snapshot") {
+      producer.replace([{ activity: "chat", state: "working" }])
+      old = await peer.wait(2)
+    }
+    expect(old.frame.type).toBe(type)
+    const token = producer.connection() ?? null
+    if (type === "source.register") expect(token).toBeNull()
+    else expect(typeof token).toBe("number")
+    old.socket.destroy()
+    const fresh = await peer.wait(peer.messages.length + 1)
+    expect(fresh.connection).toBe(2)
+    expect(fresh.frame.type).toBe("source.register")
+    expect(producer.connection()).toBeUndefined()
+    producer.replace([{ activity: "chat", state: "working" }])
+    fresh.socket.write(ack)
+    const current = await peer.wait(peer.messages.length + 1)
+    expect(current.frame.type).toBe("source.snapshot")
+    expect(typeof producer.connection()).toBe("number")
+    expect(producer.connection()).not.toBe(token)
+    producer.transition({ activity: "chat", state: "succeeded" }, token)
+    const count = peer.messages.length
+    current.socket.write(ack)
+    const terminal = await peer.wait(count + 1)
+    expect(terminal.frame.type).toBe("source.snapshot")
+    expect(terminal.frame.activities[0].state).toBe("succeeded")
+    expect(peer.messages.some((message) => message.frame.type === "activity.state")).toBe(false)
+  })
+}
+
+test("a null token captured before registration ACK cannot cue when drained after ACK", async () => {
+  await using peer = await fixture(() => {})
+  const producer = peer.producer()
+  expect(producer.connection()).toBeUndefined()
+  const registration = await peer.wait(1)
+  const token = producer.connection() ?? null
+  expect(token).toBeNull()
+  producer.replace([{ activity: "chat", state: "working" }])
+  registration.socket.write(ack)
+  const held = await peer.wait(2)
+  expect(typeof producer.connection()).toBe("number")
+  producer.transition({ activity: "chat", state: "succeeded" }, token)
+  held.socket.write(ack)
+  const terminal = await peer.wait(3)
+  expect(terminal.frame).toMatchObject({
+    type: "source.snapshot",
+    activities: [{ activity: "chat", state: "succeeded", sequence: 2 }],
+  })
+  expect(peer.messages.some((message) => message.frame.type === "activity.state")).toBe(false)
+  producer.close()
+  expect(producer.connection()).toBeUndefined()
+})
+
+test("a current registered token submits each queued live transition once", async () => {
+  await using peer = await fixture((message) => {
+    if (message.frame.type === "source.register") message.socket.write(ack)
+  })
+  const producer = peer.producer()
+  await peer.wait(1)
+  producer.replace([{ activity: "chat", state: "idle" }])
+  const held = await peer.wait(2)
+  const token = producer.connection()
+  expect(typeof token).toBe("number")
+  producer.transition({ activity: "chat", state: "working" }, token)
+  producer.transition({ activity: "chat", state: "succeeded" }, token)
+  expect(peer.messages).toHaveLength(2)
+  expect(producer.connection()).toBe(token)
+  held.socket.write(ack)
+  const working = await peer.wait(3)
+  expect(working.frame).toMatchObject({ type: "activity.state", state: "working", sequence: 2 })
+  working.socket.write(ack)
+  const terminal = await peer.wait(4)
+  expect(terminal.frame).toMatchObject({ type: "activity.state", state: "succeeded", sequence: 3 })
+  terminal.socket.write(ack)
+  const snapshot = await peer.wait(5)
+  expect(snapshot.frame).toMatchObject({
+    type: "source.snapshot",
+    activities: [{ activity: "chat", state: "succeeded", sequence: 4 }],
+  })
+  snapshot.socket.write(ack)
+  await Bun.sleep(20)
+  expect(peer.messages.filter((message) => message.frame.type === "activity.state")).toHaveLength(2)
+  expect(producer.connection()).toBe(token)
 })

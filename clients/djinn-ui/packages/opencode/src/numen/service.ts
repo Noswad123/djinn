@@ -13,6 +13,7 @@ import { Question } from "@/question"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
+import { RunLifecycle } from "@/session/run-lifecycle"
 import { NumenTransport, type Activity } from "./transport"
 
 export interface Input {
@@ -52,6 +53,8 @@ type RecordState = {
   dirty: boolean
   alive: boolean
   observed: boolean
+  run?: RunLifecycle.Event
+  terminal?: { state: "succeeded" | "failed" | "cancelled"; reason: string; expires: number }
   owner: Set<RecordState>
 }
 
@@ -65,10 +68,13 @@ export const layer = Layer.effect(
     const statuses = yield* SessionStatus.Service
     const permissions = yield* Permission.Service
     const questions = yield* Question.Service
+    const lifecycle = yield* RunLifecycle.Service
     const viewers = new Map<string, Viewer>()
     const records = new Set<RecordState>()
     // Exact session pins require stable IDs: fail closed after 32 per transport lifetime.
     const admitted = new Set<SessionID>()
+    const transitions: { record: RecordState; activity: Activity; expires: number; connection: number | null }[] = []
+    let suppressTransitions = false
     let epoch = 0
     let resetting = false
     let offDispose: (() => void) | undefined
@@ -78,43 +84,131 @@ export const layer = Layer.effect(
 
     const viewed = (record: RecordState) => [...viewers.values()].some((viewer) => viewer.record === record)
     const busy = (record: RecordState) =>
-      record.status.type !== "idle" || record.permissions.size > 0 || record.questions.size > 0
+      record.run?.phase === "owned" ||
+      record.status.type !== "idle" ||
+      record.permissions.size > 0 ||
+      record.questions.size > 0
     const remove = (record: RecordState) => {
       record.alive = false
       records.delete(record)
       record.owner.delete(record)
       for (const viewer of viewers.values()) if (viewer.record === record) viewer.record = undefined
     }
+    const activity = (record: RecordState): Activity => {
+      if (record.terminal && !busy(record))
+        return {
+          activity: record.id,
+          summary: record.summary,
+          state: record.terminal.state,
+          reason: record.terminal.reason,
+        }
+      return {
+        activity: record.id,
+        summary: record.summary,
+        state:
+          record.permissions.size || record.questions.size || record.status.type === "retry"
+            ? "waiting"
+            : busy(record)
+              ? "working"
+              : "idle",
+        ...(record.permissions.size || record.questions.size ? { attention: true, reason: "Input required" } : {}),
+        ...(record.status.type === "retry" && !record.permissions.size && !record.questions.size
+          ? { attention: false, reason: "retry" }
+          : {}),
+      }
+    }
     const publish = () => {
-      for (const record of records) if (!viewed(record) && !(record.observed && busy(record))) remove(record)
-      const activities = [...records]
-        .filter((record) => record.ready)
-        .map(
-          (record): Activity => ({
-            activity: record.id,
-            summary: record.summary,
-            state:
-              record.permissions.size || record.questions.size || record.status.type === "retry"
-                ? "waiting"
-                : busy(record)
-                  ? "working"
-                  : "idle",
-            ...(record.permissions.size || record.questions.size ? { attention: true, reason: "Input required" } : {}),
-            ...(record.status.type === "retry" && !record.permissions.size && !record.questions.size
-              ? { attention: false, reason: "retry" }
-              : {}),
-          }),
+      drain()
+      for (const record of records)
+        if (
+          !viewed(record) &&
+          !(record.observed && busy(record)) &&
+          !(record.terminal && record.terminal.expires > performance.now())
         )
+          remove(record)
+      const activities = [...records].filter((record) => record.ready).map(activity)
       const snapshot = JSON.stringify(activities)
       if (!publisher || publisher.snapshot === snapshot) return
       publisher.snapshot = snapshot
       publisher.transport.replace(activities)
+    }
+    const drain = () => {
+      // A lost prefix must not leave a later terminal transition behind it.
+      if (transitions.some((entry) => entry.expires <= performance.now())) transitions.length = 0
+      for (const entry of transitions.splice(0)) {
+        if (!entry.record.alive || !entry.record.ready || !publisher) continue
+        publisher.transport.transition(entry.activity, entry.connection)
+        // A transition mutates transport state independently of the snapshot cache.
+        publisher.snapshot = undefined
+      }
+      suppressTransitions = false
     }
 
     const state = yield* InstanceState.make((ctx) =>
       Effect.gen(function* () {
         const owned = new Set<RecordState>()
         const local = { alive: true, owned, pending: 0 }
+        const offLifecycle = lifecycle.subscribe((event) => {
+          if (
+            !local.alive ||
+            event.kind !== "response" ||
+            event.directory !== ctx.directory ||
+            event.projectID !== ctx.project.id
+          )
+            return
+          for (const record of owned) {
+            if (!record.alive || record.id !== event.sessionID || record.workspace !== event.workspaceID) continue
+            if (event.phase === "owned") {
+              // Ownership order, not settlement arrival order, decides which run is current.
+              const current = lifecycle.current(event)
+              if (current?.runID !== event.runID || current.instanceID !== event.instanceID) continue
+              if (
+                record.run?.instanceID === event.instanceID &&
+                (record.run.order > event.order || record.run.runID === event.runID)
+              )
+                continue
+              record.run = event
+              record.terminal = undefined
+              record.observed = true
+            } else {
+              if (
+                record.run?.phase !== "owned" ||
+                record.run.instanceID !== event.instanceID ||
+                record.run.runID !== event.runID ||
+                record.run.order !== event.order
+              )
+                continue
+              record.run = event
+              record.status = { type: "idle" }
+              record.expectedStatus = "idle"
+              record.permissions.clear()
+              record.questions.clear()
+              record.terminal =
+                event.outcome === "completed" || event.outcome === "failed" || event.outcome === "cancelled"
+                  ? {
+                      state: event.outcome === "completed" ? "succeeded" : event.outcome,
+                      reason: event.outcome === "completed" ? "response_completed" : `run_${event.outcome}`,
+                      // Allow the bounded live queue and 1.5-second cue to finish before retiring an unviewed target.
+                      expires: performance.now() + 5000,
+                    }
+                  : undefined
+            }
+            record.generation++
+            record.dirty = true
+            if (!record.ready || !publisher || suppressTransitions) continue
+            if (transitions.length === 32) {
+              transitions.length = 0
+              suppressTransitions = true
+              continue
+            }
+            transitions.push({
+              record,
+              activity: activity(record),
+              expires: performance.now() + 2000,
+              connection: publisher.transport.connection() ?? null,
+            })
+          }
+        })
         const onEvent = (event: GlobalEvent) => {
           if (!local.alive || event.directory !== ctx.directory || (event.project && event.project !== ctx.project.id))
             return
@@ -136,6 +230,7 @@ export const layer = Layer.effect(
             if (payload.type === "session.status" && data.status) {
               record.status = data.status
               record.expectedStatus = data.status.type
+              if (data.status.type !== "idle") record.terminal = undefined
             } else if (payload.type === "permission.asked" && data.id) record.permissions.add(data.id)
             else if (payload.type === "permission.replied" && data.requestID) record.permissions.delete(data.requestID)
             else if (payload.type === "question.asked" && data.id) record.questions.add(data.id)
@@ -152,6 +247,7 @@ export const layer = Layer.effect(
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
             local.alive = false
+            offLifecycle()
             GlobalBus.off("event", onEvent)
             for (const record of owned) remove(record)
             owned.clear()
@@ -193,6 +289,7 @@ export const layer = Layer.effect(
                 record.status = status
                 record.expectedStatus = undefined
               }
+              if (record.status.type !== "idle") record.terminal = undefined
               record.permissions = new Set(
                 pendingPermissions.filter((item) => item.sessionID === record.id).map((item) => item.id),
               )
@@ -232,6 +329,8 @@ export const layer = Layer.effect(
       offDispose?.()
       offDispose = undefined
       viewers.clear()
+      transitions.length = 0
+      suppressTransitions = false
       for (const record of records) record.alive = false
       records.clear()
       const previous = publisher
@@ -257,11 +356,12 @@ export const layer = Layer.effect(
         input.revision < 0
       )
         return
+      const stamp = epoch
+      const now = yield* Clock.currentTimeMillis
+      if (resetting || epoch !== stamp) return
       const previous = viewers.get(input.viewer)
       if (previous && input.revision <= previous.revision) return
       if (!previous && viewers.size >= 32) return
-      const now = yield* Clock.currentTimeMillis
-      const stamp = epoch
       const token = {}
       const selection = input.selection
       const directory = selection ? FSUtil.resolve(selection.directory) : undefined
@@ -342,6 +442,11 @@ export const layer = Layer.effect(
                 dirty: false,
                 alive: true,
                 observed: false,
+                run: lifecycle.current({
+                  directory: ctx.directory,
+                  sessionID: info.value.id,
+                  workspaceID: selection.workspaceID,
+                }),
                 owner: local.owned,
               }
               local.owned.add(record)
@@ -444,6 +549,7 @@ export const node = LayerNode.make({
     SessionStatus.node,
     Permission.node,
     Question.node,
+    RunLifecycle.node,
   ],
 })
 

@@ -55,6 +55,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilderV1 } from "./app-node-builder-v1"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { Numen } from "@/numen/service"
+import { RunLifecycle } from "@/session/run-lifecycle"
 
 export const AppLayer = AppNodeBuilderV1.build(
   LayerNode.group([
@@ -85,6 +86,7 @@ export const AppLayer = AppNodeBuilderV1.build(
     RuntimeFlags.node,
     EventV2Bridge.node,
     SessionRunState.node,
+    RunLifecycle.node,
     SessionProcessor.node,
     SessionCompaction.node,
     SessionRevert.node,

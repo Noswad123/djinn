@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join } from "node:path"
 
 export type Activity = {
   activity: string
-  state: "idle" | "working" | "waiting"
+  state: "idle" | "working" | "waiting" | "succeeded" | "failed" | "cancelled"
   attention?: boolean
   reason?: string
   summary?: string
@@ -28,20 +28,28 @@ export function create(options: {
   heartbeatMs?: number
   retryMs?: number
   ackTimeoutMs?: number
-}): { replace(activities: readonly Activity[]): void; close(): void } {
+}): {
+  replace(activities: readonly Activity[]): void
+  connection(): number | undefined
+  transition(activity: Activity, connection?: number | null): void
+  close(): void
+} {
   const instance = options.instance ?? randomUUID()
   const uid = process.geteuid?.() ?? process.getuid?.()
   const heartbeatMs = duration(options.heartbeatMs, 3000, 9000)
   const retryMs = duration(options.retryMs, 1000, 30000)
-  const ackTimeoutMs = duration(options.ackTimeoutMs, 500, 2000)
+  const ackTimeoutMs = duration(options.ackTimeoutMs, 500, 500)
   const sequences = new Map<string, number>()
-  let desired: (Activity & { sequence: number })[] = []
+  let desired: Activity[] = []
   let revision = 0
   let sent = -1
   let closed = !identifier.test(instance) || !validPath(options.socket) || uid === undefined
   let socket: Socket | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
-  let pending = false
+  let generation = 0
+  let pending: { generation: number; type: string; revision: number; activities?: readonly Activity[] } | undefined
+  let baseline = new Map<string, Activity>()
+  const live: { activity: Activity; generation: number; expires: number }[] = []
   let registered = false
   let received = Buffer.alloc(0)
 
@@ -62,18 +70,41 @@ export function create(options: {
     socket = undefined
     previous?.destroy()
     received = Buffer.alloc(0)
-    pending = false
+    generation++
+    pending = undefined
+    live.length = 0
+    baseline.clear()
     registered = false
     if (!closed) schedule(() => void connect(), retryMs)
   }
 
-  function registration(activities = desired) {
+  function registration(activities: readonly Activity[]) {
     return { version: 1, type: "source.register", source: "djinn", instance, activities }
   }
 
-  function send(message: object) {
+  function records(activities: readonly Activity[]) {
+    if (activities.some((activity) => !Number.isSafeInteger((sequences.get(activity.activity) ?? 0) + 1))) {
+      closed = true
+      retire()
+      return []
+    }
+    return activities.map((activity) => {
+      const sequence = (sequences.get(activity.activity) ?? 0) + 1
+      sequences.set(activity.activity, sequence)
+      return { ...activity, sequence }
+    })
+  }
+
+  function send<
+    T extends { type: string; activities?: readonly Activity[]; activity?: string; state?: Activity["state"] },
+  >(message: T) {
     if (closed || !socket || pending) return
-    pending = true
+    pending = {
+      generation,
+      type: message.type,
+      revision,
+      activities: message.activities ?? (message.type === "activity.state" ? [message as Activity] : undefined),
+    }
     schedule(retire, ackTimeoutMs)
     try {
       socket.write(JSON.stringify(message) + "\n")
@@ -84,9 +115,18 @@ export function create(options: {
 
   function pump() {
     if (closed || !socket || pending || !registered) return
+    // A lost prefix cannot safely leave terminal cues behind it. Recover via snapshot.
+    if (live.some((event) => event.generation !== generation || event.expires <= performance.now())) live.length = 0
+    const event = live.shift()
+    if (event) {
+      if (baseline.has(event.activity.activity) || baseline.size < 16) {
+        send({ version: 1, type: "activity.state", ...records([event.activity])[0] })
+        return
+      }
+      live.length = 0
+    }
     if (sent !== revision) {
-      sent = revision
-      send({ version: 1, type: "source.snapshot", activities: desired })
+      send({ version: 1, type: "source.snapshot", activities: records(desired) })
       return
     }
     schedule(() => send({ version: 1, type: "source.heartbeat" }), heartbeatMs)
@@ -103,6 +143,7 @@ export function create(options: {
       if (closed) return
       if (!endpoint.isSocket() || endpoint.uid !== uid || (endpoint.mode & 0o077) !== 0) return retire()
       const client = new Socket()
+      const current = ++generation
       socket = client
       client.unref()
       schedule(retire, ackTimeoutMs)
@@ -117,11 +158,10 @@ export function create(options: {
       })
       client.on("connect", () => {
         if (closed || socket !== client) return client.destroy()
-        sent = revision
-        send(registration())
+        send(registration(records(desired)))
       })
       client.on("data", (chunk: Buffer) => {
-        if (socket !== client) return
+        if (socket !== client || generation !== current) return
         if (!pending || received.length + chunk.length > limit + 1) return retire()
         received = Buffer.concat([received, chunk])
         const newline = received.indexOf(10)
@@ -149,10 +189,16 @@ export function create(options: {
         } catch {
           return retire()
         }
+        if (!pending || pending.generation !== current) return
+        if (pending.type === "source.register" || pending.type === "source.snapshot") sent = pending.revision
+        if (pending.activities) {
+          if (pending.type !== "activity.state") baseline = new Map()
+          for (const activity of pending.activities) baseline.set(activity.activity, activity)
+        }
+        if (pending.type === "source.register") registered = true
         clear()
         received = Buffer.alloc(0)
-        pending = false
-        registered = true
+        pending = undefined
         pump()
       })
       client.connect(options.socket)
@@ -163,39 +209,68 @@ export function create(options: {
 
   if (!closed) void connect()
 
+  function normalize(activities: readonly Activity[]) {
+    const next: typeof desired = []
+    const seen = new Set<string>()
+    for (const activity of activities) {
+      if (next.length === 16) break
+      if (!identifier.test(activity.activity) || seen.has(activity.activity)) continue
+      seen.add(activity.activity)
+      if (!["idle", "working", "waiting", "succeeded", "failed", "cancelled"].includes(activity.state)) continue
+      if (!sequences.has(activity.activity) && sequences.size === 32) continue
+      const sequence = (sequences.get(activity.activity) ?? 0) + 1
+      if (!Number.isSafeInteger(sequence)) continue
+      const summary = cleanText(activity.summary, 160)
+      const reason = cleanText(activity.reason, 128)
+      const record = {
+        activity: activity.activity,
+        state: activity.state,
+        ...(activity.state === "waiting" && activity.attention === true ? { attention: true } : {}),
+        ...(reason ? { reason } : {}),
+        ...(summary ? { summary } : {}),
+      }
+      next.push(record)
+      // Registration is larger than a snapshot; reserve its actual envelope too.
+      if (
+        Buffer.byteLength(
+          JSON.stringify(registration(next.map((item) => ({ ...item, sequence: Number.MAX_SAFE_INTEGER })))),
+          "utf8",
+        ) > limit
+      ) {
+        next.pop()
+        continue
+      }
+      if (!sequences.has(activity.activity)) sequences.set(activity.activity, 0)
+    }
+    return next
+  }
+
   return {
     replace(activities) {
       if (closed) return
-      const next: typeof desired = []
-      const seen = new Set<string>()
-      for (const activity of activities) {
-        if (next.length === 16) break
-        if (!identifier.test(activity.activity) || seen.has(activity.activity)) continue
-        seen.add(activity.activity)
-        if (!["idle", "working", "waiting"].includes(activity.state)) continue
-        if (!sequences.has(activity.activity) && sequences.size === 32) continue
-        const sequence = (sequences.get(activity.activity) ?? 0) + 1
-        if (!Number.isSafeInteger(sequence)) continue
-        const summary = cleanText(activity.summary, 160)
-        const reason = cleanText(activity.reason, 128)
-        const record = {
-          activity: activity.activity,
-          sequence,
-          state: activity.state,
-          ...(activity.state === "waiting" && activity.attention === true ? { attention: true } : {}),
-          ...(reason ? { reason } : {}),
-          ...(summary ? { summary } : {}),
-        }
-        next.push(record)
-        // Registration is larger than a snapshot; reserve its actual envelope too.
-        if (Buffer.byteLength(JSON.stringify(registration(next)), "utf8") > limit) {
-          next.pop()
-          continue
-        }
-        sequences.set(activity.activity, sequence)
-      }
+      const next = normalize(activities)
       desired = next
       revision++
+      pump()
+    },
+    connection() {
+      return registered ? generation : undefined
+    },
+    transition(activity, connection) {
+      if (closed) return
+      const record = normalize([activity])[0]
+      if (!record) return
+      const index = desired.findIndex((item) => item.activity === record.activity)
+      if (index < 0 && desired.length === 16) return
+      const next = normalize(index < 0 ? [...desired, record] : desired.map((item, i) => (i === index ? record : item)))
+      if (!next.some((item) => item.activity === record.activity)) return
+      desired = next
+      revision++
+      // Buffered callers seal the generation at event time; null forbids historical cues.
+      if (registered && (connection === undefined || connection === generation)) {
+        if (live.length === 32) retire()
+        else live.push({ activity: record, generation, expires: performance.now() + 2000 })
+      }
       pump()
     },
     close() {

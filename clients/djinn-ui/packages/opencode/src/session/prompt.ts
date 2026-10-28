@@ -1440,7 +1440,21 @@ const layer = Layer.effect(
     const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
     ) {
-      return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
+      let eligible = false
+      return yield* state.ensureRunning(
+        input.sessionID,
+        lastAssistant(input.sessionID),
+        Effect.gen(function* () {
+          // A no-op resume can return history without creating a response.
+          const baseline = yield* sessions
+            .findMessage(input.sessionID, (message) => message.info.role === "assistant")
+            .pipe(Effect.orDie)
+          const result = yield* runLoop(input.sessionID)
+          eligible = Option.isNone(baseline) || result.info.id !== baseline.value.info.id
+          return result
+        }),
+        () => eligible,
+      )
     })
 
     const shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError> = Effect.fn(

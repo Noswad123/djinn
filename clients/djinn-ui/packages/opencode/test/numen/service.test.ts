@@ -18,6 +18,7 @@ import { InstanceStore } from "@/project/instance-store"
 import { Question } from "@/question"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
+import { RunLifecycle } from "@/session/run-lifecycle"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -48,6 +49,7 @@ const dependencies = AppNodeBuilder.build(
     Question.node,
     CrossSpawnSpawner.node,
     EventV2Bridge.node,
+    RunLifecycle.node,
   ]),
   [[InstanceStore.bootstrapNode, Layer.succeed(InstanceBootstrap.Service, { run: Effect.void })]],
 )
@@ -63,6 +65,8 @@ const setup = (enabled = true, disabled = false) => {
             replace: (activities: readonly Activity[]) => {
               record.snapshots.push(activities)
             },
+            transition: () => {},
+            connection: () => 1,
             close: () => {
               record.closed++
             },
