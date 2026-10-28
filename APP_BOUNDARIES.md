@@ -63,6 +63,13 @@ Read-only observation/display grants no launch, input-send, resume, stop, or
 policy-changing authority. Execution and cancellation need separately supported,
 explicitly authorized adapters; native policy remains independently authoritative.
 
+The optional [interactive prompt socket](docs/interactive-prompts.md) is a
+startup-enabled native full-TUI endpoint, independent of Kitsune/Coven. Explicit
+runtime/session targeting returns native message admission receipts, not worker
+admission or completion. It preserves recorded agent/model selection and native
+policy. No automatic prompt retry, default endpoint, permission inheritance or
+legacy-to-V2 execution bridge is introduced.
+
 ### Separate generic annotations: first production slice
 
 Kitsune's [annotation guide](../kitsune/ANNOTATIONS.md) documents manual source
