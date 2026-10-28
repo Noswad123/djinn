@@ -3,10 +3,11 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Runner } from "@/effect/runner"
 import { BackgroundJob } from "@/background/job"
-import { Effect, Latch, Layer, Scope, Context } from "effect"
+import { Effect, Latch, Layer, Scope, Context, type Exit } from "effect"
 import { Session } from "./session"
 import { SessionID } from "./schema"
 import { SessionStatus } from "./status"
+import { defaultRegistry } from "./live-observation"
 
 export interface Interface {
   readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
@@ -34,10 +35,16 @@ const layer = Layer.effect(
 
     const state = yield* InstanceState.make(
       Effect.fn("SessionRunState.state")(function* () {
-        const scope = yield* Scope.Scope
+        // Deregister before scoped interruption, retaining its precedence over
+        // the existing manual runner cleanup (shell fibers are caller-owned).
+        const parent = yield* Scope.Scope
+        const scope = yield* Scope.fork(parent)
         const runners = new Map<SessionID, Runner.Runner<SessionV1.WithParts>>()
+        const observation = defaultRegistry.registerInstance()
         yield* Effect.addFinalizer(
-          Effect.fnUntraced(function* () {
+          Effect.fnUntraced(function* (exit: Exit.Exit<unknown, unknown>) {
+            observation.close()
+            yield* Scope.close(scope, exit)
             yield* Effect.forEach(runners.values(), (runner) => runner.cancel, {
               concurrency: "unbounded",
               discard: true,
@@ -45,7 +52,7 @@ const layer = Layer.effect(
             runners.clear()
           }),
         )
-        return { runners, scope }
+        return { runners, scope, observation }
       }),
     )
 
@@ -58,12 +65,14 @@ const layer = Layer.effect(
       if (existing) return existing
       const next = Runner.make<SessionV1.WithParts>(data.scope, {
         onIdle: Effect.gen(function* () {
+          registration.remove()
           data.runners.delete(sessionID)
           yield* status.set(sessionID, { type: "idle" })
         }),
         onBusy: status.set(sessionID, { type: "busy" }),
         onInterrupt,
       })
+      const registration = data.observation.track(sessionID, next)
       data.runners.set(sessionID, next)
       return next
     })

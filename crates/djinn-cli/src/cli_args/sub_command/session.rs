@@ -61,6 +61,8 @@ pub(crate) enum SessionCommand {
     Context(SessionContextArgs),
     /// Inspect a folder-backed Djinn work session without running a model.
     Status(SessionStatusArgs),
+    /// Observe persisted metadata in an explicit folder without resolving live status.
+    Observe(SessionObserveArgs),
     /// List cache-backed named folder sessions.
     Ls(SessionLsArgs),
     /// Open a folder-backed session artifact in $VISUAL/$EDITOR.
@@ -471,6 +473,16 @@ pub(crate) struct SessionContextRmArgs {
 }
 
 #[derive(Debug, Args)]
+pub(crate) struct SessionObserveArgs {
+    /// Existing absolute UTF-8 folder path. No names or session IDs are resolved.
+    #[arg(value_name = "ABS_FOLDER")]
+    pub(crate) dir: PathBuf,
+    /// Output compact JSON instead of pretty JSON.
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
 pub(crate) struct SessionStatusArgs {
     /// Folder-backed session name, path, or UI session id to inspect.
     #[arg(value_name = "SESSION")]
@@ -547,6 +559,22 @@ mod tests {
 
     use super::*;
     use crate::cli_args::{Cli, Command};
+
+    #[test]
+    fn parses_session_observe_only_with_required_folder() {
+        assert!(Cli::try_parse_from(["djinn", "session", "observe"]).is_err());
+        let cli =
+            Cli::try_parse_from(["djinn", "session", "observe", "/tmp/session", "--json"]).unwrap();
+        let Some(Command::Session(args)) = cli.command else {
+            panic!("session")
+        };
+        let Some(SessionCommand::Observe(args)) = args.command else {
+            panic!("observe")
+        };
+        assert_eq!(args.dir, PathBuf::from("/tmp/session"));
+        assert!(args.json);
+        assert!(Cli::try_parse_from(["djinn", "session", "observe", "/tmp/a", "/tmp/b"]).is_err());
+    }
 
     #[test]
     fn parses_session_nouns_and_rejects_share_command() {

@@ -560,6 +560,49 @@ it.instance("prompt appends Djinn events when DJINN_EVENTS_JSONL is set", () =>
   }),
 )
 
+it.instance("interactive admission returns the persisted user message before a blocked reply", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Native admission" })
+    yield* llm.hang
+    const admitted = yield* prompt.admitInteractive({ sessionID: chat.id, agent: "build",
+      parts: [{ type: "text", text: "native task" }] })
+    expect(admitted.info.role).toBe("user")
+    const stored = yield* sessions.messages({ sessionID: chat.id })
+    expect(stored.some((message) => message.info.id === admitted.info.id)).toBe(true)
+    yield* awaitWithTimeout(llm.wait(1), "native reply never started", "10 seconds")
+    yield* prompt.cancel(chat.id)
+  }),
+)
+
+it.instance("interactive admission retains ordinary folder assistant event capture", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Native event capture" })
+    const eventsPath = path.join(dir, "djinn", "events.jsonl")
+    yield* llm.text("native reply")
+    yield* withDjinnEvents(eventsPath, () => Effect.gen(function* () {
+      const admitted = yield* prompt.admitInteractive({ sessionID: chat.id, agent: "build",
+        parts: [{ type: "text", text: "native request" }] })
+      expect(admitted.info.role).toBe("user")
+      yield* pollWithTimeout(
+        Effect.promise(() => Bun.file(eventsPath).text()).pipe(Effect.map((text) => {
+          const lines = text.trim().split("\n").map((line) => JSON.parse(line))
+          return lines.some((line) => line.type === "assistant_message" && line.content === "native reply")
+            ? true : undefined
+        })),
+        "native reply did not append the folder assistant event",
+      )
+    }))
+    const lines = (yield* Effect.promise(() => Bun.file(eventsPath).text())).trim().split("\n").map((line) => JSON.parse(line))
+    expect(lines.map((line) => line.type)).toEqual(["user_message", "assistant_message"])
+  }),
+)
+
 it.instance("prompt skips Djinn events with an existing event_id", () =>
   Effect.gen(function* () {
     const { dir } = yield* useServerConfig(providerCfg)

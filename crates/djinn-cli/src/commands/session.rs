@@ -61,6 +61,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Cleanup(args) => session_cleanup(args),
         SessionCommand::Context(args) => session_context(args),
         SessionCommand::Status(args) => session_status(args),
+        SessionCommand::Observe(args) => crate::session::observe::session_observe(args),
         SessionCommand::Ls(args) => session_ls(args),
         SessionCommand::Open(args) => session_open(args),
         SessionCommand::Rename(args) => session_rename(args),

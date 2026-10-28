@@ -42,6 +42,11 @@ is the Rust rewrite.
 
 ## Documentation
 
+- [Live observation v1](docs/live-observation.md) — optional new full-TUI worker
+  startup opt-in; short-lived legacy busy evidence only, never idle or completion.
+- [Persisted session observation](docs/session-observation.md) — explicit
+  `djinn session observe ABS_FOLDER --json`; bounded folder evidence, not live
+  status, completion or authorization. Native exit 0 means report generated.
 - [App guide](docs/app-guide.md) — detailed concepts, storage, commands, TUI
   behavior, OpenCode integration, skills, contexts, and memory workflow.
 - [Future TUI tabs](docs/tui-future-tabs.md) — rationale and entry criteria for

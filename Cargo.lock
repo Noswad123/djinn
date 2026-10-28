@@ -330,11 +330,13 @@ dependencies = [
  "djinn-opencode",
  "djinn-skills",
  "djinn-tools",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
+ "toml_edit",
 ]
 
 [[package]]

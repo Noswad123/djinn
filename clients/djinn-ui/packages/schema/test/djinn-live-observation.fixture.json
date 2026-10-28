@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "contract": "djinn.live-observation.v1",
+  "runtime_id": "616fed3e-ae7f-41a0-99e5-80546d659d76",
+  "sequence": 1,
+  "sampled_at_ms": 1792861200000,
+  "valid_for_ms": 3000,
+  "source": "legacy_session_run_state",
+  "activity_scope": "legacy_runner_ownership",
+  "capabilities": {
+    "activity": true,
+    "idle": false,
+    "catalog_complete": false,
+    "decision_state": false,
+    "retry_state": false,
+    "durable_lifecycle": false,
+    "job_completion": false
+  },
+  "authorization": "none",
+  "dispatchable": false,
+  "native_lifecycle": "unestablished",
+  "job_completion": "unestablished",
+  "instances": [
+    {
+      "instance_id": "e3c0e2ce-544c-4f1e-a489-5d3e0cf1978e",
+      "sessions": [
+        { "session_id": "ses_cross_language_busy", "activity": "busy" },
+        { "session_id": "ses_cross_language_unknown", "activity": "unknown" }
+      ]
+    }
+  ]
+}

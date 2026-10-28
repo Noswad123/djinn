@@ -28,6 +28,19 @@ agent-aware features. This decision does not claim those features are removed.
 
 ## API / Interfaces
 
+The separate [live observation v1](docs/live-observation.md) source is implemented
+for optional startup opt-in in a new legacy full-TUI worker build. Private,
+UUID-pinned heartbeat files establish only short-lived runner busy evidence,
+never idle, health, readiness or completion. Coven's reader does not start/restart
+apps or integrate this evidence with groups/dispatch; persisted observation stays separate.
+
+The first native persisted-evidence slice is implemented:
+[`djinn session observe ABS_FOLDER --json`](docs/session-observation.md).
+It reads only root manifest/events from an explicit folder, with no core Coven
+dependency. Recorded lifecycle is not live status, job completion, policy admission
+or dispatch authority. Existing status/list/watch semantics are unchanged and are
+never an observation fallback.
+
 Target dependency direction: Coven adapters consume supported native runtime and
 multiplexer capabilities. Optional Djinn reporting and generic Kitsune decoration
 are external integration edges, not core or installation dependencies.
@@ -49,6 +62,13 @@ without Djinn/Coven-specific core types.
 Read-only observation/display grants no launch, input-send, resume, stop, or
 policy-changing authority. Execution and cancellation need separately supported,
 explicitly authorized adapters; native policy remains independently authoritative.
+
+The optional [interactive prompt socket](docs/interactive-prompts.md) is a
+startup-enabled native full-TUI endpoint, independent of Kitsune/Coven. Explicit
+runtime/session targeting returns native message admission receipts, not worker
+admission or completion. It preserves recorded agent/model selection and native
+policy. No automatic prompt retry, default endpoint, permission inheritance or
+legacy-to-V2 execution bridge is introduced.
 
 ### Separate generic annotations: first production slice
 

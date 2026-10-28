@@ -174,6 +174,7 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
+  readonly admitInteractive: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
@@ -1121,6 +1122,18 @@ const layer = Layer.effect(
       return { info, parts }
     }, Effect.scoped)
 
+    const completeReply = Effect.fn("SessionPrompt.completeReply")(function* (message: SessionV1.WithParts) {
+      const reply = yield* loop({ sessionID: message.info.sessionID })
+      if (reply.info.role === "assistant" && reply.info.parentID === message.info.id) {
+        yield* appendDjinnEvent(
+          "assistant_message",
+          assistantEventContent(reply),
+          djinnEventID("assistant_message", reply.info.id),
+        )
+      }
+      return reply
+    })
+
     const prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
@@ -1140,15 +1153,18 @@ const layer = Layer.effect(
       }
 
       if (input.noReply === true) return message
-      const reply = yield* loop({ sessionID: input.sessionID })
-      if (reply.info.role === "assistant" && reply.info.parentID === message.info.id) {
-        yield* appendDjinnEvent(
-          "assistant_message",
-          assistantEventContent(reply),
-          djinnEventID("assistant_message", reply.info.id),
-        )
-      }
-      return reply
+      return yield* completeReply(message)
+    })
+
+    // Return only the persisted user message, while the ordinary reply path stays
+    // owned by this instance scope, including folder-capsule assistant events.
+    const admitInteractive = Effect.fn("SessionPrompt.admitInteractive")(function* (input: PromptInput) {
+      const message = yield* prompt({ ...input, noReply: true })
+      yield* completeReply(message).pipe(
+        Effect.catchCause(() => Effect.logWarning("native prompt execution stopped")),
+        Effect.forkIn(scope),
+      )
+      return message
     })
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
@@ -1564,6 +1580,7 @@ const layer = Layer.effect(
     return Service.of({
       cancel,
       prompt,
+      admitInteractive,
       loop,
       shell,
       command,
