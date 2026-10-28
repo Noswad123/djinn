@@ -10,6 +10,33 @@ const fromConfig = (input: Record<string, unknown>) =>
 const readFlags = RuntimeFlags.Service.useSync((flags) => flags)
 
 describe("RuntimeFlags", () => {
+  it.effect("Numen is opt-in and invalid observer flags fail closed", () =>
+    Effect.gen(function* () {
+      const defaults = yield* readFlags.pipe(Effect.provide(fromConfig({})))
+      expect(defaults.numen).toBe(false)
+      expect(defaults.numenDisabled).toBe(false)
+      expect(defaults.numenSocket).toBe("")
+      expect(defaults.numenRuntimeDir).toBe("")
+      const enabled = yield* readFlags.pipe(
+        Effect.provide(
+          fromConfig({ DJINN_NUMEN: "1", DJINN_NUMEN_SOCKET: "/private/numen/s", XDG_RUNTIME_DIR: "/run/u" }),
+        ),
+      )
+      expect(enabled.numen).toBe(true)
+      expect(enabled.numenSocket).toBe("/private/numen/s")
+      expect(enabled.numenRuntimeDir).toBe("/run/u")
+      const disabled = yield* readFlags.pipe(
+        Effect.provide(fromConfig({ DJINN_NUMEN: "true", DJINN_NUMEN_DISABLED: "true" })),
+      )
+      expect(disabled.numenDisabled).toBe(true)
+      const invalid = yield* readFlags.pipe(
+        Effect.provide(fromConfig({ DJINN_NUMEN: "maybe", DJINN_NUMEN_DISABLED: "maybe" })),
+      )
+      expect(invalid.numen).toBe(false)
+      expect(invalid.numenDisabled).toBe(true)
+    }),
+  )
+
   it.effect("layer defaults autoShare to false", () =>
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(Effect.provide(fromConfig({})))

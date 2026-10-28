@@ -88,6 +88,7 @@ import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { djinnSessionListActionLine, djinnSessionListTitle } from "./djinn/session-list"
 import { toolPreview } from "./djinn/tool-preview"
+import type { SelectedSession } from "./util/selected-session"
 
 registerOpencodeSpinner()
 
@@ -165,6 +166,7 @@ export type TuiInput = {
   args: Args
   config: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
+  onSelectedSessionChange?: (selection: SelectedSession | undefined) => void
   directory?: string
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
@@ -321,6 +323,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                                   <LocationProvider>
                                                                     <App
                                                                       onSnapshot={input.onSnapshot}
+                                                                      onSelectedSessionChange={
+                                                                        input.onSelectedSessionChange
+                                                                      }
                                                                       pluginHost={input.pluginHost}
                                                                     />
                                                                   </LocationProvider>
@@ -366,7 +371,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   })
 })
 
-function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPluginHost }) {
+function App(props: Pick<TuiInput, "onSnapshot" | "onSelectedSessionChange" | "pluginHost">) {
   const startup = useTuiStartup()
   const tuiConfig = useTuiConfig()
   const route = useRoute()
@@ -1110,7 +1115,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                 </Match>
                 <Match when={route.data.type === "session"}>
                   <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-                    {(_) => <Session />}
+                    {(_) => <Session onSelectedSessionChange={props.onSelectedSessionChange} />}
                   </Show>
                 </Match>
               </Switch>

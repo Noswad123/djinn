@@ -14,6 +14,7 @@ import { writeHeapSnapshot } from "v8"
 import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
+import { NumenViewer } from "@/numen/viewer"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -225,6 +226,12 @@ export const TuiThreadCommand = cmd({
         ),
       })
       const client = Rpc.client<typeof rpc>(worker)
+      const numen = NumenViewer.create({
+        enabled:
+          ["1", "true"].includes(process.env.DJINN_NUMEN ?? "") &&
+          !["1", "true"].includes(process.env.DJINN_NUMEN_DISABLED ?? ""),
+        send: (input) => client.call("numenViewer", input),
+      })
       const reload = () => {
         client.call("reload", undefined).catch(() => {})
       }
@@ -234,57 +241,59 @@ export const TuiThreadCommand = cmd({
       const stop = async () => {
         if (stopped) return
         stopped = true
+        numen.close()
         process.off("SIGUSR2", reload)
         await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
         worker.terminate()
       }
 
-      const prompt = await input(args.prompt)
-      const config = await TuiConfig.get()
+      try {
+        const prompt = await input(args.prompt)
+        const config = await TuiConfig.get()
 
-      const network = resolveNetworkOptionsNoConfig(args)
-      const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
+        const network = resolveNetworkOptionsNoConfig(args)
+        const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
 
-      const headers = external ? ServerAuth.headers() : undefined
+        const headers = external ? ServerAuth.headers() : undefined
 
-      const transport = external
-        ? {
-            url: (await client.call("server", network)).url,
-            fetch: undefined,
-            events: undefined,
+        const transport = external
+          ? {
+              url: (await client.call("server", network)).url,
+              fetch: undefined,
+              events: undefined,
+              headers,
+            }
+          : {
+              url: "http://opencode.internal",
+              fetch: createWorkerFetch(client),
+              events: createEventSource(client),
+            }
+
+        try {
+          await validateSession({
+            url: transport.url,
+            sessionID: args.session,
+            directory: cwd,
+            fetch: transport.fetch,
             headers,
-          }
-        : {
-            url: "http://opencode.internal",
-            fetch: createWorkerFetch(client),
-            events: createEventSource(client),
-          }
+          })
+        } catch (error) {
+          UI.error(errorMessage(error))
+          process.exitCode = 1
+          return
+        }
 
-      try {
-        await validateSession({
-          url: transport.url,
-          sessionID: args.session,
-          directory: cwd,
-          fetch: transport.fetch,
-          headers,
-        })
-      } catch (error) {
-        UI.error(errorMessage(error))
-        process.exitCode = 1
-        return
-      }
+        setTimeout(() => {
+          client.call("checkUpgrade", { directory: cwd }).catch(() => {})
+        }, 1000).unref?.()
 
-      setTimeout(() => {
-        client.call("checkUpgrade", { directory: cwd }).catch(() => {})
-      }, 1000).unref?.()
-
-      try {
         const { Effect } = await import("effect")
         const { run } = await import("../tui/layer")
         const { createLegacyTuiPluginHost } = await import("@/plugin/tui/runtime")
         await Effect.runPromise(
           run({
             url: transport.url,
+            onSelectedSessionChange: numen.select,
             async onSnapshot() {
               const tui = writeHeapSnapshot("tui.heapsnapshot")
               const server = await client.call("snapshot", undefined)

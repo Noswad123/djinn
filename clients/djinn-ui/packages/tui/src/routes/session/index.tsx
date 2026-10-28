@@ -82,6 +82,7 @@ import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
+import { createSelectedSessionLoad, createSessionPlacement, type SelectedSession } from "../../util/selected-session"
 
 addDefaultParsers(parsers.parsers)
 
@@ -175,7 +176,7 @@ function use() {
   return ctx
 }
 
-export function Session() {
+export function Session(props: { onSelectedSessionChange?: (selection: SelectedSession | undefined) => void }) {
   const setEpilogue = useEpilogue()
   const clipboard = useClipboard()
   const writeExport = async (file: string, content: string) => {
@@ -194,10 +195,7 @@ export function Session() {
   const { theme } = useTheme()
   const promptRef = usePromptRef()
   const session = createMemo(() => sync.session.get(route.sessionID))
-  const location = createMemo(() => {
-    const current = session()
-    return current ? { directory: current.directory, workspaceID: current.workspaceID } : undefined
-  })
+  const location = createSessionPlacement(session)
 
   createEffect(() => {
     const title = Locale.truncate(session()?.title ?? "", 50)
@@ -278,42 +276,31 @@ export function Session() {
 
   createEffect(() => {
     const sessionID = route.sessionID
-    void (async () => {
-      const previousWorkspace = untrack(() => project.workspace.current())
-      const result = await sdk.client.session.get({ sessionID }, { throwOnError: true })
-      if (!result.data) {
+    // Synced placement changes invalidate this load; get remains the source of validated placement.
+    location()
+    const load = createSelectedSessionLoad({
+      sessionID,
+      previousWorkspace: untrack(() => project.workspace.current()),
+      get: async () => (await sdk.client.session.get({ sessionID }, { throwOnError: true })).data,
+      setWorkspace: (workspaceID) => project.workspace.set(workspaceID),
+      bootstrap: () => sync.bootstrap({ fatal: false }),
+      reconnect: (directory) => editor.reconnect(directory),
+      sync: () => sync.session.sync(sessionID),
+      onSelectedSessionChange: props.onSelectedSessionChange,
+      onLoaded: () => {
+        if (scroll) scroll.scrollBy(100_000)
+      },
+      onError: (error) => {
         toast.show({
-          message: `Session not found: ${sessionID}`,
+          message: errorMessage(error),
           variant: "error",
           duration: 5000,
         })
         navigate({ type: "home" })
-        return
-      }
-
-      if (result.data.workspaceID !== previousWorkspace) {
-        project.workspace.set(result.data.workspaceID)
-
-        // Sync all the data for this workspace. Note that this
-        // workspace may not exist anymore which is why this is not
-        // fatal. If it doesn't we still want to show the session
-        // (which will be non-interactive)
-        try {
-          await sync.bootstrap({ fatal: false })
-        } catch {}
-      }
-      editor.reconnect(result.data.directory)
-      await sync.session.sync(sessionID)
-      if (route.sessionID === sessionID && scroll) scroll.scrollBy(100_000)
-    })().catch((error) => {
-      if (route.sessionID !== sessionID) return
-      toast.show({
-        message: errorMessage(error),
-        variant: "error",
-        duration: 5000,
-      })
-      navigate({ type: "home" })
+      },
     })
+    // Register before any awaited continuation; an ID comparison cannot fence A -> B -> A.
+    onCleanup(load.dispose)
   })
 
   let lastSwitch: string | undefined = undefined

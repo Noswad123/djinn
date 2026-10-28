@@ -14,6 +14,10 @@ const enabledByExperimental = (name: string) =>
   )
 
 export class Service extends ConfigService.Service<Service>()("@opencode/RuntimeFlags", {
+  numen: bool("DJINN_NUMEN").pipe(Config.orElse(() => Config.succeed(false))),
+  numenDisabled: bool("DJINN_NUMEN_DISABLED").pipe(Config.orElse(() => Config.succeed(true))),
+  numenSocket: Config.string("DJINN_NUMEN_SOCKET").pipe(Config.withDefault("")),
+  numenRuntimeDir: Config.string("XDG_RUNTIME_DIR").pipe(Config.withDefault("")),
   autoShare: bool("OPENCODE_AUTO_SHARE"),
   pure: bool("OPENCODE_PURE"),
   disableDefaultPlugins: bool("OPENCODE_DISABLE_DEFAULT_PLUGINS"),
