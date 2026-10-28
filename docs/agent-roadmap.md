@@ -68,6 +68,95 @@ Ready implementation slices:
 4. Add session-folder inspect/open action for the bound Djinn folder session.
 5. Add request summoning from `request.md` into the next Djinn UI prompt.
 
+### Djinn-owned authentication and token lifecycle
+
+Make `${XDG_DATA_HOME:-$HOME/.local/share}/djinn` the source of truth for
+Djinn-owned persistent authentication state. Provider credentials should live in
+`${XDG_DATA_HOME:-$HOME/.local/share}/djinn/auth.json`, not in OpenCode's data
+directory. This is planned work, not a description of current unified behavior.
+
+Motivation: debugging on bumblebee found that `djinn auth login` updated Djinn's
+credential file while the interactive UI continued reading an older OpenCode
+credential. Reauthentication after a plan upgrade therefore did not repair the
+UI. The server also rejected that older token as `token_expired` even though its
+recorded expiry was still in the future. Copying credentials between stores was
+a temporary repair, not the desired architecture.
+
+Ready implementation slices:
+
+1. **Unify the credential contract and all Djinn login paths.** Make native CLI
+   login, `djinn ask`, and the embedded Djinn UI read and write the same
+   Djinn-owned provider store. Keep `djinn auth login` the user-facing login
+   command; UI login actions must update that same store. Define a shared
+   schema/path/expiry contract across Rust and TypeScript, with contract tests
+   rather than two independently evolving implementations. The embedded UI must
+   not inherit OpenCode's global auth path merely because its UI is forked from
+   OpenCode. Do not relocate unrelated UI databases, sessions, or caches as an
+   incidental part of this focused provider-auth fix.
+2. **Migrate OpenCode credentials one way, without ongoing synchronization.**
+   Offer a bounded compatibility import from the legacy OpenCode auth file when
+   the corresponding Djinn provider entry is missing. Preserve other providers,
+   validate the credential shape, and report the migration. If both entries
+   exist and differ, keep Djinn authoritative and require explicit selection to
+   replace it; do not infer the right account or credential from file mtime.
+   Never silently switch accounts, fall back to OpenCode after a canonical
+   credential fails, or keep dual writes. Leave standalone OpenCode's credentials
+   untouched, and make clear that independently running OpenCode may require its
+   own login if imported refresh credentials are later rotated. Preserve
+   intentional API-key/config/environment overrides, but expose their precedence
+   and warn when they mask a newly saved login. Environment-provided credentials
+   are explicit overrides, not another persistent source of truth.
+3. **Reload credentials and recover from explicit token-expiry rejection.**
+   Resolve current credentials for each model request, including subsequent turns
+   in an already-running native or UI session. Refresh proactively before local
+   expiry with a small clock-skew margin. If the provider explicitly rejects a
+   token as expired/invalidated before its recorded expiry, reload the canonical
+   store first: use a newer credential if another session already replaced the
+   rejected token; otherwise perform one coordinated refresh. Retry the rejected
+   request at most once, before any streamed output or tool execution. Do not
+   refresh indiscriminately on generic 401/403, proxy errors, quota failures, or
+   model-entitlement failures, and never replay a partially delivered stream.
+   Unrecoverable refresh failures should direct users to `djinn auth login`.
+4. **Coordinate refresh and writes across processes.** Use a provider-scoped
+   cross-process lock shared by native and UI writers, including login/import
+   writes, not only a per-process promise. Re-read after acquiring the lock and
+   skip refresh if another process already replaced the rejected/expiring
+   credential. Persist the rotated access/refresh pair together using atomic
+   replacement; preserve unrelated provider entries under an appropriate
+   store-wide write lock. Keep credential files and migration backups at `0600`
+   in private directories, and handle process death or failed writes without
+   partial JSON, stale overwrites, or exposing secrets. Do not blindly retry a
+   possibly consumed refresh token after an ambiguous network failure.
+5. **Add secret-safe authentication diagnostics.** Add `djinn auth status` with
+   text/JSON output showing the resolved store, provider/auth mode, recorded
+   expiry, refresh availability, override source, and legacy-store conflicts.
+   Distinguish locally unexpired credentials from server-verified authentication;
+   any network validation should be explicit. Never print access/refresh tokens,
+   raw auth files, sensitive account identifiers, or unredacted provider bodies.
+
+Acceptance and regression coverage:
+
+- One `djinn auth login` makes both `djinn ask` and an already-running Djinn UI
+  usable on their next request, without copying files or restarting sessions.
+- Native/UI readers and writers agree on the default Djinn path and an explicit
+  `XDG_DATA_HOME`; embedded UI auth never silently writes to OpenCode's store.
+- Cover missing legacy/canonical files, per-provider imports, conflicting
+  accounts, masked logins, malformed files, and preservation of other providers.
+- Cover server-side `token_expired` with a future local expiry, proactive refresh,
+  and successful reauthentication becoming visible to a previously created client.
+- Concurrent native/UI refreshes perform one token exchange for the same rejected
+  credential; login racing refresh cannot overwrite newer credentials. Test
+  interrupted writes and lock release after process death.
+- A second rejection stops after the single retry. Generic authorization/proxy
+  failures and partially delivered streams are not retried through this path.
+- Revoked/unusable refresh credentials produce actionable Djinn login guidance;
+  diagnostics and failure logs remain secret-free.
+
+Keep this a focused provider-auth reliability change, not a new auth daemon or a
+full provider-system rewrite. When shipped, move the durable ownership/lifecycle
+contract into `agent-design-decisions.md`, document the OpenCode import boundary
+in `opencode-compatibility-matrix.md`, and update the app guide/login help.
+
 ### Folder-backed session follow-ups
 
 Use folder-backed sessions as the work capsule for future slices. Implemented
