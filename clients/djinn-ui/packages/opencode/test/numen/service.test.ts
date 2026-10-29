@@ -53,7 +53,7 @@ const dependencies = AppNodeBuilder.build(
   ]),
   [[InstanceStore.bootstrapNode, Layer.succeed(InstanceBootstrap.Service, { run: Effect.void })]],
 )
-const setup = (enabled = true, disabled = false) => {
+const setup = (enabled?: boolean, disabled = false) => {
   const transport = Layer.effect(
     Numen.Transport,
     Effect.gen(function* () {
@@ -138,7 +138,9 @@ const setup = (enabled = true, disabled = false) => {
   )
   return Numen.layer.pipe(
     Layer.provideMerge(Layer.mergeAll(sessions, instances, statuses).pipe(Layer.provideMerge(dependencies))),
-    Layer.provide(RuntimeFlags.layer({ numen: enabled, numenDisabled: disabled })),
+    Layer.provide(
+      RuntimeFlags.layer({ ...(enabled === undefined ? {} : { numen: enabled }), numenDisabled: disabled }),
+    ),
     Layer.provide(transport),
     Layer.provideMerge(recording),
   )
@@ -178,7 +180,7 @@ describe("Numen", () => {
     )
 
   it.instance(
-    "opening history publishes neutral presence, ignores metadata-only sessions, and renews one publisher",
+    "default discovery publishes neutral opened-chat presence, ignores metadata-only history, and renews one publisher",
     () =>
       Effect.gen(function* () {
         const service = yield* Numen.Service

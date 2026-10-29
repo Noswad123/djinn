@@ -2,6 +2,7 @@ import { describe, expect } from "bun:test"
 import { ConfigProvider, Effect, Layer } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
+import { NumenConfig } from "../../src/numen/config"
 import { it } from "../lib/effect"
 
 const fromConfig = (input: Record<string, unknown>) =>
@@ -10,10 +11,10 @@ const fromConfig = (input: Record<string, unknown>) =>
 const readFlags = RuntimeFlags.Service.useSync((flags) => flags)
 
 describe("RuntimeFlags", () => {
-  it.effect("Numen is opt-in and invalid observer flags fail closed", () =>
+  it.effect("Numen discovery defaults on and invalid observer flags fail closed", () =>
     Effect.gen(function* () {
       const defaults = yield* readFlags.pipe(Effect.provide(fromConfig({})))
-      expect(defaults.numen).toBe(false)
+      expect(defaults.numen).toBe(true)
       expect(defaults.numenDisabled).toBe(false)
       expect(defaults.numenSocket).toBe("")
       expect(defaults.numenRuntimeDir).toBe("")
@@ -34,6 +35,50 @@ describe("RuntimeFlags", () => {
       )
       expect(invalid.numen).toBe(false)
       expect(invalid.numenDisabled).toBe(true)
+    }),
+  )
+
+  for (const value of [
+    undefined,
+    "true",
+    "yes",
+    "on",
+    "1",
+    "y",
+    "false",
+    "no",
+    "off",
+    "0",
+    "n",
+    "",
+    "TRUE",
+    " true ",
+    "maybe",
+  ]) {
+    for (const key of ["DJINN_NUMEN", "DJINN_NUMEN_DISABLED"] as const) {
+      it.effect(`Numen renderer and backend agree for ${key}=${JSON.stringify(value)}`, () =>
+        Effect.gen(function* () {
+          const env = value === undefined ? {} : { [key]: value }
+          const flags = yield* readFlags.pipe(Effect.provide(fromConfig(env)))
+          expect(flags.numen && !flags.numenDisabled).toBe(NumenConfig.enabled(env))
+          const acceptedTrue = value === undefined || ["true", "yes", "on", "1", "y"].includes(value)
+          const acceptedFalse = value === undefined || ["false", "no", "off", "0", "n"].includes(value)
+          expect(NumenConfig.enabled(env)).toBe(key === "DJINN_NUMEN" ? acceptedTrue : acceptedFalse)
+        }),
+      )
+    }
+  }
+
+  it.effect("Numen disable overrides explicit enable and test layers follow the production default", () =>
+    Effect.gen(function* () {
+      const disabled = yield* readFlags.pipe(
+        Effect.provide(fromConfig({ DJINN_NUMEN: "yes", DJINN_NUMEN_DISABLED: "on" })),
+      )
+      expect(disabled.numen && !disabled.numenDisabled).toBe(false)
+      expect(NumenConfig.enabled({ DJINN_NUMEN: "yes", DJINN_NUMEN_DISABLED: "on" })).toBe(false)
+      const defaults = yield* readFlags.pipe(Effect.provide(RuntimeFlags.layer()))
+      expect(defaults.numen).toBe(true)
+      expect(defaults.numenDisabled).toBe(false)
     }),
   )
 

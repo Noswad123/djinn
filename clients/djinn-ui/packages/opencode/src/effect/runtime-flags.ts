@@ -1,5 +1,6 @@
 import { Config, ConfigProvider, Context, Effect, Layer, Option } from "effect"
 import { ConfigService } from "@/effect/config-service"
+import { NumenConfig } from "@/numen/config"
 
 const bool = (name: string) => Config.boolean(name).pipe(Config.withDefault(false))
 const positiveInteger = (name: string) =>
@@ -14,8 +15,16 @@ const enabledByExperimental = (name: string) =>
   )
 
 export class Service extends ConfigService.Service<Service>()("@opencode/RuntimeFlags", {
-  numen: bool("DJINN_NUMEN").pipe(Config.orElse(() => Config.succeed(false))),
-  numenDisabled: bool("DJINN_NUMEN_DISABLED").pipe(Config.orElse(() => Config.succeed(true))),
+  numen: Config.string("DJINN_NUMEN").pipe(
+    Config.withDefault("true"),
+    Config.map(NumenConfig.enabledFlag),
+    Config.orElse(() => Config.succeed(false)),
+  ),
+  numenDisabled: Config.string("DJINN_NUMEN_DISABLED").pipe(
+    Config.withDefault("false"),
+    Config.map(NumenConfig.disabledFlag),
+    Config.orElse(() => Config.succeed(true)),
+  ),
   numenSocket: Config.string("DJINN_NUMEN_SOCKET").pipe(Config.withDefault("")),
   numenRuntimeDir: Config.string("XDG_RUNTIME_DIR").pipe(Config.withDefault("")),
   autoShare: bool("OPENCODE_AUTO_SHARE"),

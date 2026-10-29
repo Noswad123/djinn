@@ -323,7 +323,7 @@ instance(
       }).pipe(
         Effect.provide(
           Numen.layer.pipe(
-            Layer.provide(RuntimeFlags.layer({ numen: true, numenDisabled: false })),
+            Layer.provide(RuntimeFlags.layer()),
             Layer.provide(
               Layer.succeed(Numen.Transport, {
                 create: (options) => NumenTransport.create({ ...options, socket, heartbeatMs: 250, retryMs: 50 }),

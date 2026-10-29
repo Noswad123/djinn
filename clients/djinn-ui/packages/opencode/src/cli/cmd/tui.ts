@@ -15,6 +15,7 @@ import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
 import { NumenViewer } from "@/numen/viewer"
+import { NumenConfig } from "@/numen/config"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -227,9 +228,7 @@ export const TuiThreadCommand = cmd({
       })
       const client = Rpc.client<typeof rpc>(worker)
       const numen = NumenViewer.create({
-        enabled:
-          ["1", "true"].includes(process.env.DJINN_NUMEN ?? "") &&
-          !["1", "true"].includes(process.env.DJINN_NUMEN_DISABLED ?? ""),
+        enabled: NumenConfig.enabled(process.env),
         send: (input) => client.call("numenViewer", input),
       })
       const reload = () => {

@@ -42,8 +42,17 @@ is the Rust rewrite.
 
 ## Documentation
 
-- [Numen adapter](docs/numen.md) — optional local owning-Worker interactive
-  activity and response outcomes; setup, privacy, live-cue limits and checks.
+- [Numen adapter](docs/numen.md) — default-on chat discovery for the supported
+  local ordinary interactive UI with its owning Worker; Numen remains optional.
+  Updated builds need no enablement export for `djinn`, `djinn -s REF`, or
+  `djinn session chat REF`; select a chat in the Chat tab. Existing older UIs need
+  one restart with the updated binary. Eligible chat titles/status are shared
+  automatically and may be sensitive: `DJINN_NUMEN_DISABLED=1` opts out of reporting
+  (legacy `DJINN_NUMEN=0` also works); `--no-bubble` hides display only.
+  Discovery does not start Numen, open familiars, publish history, read raw prompts,
+  make model calls, or change Wisp/transcripts. Native `ask`/`session run`, mini,
+  external attach, remote and v2 paths remain unsupported; this is not OS scanning.
+  See the guide for exact boolean parsing, setup, privacy, live-cue limits and checks.
 - [Live observation v1](docs/live-observation.md) — optional new full-TUI worker
   startup opt-in; short-lived legacy busy evidence only, never idle or completion.
 - [Persisted session observation](docs/session-observation.md) — explicit

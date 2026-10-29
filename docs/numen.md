@@ -3,15 +3,39 @@
 ## Overview
 
 The optional local adapter lets [Numen](../../numen/README.md) follow a chat in
-Djinn's **ordinary interactive UI with its owning internal Worker**. It reports
+Djinn's **local ordinary interactive UI with its owning internal Worker**. Chat
+discovery is enabled by default in an updated build; Numen remains optional. It reports
 activity and authoritative response settlement, not proof that the user's task
 succeeded. It is best-effort: an absent or slow companion must not block execution.
 This extends the legacy interactive path, not the v2 core or Rust-native runner.
 No public Schema/SDK or Numen Rust renderer changes are required.
 
+Discovery advertises only explicit current Chat-tab selections and previously
+observed busy chats (with bounded terminal retention), not all Djinn processes or
+historical sessions. It does not start Numen, open familiars, publish conversation
+history, change Wisp or transcripts, read raw prompts, or make model calls.
+
 ## API / Interfaces
 
 Paths below are relative to `clients/djinn-ui/packages/opencode/`.
+
+### Discovery environment policy
+
+The CLI viewer and backend use the same boolean policy. Effective enablement is
+`DJINN_NUMEN && !DJINN_NUMEN_DISABLED` after parsing:
+
+| Variable | Missing | Malformed |
+| --- | --- | --- |
+| `DJINN_NUMEN` | `true` | `false` |
+| `DJINN_NUMEN_DISABLED` | `false` | `true` |
+
+Both accept exactly `true`, `yes`, `on`, `1`, `y` as true and `false`, `no`,
+`off`, `0`, `n` as false, case-sensitive and without trimming. Empty strings,
+uppercase variants and surrounding whitespace are malformed and fail closed.
+Use `DJINN_NUMEN_DISABLED=1` to opt out of reporting; legacy `DJINN_NUMEN=0`
+also remains supported. No enablement export is needed for the default path.
+
+### Internal interfaces
 
 - `src/session/run-lifecycle.ts` is an internal, synchronous, listener-isolated
   channel: `subscribe(listener)` returns an unsubscribe function; `current({
@@ -94,24 +118,37 @@ deferring them. Acceptance does not guarantee a displayed GUI frame.
   restarting the backend and reattaching resets capacity.
 - Summaries reuse only the existing title: sanitized, trimmed, at most 160 UTF-8
   bytes. No extra LLM calls, raw prompts or error files are copied. Titles can
-  still be sensitive; Numen `--no-bubble` hides display, not wire/state metadata.
+  still be sensitive: titles and status are shared automatically for eligible
+  chats when discovery is enabled. Opt out to prevent reporting; Numen
+  `--no-bubble` hides display, not wire/state metadata.
 - Unsupported: Rust-native `ask`/`session run`, `--mini`, external attach, remote
   web clients, current core v2 API, arbitrary background/child sessions and OS
   process scanning. Enablement neither starts Numen nor edits Wisp configuration.
 
 ## Example usage
 
-With a Numen service running and a Djinn source build containing the adapter:
+With an updated Djinn build, no enablement environment variable is necessary:
 
 ```sh
-DJINN_NUMEN=1 djinn -s REF
+djinn
+# Open a chat from the dashboard, or launch one directly:
+djinn -s REF
 # Equivalent interactive entry:
-DJINN_NUMEN=1 djinn session chat REF
+djinn session chat REF
 # Separately: Djinn preset → Open → select the chat target
 /path/to/numen menu
+# Explicit reporting opt-out for a new UI launch:
+DJINN_NUMEN_DISABLED=1 djinn -s REF
 ```
 
-`DJINN_NUMEN_DISABLED=1` overrides enablement. Optional
+An already-running older Djinn UI needs **one restart after the updated binary
+is available**; rebuilding alone does not change that running UI. Restart with
+the updated build and open the chat again, then explicitly reattach in Numen if
+its producer instance changed. The in-repository UI bundle has been rebuilt;
+already-running UIs are not restarted or upgraded in place. No home configuration
+or global binary installation is needed for that rebuilt bundle.
+
+Optional
 `DJINN_NUMEN_SOCKET=/absolute/private/events.sock` must match Numen `--socket` and
 use an existing user-owned private directory/socket. Defaults are nonempty
 `$XDG_RUNTIME_DIR/numen/events.sock`, otherwise the system temporary directory's
@@ -132,9 +169,23 @@ NUMEN_TEST_BINARY=/absolute/path/to/numen bun run test test/numen/interoperabili
 
 Without `NUMEN_TEST_BINARY`, real Rust interop is skipped. `1` is also accepted as
 a test convenience for the developer-local binary; prefer an explicit path.
-Reported feature verification covers unit/integration tests and headless real-wire
-cues/reconnect behavior, without fixing a final test count. These commands were
-not rerun for this documentation-only update.
+Default-on discovery verification passed **182 focused tests**, with one
+root-only ownership test skipped, plus package typechecking and formatting.
+The focused suite includes real Rust Numen wire/cue/reconnect interoperability
+using default backend configuration, rather than forcing enablement in the fixture.
+
+### Default-on compiled UI verification
+
+Rebuilt the in-repository native UI bundle without dependency installation and
+passed its version smoke check. In an isolated HOME/XDG/SQLite/project/socket
+fixture, two separate compiled UIs advertised their selected idle chats with
+both discovery flags absent and distinct publisher identities. Discovering the
+second UI did not open another familiar automatically. Two further UI launches,
+one with `DJINN_NUMEN_DISABLED=1` and one with `DJINN_NUMEN=0`, loaded their chats
+without advertising targets. The real fzf menu attached the first chat to a
+Metal-rendered familiar. Exit/disconnect, retained unavailable attachment,
+zero-window service survival and graceful socket cleanup passed. The fixture
+contained zero conversation messages. No running user application was restarted.
 
 ### Real interactive handoff smoke — 2026-10-28
 
