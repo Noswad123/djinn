@@ -11,22 +11,17 @@ import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { Numen, type Input } from "@/numen/service"
 import { LiveObservationPublisher } from "@/session/live-observation-publisher"
-import { withPublisherClosing } from "./worker-lifecycle"
+import { startOptionalService, withPublisherClosing } from "./worker-lifecycle"
 import { PromptControl } from "@/session/prompt-control"
 
 Heap.start()
 const liveObservation = LiveObservationPublisher.start({ warn: (message) => console.warn(message) })
-const promptControl = await (async () => {
+const promptControl = startOptionalService(async () => {
   if (!process.env.DJINN_PROMPT_SOCKET) return { close: async () => {} }
-  try {
-    const { PromptControlRuntime } = await import("@/session/prompt-control-runtime")
-    return await PromptControl.start({ ...PromptControlRuntime.callbacks(process.cwd()),
-      warn: () => console.warn("Djinn prompt endpoint disabled") })
-  } catch {
-    console.warn("Djinn prompt endpoint disabled: startup failed")
-    return { close: async () => {} }
-  }
-})()
+  const { PromptControlRuntime } = await import("@/session/prompt-control-runtime")
+  return PromptControl.start({ ...PromptControlRuntime.callbacks(process.cwd()),
+    warn: () => console.warn("Djinn prompt endpoint disabled") })
+}, () => console.warn("Djinn prompt endpoint disabled: startup failed"))
 
 const onUnhandledRejection = (_error: unknown) => {}
 

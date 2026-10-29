@@ -22,6 +22,8 @@ The published socket is mode 0600. Existing leaves are never unlinked/adopted;
 Windows, unsafe paths/permissions, collisions or startup failures leave the
 optional endpoint unavailable without crashing the UI. No default discovery,
 permission changes, HTTP exposure, auto-start or automatic restart is added.
+Optional listener initialization runs in the background after the worker installs
+its UI RPC handler; slow filesystem/socket startup must not lose the first UI RPC.
 
 The native session ID is explicitly selected by the caller. It must already
 exist in the worker's startup directory and have a recorded agent/model. The

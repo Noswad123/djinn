@@ -19,7 +19,7 @@ type Received = { frame: Frame; raw: string; socket: Socket; connection: number 
 const ack = '{"version":1,"ok":true}\n'
 
 async function fixture(reply: (message: Received) => void = (message) => void message.socket.write(ack)) {
-  const directory = await mkdtemp("/var/folders/4x/vb2wqbds6_x1sh38zt3l17vc0000gq/T/opencode/n-")
+  const directory = await mkdtemp(join(os.tmpdir(), "n-"))
   const temp = { path: directory, [Symbol.asyncDispose]: () => rm(directory, { recursive: true, force: true }) }
   await chmod(temp.path, 0o700)
   const path = join(temp.path, "s")
