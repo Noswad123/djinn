@@ -11,6 +11,7 @@ import { WorkspaceRef } from "@/effect/instance-ref"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Numen } from "@/numen/service"
+import { LiveAttach } from "@/numen/live-attach"
 import type { Activity } from "@/numen/transport"
 import { Permission } from "@/permission"
 import { InstanceBootstrap } from "@/project/bootstrap-service"
@@ -28,7 +29,11 @@ class Recording extends Context.Service<
     created: number
     closed: number
     snapshots: (readonly Activity[])[]
+    instances: string[]
+    loads: number
+    reads: number
     hold?: { id: string; entered: Deferred.Deferred<void>; resume: Deferred.Deferred<void> }
+    captured?: { id: string; entered: Deferred.Deferred<void>; resume: Deferred.Deferred<void> }
     load?: { directory: string; entered: Deferred.Deferred<void>; resume: Deferred.Deferred<void> }
     statusRead?: { id: string; entered: Deferred.Deferred<void>; resume: Deferred.Deferred<void> }
     lookup?: { id: string; done: Deferred.Deferred<void> }
@@ -37,7 +42,7 @@ class Recording extends Context.Service<
 
 const recording = Layer.effect(
   Recording,
-  Effect.sync(() => ({ created: 0, closed: 0, snapshots: [] })),
+  Effect.sync(() => ({ created: 0, closed: 0, snapshots: [], instances: [], loads: 0, reads: 0 })),
 )
 const dependencies = AppNodeBuilder.build(
   LayerNode.group([
@@ -53,14 +58,15 @@ const dependencies = AppNodeBuilder.build(
   ]),
   [[InstanceStore.bootstrapNode, Layer.succeed(InstanceBootstrap.Service, { run: Effect.void })]],
 )
-const setup = (enabled?: boolean, disabled = false) => {
+const setup = (enabled?: boolean, disabled = false, runtimeDir = "") => {
   const transport = Layer.effect(
     Numen.Transport,
     Effect.gen(function* () {
       const record = yield* Recording
       return {
-        create: () => {
+        create: (options) => {
           record.created++
+          record.instances.push(options.instance!)
           return {
             replace: (activities: readonly Activity[]) => {
               record.snapshots.push(activities)
@@ -84,12 +90,19 @@ const setup = (enabled?: boolean, disabled = false) => {
         ...sessions,
         get: (id) =>
           Effect.gen(function* () {
+            record.reads++
             const hold = record.hold
             if (hold?.id === id) {
               yield* Deferred.succeed(hold.entered, undefined)
               yield* Deferred.await(hold.resume)
             }
             const info = yield* sessions.get(id)
+            const captured = record.captured
+            if (captured?.id === id) {
+              record.captured = undefined
+              yield* Deferred.succeed(captured.entered, undefined)
+              yield* Deferred.await(captured.resume)
+            }
             if (record.lookup?.id === id) yield* Deferred.succeed(record.lookup.done, undefined)
             return info
           }),
@@ -105,6 +118,7 @@ const setup = (enabled?: boolean, disabled = false) => {
         store.provide(
           input,
           Effect.gen(function* () {
+            record.loads++
             const load = record.load
             if (load?.directory === input.directory) {
               yield* Deferred.succeed(load.entered, undefined)
@@ -139,7 +153,11 @@ const setup = (enabled?: boolean, disabled = false) => {
   return Numen.layer.pipe(
     Layer.provideMerge(Layer.mergeAll(sessions, instances, statuses).pipe(Layer.provideMerge(dependencies))),
     Layer.provide(
-      RuntimeFlags.layer({ ...(enabled === undefined ? {} : { numen: enabled }), numenDisabled: disabled }),
+      RuntimeFlags.layer({
+        ...(enabled === undefined ? {} : { numen: enabled }),
+        numenDisabled: disabled,
+        numenRuntimeDir: runtimeDir,
+      }),
     ),
     Layer.provide(transport),
     Layer.provideMerge(recording),
@@ -148,6 +166,7 @@ const setup = (enabled?: boolean, disabled = false) => {
 const it = testEffect(setup())
 const off = testEffect(setup(false))
 const denied = testEffect(setup(true, true))
+const brokenGateway = testEffect(setup(true, false, "/dev/null"))
 
 const snapshot = (state: "idle" | "working" | "waiting", count = 1) =>
   Effect.gen(function* () {
@@ -162,6 +181,148 @@ const snapshot = (state: "idle" | "working" | "waiting", count = 1) =>
   })
 
 describe("Numen", () => {
+  it.instance("more than 32 sequential live viewers release capacity without losing revision fences", () =>
+    Effect.gen(function* () {
+      const service = yield* Numen.Service
+      const sessions = yield* Session.Service
+      const record = yield* Recording
+      const ctx = yield* TestInstance
+      const session = yield* sessions.create({})
+      const selection = { sessionID: session.id, directory: ctx.directory }
+      yield* service.select({ viewer: "ordinary", revision: 1, selection })
+      const query = { instance: record.instances[0]!, session: session.id }
+      const resolved = yield* Effect.promise(() => LiveAttach.resolve(query))
+      const loads = record.loads
+      for (let index = 0; index < 96; index++) {
+        const viewer = `float-${index}`
+        yield* Effect.promise(() => LiveAttach.viewer(resolved, { viewer, revision: 1, selection }))
+        yield* Effect.promise(() => LiveAttach.viewer(resolved, { viewer, revision: 2 }))
+      }
+      // A replay must not create a lease and keep the record after its real owner leaves.
+      yield* service.select({ viewer: "float-0", revision: 1, selection })
+      expect(record.loads).toBe(loads)
+      expect(record.created).toBe(1)
+      yield* service.select({ viewer: "ordinary", revision: 2 })
+      expect(service.resolve(query)).toBeUndefined()
+    }),
+  )
+
+  it.effect("expired viewers recover all active capacity and stale revisions cannot resurrect them", () =>
+    Effect.gen(function* () {
+      const service = yield* Numen.Service
+      const sessions = yield* Session.Service
+      const store = yield* InstanceStore.Service
+      const record = yield* Recording
+      const directory = yield* tmpdirScoped()
+      const session = yield* store.provide({ directory }, sessions.create({}))
+      const selection = { sessionID: session.id, directory }
+      for (let index = 0; index < 32; index++) yield* service.select({ viewer: `old-${index}`, revision: 1, selection })
+      yield* TestClock.adjust("21 seconds")
+      expect(record.snapshots.at(-1)).toEqual([])
+      const loads = record.loads
+      for (let index = 0; index < 32; index++) yield* service.select({ viewer: `old-${index}`, revision: 1, selection })
+      expect(record.loads).toBe(loads)
+      for (let index = 0; index < 32; index++) yield* service.select({ viewer: `new-${index}`, revision: 1, selection })
+      expect(record.loads).toBe(loads + 32)
+      expect(record.snapshots.at(-1)).toHaveLength(1)
+      for (let index = 0; index < 32; index++) yield* service.select({ viewer: `new-${index}`, revision: 2 })
+      expect(record.snapshots.at(-1)).toEqual([])
+    }),
+  )
+
+  it.effect("an expired pending acquisition cannot resurrect after its viewer ID is reused", () =>
+    Effect.gen(function* () {
+      const service = yield* Numen.Service
+      const sessions = yield* Session.Service
+      const store = yield* InstanceStore.Service
+      const record = yield* Recording
+      const directory = yield* tmpdirScoped()
+      const anchor = yield* store.provide({ directory }, sessions.create({}))
+      const stale = yield* store.provide({ directory }, sessions.create({}))
+      yield* service.select({ viewer: "anchor", revision: 1, selection: { sessionID: anchor.id, directory } })
+      const entered = yield* Deferred.make<void>()
+      const resume = yield* Deferred.make<void>()
+      record.captured = { id: stale.id, entered, resume }
+      const pending = yield* service
+        .select({ viewer: "reused", revision: 1, selection: { sessionID: stale.id, directory } })
+        .pipe(Effect.forkScoped)
+      yield* Deferred.await(entered)
+      yield* TestClock.adjust("21 seconds")
+      yield* service.select({ viewer: "reused", revision: 2, selection: { sessionID: anchor.id, directory } })
+      yield* Deferred.succeed(resume, undefined)
+      yield* Fiber.join(pending)
+      expect(record.snapshots.flat().some((item) => item.activity === stale.id)).toBe(false)
+      yield* service.select({ viewer: "reused", revision: 3 })
+      expect(record.snapshots.at(-1)).toEqual([])
+    }),
+  )
+
+  it.instance(
+    "deletion after a captured lookup but before provisional installation cannot admit or lease the session",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* Numen.Service
+        const sessions = yield* Session.Service
+        const record = yield* Recording
+        const ctx = yield* TestInstance
+        const anchor = yield* sessions.create({})
+        const deleted = yield* sessions.create({})
+        yield* service.select({
+          viewer: "anchor",
+          revision: 1,
+          selection: { sessionID: anchor.id, directory: ctx.directory },
+        })
+        const instance = record.instances[0]!
+        const resolved = yield* Effect.promise(() => LiveAttach.resolve({ instance, session: anchor.id }))
+        const entered = yield* Deferred.make<void>()
+        const resume = yield* Deferred.make<void>()
+        record.captured = { id: deleted.id, entered, resume }
+        const pending = yield* service
+          .select({ viewer: "deleted", revision: 1, selection: { sessionID: deleted.id, directory: ctx.directory } })
+          .pipe(Effect.forkScoped)
+        yield* Deferred.await(entered)
+        yield* sessions.remove(deleted.id)
+        yield* Deferred.succeed(resume, undefined)
+        yield* Fiber.join(pending)
+        expect(service.resolve({ instance, session: deleted.id })).toBeUndefined()
+        expect(record.snapshots.flat().some((item) => item.activity === deleted.id)).toBe(false)
+        yield* Effect.promise(async () => {
+          await expect(LiveAttach.resolve({ instance, session: deleted.id })).rejects.toThrow()
+          await expect(
+            LiveAttach.viewer(
+              { ...resolved, target: { ...resolved.target, session: deleted.id } },
+              {
+                viewer: "forbidden",
+                revision: 1,
+                selection: { sessionID: deleted.id, directory: ctx.directory },
+              },
+            ),
+          ).rejects.toThrow()
+        })
+        expect(record.created).toBe(1)
+      }),
+  )
+  brokenGateway.instance("gateway record failure leaves ordinary selection and status publication intact", () =>
+    Effect.gen(function* () {
+      const service = yield* Numen.Service
+      const sessions = yield* Session.Service
+      const statuses = yield* SessionStatus.Service
+      const record = yield* Recording
+      const ctx = yield* TestInstance
+      const session = yield* sessions.create({})
+      yield* service.select({
+        viewer: "ordinary",
+        revision: 1,
+        selection: { sessionID: session.id, directory: ctx.directory },
+      })
+      expect(record.created).toBe(1)
+      expect((yield* snapshot("idle"))[0]!.activity).toBe(session.id)
+      yield* statuses.set(session.id, { type: "busy" })
+      yield* snapshot("working")
+      yield* service.reset()
+      expect(record.closed).toBe(1)
+    }),
+  )
   for (const runner of [off, denied])
     runner.live("disabled select has no transport or observers", () =>
       Effect.gen(function* () {
@@ -175,6 +336,7 @@ describe("Numen", () => {
         })
         yield* service.reset()
         expect(record.created).toBe(0)
+        expect(service.resolve({ instance: "missing", session: "ses_missing" })).toBeUndefined()
         expect(GlobalBus.listenerCount("event")).toBe(listeners)
       }),
     )
@@ -201,6 +363,70 @@ describe("Numen", () => {
         expect(record.snapshots.at(-1)).toEqual([])
         yield* service.reset()
         expect(record.closed).toBe(1)
+      }),
+  )
+
+  it.instance(
+    "live lookup is pure, identity survives status changes, and exact viewer leases reuse one publisher",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* Numen.Service
+        const sessions = yield* Session.Service
+        const statuses = yield* SessionStatus.Service
+        const record = yield* Recording
+        const ctx = yield* TestInstance
+        const selected = yield* sessions.create({})
+        const hidden = yield* sessions.create({})
+        const selection = { sessionID: selected.id, directory: ctx.directory }
+        yield* service.select({ viewer: "ordinary", revision: 1, selection })
+        const query = { instance: record.instances[0]!, session: selected.id }
+        const first = service.resolve(query)!
+        expect(first).toMatchObject({ ...query, directory: ctx.directory })
+        const reads = record.reads
+        const loads = record.loads
+        const snapshots = record.snapshots.length
+        expect(service.resolve({ ...query, session: hidden.id })).toBeUndefined()
+        expect(service.resolve({ ...query, instance: "wrong" })).toBeUndefined()
+        expect(service.resolve({ ...query, incarnation: "wrong" })).toBeUndefined()
+        expect(service.resolve(query)).toEqual(first)
+        expect(record.reads).toBe(reads)
+        expect(record.loads).toBe(loads)
+        expect(record.snapshots).toHaveLength(snapshots)
+        const resolved = yield* Effect.promise(() => LiveAttach.resolve(query))
+        expect(resolved.target).toEqual(first)
+        yield* statuses.set(selected.id, { type: "busy" })
+        yield* snapshot("working")
+        expect(service.resolve(query)).toEqual(first)
+        yield* statuses.set(selected.id, { type: "idle" })
+        yield* snapshot("idle")
+        yield* Effect.promise(() => LiveAttach.viewer(resolved, { viewer: "float", revision: 1, selection }))
+        expect(record.loads).toBe(loads)
+        yield* service.select({ viewer: "ordinary", revision: 2 })
+        expect(service.resolve(query)).toEqual(first)
+        expect(record.created).toBe(1)
+        yield* Effect.promise(() => LiveAttach.viewer(resolved, { viewer: "float", revision: 2 }))
+        expect(service.resolve(query)).toBeUndefined()
+        // A retired incarnation cannot be reacquired by an old floater.
+        yield* Effect.promise(async () => {
+          await expect(LiveAttach.viewer(resolved, { viewer: "float", revision: 3, selection })).rejects.toThrow()
+          await expect(LiveAttach.resolve(query)).rejects.toThrow()
+        })
+        expect(record.loads).toBe(loads)
+        yield* service.select({ viewer: "ordinary", revision: 3, selection })
+        const replacement = service.resolve(query)!
+        expect(replacement.incarnation).not.toBe(first.incarnation)
+        expect(record.created).toBe(1)
+        yield* Effect.promise(async () => {
+          await expect(LiveAttach.viewer(resolved, { viewer: "float", revision: 4, selection })).rejects.toThrow()
+        })
+        yield* service.reset()
+        expect(service.resolve(query)).toBeUndefined()
+        yield* Effect.promise(async () => {
+          await expect(LiveAttach.resolve(query)).rejects.toThrow()
+        })
+        yield* service.select({ viewer: "ordinary", revision: 1, selection })
+        expect(record.instances[1]).not.toBe(query.instance)
+        expect(record.created).toBe(2)
       }),
   )
 

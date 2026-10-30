@@ -13,6 +13,9 @@ const hop = new Set([
 
 function sanitize(out: Headers) {
   for (const key of hop) out.delete(key)
+  // Inbound credentials authenticate this server, not the upstream. Only the
+  // explicit target headers merged below may authorize an outbound request.
+  out.delete("authorization")
   out.delete("accept-encoding")
   out.delete("x-opencode-directory")
   out.delete("x-opencode-workspace")

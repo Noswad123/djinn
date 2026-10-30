@@ -1,4 +1,5 @@
 pub(crate) mod consolidate;
+pub(crate) mod live_attach;
 
 use std::env;
 use std::fs;

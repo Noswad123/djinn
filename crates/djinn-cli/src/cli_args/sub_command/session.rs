@@ -30,6 +30,8 @@ pub(crate) enum SessionCommand {
     Run(SessionRunArgs),
     /// Open an interactive Djinn UI chat for a folder-backed session.
     Chat(SessionChatArgs),
+    /// Float the full chat UI attached to an existing live Numen worker.
+    Float(SessionFloatArgs),
     /// Reconcile Djinn folder sessions and Djinn UI sessions.
     Consolidate(SessionConsolidateArgs),
     /// Adopt a Djinn UI session into a folder-backed session capsule.
@@ -73,6 +75,32 @@ pub(crate) enum SessionCommand {
     ShortenNames(SessionShortenNamesArgs),
     /// Remove a folder-backed session and its linked native session when present.
     Rm(SessionRmArgs),
+}
+
+pub(crate) fn live_attach_id(value: &str) -> Result<String, String> {
+    if value.is_empty()
+        || value.len() > 256
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-.:".contains(&byte))
+    {
+        return Err("expected a bounded live target ID (letters, digits, _, -, ., :)".into());
+    }
+    Ok(value.to_owned())
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SessionFloatArgs {
+    #[arg(long, value_parser = live_attach_id)]
+    pub(crate) instance: String,
+    #[arg(long, value_parser = live_attach_id)]
+    pub(crate) session: String,
+    #[arg(long, hide = true)]
+    pub(crate) attach: bool,
+    #[arg(long, hide = true, value_parser = live_attach_id)]
+    pub(crate) generation: Option<String>,
+    #[arg(long, hide = true, value_parser = live_attach_id)]
+    pub(crate) incarnation: Option<String>,
 }
 
 #[derive(Debug, Args)]

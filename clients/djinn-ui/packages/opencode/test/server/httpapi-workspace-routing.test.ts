@@ -288,7 +288,7 @@ describe("HttpApi workspace routing middleware", () => {
         projectID: project.project.id,
         type: "remote-http-target",
         url: `${remoteUrl}/base`,
-        headers: { "x-target-auth": "secret" },
+        headers: { "x-target-auth": "secret", authorization: "Bearer remote-workspace-only" },
       })
 
       // The local /probe handler should not run. Selecting a remote workspace
@@ -300,6 +300,7 @@ describe("HttpApi workspace routing middleware", () => {
         HttpClientRequest.setHeaders({
           "x-opencode-directory": "/secret/path",
           "x-opencode-workspace": "internal",
+          authorization: "Basic local-only",
         }),
         HttpClientRequest.bodyStream(
           Stream.make(new TextEncoder().encode('{"title":"Remote '), new TextEncoder().encode('workspace request"}')),
@@ -322,6 +323,7 @@ describe("HttpApi workspace routing middleware", () => {
       expect(forwarded?.body).toBe(body)
       expect(forwarded?.headers["content-type"]).toBe("application/json")
       expect(forwarded?.headers["x-target-auth"]).toBe("secret")
+      expect(forwarded?.headers.authorization).toBe("Bearer remote-workspace-only")
       expect(forwarded?.headers["x-opencode-directory"]).toBeUndefined()
       expect(forwarded?.headers["x-opencode-workspace"]).toBeUndefined()
     }),

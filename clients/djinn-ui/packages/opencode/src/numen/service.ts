@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { randomUUID } from "node:crypto"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { Clock, Context, Deferred, Effect, Exit, Layer, Scope, ScopedCache } from "effect"
@@ -7,6 +8,7 @@ import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { InstanceState } from "@/effect/instance-state"
 import { registerDisposer } from "@/effect/instance-registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { EffectBridge } from "@/effect/bridge"
 import { InstanceStore } from "@/project/instance-store"
 import { Permission } from "@/permission"
 import { Question } from "@/question"
@@ -14,7 +16,9 @@ import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { RunLifecycle } from "@/session/run-lifecycle"
+import { ServerAuth } from "@/server/auth"
 import { NumenTransport, type Activity } from "./transport"
+import { LiveAttach } from "./live-attach"
 
 export interface Input {
   viewer: string
@@ -24,6 +28,7 @@ export interface Input {
 
 export interface Interface {
   readonly select: (input: Input) => Effect.Effect<void>
+  readonly resolve: (input: LiveAttach.Query) => LiveAttach.Target | undefined
   readonly reset: () => Effect.Effect<void>
 }
 
@@ -40,6 +45,7 @@ const transportNode = LayerNode.make({ service: Transport, layer: transportLayer
 type Viewer = { revision: number; expires: number; token: object; directory?: string; record?: RecordState }
 type RecordState = {
   id: SessionID
+  incarnation: string
   workspace?: string
   directory: string
   ready: boolean
@@ -69,7 +75,23 @@ export const layer = Layer.effect(
     const permissions = yield* Permission.Service
     const questions = yield* Question.Service
     const lifecycle = yield* RunLifecycle.Service
+    const bridge = yield* EffectBridge.make()
     const viewers = new Map<string, Viewer>()
+    // Released/expired viewers do not consume active capacity. Retain a bounded
+    // one-minute replay fence; pending acquisitions also require object identity.
+    const tombstones = new Map<string, { revision: number; expires: number }>()
+    const retire = (id: string, revision: number, now: number) => {
+      const viewer = viewers.get(id)
+      if (viewer) viewer.token = {}
+      viewers.delete(id)
+      tombstones.delete(id)
+      tombstones.set(id, { revision, expires: now + 60_000 })
+      if (tombstones.size > 256) tombstones.delete(tombstones.keys().next().value!)
+    }
+    const expire = (now: number) => {
+      for (const [id, item] of tombstones) if (item.expires <= now) tombstones.delete(id)
+      for (const [id, viewer] of viewers) if (viewer.expires <= now) retire(id, viewer.revision, now)
+    }
     const records = new Set<RecordState>()
     // Exact session pins require stable IDs: fail closed after 32 per transport lifetime.
     const admitted = new Set<SessionID>()
@@ -79,7 +101,13 @@ export const layer = Layer.effect(
     let resetting = false
     let offDispose: (() => void) | undefined
     let publisher:
-      | { scope: Scope.Closeable; transport: ReturnType<typeof NumenTransport.create>; snapshot?: string }
+      | {
+          instance: string
+          scope: Scope.Closeable
+          transport: ReturnType<typeof NumenTransport.create>
+          gateway?: ReturnType<typeof LiveAttach.start>
+          snapshot?: string
+        }
       | undefined
 
     const viewed = (record: RecordState) => [...viewers.values()].some((viewer) => viewer.record === record)
@@ -329,12 +357,14 @@ export const layer = Layer.effect(
       offDispose?.()
       offDispose = undefined
       viewers.clear()
+      tombstones.clear()
       transitions.length = 0
       suppressTransitions = false
       for (const record of records) record.alive = false
       records.clear()
       const previous = publisher
       publisher = undefined
+      if (previous?.gateway) yield* Effect.promise(() => previous.gateway!.close().catch(() => {}))
       previous?.transport.close()
       admitted.clear()
       if (previous) yield* Scope.close(previous.scope, Exit.void)
@@ -345,7 +375,34 @@ export const layer = Layer.effect(
     const reset = () => resettingEffect
     yield* Effect.addFinalizer(() => reset())
 
-    const select = Effect.fn("Numen.select")(function* (input: Input) {
+    const resolve = (input: LiveAttach.Query): LiveAttach.Target | undefined => {
+      if (
+        resetting ||
+        !publisher ||
+        input.instance !== publisher.instance ||
+        (input.generation !== undefined && input.generation !== publisher.gateway?.generation)
+      )
+        return
+      const matches = [...records].filter(
+        (record) =>
+          record.alive &&
+          record.ready &&
+          record.id === input.session &&
+          (input.incarnation === undefined || input.incarnation === record.incarnation),
+      )
+      // An ambiguous session placement cannot be attached without an incarnation pin.
+      if (matches.length !== 1) return
+      const record = matches[0]!
+      return {
+        instance: publisher.instance,
+        session: record.id,
+        incarnation: record.incarnation,
+        directory: record.directory,
+        ...(record.workspace ? { workspaceID: record.workspace } : {}),
+      }
+    }
+
+    const select = Effect.fn("Numen.select")(function* (input: Input, expected?: LiveAttach.Target) {
       if (
         resetting ||
         !flags.numen ||
@@ -359,9 +416,30 @@ export const layer = Layer.effect(
       const stamp = epoch
       const now = yield* Clock.currentTimeMillis
       if (resetting || epoch !== stamp) return
+      expire(now)
+      if (expected) {
+        const found = resolve(expected)
+        if (
+          !found ||
+          found.directory !== expected.directory ||
+          found.workspaceID !== expected.workspaceID ||
+          (input.selection &&
+            (input.selection.sessionID !== found.session ||
+              input.selection.directory !== found.directory ||
+              input.selection.workspaceID !== found.workspaceID))
+        )
+          return
+      }
       const previous = viewers.get(input.viewer)
-      if (previous && input.revision <= previous.revision) return
+      if (input.revision <= (previous?.revision ?? tombstones.get(input.viewer)?.revision ?? -1)) return
+      if (!input.selection) {
+        retire(input.viewer, input.revision, now)
+        publish()
+        yield* prune
+        return
+      }
       if (!previous && viewers.size >= 32) return
+      tombstones.delete(input.viewer)
       const token = {}
       const selection = input.selection
       const directory = selection ? FSUtil.resolve(selection.directory) : undefined
@@ -382,9 +460,9 @@ export const layer = Layer.effect(
       }
       viewers.set(input.viewer, viewer)
       const current = () => epoch === stamp && viewers.get(input.viewer) === viewer && viewer.token === token
-      if (!selection) {
+      // Authenticated live viewers may only lease an existing ready record. Never load or recreate it.
+      if (expected) {
         publish()
-        yield* prune
         return
       }
       // Invalidate acquisitions even if disposal wins before their InstanceState lookup.
@@ -430,6 +508,7 @@ export const layer = Layer.effect(
               if (records.size >= 16 || (!admitted.has(info.value.id) && admitted.size >= 32)) return
               const record: RecordState = {
                 id: info.value.id,
+                incarnation: randomUUID(),
                 directory: ctx.directory,
                 workspace: selection.workspaceID,
                 ready: false,
@@ -455,6 +534,9 @@ export const layer = Layer.effect(
               yield* Effect.gen(function* () {
                 while (true) {
                   const generation = record.generation
+                  // The first lookup can have captured a session before deletion,
+                  // before this record was visible to the deletion subscription.
+                  const currentInfo = yield* sessions.get(record.id).pipe(Effect.option)
                   const status = yield* statuses.get(record.id)
                   const pendingPermissions = yield* permissions.list()
                   const pendingQuestions = yield* questions.list()
@@ -464,6 +546,10 @@ export const layer = Layer.effect(
                     epoch !== stamp ||
                     !local.alive ||
                     !record.alive ||
+                    currentInfo._tag === "None" ||
+                    currentInfo.value.directory !== ctx.directory ||
+                    currentInfo.value.projectID !== ctx.project.id ||
+                    currentInfo.value.workspaceID !== record.workspace ||
                     ![...viewers.values()].some((viewer) => viewer.record === record && viewer.expires > now)
                   )
                     return
@@ -495,21 +581,58 @@ export const layer = Layer.effect(
               if (!record.ready || !record.alive || !local.alive || epoch !== stamp || !viewed(record)) return
               if (!publisher) {
                 const scope = Scope.makeUnsafe()
+                const instance = randomUUID()
                 publisher = {
+                  instance,
                   scope,
                   transport: factory.create({
+                    instance,
                     socket: flags.numenSocket || NumenTransport.defaultSocket(flags.numenRuntimeDir),
                   }),
                 }
+                const active = publisher
+                try {
+                  // Default-enabled ordinary chat selection creates this private
+                  // backend-wide transport and auth record, not a session sandbox.
+                  active.gateway = LiveAttach.start({
+                    instance,
+                    runtimeDir: flags.numenRuntimeDir || undefined,
+                    resolve,
+                    viewer: (target, input) =>
+                      bridge.promise(
+                        Effect.gen(function* () {
+                          if (publisher !== active || !resolve(target)) return false
+                          yield* select(input, target)
+                          const lease = viewers.get(input.viewer)
+                          return (
+                            publisher === active &&
+                            (input.selection
+                              ? lease?.revision === input.revision && lease.record?.incarnation === target.incarnation
+                              : tombstones.get(input.viewer)?.revision === input.revision)
+                          )
+                        }),
+                      ),
+                    fetch: async (request) => {
+                      const { Server } = await import("@/server/server")
+                      if (publisher !== active || request.signal.aborted) return new Response(null, { status: 503 })
+                      return Server.Default().app.fetch(request)
+                    },
+                    authorization: () => ServerAuth.header(),
+                  })
+                } catch {
+                  /* Optional attach failures must not affect the publisher or ordinary UI. */
+                }
+                yield* Scope.addFinalizer(
+                  scope,
+                  Effect.promise(async () => {
+                    await active.gateway?.close().catch(() => {})
+                  }),
+                )
                 yield* Effect.gen(function* () {
                   while (true) {
                     yield* Effect.sleep("250 millis")
                     const now = yield* Clock.currentTimeMillis
-                    for (const item of viewers.values())
-                      if (item.expires <= now) {
-                        item.record = undefined
-                        item.token = {}
-                      }
+                    expire(now)
                     publish()
                     yield* prune
                   }
@@ -534,7 +657,7 @@ export const layer = Layer.effect(
         )
     })
 
-    return Service.of({ select, reset })
+    return Service.of({ select, resolve, reset })
   }),
 )
 
