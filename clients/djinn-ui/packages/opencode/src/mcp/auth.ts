@@ -43,6 +43,7 @@ export interface Interface {
   readonly getForUrl: (mcpName: string, serverUrl: string) => Effect.Effect<Entry | undefined>
   readonly set: (mcpName: string, entry: Entry, serverUrl?: string) => Effect.Effect<void>
   readonly remove: (mcpName: string) => Effect.Effect<void>
+  readonly invalidate: (mcpName: string, type: "all" | "client" | "tokens", serverUrl: string) => Effect.Effect<void>
   readonly updateTokens: (mcpName: string, tokens: Tokens, serverUrl?: string) => Effect.Effect<void>
   readonly updateClientInfo: (mcpName: string, clientInfo: ClientInfo, serverUrl?: string) => Effect.Effect<void>
   readonly updateCodeVerifier: (mcpName: string, codeVerifier: string) => Effect.Effect<void>
@@ -109,12 +110,33 @@ const layer = Layer.effect(
       })
     })
 
+    const invalidate = Effect.fn("McpAuth.invalidate")(function* (
+      mcpName: string,
+      type: "all" | "client" | "tokens",
+      serverUrl: string,
+    ) {
+      yield* mutate((data) => {
+        const entry = data[mcpName]
+        if (!entry || entry.serverUrl !== serverUrl) return undefined
+        if (type === "all") {
+          delete data[mcpName]
+          return data
+        }
+        delete entry[type === "client" ? "clientInfo" : "tokens"]
+        return data
+      })
+    })
+
     const updateField = <K extends keyof Entry>(field: K, spanName: string) =>
       Effect.fn(`McpAuth.${spanName}`)(function* (mcpName: string, value: NonNullable<Entry[K]>, serverUrl?: string) {
         yield* mutate((data) => {
-          const entry = data[mcpName] ?? {}
+          const current = data[mcpName]
+          // Ordinary saves cannot replace another URL's credentials, even from a stale provider.
+          // Check under the lock; cross-URL replacement must explicitly use set (pending OAuth commit).
+          if (serverUrl !== undefined && current?.serverUrl && current.serverUrl !== serverUrl) return undefined
+          const entry = serverUrl !== undefined && current?.serverUrl !== serverUrl ? {} : (current ?? {})
           entry[field] = value
-          if (serverUrl) entry.serverUrl = serverUrl
+          if (serverUrl !== undefined) entry.serverUrl = serverUrl
           return { ...data, [mcpName]: entry }
         })
       })
@@ -147,6 +169,7 @@ const layer = Layer.effect(
       getForUrl,
       set,
       remove,
+      invalidate,
       updateTokens,
       updateClientInfo,
       updateCodeVerifier,

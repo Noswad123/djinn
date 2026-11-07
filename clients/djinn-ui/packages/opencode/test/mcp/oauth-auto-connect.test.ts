@@ -256,7 +256,10 @@ mcpTest.instance("auth status only reports credentials stored for the configured
 
     expect(yield* mcp.getAuthStatus("test-status-url")).toBe("not_authenticated")
 
-    yield* McpAuth.use.updateTokens("test-status-url", { accessToken: "current-token" }, "https://example.com/mcp")
+    yield* McpAuth.use.updateTokens("test-status-url", { accessToken: "ignored-token" }, "https://example.com/mcp")
+    expect(yield* mcp.getAuthStatus("test-status-url")).toBe("not_authenticated")
+
+    yield* McpAuth.use.set("test-status-url", { tokens: { accessToken: "current-token" } }, "https://example.com/mcp")
     expect(yield* mcp.getAuthStatus("test-status-url")).toBe("authenticated")
 
     yield* McpAuth.use.updateTokens(

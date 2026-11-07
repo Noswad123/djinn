@@ -1,6 +1,6 @@
 APP_NAME = djinn
 BIN_DIR = ./bin
-INSTALL_DIR ?= $(HOME)/.local/bin
+INSTALL_DIR ?= $(HOME)/.local/libexec/arcana-dev/djinn/bin
 DJINN_UI_ROOT = ./clients/djinn-ui
 DJINN_UI_PACKAGE = $(DJINN_UI_ROOT)/packages/opencode
 

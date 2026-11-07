@@ -62,6 +62,7 @@ fn main() -> Result<()> {
         return Ok(());
     };
     match command {
+        Command::Execute(args) => commands::execute::run_execute(args),
         Command::List(args) => run_list(args),
         Command::Show(args) => run_show(args),
         Command::Add(args) => run_add(args),

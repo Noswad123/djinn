@@ -1,4 +1,5 @@
 # Djinn
+
 ![Djinn](img/djinn.png)
 
 Djinn is a local-first companion for OpenCode and other AI coding agents. It
@@ -91,10 +92,20 @@ make build
 make install
 ```
 
-Install target:
+Default dev bundle (the CLI and UI remain siblings):
 
 ```text
-~/.local/bin/djinn
+~/.local/libexec/arcana-dev/djinn/bin/djinn
+~/.local/libexec/arcana-dev/djinn/bin/djinn-ui
+```
+
+Arcana reserves `~/.local/bin` for stable launchers. Do not add the dev root
+(`~/.local/libexec/arcana-dev`) or its app `bin` directories to global `PATH`.
+After a valid bundle is installed, select it with `arcana source use dev djinn`.
+For an explicit standalone install outside Arcana, the existing override remains:
+
+```bash
+make install INSTALL_DIR=/usr/local/bin
 ```
 
 ## Quick start
@@ -301,6 +312,11 @@ model is still evolving. Known hosted providers can be bootstrapped by name;
 `djinn mcp auth atlassian` automatically adds the Atlassian Rovo MCP endpoint
 (`https://mcp.atlassian.com/v2/mcp`) before starting OAuth when an `atlassian`
 MCP server is not already configured.
+
+See [MCP authentication and fresh-process verification](docs/mcp-authentication.md)
+for project overrides, URL-bound credentials, and troubleshooting a successful
+login that does not survive a fresh process. Authentication does not enable a
+disabled server.
 
 Work in folder-backed sessions:
 

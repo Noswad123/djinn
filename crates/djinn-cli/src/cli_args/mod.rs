@@ -38,6 +38,8 @@ pub(crate) fn print_cli_help() -> std::io::Result<()> {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Make one tool-free, schema-validated model call.
+    Execute(ExecuteArgs),
     /// List a collection for humans.
     List(ListArgs),
     /// Show detailed information for one item.
@@ -86,9 +88,56 @@ pub(crate) enum Command {
     Tui(TuiArgs),
 }
 
+#[derive(Debug, clap::Args)]
+pub(crate) struct ExecuteArgs {
+    #[arg(long, value_name = "PATH_OR_MINUS")]
+    pub(crate) request: PathBuf,
+    /// Emit the structured protocol (also the default).
+    #[arg(long)]
+    pub(crate) json: bool,
+    /// Override the shared auth/model deadline in seconds (1-600; default: request timeoutMs or 120 seconds).
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=600))]
+    pub(crate) timeout_seconds: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execute_timeout_is_an_optional_explicit_override() {
+        let cli = Cli::try_parse_from(["djinn", "execute", "--request", "-"]).unwrap();
+        let Some(Command::Execute(args)) = cli.command else {
+            panic!("expected execute")
+        };
+        assert_eq!(args.timeout_seconds, None);
+        for seconds in ["1", "301", "600"] {
+            let cli = Cli::try_parse_from([
+                "djinn",
+                "execute",
+                "--request",
+                "-",
+                "--timeout-seconds",
+                seconds,
+            ])
+            .unwrap();
+            let Some(Command::Execute(args)) = cli.command else {
+                panic!("expected execute")
+            };
+            assert_eq!(args.timeout_seconds, Some(seconds.parse().unwrap()));
+        }
+        for seconds in ["0", "601"] {
+            assert!(Cli::try_parse_from([
+                "djinn",
+                "execute",
+                "--request",
+                "-",
+                "--timeout-seconds",
+                seconds
+            ])
+            .is_err());
+        }
+    }
 
     #[test]
     fn rejects_removed_agent_session_command() {

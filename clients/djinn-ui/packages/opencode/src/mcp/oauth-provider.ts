@@ -162,21 +162,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async invalidateCredentials(type: "all" | "client" | "tokens"): Promise<void> {
-    const entry = await Effect.runPromise(this.auth.get(this.mcpName))
-    if (!entry) return
-    switch (type) {
-      case "all":
-        await Effect.runPromise(this.auth.remove(this.mcpName))
-        break
-      case "client":
-        delete entry.clientInfo
-        await Effect.runPromise(this.auth.set(this.mcpName, entry))
-        break
-      case "tokens":
-        delete entry.tokens
-        await Effect.runPromise(this.auth.set(this.mcpName, entry))
-        break
-    }
+    await Effect.runPromise(this.auth.invalidate(this.mcpName, type, this.serverUrl))
   }
 }
 
@@ -211,6 +197,7 @@ export class McpOAuthPendingProvider extends McpOAuthProvider {
 
   async commit(): Promise<void> {
     if (!this.pendingTokens) return
+    // Explicitly replace the URL binding only after the staged OAuth flow has obtained tokens.
     await Effect.runPromise(
       this.auth.set(
         this.mcpName,
