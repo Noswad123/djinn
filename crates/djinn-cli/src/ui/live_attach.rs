@@ -8,6 +8,7 @@ use crate::cli_args::SessionFloatArgs;
 // Deliberately bypass session binding/adoption and all transcript machinery.
 pub(crate) fn session_float(args: SessionFloatArgs) -> Result<()> {
     let resolution = super::resolve_ui_command_resolution(None)?;
+    super::capabilities::verify(&resolution)?;
     let executable = std::env::current_exe().context("resolving Djinn live attach wrapper")?;
     let status = command(&resolution.command, &args, &executable)?
         .status()

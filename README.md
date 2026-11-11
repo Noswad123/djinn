@@ -66,7 +66,9 @@ is the Rust rewrite.
 
 ## Build and install
 
-Prerequisite: Rust/Cargo.
+Prerequisites: Rust/Cargo and Bun. Native UI bundles currently support macOS and
+glibc Linux on arm64/x64; musl Linux is rejected rather than given a mismatched
+binary.
 
 The UI dependency step uses `bun install --frozen-lockfile`. Keep native-asset
 patch registrations aligned with the exact dependency versions and `bun.lock`;
@@ -107,6 +109,36 @@ For an explicit standalone install outside Arcana, the existing override remains
 ```bash
 make install INSTALL_DIR=/usr/local/bin
 ```
+
+### Automatic runtime provisioning and repair
+
+`make install` builds and verifies the CLI/UI pair before publishing it. It uses
+the exact host UI, not the first executable in an old build directory. Source
+installs keep versioned bundles behind relative links; subsequent upgrades switch
+the pair through one atomic activation pointer. The Homebrew formula likewise
+ships both payloads in the same package. No machine-specific UI wrapper or copied
+rollout binary is required.
+
+Djinn checks the selected UI's storage capabilities before UI/session operations.
+The default diagnostic is database-independent:
+
+```sh
+djinn doctor ui --json
+djinn doctor ui --repair
+```
+
+`--repair` checks first, does nothing for a compatible UI, and otherwise detects a
+recognized source or Homebrew installation and invokes its scoped bundle
+installer. This explicit operation can download dependencies and compile; ordinary
+startup and doctor never run installers. Custom overrides are not silently
+replaced, and Arcana's selected source is not changed. Readers support both legacy
+and compressed events; the existing `DJINN_EVENT_COMPRESSION=1` write opt-in stays
+separate from installation. No setup/probe/repair command compacts or deletes the
+production database.
+
+See [Runtime installation and repair](RUNTIME_INSTALLATION.md) for bootstrap,
+override handling, publication limits, and recovery details. Already installed
+older CLIs need one normal source/package update to acquire these commands.
 
 ## Quick start
 

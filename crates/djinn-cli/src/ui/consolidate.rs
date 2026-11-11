@@ -493,7 +493,8 @@ mod tests {
         fs::write(
             &ui_bin,
             "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"--format\" ] && [ \"$4\" = \"json\" ]; then\n  cat <<'JSON'\n[{\"id\":\"ui_alpha\",\"title\":\"Alpha\",\"updated\":1785599577905,\"created\":1785081429401,\"projectId\":\"project-a\",\"directory\":\"/tmp/repo-a\"},{\"id\":\"ui_orphan\",\"title\":\"Orphan UI\",\"updated\":1785595306273,\"created\":1785595040658,\"projectId\":\"project-b\",\"directory\":\"/tmp/repo-b\"}]\nJSON\n  exit 0\nfi\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ui_created_beta\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected ui args: \"$@\" >&2\nexit 2\n"
-                .replace("__CREATE_LOG__", &create_log.display().to_string()),
+                .replace("__CREATE_LOG__", &create_log.display().to_string())
+                .replacen("#!/bin/sh\n", &crate::ui::capabilities::fixture_script("#!/bin/sh\n"), 1),
         )
         .unwrap();
         #[cfg(unix)]

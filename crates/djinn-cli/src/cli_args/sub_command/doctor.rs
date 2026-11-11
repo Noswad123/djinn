@@ -12,7 +12,7 @@ pub(crate) struct DoctorArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum DoctorCommand {
-    /// Show which Djinn UI command Djinn will use without launching the UI.
+    /// Inspect the selected Djinn UI command and shared storage capabilities.
     #[command(name = "ui")]
     Ui(DoctorUiArgs),
 }
@@ -28,6 +28,12 @@ pub(crate) struct DoctorUiArgs {
     /// Shortcut for --format json.
     #[arg(long)]
     pub(crate) json: bool,
+    /// Also run storage-backed bridge and legacy session-list probes (starts the UI runtime).
+    #[arg(long)]
+    pub(crate) deep: bool,
+    /// Explicitly repair an incompatible recognized source/Homebrew CLI/UI bundle, then verify it.
+    #[arg(long, conflicts_with = "deep")]
+    pub(crate) repair: bool,
 }
 
 #[cfg(test)]
@@ -58,6 +64,10 @@ mod tests {
 
         assert_eq!(args.session.as_deref(), Some(Path::new("rebrand-opencode")));
         assert!(args.json);
+        assert!(!args.deep);
+        assert!(!args.repair);
+        assert!(Cli::try_parse_from(["djinn", "doctor", "ui", "--repair"]).is_ok());
+        assert!(Cli::try_parse_from(["djinn", "doctor", "ui", "--repair", "--deep"]).is_err());
 
         assert!(Cli::try_parse_from(["djinn", "doctor", "legacy-ui"]).is_err());
     }

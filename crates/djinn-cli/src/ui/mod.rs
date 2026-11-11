@@ -1,11 +1,14 @@
+pub(crate) mod capabilities;
 pub(crate) mod consolidate;
 pub(crate) mod live_attach;
+pub(crate) mod repair;
 
 use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
@@ -33,6 +36,7 @@ use crate::util::text::{ensure_trailing_newline, yes_no};
 pub(crate) const DJINN_UI_BIN_ENV: &str = "DJINN_UI_BIN";
 pub(crate) const DJINN_UI_INITIAL_TAB_ENV: &str = "DJINN_UI_INITIAL_TAB";
 pub(crate) const IN_TREE_UI_COMMAND: &str = "clients/djinn-ui/bin/djinn-ui";
+pub(crate) const INSTALLED_UI_COMMAND_SOURCE: &str = "installed sibling";
 const EXPLICIT_UI_COMMAND_SOURCE: &str = "--ui-bin";
 pub(crate) const UNAVAILABLE_UI_COMMAND_SOURCE: &str = "unavailable";
 
@@ -65,6 +69,7 @@ pub(crate) struct UiCommandDoctorReport {
     pub(crate) runtime_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) bridge: Option<UiBridgeDoctorReport>,
+    pub(crate) capabilities: Option<capabilities::UiCapabilityDoctorReport>,
     pub(crate) candidates: Vec<UiCommandDoctorCandidate>,
     pub(crate) note: String,
 }
@@ -110,8 +115,20 @@ struct UiPermissionApprovalResponse {
 }
 
 impl UiCommandResolution {
+    fn recognize_installed_companion(mut self, executable: &Path) -> Self {
+        if matches!(
+            self.source.as_str(),
+            DJINN_UI_BIN_ENV | "runtime/djinn.json.command"
+        ) && is_installed_ui_companion(&self.command, executable)
+        {
+            self.source = INSTALLED_UI_COMMAND_SOURCE.to_string();
+        }
+        self
+    }
+
     pub(crate) fn runtime_command_override(&self) -> Option<String> {
-        (self.source != IN_TREE_UI_COMMAND).then(|| self.command.clone())
+        (self.source != IN_TREE_UI_COMMAND && self.source != INSTALLED_UI_COMMAND_SOURCE)
+            .then(|| self.command.clone())
     }
 }
 
@@ -239,6 +256,7 @@ pub(crate) trait UiSessionBackend {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UiCliBackend {
     resolution: UiCommandResolution,
+    capabilities: OnceLock<Result<capabilities::UiCapabilities, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,6 +268,7 @@ impl UiCliBackend {
     pub(crate) fn resolved(previous_runtime: Option<&UiRuntimeState>) -> Result<Self> {
         Ok(Self {
             resolution: resolve_ui_command_resolution(previous_runtime)?,
+            capabilities: OnceLock::new(),
         })
     }
 
@@ -259,6 +278,7 @@ impl UiCliBackend {
                 command,
                 source: EXPLICIT_UI_COMMAND_SOURCE.to_string(),
             },
+            capabilities: OnceLock::new(),
         }
     }
 
@@ -266,11 +286,22 @@ impl UiCliBackend {
         &self.resolution.command
     }
 
+    fn ensure_capabilities(&self) -> Result<()> {
+        self.capabilities
+            .get_or_init(|| {
+                capabilities::verify(&self.resolution).map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
     fn runtime_command_override(&self) -> Option<String> {
         self.resolution.runtime_command_override()
     }
 
     fn launch_plain_with_initial_tab(&self, initial_tab: Option<&str>) -> Result<()> {
+        self.ensure_capabilities()?;
         let mut command = ui_process_command(self.command())?;
         if let Some(tab) = initial_tab.filter(|value| !value.trim().is_empty()) {
             command.env(DJINN_UI_INITIAL_TAB_ENV, tab);
@@ -285,6 +316,7 @@ impl UiCliBackend {
     }
 
     fn execute_bridge_request(&self, request: UiBridgeRequest) -> Result<UiBridgeResponse> {
+        self.ensure_capabilities()?;
         match request {
             UiBridgeRequest::LaunchPlain => {
                 let mut command = ui_process_command(self.command())?;
@@ -435,6 +467,7 @@ impl UiBridgeBackend {
     }
 
     fn execute_wire_request(&self, request: UiBridgeWireRequest) -> Result<UiBridgeWireResponse> {
+        self.cli.ensure_capabilities()?;
         let mut command = ui_process_command(self.command())?;
         command.arg("djinn-bridge");
         command.stdin(Stdio::piped());
@@ -605,6 +638,7 @@ impl UiSessionBackend for UiBridgeBackend {
     }
 
     fn list_sessions(&self) -> Result<Vec<UiSessionListRecord>> {
+        self.cli.ensure_capabilities()?;
         match self.execute_wire_request(UiBridgeWireRequest::ListSessions) {
             Ok(UiBridgeWireResponse::Sessions { sessions }) => Ok(sessions
                 .into_iter()
@@ -624,6 +658,7 @@ impl UiSessionBackend for UiBridgeBackend {
     }
 
     fn get_session(&self, session_id: &str) -> Result<UiSessionListRecord> {
+        self.cli.ensure_capabilities()?;
         match self.execute_wire_request(UiBridgeWireRequest::GetSession {
             session_id: session_id.to_string(),
         }) {
@@ -640,6 +675,7 @@ impl UiSessionBackend for UiBridgeBackend {
     }
 
     fn create_session(&self, title: &str, repo_path: &str) -> Result<UiSessionCreateRecord> {
+        self.cli.ensure_capabilities()?;
         match self.execute_wire_request(UiBridgeWireRequest::CreateSession {
             title: title.to_string(),
             repo_path: repo_path.to_string(),
@@ -659,6 +695,7 @@ impl UiSessionBackend for UiBridgeBackend {
     }
 
     fn delete_session(&self, session_id: &str) -> Result<()> {
+        self.cli.ensure_capabilities()?;
         match self.execute_wire_request(UiBridgeWireRequest::DeleteSession {
             session_id: session_id.to_string(),
         }) {
@@ -709,6 +746,10 @@ pub(crate) fn ui_command_doctor_report_from(
     runtime_path: Option<&Path>,
 ) -> UiCommandDoctorReport {
     let in_tree = workspace_root.and_then(in_tree_ui_command);
+    let mut installed = env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(installed_ui_command);
     let command = resolve_ui_command_from(
         env_ui_command.clone(),
         runtime_command.clone(),
@@ -720,6 +761,9 @@ pub(crate) fn ui_command_doctor_report_from(
         runtime_command.as_deref(),
         in_tree.as_deref(),
     );
+    if source == INSTALLED_UI_COMMAND_SOURCE {
+        installed = command.clone();
+    }
     let command = command.unwrap_or_else(|| "<unavailable>".to_string());
     let (resolved_path, exists, executable) = if source == UNAVAILABLE_UI_COMMAND_SOURCE {
         (None, false, false)
@@ -737,6 +781,11 @@ pub(crate) fn ui_command_doctor_report_from(
             runtime_command.as_deref(),
             source == "runtime/djinn.json.command",
         ),
+        ui_command_candidate(
+            INSTALLED_UI_COMMAND_SOURCE,
+            installed.as_deref(),
+            source == INSTALLED_UI_COMMAND_SOURCE,
+        ),
         UiCommandDoctorCandidate {
             source: IN_TREE_UI_COMMAND.to_string(),
             value: in_tree.clone(),
@@ -750,11 +799,13 @@ pub(crate) fn ui_command_doctor_report_from(
         },
     ];
     let note = if source == "runtime/djinn.json.command" {
-        "Session runtime command overrides the in-tree Djinn UI launcher.".to_string()
+        "Session runtime command overrides auto-discovered installed and in-tree Djinn UI launchers.".to_string()
     } else if source == IN_TREE_UI_COMMAND {
         "Djinn will use its in-tree Djinn UI launcher; the launcher itself does not fall back to an external UI.".to_string()
     } else if source == DJINN_UI_BIN_ENV {
         "Environment override is active.".to_string()
+    } else if source == INSTALLED_UI_COMMAND_SOURCE {
+        "Djinn will use the current installation's UI companion (including a matching environment/runtime bundle binding); this path is not saved as an override.".to_string()
     } else {
         ui_command_unavailable_message()
     };
@@ -768,6 +819,7 @@ pub(crate) fn ui_command_doctor_report_from(
         session_dir: session_dir.map(|path| path.display().to_string()),
         runtime_path: runtime_path.map(|path| path.display().to_string()),
         bridge: None,
+        capabilities: None,
         candidates,
         note,
     }
@@ -839,12 +891,8 @@ pub(crate) fn run_ui_permission_approval(
     fs::create_dir_all(&temp_dir).context("creating Djinn UI approval temp directory")?;
     let request_path = temp_dir.join("request.json");
     let response_path = temp_dir.join("response.json");
-    let result = run_ui_permission_approval_from(
-        &resolution.command,
-        request,
-        &request_path,
-        &response_path,
-    );
+    let result =
+        run_ui_permission_approval_from(&resolution, request, &request_path, &response_path);
     let _ = fs::remove_file(&request_path);
     let _ = fs::remove_file(&response_path);
     let _ = fs::remove_dir(&temp_dir);
@@ -853,6 +901,7 @@ pub(crate) fn run_ui_permission_approval(
 
 pub(crate) fn run_ui_mcp_command(args: &[String]) -> Result<()> {
     let resolution = resolve_ui_command_resolution(None)?;
+    capabilities::verify(&resolution)?;
     let mut command = ui_process_command(&resolution.command)?;
     command.arg("mcp").args(args);
     let status = command.status().with_context(|| {
@@ -880,11 +929,13 @@ fn ui_mcp_command_hint(ui_command: &str, args: &[String]) -> String {
 }
 
 fn run_ui_permission_approval_from(
-    ui_command: &str,
+    resolution: &UiCommandResolution,
     request: &PermissionRequest,
     request_path: &Path,
     response_path: &Path,
 ) -> Result<UiPermissionApprovalDecision> {
+    capabilities::verify(resolution)?;
+    let ui_command = &resolution.command;
     fs::write(request_path, serde_json::to_vec_pretty(request)?)
         .context("writing Djinn UI permission approval request")?;
     let mut command = ui_process_command(ui_command)?;
@@ -923,22 +974,43 @@ fn ui_command_source(
     runtime_command: Option<&str>,
     in_tree_command: Option<&str>,
 ) -> String {
+    ui_command_source_with_exe(
+        command,
+        env_ui_command,
+        runtime_command,
+        in_tree_command,
+        &env::current_exe().unwrap_or_default(),
+    )
+}
+
+fn ui_command_source_with_exe(
+    command: Option<&str>,
+    env_ui_command: Option<&str>,
+    runtime_command: Option<&str>,
+    in_tree_command: Option<&str>,
+    executable: &Path,
+) -> String {
     let Some(command) = command else {
         return UNAVAILABLE_UI_COMMAND_SOURCE.to_string();
     };
-    if env_ui_command
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        == Some(command)
-    {
-        return DJINN_UI_BIN_ENV.to_string();
+    if env_ui_command.filter(|value| !value.trim().is_empty()) == Some(command) {
+        return UiCommandResolution {
+            command: command.to_string(),
+            source: DJINN_UI_BIN_ENV.to_string(),
+        }
+        .recognize_installed_companion(executable)
+        .source;
     }
-    if runtime_command
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        == Some(command)
-    {
-        return "runtime/djinn.json.command".to_string();
+    if runtime_command.filter(|value| !value.trim().is_empty()) == Some(command) {
+        return UiCommandResolution {
+            command: command.to_string(),
+            source: "runtime/djinn.json.command".to_string(),
+        }
+        .recognize_installed_companion(executable)
+        .source;
+    }
+    if installed_ui_command(executable).as_deref() == Some(command) {
+        return INSTALLED_UI_COMMAND_SOURCE.to_string();
     }
     if in_tree_command == Some(command) {
         return IN_TREE_UI_COMMAND.to_string();
@@ -946,9 +1018,102 @@ fn ui_command_source(
     UNAVAILABLE_UI_COMMAND_SOURCE.to_string()
 }
 
+fn is_installed_ui_companion(command: &str, executable: &Path) -> bool {
+    let command = Path::new(command);
+    // Never consult PATH or parse arguments to infer bundle ownership.
+    if !command.is_absolute()
+        || command
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+    {
+        return false;
+    }
+    let Ok(executable) = executable.canonicalize() else {
+        return false;
+    };
+    if executable.file_name().is_none_or(|name| name != "djinn") {
+        return false;
+    }
+    let Some(payload) = executable.parent() else {
+        return false;
+    };
+    let sibling = payload.join("djinn-ui");
+    if let Some(store) = payload
+        .parent()
+        .filter(|store| store.file_name().is_some_and(|name| name == ".djinn"))
+    {
+        let digest = payload
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+        if command.is_file()
+            && sibling.is_file()
+            && command
+                .canonicalize()
+                .ok()
+                .zip(sibling.canonicalize().ok())
+                .is_some_and(|(command, sibling)| command == sibling)
+        {
+            return true;
+        }
+        // Arcana binds the public path even when the companion is absent/broken.
+        return store
+            .parent()
+            .is_some_and(|prefix| command == prefix.join("djinn-ui"))
+            && command
+                .canonicalize()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+    }
+    let Some(version) = payload
+        .parent()
+        .filter(|libexec| libexec.file_name().is_some_and(|name| name == "libexec"))
+        .and_then(Path::parent)
+    else {
+        return false;
+    };
+    if payload.file_name().is_none_or(|name| name != "bin")
+        || version
+            .parent()
+            .and_then(Path::file_name)
+            .is_none_or(|name| name != "djinn")
+        || version
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .is_none_or(|name| name != "Cellar")
+    {
+        return false;
+    }
+    if command == sibling && command.is_file() {
+        return command
+            .canonicalize()
+            .is_ok_and(|target| target.starts_with(version));
+    }
+    let Some(prefix) = version
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+    else {
+        return false;
+    };
+    let public = version.join("bin/djinn-ui");
+    if command != public && command != prefix.join("opt/djinn/bin/djinn-ui") {
+        return false;
+    }
+    let Ok(public_target) = public.canonicalize() else {
+        return false;
+    };
+    public.is_file()
+        && public_target.starts_with(version)
+        && command.canonicalize().ok().as_ref() == Some(&public_target)
+}
+
 fn ui_command_unavailable_message() -> String {
     format!(
-        "No Djinn UI command is configured; run `make install` from Djinn so {IN_TREE_UI_COMMAND} exists, or set {DJINN_UI_BIN_ENV} explicitly."
+        "No Djinn UI command is configured; run `djinn doctor ui --repair` for a recognized source/Homebrew installation, reinstall the matching CLI/UI bundle (`make install` from a trusted Djinn checkout), or set {DJINN_UI_BIN_ENV} explicitly."
     )
 }
 
@@ -971,8 +1136,12 @@ fn ui_command_candidate(
     }
 }
 
-fn ui_command_status(command: &str) -> (Option<PathBuf>, bool, bool) {
-    let Some(program) = command.split_whitespace().next() else {
+pub(crate) fn ui_command_status(command: &str) -> (Option<PathBuf>, bool, bool) {
+    let Some(program) = (if Path::new(command).is_file() {
+        Some(command)
+    } else {
+        command.split_whitespace().next()
+    }) else {
         return (None, false, false);
     };
     let path = if program.contains(std::path::MAIN_SEPARATOR) || Path::new(program).is_absolute() {
@@ -989,6 +1158,9 @@ fn ui_command_status(command: &str) -> (Option<PathBuf>, bool, bool) {
 }
 
 fn ui_process_command(ui_command: &str) -> Result<ProcessCommand> {
+    if Path::new(ui_command).is_file() {
+        return Ok(ProcessCommand::new(ui_command));
+    }
     let mut parts = ui_command.split_whitespace();
     let Some(program) = parts.next() else {
         bail!("Djinn UI command is empty");
@@ -1038,6 +1210,18 @@ pub(crate) fn format_ui_command_doctor_report(
     lines.push(format!("  source: {}", report.source));
     lines.push(format!("  exists: {}", yes_no(report.exists)));
     lines.push(format!("  executable: {}", yes_no(report.executable)));
+    if let Some(capabilities) = &report.capabilities {
+        lines.push(format!(
+            "  storage capabilities verified: {}",
+            yes_no(capabilities.compatible)
+        ));
+        if let Some(build) = &capabilities.build {
+            lines.push(format!("  UI build: {build}"));
+        }
+        if let Some(error) = &capabilities.error {
+            lines.push(format!("  capability error: {error}"));
+        }
+    }
     if let Some(path) = &report.resolved_path {
         lines.push(format!("  resolved path: {path}"));
     }
@@ -1085,10 +1269,65 @@ pub(crate) fn resolve_ui_command_from(
     runtime_command: Option<String>,
     workspace_root: Option<&Path>,
 ) -> Option<String> {
+    resolve_ui_command_with_exe(
+        env_command,
+        runtime_command,
+        env::current_exe().ok().as_deref(),
+        workspace_root,
+    )
+}
+
+fn resolve_ui_command_with_exe(
+    env_command: Option<String>,
+    runtime_command: Option<String>,
+    current_exe: Option<&Path>,
+    workspace_root: Option<&Path>,
+) -> Option<String> {
     env_command
         .filter(|value| !value.trim().is_empty())
         .or_else(|| runtime_command.filter(|value| !value.trim().is_empty()))
+        .or_else(|| current_exe.and_then(installed_ui_command))
         .or_else(|| workspace_root.and_then(in_tree_ui_command))
+}
+
+fn installed_ui_command(current_exe: &Path) -> Option<String> {
+    let executable = current_exe.canonicalize().ok()?;
+    let payload = executable.parent()?;
+    let candidate = payload.join(if cfg!(windows) {
+        "djinn-ui.exe"
+    } else {
+        "djinn-ui"
+    });
+    // A missing companion in a known installation is damage, not permission to
+    // silently select a healthy source launcher (which would also mask repair).
+    let installed_bundle = executable.file_name().is_some_and(|name| name == "djinn")
+        && payload
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == ".djinn")
+        && payload
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            });
+    let installed_package = executable.file_name().is_some_and(|name| name == "djinn")
+        && executable.ancestors().any(|version| {
+            version
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "djinn")
+                && version
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(Path::file_name)
+                    .is_some_and(|name| name == "Cellar")
+                && executable.strip_prefix(version).is_ok_and(|relative| {
+                    relative == Path::new("libexec/bin/djinn") || relative == Path::new("bin/djinn")
+                })
+        });
+    (candidate.is_file() || installed_bundle || installed_package)
+        .then(|| candidate.to_string_lossy().into_owned())
 }
 
 pub(crate) fn djinn_source_workspace_root() -> PathBuf {
@@ -1955,12 +2194,7 @@ fn run_ui_status_command(ui_bin: &str, args: &[&str]) -> Result<()> {
 }
 
 fn run_ui_output_command(ui_bin: &str, args: &[&str]) -> Result<std::process::Output> {
-    let mut parts = ui_bin.split_whitespace();
-    let Some(program) = parts.next() else {
-        bail!("Djinn UI command is empty");
-    };
-    let output = ProcessCommand::new(program)
-        .args(parts)
+    let output = ui_process_command(ui_bin)?
         .args(args)
         .output()
         .with_context(|| {
@@ -1996,12 +2230,85 @@ fn ui_json_command_hint(ui_bin: &str, args: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::capabilities::fixture_script;
     use super::*;
     use std::sync::{Arc, Mutex};
 
     use crate::session::reference::{
         resolve_existing_folder_session_reference_in_root, resolve_ui_session_reference_in_root,
     };
+
+    #[test]
+    #[cfg(unix)]
+    fn installed_sibling_survives_relocation_symlinks_and_spaces_without_persisting_path() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = env::temp_dir().join(format!(
+            "djinn sibling test {}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let original = root.join("original payload");
+        let relocated = root.join("relocated payload");
+        fs::create_dir_all(&original).unwrap();
+        fs::write(original.join("djinn"), "fixture CLI").unwrap();
+        fs::write(
+            original.join("djinn-ui"),
+            fixture_script("#!/bin/sh\nprintf '[]'\n"),
+        )
+        .unwrap();
+        fs::set_permissions(original.join("djinn-ui"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::rename(&original, &relocated).unwrap();
+        let link = root.join("symlinked CLI");
+        symlink(relocated.join("djinn"), &link).unwrap();
+        let expected = relocated
+            .join("djinn-ui")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string();
+        let discovered = resolve_ui_command_with_exe(
+            None,
+            None,
+            Some(&link),
+            Some(&djinn_source_workspace_root()),
+        )
+        .unwrap();
+        assert_eq!(discovered, expected);
+        let resolution = UiCommandResolution {
+            command: discovered,
+            source: INSTALLED_UI_COMMAND_SOURCE.to_string(),
+        };
+        assert_eq!(resolution.runtime_command_override(), None);
+        let backend = UiCliBackend {
+            resolution,
+            capabilities: OnceLock::new(),
+        };
+        assert!(backend.list_sessions().unwrap().is_empty());
+        assert_eq!(
+            ui_command_status(&expected),
+            (Some(PathBuf::from(&expected)), true, true)
+        );
+        for (env_command, saved, selected) in [
+            (
+                Some("custom --flag"),
+                Some("saved --custom"),
+                "custom --flag",
+            ),
+            (None, Some("saved --custom"), "saved --custom"),
+            (Some("  custom --flag  "), None, "  custom --flag  "),
+        ] {
+            assert_eq!(
+                resolve_ui_command_with_exe(
+                    env_command.map(str::to_string),
+                    saved.map(str::to_string),
+                    Some(&link),
+                    Some(&root)
+                )
+                .as_deref(),
+                Some(selected)
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     #[cfg(unix)]
@@ -2045,13 +2352,16 @@ cat > "$response" <<'JSON'
 JSON
 "#
         .replace("__SEEN_REQUEST__", &seen_request.display().to_string());
-        fs::write(&ui_bin, script).unwrap();
+        fs::write(&ui_bin, fixture_script(&script)).unwrap();
         let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&ui_bin, permissions).unwrap();
 
         let decision = run_ui_permission_approval_from(
-            &ui_bin.display().to_string(),
+            &UiCommandResolution {
+                command: ui_bin.display().to_string(),
+                source: EXPLICIT_UI_COMMAND_SOURCE.to_string(),
+            },
             &PermissionRequest {
                 action: "apply_patch".to_string(),
                 description: "patch".to_string(),
@@ -2126,7 +2436,7 @@ printf 'legacy fallback unexpectedly used: %s\n' "$*" >&2
 exit 2
 "#
         .replace("__REQUEST_LOG__", &request_log.display().to_string());
-        fs::write(&ui_bin, script).unwrap();
+        fs::write(&ui_bin, fixture_script(&script)).unwrap();
         let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&ui_bin, permissions).unwrap();
@@ -2199,7 +2509,7 @@ echo unexpected ui args: "$@" >&2
 exit 2
 "#
         .replace("__FALLBACK_LOG__", &fallback_log.display().to_string());
-        fs::write(&ui_bin, script).unwrap();
+        fs::write(&ui_bin, fixture_script(&script)).unwrap();
         let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&ui_bin, permissions).unwrap();
@@ -2371,7 +2681,8 @@ exit 2
         let ui_bin = root.join("djinn-ui-bridge-ok.sh");
         fs::write(
             &ui_bin,
-            r#"#!/bin/sh
+            fixture_script(
+                r#"#!/bin/sh
 if [ "$1" = "djinn-bridge" ]; then
   cat >/dev/null
   printf '{"type":"sessions","sessions":[]}\n'
@@ -2383,6 +2694,7 @@ if [ "$1" = "session" ] && [ "$2" = "list" ] && [ "$3" = "--format" ] && [ "$4" 
 fi
 exit 2
 "#,
+            ),
         )
         .unwrap();
         let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
@@ -2430,7 +2742,8 @@ exit 2
         let ui_bin = root.join("djinn-ui-bridge-fallback.sh");
         fs::write(
             &ui_bin,
-            r#"#!/bin/sh
+            fixture_script(
+                r#"#!/bin/sh
 if [ "$1" = "djinn-bridge" ]; then
   echo bridge unavailable >&2
   exit 77
@@ -2441,6 +2754,7 @@ if [ "$1" = "session" ] && [ "$2" = "list" ] && [ "$3" = "--format" ] && [ "$4" 
 fi
 exit 2
 "#,
+            ),
         )
         .unwrap();
         let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
@@ -2915,10 +3229,10 @@ exit 2
         .to_string();
         fs::write(
             &ui_bin,
-            format!(
+            fixture_script(&format!(
                 "#!/bin/sh\nif [ \"$1\" = \"djinn-bridge\" ]; then\n  cat >/dev/null\n  printf '%s\\n' '{}'\n  exit 0\nfi\necho unexpected ui args: \"$@\" >&2\nexit 2\n",
                 bridge_response
-            ),
+            )),
         )
         .unwrap();
         let mut permissions = fs::metadata(&ui_bin).unwrap().permissions();
@@ -2968,8 +3282,8 @@ exit 2
         let ui_bin = root.join("djinn-ui-json.sh");
         fs::write(
             &ui_bin,
-            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ses_auto_bound\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected ui args: \"$@\" >&2\nexit 2\n"
-                .replace("__CREATE_LOG__", &create_log.display().to_string()),
+            fixture_script(&"#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ses_auto_bound\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected ui args: \"$@\" >&2\nexit 2\n"
+                .replace("__CREATE_LOG__", &create_log.display().to_string())),
         )
         .unwrap();
         #[cfg(unix)]
@@ -3031,8 +3345,8 @@ exit 2
         let ui_bin = root.join("djinn-ui-json.sh");
         fs::write(
             &ui_bin,
-            "#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ses_promoted\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected ui args: \"$@\" >&2\nexit 2\n"
-                .replace("__CREATE_LOG__", &create_log.display().to_string()),
+            fixture_script(&"#!/bin/sh\nif [ \"$1\" = \"session\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s|%s\\n' \"$6\" \"$8\" >> '__CREATE_LOG__'\n  printf '{\"id\":\"ses_promoted\",\"title\":\"%s\",\"repo_path\":\"%s\",\"created_at\":\"2026-08-01T12:00:00Z\"}\\n' \"$6\" \"$8\"\n  exit 0\nfi\necho unexpected ui args: \"$@\" >&2\nexit 2\n"
+                .replace("__CREATE_LOG__", &create_log.display().to_string())),
         )
         .unwrap();
         #[cfg(unix)]
@@ -3113,11 +3427,11 @@ exit 2
         let ui_bin = dir.join("djinn-ui-test.sh");
         fs::write(
             &ui_bin,
-            format!(
+            fixture_script(&format!(
                 "#!/bin/sh\ncat > '{}'\nprintf '%s\\n' \"$@\" > '{}'\nprintf 'Djinn UI final response.\\n'\n",
                 prompt_seen.display(),
                 args_seen.display()
-            ),
+            )),
         )
         .unwrap();
         #[cfg(unix)]
