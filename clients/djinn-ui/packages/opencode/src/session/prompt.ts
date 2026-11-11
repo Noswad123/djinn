@@ -30,6 +30,7 @@ import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
+import { OutputCheckpoint } from "./output-checkpoint"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
@@ -110,7 +111,8 @@ function userEventContent(message: SessionV1.WithParts) {
 function assistantEventContent(message: SessionV1.WithParts) {
   const text = textContent(message.parts, { includeSynthetic: true })
   if (text.trim()) return text
-  if (message.info.role === "assistant" && message.info.structured !== undefined) return JSON.stringify(message.info.structured)
+  if (message.info.role === "assistant" && message.info.structured !== undefined)
+    return JSON.stringify(message.info.structured)
   return ""
 }
 
@@ -637,13 +639,17 @@ const layer = Layer.effect(
                 forceKillAfter: "3 seconds",
               })
               const handle = yield* spawner.spawn(cmd)
+              const checkpoint = yield* OutputCheckpoint.make((output) =>
+                Effect.gen(function* () {
+                  if (part.state.status !== "running") return
+                  part.state.metadata = { output }
+                  yield* sessions.updatePart(part)
+                }),
+              )
               yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
                 Effect.gen(function* () {
                   output += chunk
-                  if (part.state.status === "running") {
-                    part.state.metadata = { output }
-                    yield* sessions.updatePart(part)
-                  }
+                  yield* checkpoint(output)
                 }),
               )
               yield* handle.exitCode

@@ -6,6 +6,7 @@ import { Snapshot } from "@/snapshot"
 import { Session } from "./session"
 import { SessionID, MessageID } from "./schema"
 import { Config } from "@/config/config"
+import { isDeepStrictEqual } from "node:util"
 
 function unquoteGitPath(input: string) {
   if (!input.startsWith('"')) return input
@@ -103,15 +104,17 @@ const layer = Layer.effect(
       sessionID: SessionID
       messageID: MessageID
     }) {
-      yield* sessions.setSummary({
-        sessionID: input.sessionID,
-        summary: {
-          additions: 0,
-          deletions: 0,
-          files: 0,
-        },
-      })
-      yield* events.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: [] })
+      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      const summary = { additions: 0, deletions: 0, files: 0 }
+      if (
+        session.summary?.additions !== 0 ||
+        session.summary.deletions !== 0 ||
+        session.summary.files !== 0 ||
+        session.summary.diffs?.length
+      ) {
+        yield* sessions.setSummary({ sessionID: input.sessionID, summary })
+        yield* events.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: [] })
+      }
       if ((yield* config.get()).snapshot === false) return
       const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
       if (!all.length) return
@@ -122,6 +125,7 @@ const layer = Layer.effect(
       const target = messages.find((m) => m.info.id === input.messageID)
       if (!target || target.info.role !== "user") return
       const msgDiffs = yield* computeDiff({ messages })
+      if (isDeepStrictEqual(target.info.summary?.diffs, msgDiffs)) return
       target.info.summary = { ...target.info.summary, diffs: msgDiffs }
       yield* sessions.updateMessage(target.info)
     })

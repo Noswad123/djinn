@@ -9,6 +9,7 @@ import { isAbsolute, join } from "path"
 import { DatabaseMigration } from "./migration"
 import { InstallationChannel } from "../installation/version"
 import { makeGlobalNode } from "../effect/app-node"
+import { EventStorageGuard } from "../event/storage-guard"
 
 const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
 type DatabaseShape = Effect.Success<typeof makeDatabase>
@@ -29,8 +30,16 @@ const layer = Layer.effect(
     yield* db.run("PRAGMA busy_timeout = 5000")
     yield* db.run("PRAGMA cache_size = -64000")
     yield* db.run("PRAGMA foreign_keys = ON")
-    yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
+    // Do not checkpoint the connection-local capability attachment as well.
+    yield* db.run("PRAGMA main.wal_checkpoint(PASSIVE)")
     yield* DatabaseMigration.apply(db)
+    // Reader-first rollout: legacy JSON stays the default until explicitly enabled.
+    // Guard all event mutations before this process can write compressed payloads.
+    if (process.env.DJINN_EVENT_COMPRESSION === "1") {
+      yield* db.transaction(() =>
+        Effect.forEach(EventStorageGuard.TRIGGERS, (trigger) => db.run(trigger), { discard: true }),
+      )
+    }
 
     return { db }
   }).pipe(Effect.orDie),
