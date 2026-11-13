@@ -9,9 +9,10 @@ set -eu
 #
 # Resolution order inside this wrapper:
 #   1. DJINN_UI_TARGET, when set (may include command arguments).
-#   2. In-repo built UI binary under clients/djinn-ui/.
-#   3. In-repo TypeScript source under clients/djinn-ui/packages/opencode/.
-#   4. In-repo package launcher under clients/djinn-ui/packages/opencode/.
+#   2. Exact host UI under the repository's .build/djinn-ui/.
+#   3. Exact host legacy dist UI under clients/djinn-ui/.
+#   4. In-repo TypeScript source under clients/djinn-ui/packages/opencode/.
+#   5. In-repo package launcher under clients/djinn-ui/packages/opencode/.
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 djinn_ui_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
@@ -24,9 +25,23 @@ if [ "${DJINN_UI_TARGET:-}" != "" ]; then
   exec ${DJINN_UI_TARGET} "$@"
 fi
 
+case "$(uname -s)" in
+  Darwin) host_os=darwin ;;
+  Linux) host_os=linux ;;
+  *) host_os=unsupported ;;
+esac
+case "$(uname -m)" in
+  arm64|aarch64) host_arch=arm64 ;;
+  x86_64|amd64) host_arch=x64 ;;
+  *) host_arch=unsupported ;;
+esac
+target="djinn-ui-$host_os-$host_arch"
+repo_root=$(CDPATH= cd -- "$djinn_ui_root/../.." && pwd)
+
 for candidate in \
-  "$djinn_ui_root"/packages/opencode/dist/djinn-ui-*/bin/djinn-ui \
-  "$djinn_ui_root"/dist/djinn-ui-*/bin/djinn-ui
+  "$repo_root/.build/djinn-ui/$target/bin/djinn-ui" \
+  "$djinn_ui_root/packages/opencode/dist/$target/bin/djinn-ui" \
+  "$djinn_ui_root/dist/$target/bin/djinn-ui"
 do
   if [ -x "$candidate" ]; then
     exec "$candidate" "$@"

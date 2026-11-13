@@ -184,6 +184,25 @@ function responseText(response: Response) {
 }
 
 describe("HttpApi UI fallback", () => {
+  it.live("authenticates local Basic credentials but never sends them to the UI upstream", () =>
+    Effect.gen(function* () {
+      const sent: HttpClientRequest.HttpClientRequest[] = []
+      const local = uiApp({
+        password: "local-only",
+        disableEmbeddedWebUi: true,
+        client: httpClient(new Response("mock upstream"), (request) => sent.push(request)),
+      })
+      const response = yield* local.request("/unknown-api-or-asset", {
+        headers: { authorization: `Basic ${btoa("opencode:local-only")}`, "x-custom": "retained" },
+      })
+      expect(response.status).toBe(200)
+      expect(yield* responseText(response)).toBe("mock upstream")
+      expect(sent).toHaveLength(1)
+      expect(sent[0].url).toBe("https://app.opencode.ai/unknown-api-or-asset")
+      expect(sent[0].headers.authorization).toBeUndefined()
+      expect(sent[0].headers["x-custom"]).toBe("retained")
+    }),
+  )
   it.live("serves the web UI through the HTTP API app", () =>
     Effect.gen(function* () {
       let proxiedUrl: string | undefined

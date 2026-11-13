@@ -34,6 +34,7 @@ import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
+import { backgroundPromptEnabled, createPromptSubmission } from "../../prompt/submission"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
@@ -143,6 +144,10 @@ let stashed: { prompt: PromptInfo; cursor: number } | undefined
 export function Prompt(props: PromptProps) {
   let input: TextareaRenderable
   let anchor: BoxRenderable
+  let disposed = false
+  const submission = createPromptSubmission()
+  const [sending, setSending] = createSignal(false)
+  const alive = () => !disposed && !renderer.isDestroyed && !!input && !input.isDestroyed
   const [inputTarget, setInputTarget] = createSignal<TextareaRenderable | undefined>()
 
   const leader = useLeaderActive()
@@ -353,7 +358,7 @@ export function Prompt(props: PromptProps) {
           const handled = await submit()
           if (!handled) return
 
-          dialog.clear()
+          if (alive()) dialog.clear()
         },
       },
       {
@@ -624,6 +629,7 @@ export function Prompt(props: PromptProps) {
   })
 
   onCleanup(() => {
+    disposed = true
     if (store.prompt.input) {
       stashed = { prompt: unwrap(store.prompt), cursor: input.cursorOffset }
     }
@@ -926,7 +932,6 @@ export function Prompt(props: PromptProps) {
     }
   })
 
-  let submitting = false
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
     // input's native onSubmit racing another dispatch). Without this guard,
@@ -934,13 +939,8 @@ export function Prompt(props: PromptProps) {
     // clears `store.prompt.input`, then awaits its own `session.create` and
     // ultimately reads the now-empty store — sending a phantom empty prompt
     // to a freshly created session.
-    if (submitting) return false
-    submitting = true
-    try {
-      return await submitInner()
-    } finally {
-      submitting = false
-    }
+    if (!alive()) return false
+    return submission.run(submitInner)
   }
 
   async function submitInner() {
@@ -993,6 +993,7 @@ export function Prompt(props: PromptProps) {
       const workspaceID = selectedWorkspace?.type === "existing" ? selectedWorkspace.workspaceID : undefined
 
       const directory = await move.getDirectory(store.prompt.input)
+      if (!alive()) return false
       if (move.pending() && !directory) return false
       finishMoveProgress = Boolean(move.progress())
 
@@ -1006,6 +1007,7 @@ export function Prompt(props: PromptProps) {
           variant,
         },
       })
+      if (!alive()) return false
 
       if (res.error) {
         if (finishMoveProgress) move.finishSubmit()
@@ -1037,7 +1039,10 @@ export function Prompt(props: PromptProps) {
 
     // Capture mode before it gets reset
     const currentMode = store.mode
+    const submittedSessionID = sessionID
+    const submittedPrompt = structuredClone(unwrap(store.prompt))
     const editorSelection = editorContext()
+    const submittedEditorKey = editorSelectionKey(editorSelection)
     const editorParts =
       editorSelection && editor.labelState() === "pending"
         ? [
@@ -1090,59 +1095,81 @@ export function Prompt(props: PromptProps) {
       })
     } else {
       move.startSubmit()
-      sdk.client.session
-        .prompt(
-          {
-            sessionID,
-            ...selectedModel,
-            agent: agent.name,
-            model: selectedModel,
-            variant,
-            parts: [
-              ...editorParts,
-              {
-                type: "text",
-                text: inputText,
-              },
-              ...nonTextParts,
-            ],
-          },
-          { throwOnError: true },
-        )
-        .catch((error) => {
+      const background = backgroundPromptEnabled(args, props.sessionID)
+      return submission.send({
+        background,
+        session: sdk.client.session,
+        parameters: {
+          sessionID,
+          ...selectedModel,
+          agent: agent.name,
+          model: selectedModel,
+          variant,
+          parts: [
+            ...editorParts,
+            {
+              type: "text",
+              text: inputText,
+            },
+            ...nonTextParts,
+          ],
+        },
+        current: () => JSON.stringify([store.prompt, store.mode, input.plainText, props.sessionID]),
+        alive,
+        appAlive: () => !renderer.isDestroyed,
+        sending: setSending,
+        accepted: (unchanged) => {
+          if (editorParts.length > 0 && submittedEditorKey === editorSelectionKey(editorContext()))
+            editor.markSelectionSent()
+          completeSubmission(unchanged)
+        },
+        error: (error) => {
           toast.show({
-            title: "Failed to send prompt",
-            message: errorMessage(error),
+            title: background ? "Prompt acknowledgement unconfirmed" : "Failed to send prompt",
+            message: background
+              ? `${errorMessage(error)}. The request may have been accepted; check the session before resending.`
+              : errorMessage(error),
             variant: "error",
           })
-        })
-      if (editorParts.length > 0) editor.markSelectionSent()
+          if (alive() && finishMoveProgress) move.finishSubmit()
+        },
+      })
     }
-    history.append({
-      ...store.prompt,
-      mode: currentMode,
-    })
-    input.extmarks.clear()
-    setStore("prompt", {
-      input: "",
-      parts: [],
-    })
-    setStore("extmarkToPartIndex", new Map())
-    props.onSubmit?.()
-
-    // temporary hack to make sure the message is sent
-    if (!props.sessionID) {
-      if (editorParts.length > 0) editor.preserveSelectionFromNewSession()
-      setTimeout(() => {
-        route.navigate({
-          type: "session",
-          sessionID,
-        })
-      }, 50)
-    }
-    input.clear()
-    if (finishMoveProgress) move.finishSubmit()
+    completeSubmission(true)
     return true
+
+    function completeSubmission(unchanged: boolean) {
+      history.append({
+        ...submittedPrompt,
+        mode: currentMode,
+      })
+      // Edits, attachments and mode changes received during ACK belong to the next draft.
+      if (!unchanged) {
+        if (finishMoveProgress) move.finishSubmit()
+        return
+      }
+      input.extmarks.clear()
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      setStore("extmarkToPartIndex", new Map())
+
+      // temporary hack to make sure the message is sent
+      if (!props.sessionID) {
+        if (editorParts.length > 0) editor.preserveSelectionFromNewSession()
+        setTimeout(() => {
+          if (!alive()) return
+          route.navigate({
+            type: "session",
+            sessionID: submittedSessionID,
+          })
+        }, 50)
+      }
+      input.clear()
+      if (finishMoveProgress) move.finishSubmit()
+      props.onSubmit?.()
+    }
   }
 
   function pasteText(text: string, virtualText: string) {
@@ -1509,6 +1536,9 @@ export function Prompt(props: PromptProps) {
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between">
           <Switch>
+            <Match when={sending()}>
+              <text fg={theme.textMuted}>Sending…</text>
+            </Match>
             <Match when={status().type !== "idle"}>
               <box
                 flexDirection="row"

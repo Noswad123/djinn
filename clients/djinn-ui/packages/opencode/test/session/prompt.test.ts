@@ -629,8 +629,11 @@ it.instance("interactive admission returns the persisted user message before a b
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Native admission" })
     yield* llm.hang
-    const admitted = yield* prompt.admitInteractive({ sessionID: chat.id, agent: "build",
-      parts: [{ type: "text", text: "native task" }] })
+    const admitted = yield* prompt.admitInteractive({
+      sessionID: chat.id,
+      agent: "build",
+      parts: [{ type: "text", text: "native task" }],
+    })
     expect(admitted.info.role).toBe("user")
     const stored = yield* sessions.messages({ sessionID: chat.id })
     expect(stored.some((message) => message.info.id === admitted.info.id)).toBe(true)
@@ -647,20 +650,34 @@ it.instance("interactive admission retains ordinary folder assistant event captu
     const chat = yield* sessions.create({ title: "Native event capture" })
     const eventsPath = path.join(dir, "djinn", "events.jsonl")
     yield* llm.text("native reply")
-    yield* withDjinnEvents(eventsPath, () => Effect.gen(function* () {
-      const admitted = yield* prompt.admitInteractive({ sessionID: chat.id, agent: "build",
-        parts: [{ type: "text", text: "native request" }] })
-      expect(admitted.info.role).toBe("user")
-      yield* pollWithTimeout(
-        Effect.promise(() => Bun.file(eventsPath).text()).pipe(Effect.map((text) => {
-          const lines = text.trim().split("\n").map((line) => JSON.parse(line))
-          return lines.some((line) => line.type === "assistant_message" && line.content === "native reply")
-            ? true : undefined
-        })),
-        "native reply did not append the folder assistant event",
-      )
-    }))
-    const lines = (yield* Effect.promise(() => Bun.file(eventsPath).text())).trim().split("\n").map((line) => JSON.parse(line))
+    yield* withDjinnEvents(eventsPath, () =>
+      Effect.gen(function* () {
+        const admitted = yield* prompt.admitInteractive({
+          sessionID: chat.id,
+          agent: "build",
+          parts: [{ type: "text", text: "native request" }],
+        })
+        expect(admitted.info.role).toBe("user")
+        yield* pollWithTimeout(
+          Effect.promise(() => Bun.file(eventsPath).text()).pipe(
+            Effect.map((text) => {
+              const lines = text
+                .trim()
+                .split("\n")
+                .map((line) => JSON.parse(line))
+              return lines.some((line) => line.type === "assistant_message" && line.content === "native reply")
+                ? true
+                : undefined
+            }),
+          ),
+          "native reply did not append the folder assistant event",
+        )
+      }),
+    )
+    const lines = (yield* Effect.promise(() => Bun.file(eventsPath).text()))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
     expect(lines.map((line) => line.type)).toEqual(["user_message", "assistant_message"])
   }),
 )
@@ -1820,6 +1837,58 @@ unixNoLLMServer(
 )
 
 unixNoLLMServer(
+  "shell bounds durable checkpoint growth without truncating terminal output",
+  () =>
+    withSh(() =>
+      Effect.gen(function* () {
+        const { prompt, chat } = yield* boot()
+        const sessions = yield* Session.Service
+        const events = yield* EventV2Bridge.Service
+        const updates: Array<{ time: number; part: typeof SessionV1.Event.PartUpdated.data.Type.part }> = []
+        const off = yield* events.listen((event) => {
+          if (event.type === SessionV1.Event.PartUpdated.type) {
+            const data = event.data as typeof SessionV1.Event.PartUpdated.data.Type
+            if (data.sessionID === chat.id && data.part.type === "tool") {
+              updates.push({ time: performance.now(), part: structuredClone(data.part) })
+            }
+          }
+          return Effect.void
+        })
+        yield* Effect.addFinalizer(() => off)
+        const result = yield* prompt.shell({
+          sessionID: chat.id,
+          agent: "build",
+          command: `i=0; while [ "$i" -lt 2000 ]; do printf '%0100d' "$i"; i=$((i + 1)); done; printf terminal-marker; exit 7`,
+        })
+        const tool = completedTool(result.parts)!
+        expect(tool.state.output.length).toBe(200_000 + "terminal-marker".length)
+        expect(tool.state.output.endsWith("terminal-marker")).toBe(true)
+        expect(tool.state.metadata.output).toBe(tool.state.output)
+        const running = updates.filter(
+          (item) => item.part.type === "tool" && item.part.state.status === "running" && item.part.state.metadata,
+        )
+        expect(running.length).toBeGreaterThan(0)
+        for (const [i, item] of running.entries()) {
+          if (item.part.type !== "tool" || item.part.state.status !== "running")
+            throw new Error("expected running tool")
+          expect(Buffer.byteLength(item.part.state.metadata!.output)).toBeLessThanOrEqual(30_000)
+          if (i) expect(item.time - running[i - 1].time).toBeGreaterThanOrEqual(245)
+        }
+        expect(
+          updates.filter((item) => item.part.type === "tool" && item.part.state.status === "completed"),
+        ).toHaveLength(1)
+        const stored = yield* sessions.getPart({ sessionID: chat.id, messageID: result.info.id, partID: tool.id })
+        expect(stored).toEqual(tool)
+        const count = updates.length
+        yield* Effect.sleep("600 millis")
+        expect(updates.length).toBe(count)
+      }),
+    ),
+  { config: cfg },
+  30_000,
+)
+
+unixNoLLMServer(
   "shell updates running metadata before process exit",
   () =>
     withSh(() =>
@@ -1963,16 +2032,19 @@ unixNoLLMServer(
     withSh(() =>
       Effect.gen(function* () {
         const { prompt, run, chat } = yield* boot()
-        const { directory: dir } = yield* TestInstance
-        const afs = yield* FSUtil.Service
-        const ready = path.join(dir, ".shell-ready")
 
         const sh = yield* prompt
-          .shell({ sessionID: chat.id, agent: "build", command: ": > '.shell-ready'; sleep 30" })
+          .shell({ sessionID: chat.id, agent: "build", command: "printf retained-before-cancel; sleep 30" })
           .pipe(Effect.forkChild)
         yield* pollWithTimeout(
-          afs.existsSafe(ready).pipe(Effect.map((exists) => (exists ? (true as const) : undefined))),
-          "shell never created readiness marker",
+          Effect.gen(function* () {
+            const messages = yield* MessageV2.filterCompactedEffect(chat.id)
+            const part = messages.flatMap((message) => message.parts).find((part) => part.type === "tool")
+            return part?.state.status === "running" && part.state.metadata?.output.includes("retained-before-cancel")
+              ? true
+              : undefined
+          }),
+          "shell never checkpointed output",
         )
 
         yield* prompt.cancel(chat.id)
@@ -1989,6 +2061,8 @@ unixNoLLMServer(
           const tool = completedTool(exit.value.parts)
           if (tool) {
             expect(tool.state.output).toContain("User aborted the command")
+            expect(tool.state.output).toContain("retained-before-cancel")
+            expect(tool.state.metadata.output).toBe(tool.state.output)
           }
         }
       }),

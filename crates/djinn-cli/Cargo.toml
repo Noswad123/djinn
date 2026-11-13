@@ -16,6 +16,7 @@ base64.workspace = true
 chrono.workspace = true
 clap.workspace = true
 dirs.workspace = true
+jsonschema = { version = "0.33", default-features = false }
 djinn-agent = { path = "../djinn-agent" }
 djinn-contexts = { path = "../djinn-contexts" }
 djinn-core = { path = "../djinn-core" }
@@ -27,7 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 reqwest.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["process"] }
 toml_edit.workspace = true
 
 [target.'cfg(unix)'.dependencies]

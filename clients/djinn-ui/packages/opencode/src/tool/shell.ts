@@ -1,4 +1,5 @@
-import { Effect, Stream } from "effect"
+import { Effect, Fiber, Stream } from "effect"
+import { OutputCheckpoint } from "@/session/output-checkpoint"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -24,7 +25,6 @@ import { BashArity } from "@/permission/arity"
 
 export { Parameters } from "./shell/prompt"
 
-const MAX_METADATA_LENGTH = 30_000
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -218,8 +218,7 @@ function pathArgs(list: Part[], ps: boolean, cmd = false) {
 }
 
 function preview(text: string) {
-  if (text.length <= MAX_METADATA_LENGTH) return text
-  return "...\n\n" + text.slice(-MAX_METADATA_LENGTH)
+  return OutputCheckpoint.preview(text)
 }
 
 function tail(text: string, maxLines: number, maxBytes: number) {
@@ -482,8 +481,9 @@ export const ShellTool = Tool.define(
         Effect.gen(function* () {
           yield* Effect.addFinalizer(closeSink)
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
+          const checkpoint = yield* OutputCheckpoint.make((output) => ctx.metadata({ metadata: { output } }))
 
-          yield* Effect.forkScoped(
+          const reader = yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
               const size = Buffer.byteLength(chunk, "utf-8")
               list.push({ text: chunk, size })
@@ -511,22 +511,12 @@ export const ShellTool = Tool.define(
                         full = ""
                       }),
                     ),
-                    Effect.andThen(
-                      ctx.metadata({
-                        metadata: {
-                          output: last,
-                        },
-                      }),
-                    ),
+                    Effect.andThen(checkpoint(last)),
                   )
                 }
               }
 
-              return ctx.metadata({
-                metadata: {
-                  output: last,
-                },
-              })
+              return checkpoint(last)
             }),
           )
 
@@ -554,6 +544,9 @@ export const ShellTool = Tool.define(
             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
           }
 
+          // Process exit can precede the last pipe read. Drain before closing the
+          // spill file or publishing the terminal result, including killed runs.
+          yield* Fiber.join(reader)
           return exit.kind === "exit" ? exit.code : null
         }),
       ).pipe(Effect.orDie)

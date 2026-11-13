@@ -18,6 +18,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use walkdir::WalkDir;
 
+#[cfg(test)]
+mod execution_tests;
+
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
@@ -119,6 +122,705 @@ pub enum AgentProgressEvent {
 #[async_trait]
 pub trait ModelClient: Send + Sync {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse>;
+
+    /// One bounded, tool-free call, with no application or transport retries.
+    async fn complete_execution(&self, _request: ModelRequest) -> Result<ExecutionCompletion> {
+        bail!("structured execution is unsupported by this model client")
+    }
+
+    /// Preserve known failures before the caller's outer execution deadline.
+    async fn complete_execution_until(
+        &self,
+        request: ModelRequest,
+        _deadline: tokio::time::Instant,
+    ) -> Result<ExecutionCompletion> {
+        self.complete_execution(request).await
+    }
+}
+
+pub struct ExecutionCompletion {
+    pub text: String,
+    pub model: String,
+}
+
+/// A transport failure does not establish whether the remote model completed.
+#[derive(Debug)]
+pub struct ExecutionIndeterminate;
+
+impl std::fmt::Display for ExecutionIndeterminate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("model execution outcome is unknown")
+    }
+}
+
+impl std::error::Error for ExecutionIndeterminate {}
+
+pub const EXECUTION_TEXT_LIMIT: usize = 4 * 1024 * 1024;
+const EXECUTION_BODY_LIMIT: usize = 8 * 1024 * 1024;
+const EXECUTION_ERROR_BODY_LIMIT: usize = 128 * 1024;
+
+fn execution_http_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .build()?)
+}
+
+async fn execution_http_failure(
+    mut response: reqwest::Response,
+    deadline: Option<tokio::time::Instant>,
+) -> anyhow::Error {
+    let status = response.status().as_u16();
+    let now = tokio::time::Instant::now();
+    let mut diagnostic_deadline = now + Duration::from_millis(100);
+    if let Some(deadline) = deadline {
+        let remaining = deadline.saturating_duration_since(now);
+        let reserve = Duration::from_millis(5).max(remaining / 10);
+        if remaining <= reserve {
+            return execution_http_error(status, &[]);
+        }
+        diagnostic_deadline = diagnostic_deadline.min(deadline - reserve);
+    }
+    if response
+        .content_length()
+        .is_some_and(|n| n > EXECUTION_ERROR_BODY_LIMIT as u64)
+    {
+        return execution_http_error(status, &[]);
+    }
+    let mut bytes = Vec::new();
+    loop {
+        match tokio::time::timeout_at(diagnostic_deadline, response.chunk()).await {
+            Ok(Ok(Some(chunk))) if chunk.len() <= EXECUTION_ERROR_BODY_LIMIT - bytes.len() => {
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(Ok(None)) => return execution_http_error(status, &bytes),
+            // A rejected request is a known failure even if diagnostics cannot
+            // be read. Never retain a raw transport error or a partial body.
+            _ => return execution_http_error(status, &[]),
+        }
+    }
+}
+
+fn execution_error_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.as_bytes()[0].is_ascii_lowercase()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn execution_http_error(status: u16, bytes: &[u8]) -> anyhow::Error {
+    let mut message = format!("provider request failed (HTTP {status})");
+    if bytes.len() > EXECUTION_ERROR_BODY_LIMIT {
+        return anyhow::anyhow!(message);
+    }
+    let value: Value = match serde_json::from_slice(bytes) {
+        Ok(value) => value,
+        Err(_) => return anyhow::anyhow!(message),
+    };
+    let mut facts = Vec::new();
+    for key in ["code", "type", "param"] {
+        if let Some(identifier) = value["error"][key]
+            .as_str()
+            .filter(|s| execution_error_identifier(s))
+        {
+            facts.push(format!("{key}={identifier}"));
+        }
+    }
+    for detail in [
+        &value["error"]["message"],
+        &value["error"]["detail"],
+        &value["detail"],
+        &value["message"],
+    ]
+    .into_iter()
+    .filter_map(Value::as_str)
+    {
+        let detail = detail.to_ascii_lowercase();
+        let reason = if detail.contains("unsupported parameter")
+            || detail.contains("unknown parameter")
+            || detail.contains("unrecognized request argument")
+        {
+            "unsupported_parameter"
+        } else if detail.contains("unsupported model")
+            || detail.contains("model is not supported")
+            || detail.contains("model not supported")
+        {
+            "unsupported_model"
+        } else if detail.contains("invalid model")
+            || detail.contains("model does not exist")
+            || detail.contains("model not found")
+        {
+            "invalid_model"
+        } else {
+            continue;
+        };
+        facts.push(format!("reason={reason}"));
+        if value["error"]["param"]
+            .as_str()
+            .filter(|s| execution_error_identifier(s))
+            .is_none()
+        {
+            if let Some((_, tail)) = detail.split_once("unsupported parameter:") {
+                let tail = tail.trim_start();
+                let candidate = match tail.as_bytes().first() {
+                    Some(b'\'' | b'"' | b'`') => tail[1..]
+                        .split_once(char::from(tail.as_bytes()[0]))
+                        .map(|(name, _)| name),
+                    _ => tail
+                        .split_whitespace()
+                        .next()
+                        .map(|name| name.trim_end_matches(['.', ','])),
+                };
+                if let Some(param) = candidate.filter(|s| execution_error_identifier(s)) {
+                    facts.push(format!("param={param}"));
+                }
+            }
+        }
+        break;
+    }
+    if !facts.is_empty() {
+        message.push_str(": ");
+        message.push_str(&facts.join(", "));
+    }
+    anyhow::anyhow!(message)
+}
+
+async fn execution_chat(
+    builder: reqwest::RequestBuilder,
+    request: ModelRequest,
+    model: &str,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<ExecutionCompletion> {
+    if !request.tools.is_empty() {
+        bail!("structured execution cannot use tools");
+    }
+    let body = json!({
+        "model": model,
+        "messages": request.messages.into_iter().map(openai_message).collect::<Vec<_>>(),
+        "stream": false,
+        "tool_choice": "none",
+    });
+    let mut response = builder
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| ExecutionIndeterminate)?;
+    if !response.status().is_success() {
+        return Err(execution_http_failure(response, deadline).await);
+    }
+    if response
+        .content_length()
+        .is_some_and(|n| n > EXECUTION_BODY_LIMIT as u64)
+    {
+        bail!("provider response exceeds transport limit");
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| ExecutionIndeterminate)? {
+        if chunk.len() > EXECUTION_BODY_LIMIT - bytes.len() {
+            bail!("provider response exceeds transport limit");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    parse_execution_chat(&bytes)
+}
+
+fn parse_execution_chat(bytes: &[u8]) -> Result<ExecutionCompletion> {
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|_| anyhow::anyhow!("invalid provider response"))?;
+    let choices = value["choices"]
+        .as_array()
+        .filter(|c| c.len() == 1)
+        .ok_or_else(|| anyhow::anyhow!("expected one provider choice"))?;
+    let choice = &choices[0];
+    let message = &choice["message"];
+    if choice["finish_reason"] != "stop"
+        || message["role"] != "assistant"
+        || message
+            .get("tool_calls")
+            .is_some_and(|v| !v.is_null() && !v.as_array().is_some_and(Vec::is_empty))
+        || message.get("function_call").is_some_and(|v| !v.is_null())
+        || message.get("refusal").is_some_and(|v| !v.is_null())
+    {
+        bail!("provider returned tools, refusal, or incomplete output");
+    }
+    let text = message["content"]
+        .as_str()
+        .filter(|s| s.len() <= EXECUTION_TEXT_LIMIT)
+        .ok_or_else(|| anyhow::anyhow!("provider output missing or exceeds text limit"))?;
+    let actual_model = value["model"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("provider did not identify actual model"))?;
+    Ok(ExecutionCompletion {
+        text: text.to_owned(),
+        model: actual_model.to_owned(),
+    })
+}
+
+async fn execution_oauth(
+    request: ModelRequest,
+    oauth: &OpenAiOAuth,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<ExecutionCompletion> {
+    if !request.tools.is_empty() {
+        bail!("structured execution cannot use tools");
+    }
+    let mut instructions = Vec::new();
+    let mut input = Vec::new();
+    for message in request.messages {
+        if !message.tool_calls.is_empty() || message.tool_call_id.is_some() {
+            bail!("structured execution cannot use tools");
+        }
+        match message.role {
+            ModelRole::System => instructions.push(message.content),
+            ModelRole::User => input.extend(openai_responses_input(message)),
+            _ => bail!("structured execution requires system and user messages"),
+        }
+    }
+    let body = json!({
+        "model": normalize_openai_model(&request.model),
+        "instructions": instructions.join("\n\n"),
+        "input": input,
+        "store": false,
+        "stream": true,
+        "tools": [],
+        "tool_choice": "none",
+    });
+    let mut builder = execution_http_client()?
+        .post(&oauth.codex_api_endpoint)
+        .bearer_auth(&oauth.access)
+        .header("originator", "opencode")
+        .header(reqwest::header::USER_AGENT, oauth_user_agent())
+        .json(&body);
+    if let Some(account_id) = &oauth.account_id {
+        builder = builder.header("ChatGPT-Account-Id", account_id);
+    }
+    let mut response = builder.send().await.map_err(|_| ExecutionIndeterminate)?;
+    if !response.status().is_success() {
+        return Err(execution_http_failure(response, deadline).await);
+    }
+    let mut parser = ExecutionResponsesParser::default();
+    while let Some(chunk) = response.chunk().await.map_err(|_| ExecutionIndeterminate)? {
+        if let Some(completion) = parser.push(&chunk)? {
+            return Ok(completion);
+        }
+    }
+    parser.finish()
+}
+
+// Inspect every observed item, not just the final snapshot: a later snapshot can
+// omit a tool call or refusal already emitted by the provider.
+fn check_execution_responses_value(value: &Value) -> Result<()> {
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if key == "status"
+                    && matches!(value.as_str(), Some("failed" | "incomplete" | "cancelled"))
+                {
+                    bail!("provider returned incomplete output");
+                }
+                if key == "type"
+                    && value.as_str().is_some_and(|kind| {
+                        kind == "refusal"
+                            || kind.ends_with("_call")
+                            || kind.ends_with("_call_output")
+                    })
+                {
+                    bail!("provider returned tools or refusal output");
+                }
+                if matches!(
+                    key.as_str(),
+                    "refusal" | "error" | "incomplete_details" | "function_call" | "tool_calls"
+                ) && !value.is_null()
+                    && !value.as_array().is_some_and(Vec::is_empty)
+                {
+                    bail!("provider returned tools, refusal, or incomplete output");
+                }
+                if key == "output" {
+                    let output = value
+                        .as_array()
+                        .ok_or_else(|| anyhow::anyhow!("invalid provider output"))?;
+                    if output
+                        .iter()
+                        .filter(|item| item["type"] == "message")
+                        .count()
+                        > 1
+                    {
+                        bail!("provider returned multiple assistant items");
+                    }
+                    for item in output {
+                        check_execution_responses_item(item)?;
+                    }
+                    continue;
+                }
+                check_execution_responses_value(value)?;
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                check_execution_responses_value(value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn check_execution_responses_item(item: &Value) -> Result<()> {
+    match item["type"].as_str() {
+        Some("reasoning") => {}
+        Some("message") if item["role"] == "assistant" => {
+            if let Some(parts) = item.get("content") {
+                let mut text_bytes = 0usize;
+                for part in parts
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("invalid provider content"))?
+                {
+                    if part["type"] != "output_text" {
+                        bail!("provider returned non-text or refusal output");
+                    }
+                    let text = part["text"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("provider text missing"))?;
+                    if text.len() > EXECUTION_TEXT_LIMIT - text_bytes {
+                        bail!("provider output exceeds text limit");
+                    }
+                    text_bytes += text.len();
+                }
+            }
+        }
+        _ => bail!("provider returned non-assistant or non-message output"),
+    }
+    check_execution_responses_value(item)
+}
+
+fn execution_responses_completion(value: &Value) -> Result<ExecutionCompletion> {
+    check_execution_responses_value(value)?;
+    if value["status"] != "completed" {
+        bail!("provider response is not completed");
+    }
+    let model = value["model"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("provider did not identify actual model"))?;
+    let output = value["output"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("provider output missing"))?;
+    let mut messages = output.iter().filter(|item| item["type"] == "message");
+    let message = messages
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("provider assistant output missing"))?;
+    if messages.next().is_some() {
+        bail!("expected one completed assistant message");
+    }
+    let text = execution_assistant_text(message)?;
+    Ok(ExecutionCompletion {
+        text,
+        model: model.to_owned(),
+    })
+}
+
+fn execution_assistant_text(message: &Value) -> Result<String> {
+    check_execution_responses_item(message)?;
+    if message["type"] != "message" || message["status"] != "completed" {
+        bail!("expected one completed assistant message");
+    }
+    let mut text = String::new();
+    for part in message["content"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("provider content missing"))?
+    {
+        let piece = part["text"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("provider text missing"))?;
+        if piece.len() > EXECUTION_TEXT_LIMIT - text.len() {
+            bail!("provider output exceeds text limit");
+        }
+        text.push_str(piece);
+    }
+    if text.is_empty() {
+        bail!("provider text missing");
+    }
+    Ok(text)
+}
+
+#[derive(Default)]
+struct ExecutionAssistantStream {
+    item_id: Option<String>,
+    output_index: Option<u64>,
+    content_index: Option<u64>,
+    added: bool,
+    done: bool,
+    text: String,
+    has_deltas: bool,
+    text_done: bool,
+    item_text: Option<String>,
+    part_text: Option<String>,
+}
+
+impl ExecutionAssistantStream {
+    fn identify(&mut self, event: &Value, item: Option<&Value>) -> Result<()> {
+        for value in [event.get("item_id"), item.and_then(|item| item.get("id"))]
+            .into_iter()
+            .flatten()
+        {
+            let id = value
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("invalid provider item identity"))?;
+            if self.item_id.as_ref().is_some_and(|known| known != id) {
+                bail!("provider returned multiple or mismatched assistant items");
+            }
+            self.item_id = Some(id.to_owned());
+        }
+        for (key, known) in [
+            ("output_index", &mut self.output_index),
+            ("content_index", &mut self.content_index),
+        ] {
+            if let Some(value) = event.get(key) {
+                let index = value
+                    .as_u64()
+                    .ok_or_else(|| anyhow::anyhow!("invalid provider output index"))?;
+                if known.is_some_and(|known| known != index) {
+                    bail!("provider returned multiple or mismatched assistant text streams");
+                }
+                *known = Some(index);
+            }
+        }
+        Ok(())
+    }
+
+    fn check_text(&self, text: &str, complete: bool) -> Result<()> {
+        if self.item_text.as_ref().is_some_and(|known| known != text)
+            || self.part_text.as_ref().is_some_and(|known| known != text)
+            || (self.text_done && self.text != text)
+            || (self.has_deltas
+                && if complete {
+                    self.text != text
+                } else {
+                    !text.starts_with(&self.text)
+                })
+        {
+            bail!("provider returned conflicting assistant text");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ExecutionResponsesParser {
+    json: Option<bool>,
+    pending: Vec<u8>,
+    data: Vec<String>,
+    event_name: Option<String>,
+    consumed_bytes: usize,
+    assistant: ExecutionAssistantStream,
+}
+
+impl ExecutionResponsesParser {
+    fn push(&mut self, bytes: &[u8]) -> Result<Option<ExecutionCompletion>> {
+        for &byte in bytes {
+            if self.consumed_bytes == EXECUTION_BODY_LIMIT {
+                bail!("provider response exceeds transport limit");
+            }
+            self.consumed_bytes += 1;
+            if self.json.is_none() && !byte.is_ascii_whitespace() {
+                self.json = Some(byte == b'{');
+            }
+            if self.json == Some(true) || byte != b'\n' {
+                self.pending.push(byte);
+                continue;
+            }
+            let bytes = std::mem::take(&mut self.pending);
+            let line = std::str::from_utf8(&bytes)
+                .map_err(|_| anyhow::anyhow!("invalid provider stream event"))?;
+            if let Some(completion) = self.line(line.strip_suffix('\r').unwrap_or(line))? {
+                return Ok(Some(completion));
+            }
+        }
+        Ok(None)
+    }
+
+    fn line(&mut self, line: &str) -> Result<Option<ExecutionCompletion>> {
+        if !line.is_empty() {
+            if let Some(value) = line.strip_prefix("data:") {
+                self.data
+                    .push(value.strip_prefix(' ').unwrap_or(value).to_owned());
+            } else if let Some(value) = line.strip_prefix("event:") {
+                self.event_name = Some(value.trim().to_owned());
+            }
+            return Ok(None);
+        }
+        if self.data.is_empty() {
+            self.event_name = None;
+            return Ok(None);
+        }
+        let payload = self.data.join("\n");
+        self.data.clear();
+        if payload == "[DONE]" {
+            self.event_name = None;
+            return Ok(None);
+        }
+        let event: Value = serde_json::from_str(&payload)
+            .map_err(|_| anyhow::anyhow!("invalid provider stream event"))?;
+        let kind = event["type"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("provider event type missing"))?;
+        if self.event_name.take().is_some_and(|name| name != kind) {
+            bail!("provider event type mismatch");
+        }
+        check_execution_responses_value(&event)?;
+        match kind {
+            "response.completed" => {
+                let mut response = event["response"].clone();
+                // Some Codex terminals omit output already streamed. Only an
+                // explicitly empty snapshot may use independently validated text.
+                if response["output"].as_array().is_some_and(Vec::is_empty) {
+                    let text = self
+                        .assistant
+                        .item_text
+                        .as_deref()
+                        .or_else(|| {
+                            (self.assistant.has_deltas || self.assistant.text_done)
+                                .then_some(self.assistant.text.as_str())
+                        })
+                        .filter(|text| !text.is_empty())
+                        .ok_or_else(|| anyhow::anyhow!("provider assistant output missing"))?;
+                    response["output"] = json!([{"type": "message", "role": "assistant", "status": "completed",
+                        "content": [{"type": "output_text", "text": text}]}]);
+                } else if let Some(output) = response["output"].as_array() {
+                    for (index, item) in output
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, item)| item["type"] == "message")
+                    {
+                        self.assistant
+                            .identify(&json!({"output_index": index}), Some(item))?;
+                    }
+                }
+                let completion = execution_responses_completion(&response)?;
+                self.assistant.check_text(&completion.text, false)?;
+                return Ok(Some(completion));
+            }
+            "response.output_item.added" | "response.output_item.done" => {
+                let item = &event["item"];
+                check_execution_responses_item(item)?;
+                if item["type"] == "message" {
+                    self.assistant.identify(&event, Some(item))?;
+                    if kind == "response.output_item.added" {
+                        if self.assistant.added
+                            || self.assistant.done
+                            || self.assistant.has_deltas
+                            || self.assistant.text_done
+                        {
+                            bail!("provider returned multiple assistant items");
+                        }
+                        self.assistant.added = true;
+                    } else {
+                        if self.assistant.done {
+                            bail!("provider returned multiple completed assistant items");
+                        }
+                        let text = execution_assistant_text(item)?;
+                        self.assistant.check_text(&text, true)?;
+                        self.assistant.item_text = Some(text);
+                        self.assistant.done = true;
+                    }
+                }
+            }
+            "response.content_part.added" | "response.content_part.done" => {
+                if event["part"]["type"] != "output_text"
+                    || event["part"]["text"]
+                        .as_str()
+                        .is_none_or(|text| text.len() > EXECUTION_TEXT_LIMIT)
+                {
+                    bail!("provider returned non-text or refusal output");
+                }
+                self.assistant.identify(&event, None)?;
+                if kind == "response.content_part.done" {
+                    let text = event["part"]["text"].as_str().unwrap();
+                    self.assistant.check_text(text, true)?;
+                    self.assistant.part_text = Some(text.to_owned());
+                }
+            }
+            "response.output_text.delta" => {
+                let delta = event["delta"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("invalid provider text delta"))?;
+                self.assistant.identify(&event, None)?;
+                if self.assistant.text_done
+                    || self.assistant.done
+                    || self.assistant.part_text.is_some()
+                {
+                    bail!("provider returned text after assistant text completed");
+                }
+                if delta.len() > EXECUTION_TEXT_LIMIT - self.assistant.text.len() {
+                    bail!("provider output exceeds text limit");
+                }
+                self.assistant.text.push_str(delta);
+                self.assistant.has_deltas = true;
+            }
+            "response.output_text.done" => {
+                if event["text"]
+                    .as_str()
+                    .is_none_or(|s| s.len() > EXECUTION_TEXT_LIMIT)
+                {
+                    bail!("provider output missing or exceeds text limit");
+                }
+                self.assistant.identify(&event, None)?;
+                let text = event["text"].as_str().unwrap();
+                self.assistant.check_text(text, true)?;
+                self.assistant.text = text.to_owned();
+                self.assistant.text_done = true;
+            }
+            "response.created"
+            | "response.in_progress"
+            | "response.queued"
+            | "response.metadata" => {}
+            // Codex can stream reasoning metadata alongside the assistant text.
+            "response.reasoning_summary_part.added"
+            | "response.reasoning_summary_part.done"
+            | "response.reasoning_summary_text.delta"
+            | "response.reasoning_summary_text.done"
+            | "response.reasoning_text.delta"
+            | "response.reasoning_text.done" => {}
+            _ => {
+                let safe_kind = if kind.starts_with("response.")
+                    && kind.len() <= 128
+                    && kind
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || matches!(ch, '.' | '_'))
+                {
+                    kind
+                } else {
+                    "unrecognized"
+                };
+                bail!("provider returned failed, incomplete, or unsupported stream event: {safe_kind}");
+            }
+        }
+        Ok(None)
+    }
+
+    fn finish(self) -> Result<ExecutionCompletion> {
+        if self.json == Some(true) {
+            let value: Value = serde_json::from_slice(&self.pending)
+                .map_err(|_| anyhow::anyhow!("invalid provider response"))?;
+            return execution_responses_completion(&value);
+        }
+        // Only a blank-line dispatch can establish completion, never EOF or a
+        // partial event, even when its JSON payload is otherwise complete.
+        bail!("provider stream ended without response.completed")
+    }
+}
+
+#[cfg(test)]
+fn parse_execution_responses(bytes: &[u8]) -> Result<ExecutionCompletion> {
+    let mut parser = ExecutionResponsesParser::default();
+    match parser.push(bytes)? {
+        Some(completion) => Ok(completion),
+        None => parser.finish(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -261,8 +963,43 @@ async fn sleep_for_retry_attempt(attempt: u64) {
     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 }
 
+impl OpenAiClient {
+    async fn complete_execution_inner(
+        &self,
+        request: ModelRequest,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<ExecutionCompletion> {
+        let key = match &self.auth {
+            OpenAiAuth::ApiKey(key) => key,
+            OpenAiAuth::OAuth(oauth) => return execution_oauth(request, oauth, deadline).await,
+        };
+        let model = normalize_openai_model(&request.model);
+        execution_chat(
+            execution_http_client()?
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(key),
+            request,
+            &model,
+            deadline,
+        )
+        .await
+    }
+}
+
 #[async_trait]
 impl ModelClient for OpenAiClient {
+    async fn complete_execution(&self, request: ModelRequest) -> Result<ExecutionCompletion> {
+        self.complete_execution_inner(request, None).await
+    }
+
+    async fn complete_execution_until(
+        &self,
+        request: ModelRequest,
+        deadline: tokio::time::Instant,
+    ) -> Result<ExecutionCompletion> {
+        self.complete_execution_inner(request, Some(deadline)).await
+    }
+
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
         match &self.auth {
             OpenAiAuth::ApiKey(api_key) => self.complete_chat_completions(request, api_key).await,
@@ -271,8 +1008,41 @@ impl ModelClient for OpenAiClient {
     }
 }
 
+impl CopilotClient {
+    async fn complete_execution_inner(
+        &self,
+        request: ModelRequest,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<ExecutionCompletion> {
+        let model = normalize_copilot_model(&request.model);
+        execution_chat(
+            execution_http_client()?
+                .post(&self.endpoint)
+                .bearer_auth(&self.token)
+                .header(reqwest::header::USER_AGENT, "djinn-agent")
+                .header("Copilot-Integration-Id", "djinn-agent"),
+            request,
+            &model,
+            deadline,
+        )
+        .await
+    }
+}
+
 #[async_trait]
 impl ModelClient for CopilotClient {
+    async fn complete_execution(&self, request: ModelRequest) -> Result<ExecutionCompletion> {
+        self.complete_execution_inner(request, None).await
+    }
+
+    async fn complete_execution_until(
+        &self,
+        request: ModelRequest,
+        deadline: tokio::time::Instant,
+    ) -> Result<ExecutionCompletion> {
+        self.complete_execution_inner(request, Some(deadline)).await
+    }
+
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
         let mut body = json!({
             "model": normalize_copilot_model(&request.model),

@@ -8,6 +8,8 @@ export interface Args {
   sessionID?: string
   fork?: boolean
   auto?: boolean
+  // Internal compact live-attach contract, ordinary text only (not shell/slash).
+  backgroundPrompt?: boolean
   djinnTab?: "chat" | "sessions" | "memories" | "suggestions" | "skills" | "tools"
 }
 

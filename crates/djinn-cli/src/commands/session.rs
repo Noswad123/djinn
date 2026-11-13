@@ -46,6 +46,7 @@ fn run_session_command(command: SessionCommand) -> Result<()> {
         SessionCommand::Init(args) => session_init(args),
         SessionCommand::Run(args) => session_run(args),
         SessionCommand::Chat(args) => session_chat(args),
+        SessionCommand::Float(args) => crate::ui::live_attach::session_float(args),
         SessionCommand::Consolidate(args) => session_consolidate(args),
         SessionCommand::AdoptUi(args) => session_adopt_ui(args),
         SessionCommand::Watch(args) => session_watch(args),

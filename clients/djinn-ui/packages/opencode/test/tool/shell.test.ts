@@ -1112,7 +1112,7 @@ describe("tool.shell abort", () => {
         const updates: string[] = []
         const result = yield* run(
           {
-            command: `echo first && sleep 0.1 && echo second`,
+            command: `echo first && sleep 0.1 && echo second && sleep 0.7`,
           },
           {
             ...ctx,
@@ -1126,12 +1126,126 @@ describe("tool.shell abort", () => {
         expect(result.output).toContain("first")
         expect(result.output).toContain("second")
         expect(updates.length).toBeGreaterThan(1)
+        expect(updates.at(-1)).toContain("second")
       }),
     ),
   )
 })
 
 describe("tool.shell truncation", () => {
+  const posix = process.platform !== "win32" ? it.live : it.live.skip
+
+  posix(
+    "drains the complete spill when cancellation must escalate past ignored TERM",
+    () =>
+      Effect.gen(function* () {
+        const tmp = yield* tmpdirScoped()
+        yield* runIn(
+          tmp,
+          Effect.gen(function* () {
+            const controller = new AbortController()
+            const updates: string[] = []
+            const result = yield* run(
+              {
+                command: `trap '' TERM; ${fill("bytes", 400_000)}; printf cancellation-ready; sleep 30`,
+              },
+              {
+                ...ctx,
+                abort: controller.signal,
+                metadata: (input) =>
+                  Effect.sync(() => {
+                    const output = input.metadata?.output
+                    if (typeof output !== "string") return
+                    updates.push(output)
+                    if (output.includes("cancellation-ready")) controller.abort()
+                  }),
+              },
+            )
+            expect(controller.signal.aborted).toBe(true)
+            expect(result.output).toContain("User aborted the command")
+            expect(result.output).toContain("cancellation-ready")
+            const saved = yield* Effect.promise(() => Bun.file(result.metadata.outputPath!).text())
+            expect(saved).toBe("a".repeat(400_000) + "cancellation-ready")
+            const count = updates.length
+            yield* Effect.sleep("600 millis")
+            expect(updates.length).toBe(count)
+          }),
+        )
+      }),
+    15_000,
+  )
+
+  each("preserves the complete spill when a portable child is cancelled", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      yield* runIn(
+        tmp,
+        Effect.gen(function* () {
+          const controller = new AbortController()
+          const code =
+            "process.stdout.write(String.fromCharCode(97).repeat(400000)+String.fromCharCode(114,101,97,100,121));setInterval(()=>{},1000)"
+          const result = yield* run(
+            { command: `${PS.has(sh()) ? "& " : ""}${bin} -e ${evalarg(code)}` },
+            {
+              ...ctx,
+              abort: controller.signal,
+              metadata: (input) =>
+                Effect.sync(() => {
+                  const output = input.metadata?.output
+                  if (typeof output === "string" && output.endsWith("ready")) controller.abort()
+                }),
+            },
+          )
+          expect(controller.signal.aborted).toBe(true)
+          expect(result.metadata.truncated).toBe(true)
+          expect(result.output).toContain("User aborted the command")
+          expect(result.output).toContain("ready")
+          const saved = yield* Effect.promise(() => Bun.file(result.metadata.outputPath!).text())
+          expect(saved).toBe("a".repeat(400_000) + "ready")
+        }),
+      )
+    }),
+  )
+
+  it.live("bounds checkpoint growth and preserves the complete spill on failure", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      yield* runIn(
+        tmp,
+        Effect.gen(function* () {
+          const updates: Array<{ time: number; output: string }> = []
+          const code =
+            "for(let i=0;i<100;i++)process.stdout.write(String.fromCharCode(97).repeat(8000));process.exitCode=7"
+          const result = yield* run(
+            {
+              command: `${PS.has(sh()) ? "& " : ""}${bin} -e ${evalarg(code)}`,
+            },
+            {
+              ...ctx,
+              metadata: (input) =>
+                Effect.sync(() => {
+                  const output = input.metadata?.output
+                  if (typeof output === "string" && output) updates.push({ time: performance.now(), output })
+                }),
+            },
+          )
+          expect(result.metadata.exit).toBe(7)
+          expect(result.metadata.truncated).toBe(true)
+          const saved = yield* Effect.promise(() => Bun.file(result.metadata.outputPath!).text())
+          expect(saved).toBe("a".repeat(800_000))
+          expect(updates.length).toBeGreaterThan(0)
+          for (const [i, update] of updates.entries()) {
+            expect(Buffer.byteLength(update.output)).toBeLessThanOrEqual(30_000)
+            if (i) expect(update.time - updates[i - 1].time).toBeGreaterThanOrEqual(245)
+          }
+          expect(updates.reduce((size, update) => size + Buffer.byteLength(update.output), 0)).toBeLessThanOrEqual(
+            updates.length * 30_000,
+          )
+        }),
+      )
+    }),
+  )
+
   it.live("truncates output exceeding line limit", () =>
     runIn(
       projectRoot,

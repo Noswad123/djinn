@@ -132,6 +132,12 @@ Djinn UI Sessions dashboard; use `djinn -s <ref>` or `djinn session <ref>` to op
 a specific folder session in the Djinn UI. `djinn --ui` is the explicit UI launch
 spelling; `djinn -b` and the clustered short form `djinn -bs <ref>` remain
 deprecated aliases for the same UI launch path.
+
+Use `djinn session float --instance X --session Y` only to attach a compact full
+chat viewer to an already-running Numen-advertised worker via Wisp. It requires
+macOS, AeroSpace and Kitty, fails closed for stale targets, and never falls back
+to normal session resume. See [Numen live attach](numen.md#open-chat-via-wisp).
+
 Use `djinn session chat <ref>` when you want the same interactive chat experience
 but prefer an explicit subcommand over `-s`. Core
 existing-session entry points (`djinn -s`, `session open`, `session status`,

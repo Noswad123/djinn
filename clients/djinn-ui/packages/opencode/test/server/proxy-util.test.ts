@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { ProxyUtil } from "../../src/server/proxy-util"
+import { Effect } from "effect"
+import { HttpClient, HttpClientResponse, HttpServerRequest } from "effect/unstable/http"
+import { HttpApiProxy } from "../../src/server/routes/instance/httpapi/middleware/proxy"
 
 describe("ProxyUtil", () => {
   describe("websocketTargetURL", () => {
@@ -49,6 +52,38 @@ describe("ProxyUtil", () => {
   })
 
   describe("headers", () => {
+    test("strips local inbound authorization and permits only explicit upstream authorization", () => {
+      const inbound = new Request("http://localhost", { headers: { Authorization: "Basic local-only" } })
+      expect(ProxyUtil.headers(inbound).has("authorization")).toBe(false)
+      expect(ProxyUtil.headers(inbound, { Authorization: "Bearer upstream-only" }).get("authorization")).toBe(
+        "Bearer upstream-only",
+      )
+      expect(inbound.headers.get("authorization")).toBe("Basic local-only")
+    })
+
+    for (const extra of [undefined, { authorization: "Bearer workspace-only" }])
+      test(`workspace HTTP proxy never forwards local Basic credentials (${extra ? "explicit target auth" : "no target auth"})`, async () => {
+        const sent: string[] = []
+        const client = HttpClient.make((request) => {
+          sent.push(request.headers.authorization ?? "")
+          return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("remote")))
+        })
+        const response = await Effect.runPromise(
+          Effect.scoped(
+            HttpApiProxy.http(
+              client,
+              "https://remote.invalid/session/status",
+              extra,
+              HttpServerRequest.fromWeb(
+                new Request("http://localhost/session/status", { headers: { authorization: "Basic local-only" } }),
+              ),
+            ),
+          ),
+        )
+        expect(response.status).toBe(200)
+        expect(sent).toEqual([extra?.authorization ?? ""])
+      })
+
     test("strips hop-by-hop headers", () => {
       const req = new Request("http://localhost", {
         headers: {

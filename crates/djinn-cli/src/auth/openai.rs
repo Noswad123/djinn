@@ -123,13 +123,11 @@ fn djinn_config_openai_auth() -> Result<Option<OpenAiAuth>> {
 
 fn djinn_auth_openai_auth() -> Result<Option<OpenAiAuth>> {
     let path = djinn_auth_path();
-    if !path.exists() {
+    let Some(content) = super::execution::read_file(&path)? else {
         return Ok(None);
-    }
-    let content = fs::read_to_string(&path)
-        .with_context(|| format!("reading Djinn auth file {}", path.display()))?;
+    };
     let Some(auth) = opencode_auth_openai_auth_from_content(&content)
-        .with_context(|| format!("parsing Djinn auth file {}", path.display()))?
+        .map_err(|_| anyhow::anyhow!("invalid Djinn OpenAI auth fields"))?
     else {
         return Ok(None);
     };
@@ -171,21 +169,22 @@ pub(crate) fn opencode_openai_api_key_from_content(content: &str) -> Result<Opti
 #[allow(dead_code)]
 pub(crate) fn opencode_auth_openai_auth() -> Result<Option<OpenAiAuth>> {
     if let Ok(content) = env::var("OPENCODE_AUTH_CONTENT") {
+        if content.len() > 1024 * 1024 {
+            bail!("OPENCODE_AUTH_CONTENT exceeds 1 MiB");
+        }
         if let Some(auth) = opencode_auth_openai_auth_from_content(&content)
-            .with_context(|| "parsing OPENCODE_AUTH_CONTENT")?
+            .map_err(|_| anyhow::anyhow!("invalid OPENCODE_AUTH_CONTENT OpenAI fields"))?
         {
             return opencode_auth_credential_to_openai_auth(auth, None).map(Some);
         }
     }
 
     let path = opencode_auth_path();
-    if !path.exists() {
+    let Some(content) = super::execution::read_file(&path)? else {
         return Ok(None);
-    }
-    let content = fs::read_to_string(&path)
-        .with_context(|| format!("reading OpenCode auth file {}", path.display()))?;
+    };
     let Some(auth) = opencode_auth_openai_auth_from_content(&content)
-        .with_context(|| format!("parsing OpenCode auth file {}", path.display()))?
+        .map_err(|_| anyhow::anyhow!("invalid OpenCode OpenAI auth fields"))?
     else {
         return Ok(None);
     };
@@ -302,53 +301,16 @@ pub(crate) fn oauth_access_token_is_current(oauth: &OpenCodeOpenAiOAuthCredentia
 #[allow(dead_code)]
 pub(crate) fn refresh_opencode_openai_oauth(
     path: &Path,
-    content: &str,
+    _content: &str,
     current: &OpenCodeOpenAiOAuthCredential,
 ) -> Result<OpenCodeOpenAiOAuthCredential> {
-    if current.refresh.is_empty() {
-        bail!("OpenCode OpenAI OAuth access token is expired and no refresh token is available");
+    if path != djinn_auth_path() {
+        return Err(super::execution::external_refresh_error());
     }
-
-    let tokens = refresh_openai_oauth_token(&current.refresh)?;
-    let account_id = extract_account_id_from_tokens(&tokens).or_else(|| current.account_id.clone());
-    let refreshed = OpenCodeOpenAiOAuthCredential {
-        access: tokens.access_token,
-        refresh: tokens.refresh_token,
-        expires: current_time_millis() + tokens.expires_in.unwrap_or(3600) * 1000,
-        account_id,
-    };
-    write_refreshed_opencode_openai_oauth(path, content, &refreshed)?;
-    Ok(refreshed)
+    super::execution::refresh_djinn_oauth_blocking(path, current)
 }
 
-#[allow(dead_code)]
-pub(crate) fn refresh_openai_oauth_token(
-    refresh_token: &str,
-) -> Result<OpenCodeOpenAiTokenResponse> {
-    let response = reqwest::blocking::Client::new()
-        .post(format!("{OPENCODE_OPENAI_OAUTH_ISSUER}/oauth/token"))
-        .header(
-            reqwest::header::CONTENT_TYPE,
-            "application/x-www-form-urlencoded",
-        )
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", OPENCODE_OPENAI_OAUTH_CLIENT_ID),
-        ])
-        .send()
-        .with_context(|| "refreshing OpenCode OpenAI OAuth token")?;
-    let status = response.status();
-    let text = response
-        .text()
-        .with_context(|| "reading OpenCode OpenAI OAuth refresh response")?;
-    if !status.is_success() {
-        bail!("OpenCode OpenAI OAuth token refresh failed ({status}): {text}");
-    }
-    serde_json::from_str(&text)
-        .with_context(|| format!("parsing OpenCode OpenAI OAuth refresh response: {text}"))
-}
-
+#[cfg(test)]
 pub(crate) fn write_refreshed_opencode_openai_oauth(
     path: &Path,
     content: &str,
@@ -381,9 +343,7 @@ pub(crate) fn write_refreshed_opencode_openai_oauth(
         openai.insert("accountId".to_string(), Value::String(account_id.clone()));
     }
 
-    let rendered = format!("{}\n", serde_json::to_string_pretty(&value)?);
-    fs::write(path, rendered)
-        .with_context(|| format!("writing OpenCode auth file {}", path.display()))
+    super::execution::write_djinn_openai_auth(path, Value::Object(openai.clone()))
 }
 
 #[allow(dead_code)]
@@ -956,26 +916,7 @@ fn write_djinn_openai_api_key(api_key: &str) -> Result<()> {
 }
 
 fn write_djinn_openai_auth_value(openai: Value) -> Result<()> {
-    let path = djinn_auth_path();
-    let mut value = if path.exists() {
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("reading Djinn auth file {}", path.display()))?;
-        serde_json::from_str(&content)
-            .with_context(|| format!("parsing Djinn auth file {}", path.display()))?
-    } else {
-        Value::Object(Map::new())
-    };
-    let Some(root) = value.as_object_mut() else {
-        bail!("Djinn auth file root must be a JSON object");
-    };
-    root.insert("openai".to_string(), openai);
-
-    djinn_core::ensure_parent(&path)?;
-    let rendered = format!("{}\n", serde_json::to_string_pretty(&value)?);
-    fs::write(&path, rendered)
-        .with_context(|| format!("writing Djinn auth file {}", path.display()))?;
-    set_owner_only_permissions(&path)?;
-    Ok(())
+    super::execution::write_djinn_openai_auth(&djinn_auth_path(), openai)
 }
 
 fn read_secret_line(prompt: &str) -> Result<String> {
@@ -1039,20 +980,6 @@ pub(crate) fn djinn_auth_path() -> PathBuf {
 
 fn oauth_user_agent() -> String {
     format!("djinn/{}", env!("CARGO_PKG_VERSION"))
-}
-
-#[cfg(unix)]
-fn set_owner_only_permissions(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let permissions = fs::Permissions::from_mode(0o600);
-    fs::set_permissions(path, permissions)
-        .with_context(|| format!("setting permissions for {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_owner_only_permissions(_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
