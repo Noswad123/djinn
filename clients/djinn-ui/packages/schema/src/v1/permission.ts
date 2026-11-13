@@ -63,4 +63,8 @@ const Replied = define({
   type: "permission.replied",
   schema: { sessionID: SessionID, requestID: ID, reply: Reply },
 })
-export const Event = { Asked, Replied, Definitions: inventory(Asked, Replied) }
+const Cancelled = define({
+  type: "permission.cancelled",
+  schema: { sessionID: SessionID, requestID: ID },
+})
+export const Event = { Asked, Replied, Cancelled, Definitions: inventory(Asked, Replied, Cancelled) }

@@ -9,6 +9,34 @@ contexts into one practical workflow.
 Djinn owns native execution and policy, with no core dependency on Coven or
 Kitsune; optional integration starts with observing/grouping existing sessions.
 
+The optional [normal-invocation workflow](../coven/docs/NORMAL_AGENT_WORKFLOW.md)
+keeps `djinn` invocation unchanged. With compatible Coven/Kit builds, review and
+explicitly apply the one-time setup:
+
+```sh
+coven integration plan
+coven integration enable --apply
+```
+
+Restart Kit, open new panes, select **Coven** in Integrations, then run `djinn`
+normally. Use an updated native legacy full-TUI **UI build**, not just the Rust
+CLI: `DJINN_UI_BIN`, a saved runtime binding or `DJINN_UI_TARGET` can still select
+an older UI. No Coven launcher, group, artifact attachment, manual workspace
+initialization or socket coordination is required. Other providers need separate
+explicit hook/extension setup; no automatic installation or native trust override
+occurs. [Setup defaults, guarded disable and recovery](../coven/docs/INTEGRATION_SETUP_CONTRACT.md)
+cover optional path overrides and manual handoff for existing unmanaged runtimes.
+
+In new external-mode panes the updated plugin sends bounded native events to the
+configured literal reporter argv, never falling back to legacy Kit reporting.
+Reporting failure does not interrupt native execution or restore legacy authority.
+Coven supplies attributed plain rows, not pane/PID/native attestation or task
+completion. Facts expire within 30 seconds independently of the five-second view
+lease; metadata/repaint do not renew them. Helper crashes need diagnosis/manual
+recovery, not self-healing; disable requires a restart ownership handoff. Mini,
+external attach, remote and v2 paths, actual provider emission qualification,
+complete migration and native macOS qualification are not claimed by this setup.
+
 Initial Kitsune observation, explicit participant groups/display roles, and a
 foreground generic-annotation publisher are implemented in Coven; optional
 [contract/quick start](../coven/GROUPS_CONTRACT.md), not a Djinn dependency. Only the

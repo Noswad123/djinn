@@ -58,9 +58,11 @@ export const Rejected = Schema.Struct({ sessionID: SessionID, requestID: ID }).a
 const Asked = define({ type: "question.asked", schema: Request.fields })
 const RepliedEvent = define({ type: "question.replied", schema: Replied.fields })
 const RejectedEvent = define({ type: "question.rejected", schema: Rejected.fields })
+const Cancelled = define({ type: "question.cancelled", schema: { sessionID: SessionID, requestID: ID } })
 export const Event = {
   Asked,
   Replied: RepliedEvent,
   Rejected: RejectedEvent,
-  Definitions: inventory(Asked, RepliedEvent, RejectedEvent),
+  Cancelled,
+  Definitions: inventory(Asked, RepliedEvent, RejectedEvent, Cancelled),
 }

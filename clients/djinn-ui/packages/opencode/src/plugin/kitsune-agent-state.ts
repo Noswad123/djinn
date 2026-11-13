@@ -29,6 +29,15 @@ const SESSION_STATE_BY_STATUS = new Map([
 ])
 
 export const KitsuneAgentStatePlugin: PluginInstance = async () => {
+  if (process.env.KITSUNE_AGENT_MANAGEMENT === "external") {
+    const { createNativeEventReporter } = await import("../coven/native-event-reporter")
+    const reporter = createNativeEventReporter()
+    return {
+      event: async ({ event }) => reporter.event(event),
+      dispose: reporter.dispose,
+    }
+  }
+
   if (process.env.KITSUNE_ENV !== "1" || !process.env.KITSUNE_SOCKET_PATH || !process.env.KITSUNE_PANE_ID) {
     return {}
   }

@@ -54,6 +54,10 @@ const layer = Layer.effect(
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             for (const item of state.pending.values()) {
+              state.pending.delete(item.info.id)
+              yield* events
+                .publish(Event.Cancelled, { sessionID: item.info.sessionID, requestID: item.info.id })
+                .pipe(Effect.catchCause(() => Effect.void))
               yield* Deferred.fail(item.deferred, new PermissionV1.RejectedError())
             }
             state.pending.clear()
@@ -96,12 +100,19 @@ const layer = Layer.effect(
       yield* Effect.logInfo("asking", { id, permission: info.permission, patterns: info.patterns })
 
       const deferred = yield* Deferred.make<void, PermissionV1.RejectedError | PermissionV1.CorrectedError>()
-      pending.set(id, { info, deferred })
-      yield* events.publish(Event.Asked, info)
-      return yield* Effect.ensuring(
-        Deferred.await(deferred),
-        Effect.sync(() => {
-          pending.delete(id)
+      // Register cleanup before restoring interruption of the native wait.
+      return yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          pending.set(id, { info, deferred })
+          return yield* Effect.ensuring(
+            events.publish(Event.Asked, info).pipe(Effect.andThen(restore(Deferred.await(deferred)))),
+            Effect.gen(function* () {
+              if (pending.get(id)?.deferred !== deferred || !pending.delete(id)) return
+              yield* events
+                .publish(Event.Cancelled, { sessionID: info.sessionID, requestID: id })
+                .pipe(Effect.catchCause(() => Effect.void))
+            }),
+          )
         }),
       )
     })
