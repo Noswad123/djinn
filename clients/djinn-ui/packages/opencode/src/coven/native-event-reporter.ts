@@ -16,6 +16,11 @@ const DECISIONS = new Set([
   "question.cancelled",
 ])
 
+export function nativeEventType(input: unknown) {
+  const type = record(input)?.type
+  if (typeof type === "string" && (LIFECYCLE.has(type) || type === "session.status" || DECISIONS.has(type))) return type
+}
+
 // This boundary deliberately knows nothing about endpoints, panes, or SDK clients.
 export function createNativeEventReporter(env: NodeJS.ProcessEnv = process.env, now = () => performance.now()) {
   const command = reportCommand(env.KITSUNE_INTEGRATION_REPORT_COMMAND)
@@ -67,25 +72,56 @@ export function createNativeEventReporter(env: NodeJS.ProcessEnv = process.env, 
     }
   }
 
+  function retire() {
+    // Deleted identities are fenced for 60s; live roots and children never expire.
+    // Retirement is lazy, requires drained transport, and never admits activity without new metadata.
+    for (const [id, session] of sessions) {
+      if (session.retireAt === undefined || session.retireAt > now()) continue
+      if (active?.session === id || queue.some((item) => item.session === id)) continue
+      sessions.delete(id)
+    }
+  }
+
   return {
-    event(input: unknown) {
+    metadataNeeded(input: unknown) {
       if (disposed || !command) return
       const event = record(input)
-      const type = event?.type
-      if (typeof type !== "string" || (!LIFECYCLE.has(type) && type !== "session.status" && !DECISIONS.has(type)))
-        return
+      if (event?.type !== "session.status" && !DECISIONS.has(String(event?.type))) return
+      retire()
+      if (sessions.size >= 256) return
+      const id = identifier(record(event?.properties)?.sessionID)
+      return id && !sessions.has(id) ? id : undefined
+    },
+    registerMetadata(sessionID: string, input: unknown) {
+      if (disposed || !command || !identifier(sessionID)) return false
+      const info = record(input)
+      if (!info || info.id !== sessionID || (info.sessionID !== undefined && info.sessionID !== sessionID)) return false
+      if (info.parentID !== undefined && info.parentID !== null && !identifier(info.parentID)) return false
+      const previous = sessions.get(sessionID)
+      if (previous?.ended || (!previous && sessions.size >= 256)) return false
+      if (!previous) sessions.set(sessionID, { child: info.parentID != null, requests: new Set() })
+      if (previous && info.parentID != null) {
+        previous.child = true
+        previous.requests.clear()
+        for (let i = queue.length - 1; i >= 0; i--) {
+          if (queue[i]!.session === sessionID) queue.splice(i, 1)
+        }
+      }
+      return true
+    },
+    event(input: unknown, arrival = now()) {
+      if (disposed || !command) return
+      const event = record(input)
+      const type = nativeEventType(input)
+      if (!type) return
+      const stale = now() - arrival >= LIMIT
+      if (stale && type !== "session.deleted") return
       const properties = record(event?.properties)
       if (!properties) return
       const info = LIFECYCLE.has(type) ? record(properties.info) : undefined
       const sessionID = identifier(info ? info.id : properties.sessionID)
       if (!sessionID) return
-      // Deleted identities are fenced for 60s; live roots and children never expire.
-      // Retirement is lazy, requires drained transport, and never admits activity without new metadata.
-      for (const [id, session] of sessions) {
-        if (session.retireAt === undefined || session.retireAt > now()) continue
-        if (active?.session === id || queue.some((item) => item.session === id)) continue
-        sessions.delete(id)
-      }
+      retire()
       if (LIFECYCLE.has(type)) {
         if (!info || (properties.sessionID !== undefined && properties.sessionID !== sessionID)) return
         if (info.sessionID !== undefined && info.sessionID !== sessionID) return
@@ -114,11 +150,22 @@ export function createNativeEventReporter(env: NodeJS.ProcessEnv = process.env, 
           return
         }
         // Deletion alone cannot establish a root. Never evict into unknown-root admission.
-        if (!previous && (type === "session.deleted" || sessions.size >= 256)) return
+        if (!previous && type === "session.deleted") {
+          if (sessions.size < 256)
+            sessions.set(sessionID, { child: false, ended: true, retireAt: now() + RETENTION, requests: new Set() })
+          return
+        }
+        if (!previous && sessions.size >= 256) return
         if (!previous) sessions.set(sessionID, { child: false, requests: new Set() })
       }
       const session = sessions.get(sessionID)
       if (!session || session.child || session.ended) return
+      if (stale) {
+        session.ended = true
+        session.retireAt = now() + RETENTION
+        session.requests.clear()
+        return
+      }
       const extra: { status?: string; request_id?: string } = {}
       if (type === "session.status") {
         const status = typeof properties.status === "string" ? properties.status : record(properties.status)?.type
@@ -148,7 +195,7 @@ export function createNativeEventReporter(env: NodeJS.ProcessEnv = process.env, 
           ...extra,
         }) + "\n"
       // At most 32 waiting observations, in addition to the single active child.
-      if (queue.length < 32) queue.push({ payload, session: sessionID, time: now() })
+      if (queue.length < 32) queue.push({ payload, session: sessionID, time: arrival })
       // Fence late events during retention, including lifecycle metadata.
       if (type === "session.deleted") {
         session.ended = true

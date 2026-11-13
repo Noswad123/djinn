@@ -5,7 +5,8 @@ import os from "node:os"
 import path from "node:path"
 import { KitsuneAgentStatePlugin } from "../../src/plugin/kitsune-agent-state"
 import { createNativeEventReporter } from "../../src/coven/native-event-reporter"
-import type { Hooks } from "@opencode-ai/plugin"
+import { createNativeEventAdapter } from "../../src/plugin/native-event-adapter"
+import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import { Effect, Fiber, Queue } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -17,7 +18,7 @@ import { SessionStatus } from "../../src/session/status"
 import { SessionID } from "../../src/session/schema"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceStore } from "../../src/project/instance-store"
-import { testEffect } from "../lib/effect"
+import { testEffect, testEffectShared } from "../lib/effect"
 
 const fixture = path.join(import.meta.dir, "fixtures/native-reporter.mjs")
 type Receipt = { pid: number; input: Record<string, unknown>; literal: string }
@@ -42,12 +43,24 @@ async function harness(mode = "ok") {
       reporters.push(reporter)
       return reporter
     },
-    async plugin() {
+    adapter(
+      get: (options: { path: { id: string }; signal: AbortSignal; throwOnError: true }) => Promise<unknown>,
+      now = () => 0,
+    ) {
+      const adapter = createNativeEventAdapter(
+        { client: { session: { get } } } as unknown as PluginInput,
+        { ...process.env, KITSUNE_INTEGRATION_REPORT_COMMAND: command },
+        now,
+      )
+      plugins.push({ dispose: adapter.dispose })
+      return adapter
+    },
+    async plugin(client?: PluginInput["client"]) {
       const saved = [process.env.KITSUNE_AGENT_MANAGEMENT, process.env.KITSUNE_INTEGRATION_REPORT_COMMAND]
       process.env.KITSUNE_AGENT_MANAGEMENT = "external"
       process.env.KITSUNE_INTEGRATION_REPORT_COMMAND = command
       try {
-        const plugin = await KitsuneAgentStatePlugin({} as Parameters<typeof KitsuneAgentStatePlugin>[0])
+        const plugin = await KitsuneAgentStatePlugin({ client } as PluginInput)
         plugins.push(plugin)
         return plugin
       } finally {
@@ -84,7 +97,7 @@ async function harness(mode = "ok") {
 }
 
 function event(
-  reporter: ReturnType<typeof createNativeEventReporter>,
+  reporter: Pick<ReturnType<typeof createNativeEventReporter>, "event">,
   type: string,
   properties: Record<string, unknown>,
 ) {
@@ -94,6 +107,252 @@ function event(
 function pluginEvent(plugin: Hooks, type: string, properties: Record<string, unknown>) {
   return plugin.event!({ event: { type, properties } } as Parameters<NonNullable<Hooks["event"]>>[0])
 }
+
+test("resumed status resolves metadata on demand without synthetic lifecycle or sequence", async () => {
+  await using h = await harness()
+  const calls: string[] = []
+  const adapter = h.adapter(async (options) => {
+    calls.push(options.path.id)
+    expect(options.throwOnError).toBe(true)
+    expect(options.signal).toBeInstanceOf(AbortSignal)
+    return { data: { id: options.path.id } }
+  })
+  expect(calls).toEqual([])
+  adapter.event({ type: "session.status", properties: { sessionID: "resumed", status: "busy" } })
+  const receipts = await h.wait(1)
+  expect(calls).toEqual(["resumed"])
+  expect(receipts.map((r) => r.input)).toEqual([
+    expect.objectContaining({ session_id: "resumed", event: "session.status", status: "busy", sequence: 1 }),
+  ])
+})
+
+test("silent metadata validates identity and parent, keeps children sticky and respects tracking and ended fences", async () => {
+  await using h = await harness()
+  const reporter = h.make()
+  for (const info of [undefined, {}, { id: "other" }, { id: "root", sessionID: "other" }, { id: "root", parentID: 3 }])
+    expect(reporter.registerMetadata("root", info)).toBe(false)
+  expect(reporter.registerMetadata("root", { id: "root" })).toBe(true)
+  expect(await h.receipts()).toEqual([])
+  event(reporter, "session.status", { sessionID: "root", status: "idle" })
+  expect((await h.wait(1))[0]!.input.sequence).toBe(1)
+  expect(reporter.registerMetadata("child", { id: "child", parentID: "root" })).toBe(true)
+  expect(reporter.registerMetadata("child", { id: "child" })).toBe(true)
+  event(reporter, "question.asked", { sessionID: "child", id: "q" })
+  event(reporter, "session.deleted", { info: { id: "root" } })
+  expect(reporter.registerMetadata("root", { id: "root" })).toBe(false)
+  for (let i = 0; i < 254; i++) reporter.registerMetadata(`child-${i}`, { id: `child-${i}`, parentID: "root" })
+  expect(reporter.registerMetadata("overflow", { id: "overflow" })).toBe(false)
+  await h.wait(2)
+  await reporter.dispose()
+  expect(await h.receipts()).toHaveLength(2)
+})
+
+test("lookup FIFO deduplicates concurrent ask/reply and preserves cross-session arrival order", async () => {
+  await using h = await harness()
+  const metadata = Promise.withResolvers<unknown>()
+  const calls: string[] = []
+  const adapter = h.adapter(async ({ path }) => {
+    calls.push(path.id)
+    return path.id === "root" ? metadata.promise : { data: { id: path.id, parentID: "root" } }
+  })
+  adapter.event({ type: "question.asked", properties: { sessionID: "root", id: "q" } })
+  adapter.event({ type: "session.status", properties: { sessionID: "child", status: "busy" } })
+  adapter.event({ type: "question.replied", properties: { sessionID: "root", requestID: "q" } })
+  adapter.event({ type: "session.updated", properties: { info: { id: "other" } } })
+  expect(calls).toEqual(["root"])
+  metadata.resolve({ data: { id: "root" } })
+  const receipts = await h.wait(3)
+  expect(calls).toEqual(["root", "child"])
+  expect(receipts.map((r) => [r.input.event, r.input.session_id, r.input.sequence])).toEqual([
+    ["question.asked", "root", 1],
+    ["question.replied", "root", 2],
+    ["session.updated", "other", 3],
+  ])
+})
+
+test("unsupported streaming events cannot consume the lookup FIFO or drop another root's status", async () => {
+  await using h = await harness()
+  const pending = Promise.withResolvers<unknown>()
+  const calls: string[] = []
+  const adapter = h.adapter(async ({ path }) => {
+    calls.push(path.id)
+    return path.id === "resumed" ? pending.promise : { data: { id: path.id } }
+  })
+  adapter.event({ type: "session.status", properties: { sessionID: "resumed", status: "busy" } })
+  for (let i = 0; i < 31; i++)
+    adapter.event({ type: "message.part.delta", properties: { sessionID: "resumed", delta: "text" } })
+  adapter.event({ type: "session.status", properties: { sessionID: "other-root", status: "idle" } })
+  adapter.event({ type: "question.asked", properties: { sessionID: "other-root", id: "q" } })
+  adapter.event({ type: "question.replied", properties: { sessionID: "other-root", requestID: "q" } })
+  expect(calls).toEqual(["resumed"])
+  pending.resolve({ data: { id: "resumed" } })
+  const receipts = await h.wait(4)
+  expect(calls).toEqual(["resumed", "other-root"])
+  expect(receipts.map((r) => [r.input.event, r.input.session_id, r.input.sequence])).toEqual([
+    ["session.status", "resumed", 1],
+    ["session.status", "other-root", 2],
+    ["question.asked", "other-root", 3],
+    ["question.replied", "other-root", 4],
+  ])
+})
+
+test("first resumed status retires 256 expired drained fences before checking metadata capacity", async () => {
+  await using h = await harness()
+  let clock = 0
+  const calls: string[] = []
+  const adapter = h.adapter(
+    async ({ path }) => {
+      calls.push(path.id)
+      return { data: { id: path.id } }
+    },
+    () => clock,
+  )
+  for (let i = 0; i < 256; i++) adapter.event({ type: "session.deleted", properties: { info: { id: `deleted-${i}` } } })
+  expect(calls).toEqual([])
+  expect(await h.receipts()).toEqual([])
+  clock = 60_001
+  adapter.event({ type: "session.status", properties: { sessionID: "resumed", status: "busy" } })
+  expect(calls).toEqual(["resumed"])
+  expect((await h.wait(1)).map((r) => r.input)).toEqual([
+    expect.objectContaining({ event: "session.status", session_id: "resumed", status: "busy", sequence: 1 }),
+  ])
+})
+
+test("invalid and failed metadata fail closed without retrying concurrent observations", async () => {
+  await using h = await harness()
+  let callsTotal = 0
+  for (const result of [
+    undefined,
+    {},
+    { data: {} },
+    { data: { id: "mismatch" } },
+    { data: { id: "root", parentID: "" } },
+    new Error("unavailable"),
+  ]) {
+    const pending = Promise.withResolvers<unknown>()
+    let calls = 0
+    const adapter = h.adapter(async () => {
+      calls++
+      return pending.promise
+    })
+    adapter.event({ type: "question.asked", properties: { sessionID: "root", id: "q" } })
+    adapter.event({ type: "question.replied", properties: { sessionID: "root", requestID: "q" } })
+    adapter.event({ type: "session.created", properties: { info: { id: "barrier" } } })
+    if (result instanceof Error) pending.reject(result)
+    else pending.resolve(result)
+    await h.wait(callsTotal + 1)
+    callsTotal++
+    expect(calls).toBe(1)
+    await adapter.dispose()
+  }
+  expect((await h.receipts()).every((r) => r.input.session_id === "barrier")).toBe(true)
+})
+
+test("lookup age, deletion and disposal suppress late metadata even when SDK ignores abort", async () => {
+  await using h = await harness()
+  for (const race of ["stale", "deleted", "disposed"]) {
+    let clock = 0
+    const pending = Promise.withResolvers<unknown>()
+    let signal: AbortSignal | undefined
+    const adapter = h.adapter(
+      async (options) => {
+        signal = options.signal
+        return pending.promise
+      },
+      () => clock,
+    )
+    adapter.event({ type: "question.asked", properties: { sessionID: "root", id: "q" } })
+    if (race === "stale") clock = 1900
+    if (race === "deleted") adapter.event({ type: "session.deleted", properties: { info: { id: "root" } } })
+    if (race === "disposed") await adapter.dispose()
+    if (race !== "stale") expect(signal?.aborted).toBe(true)
+    pending.resolve({ data: { id: "root" } })
+    // A lifecycle barrier drains behind the old lookup without depending on a sleep.
+    if (race !== "disposed") {
+      adapter.event({ type: "session.created", properties: { info: { id: race } } })
+      await h.wait(race === "stale" ? 1 : 2)
+      adapter.event({ type: "question.replied", properties: { sessionID: "root", requestID: "q" } })
+    }
+    await adapter.dispose()
+  }
+  expect((await h.receipts()).map((r) => r.input.session_id)).toEqual(["stale", "deleted"])
+})
+
+test("lookup timeout releases bounded FIFO without registering metadata or retrying", async () => {
+  await using h = await harness()
+  let signal: AbortSignal | undefined
+  let calls = 0
+  const adapter = h.adapter(async (options) => {
+    calls++
+    signal = options.signal
+    return new Promise(() => {})
+  })
+  adapter.event({ type: "session.status", properties: { sessionID: "root", status: "busy" } })
+  for (let i = 0; i < 80; i++) adapter.event({ type: "session.created", properties: { info: { id: `queued-${i}` } } })
+  adapter.event({ type: "session.deleted", properties: { info: { id: "overflow-deletion" } } })
+  await h.wait(31)
+  expect(signal?.aborted).toBe(true)
+  adapter.event({ type: "session.status", properties: { sessionID: "overflow-deletion", status: "busy" } })
+  adapter.event({ type: "session.created", properties: { info: { id: "barrier" } } })
+  await h.wait(32)
+  expect(calls).toBe(1)
+  await adapter.dispose()
+  expect(await h.receipts()).toHaveLength(32)
+})
+
+test("deletion preserves unrelated arrival order and a stale deletion still fences metadata", async () => {
+  await using h = await harness()
+  let clock = 0
+  const pending = Promise.withResolvers<unknown>()
+  const adapter = h.adapter(
+    async () => pending.promise,
+    () => clock,
+  )
+  adapter.event({ type: "session.created", properties: { info: { id: "deleted" } } })
+  await h.wait(1)
+  adapter.event({ type: "session.status", properties: { sessionID: "resumed", status: "busy" } })
+  adapter.event({ type: "session.deleted", properties: { info: { id: "deleted" } } })
+  pending.resolve({ data: { id: "resumed" } })
+  expect((await h.wait(3)).map((r) => [r.input.event, r.input.session_id])).toEqual([
+    ["session.created", "deleted"],
+    ["session.status", "resumed"],
+    ["session.deleted", "deleted"],
+  ])
+  const reporter = h.make(() => clock)
+  reporter.registerMetadata("root", { id: "root" })
+  clock = 1900
+  reporter.event({ type: "session.deleted", properties: { info: { id: "root" } } }, 0)
+  expect(reporter.registerMetadata("root", { id: "root" })).toBe(false)
+  event(reporter, "session.status", { sessionID: "root", status: "busy" })
+  await reporter.dispose()
+  await adapter.dispose()
+  expect(await h.receipts()).toHaveLength(3)
+})
+
+test("missing or malformed native route never starts metadata lookup", async () => {
+  let calls = 0
+  for (const route of [undefined, "invalid", "[]", '["relative"]']) {
+    const adapter = createNativeEventAdapter(
+      {
+        client: {
+          session: {
+            get: async () => {
+              calls++
+              return { data: { id: "root" } }
+            },
+          },
+        },
+      } as unknown as PluginInput,
+      { KITSUNE_INTEGRATION_REPORT_COMMAND: route },
+    )
+    try {
+      adapter.event({ type: "session.status", properties: { sessionID: "root", status: "busy" } })
+    } finally {
+      await adapter.dispose()
+    }
+  }
+  expect(calls).toBe(0)
+})
 
 test("normal plugin invocation emits only the closed native contract without wrapper or Kit environment", async () => {
   await using h = await harness()
@@ -222,6 +481,9 @@ test("ended root and child fences retire after 60 seconds only after reports dra
   event(reporter, "session.deleted", { info: { id: "root" } })
   // Even past retention, deletion cannot be retired while it is still queued.
   clock = 60_001
+  expect(
+    reporter.metadataNeeded({ type: "session.status", properties: { sessionID: "root", status: "busy" } }),
+  ).toBeUndefined()
   event(reporter, "session.updated", { info: { id: "root" } })
   // The old queued deletion is stale, so use another observation as a drain barrier.
   event(reporter, "session.created", { info: { id: "barrier" } })
@@ -391,6 +653,85 @@ const native = testEffect(
   LayerNode.compile(
     LayerNode.group([Question.node, Permission.node, SessionStatus.node, EventV2Bridge.node, CrossSpawnSpawner.node]),
   ),
+)
+
+testEffectShared(
+  LayerNode.compile(LayerNode.group([SessionStatus.node, EventV2Bridge.node, CrossSpawnSpawner.node])),
+).instance(
+  "saved root and child resolve through the real legacy SDK while only live root statuses report",
+  () =>
+    Effect.gen(function* () {
+      const { createOpencodeClient } = yield* Effect.promise(() => import("@opencode-ai/sdk"))
+      const { Server } = yield* Effect.promise(() => import("../../src/server/server"))
+      const h = yield* Effect.acquireRelease(
+        Effect.promise(() => harness()),
+        (h) => Effect.promise(() => h[Symbol.asyncDispose]()),
+      )
+      const ctx = yield* InstanceRef
+      if (!ctx) return yield* Effect.die("missing SDK integration instance")
+      const requests: string[] = []
+      const client = createOpencodeClient({
+        baseUrl: "http://test",
+        directory: ctx.directory,
+        fetch: async (request) => {
+          requests.push(new URL(request.url).pathname)
+          return Server.Default().app.fetch(request)
+        },
+      })
+      yield* Effect.addFinalizer(() => Effect.promise(() => client.instance.dispose({ throwOnError: true })))
+      const root = (yield* Effect.promise(() =>
+        client.session.create({ body: { title: "Saved root" }, throwOnError: true }),
+      )).data
+      const child = (yield* Effect.promise(() =>
+        client.session.create({ body: { parentID: root.id, title: "Saved child" }, throwOnError: true }),
+      )).data
+      requests.length = 0
+      const plugin = yield* Effect.promise(() => h.plugin(client))
+      expect(requests).toEqual([])
+      const events = yield* EventV2Bridge.Service
+      const observed: string[] = []
+      const off = yield* events.listen((event) =>
+        Effect.sync(() => {
+          if (event.location?.directory !== ctx.directory) return
+          observed.push(event.type)
+          void plugin.event?.({ event: { type: event.type, properties: event.data } } as Parameters<
+            NonNullable<Hooks["event"]>
+          >[0])
+        }),
+      )
+      yield* Effect.addFinalizer(() => off)
+      const controller = new AbortController()
+      const savedRoot = yield* Effect.promise(() =>
+        client.session.get({ path: { id: root.id }, throwOnError: true, signal: controller.signal }),
+      )
+      const savedChild = yield* Effect.promise(() =>
+        client.session.get({ path: { id: child.id }, throwOnError: true, signal: controller.signal }),
+      )
+      expect(savedRoot.data).toMatchObject({ id: root.id, directory: ctx.directory })
+      expect(savedRoot.data.parentID).toBeUndefined()
+      expect(savedChild.data).toMatchObject({ id: child.id, parentID: root.id, directory: ctx.directory })
+      const listed = yield* Effect.promise(() => client.session.list({ throwOnError: true }))
+      expect(listed.data.some((session) => session.id === root.id)).toBe(true)
+      expect(observed).toEqual([])
+      expect(yield* Effect.promise(() => h.receipts())).toEqual([])
+      requests.length = 0
+      const statuses = yield* SessionStatus.Service
+      // Child lookup must drain before the root report, so it cannot hide behind teardown.
+      yield* statuses.set(SessionID.make(child.id), { type: "busy" })
+      yield* statuses.set(SessionID.make(root.id), { type: "busy" })
+      yield* Effect.promise(() => h.wait(1))
+      expect(requests).toEqual([`/session/${child.id}`, `/session/${root.id}`])
+      yield* statuses.set(SessionID.make(child.id), { type: "idle" })
+      yield* statuses.set(SessionID.make(root.id), { type: "idle" })
+      yield* Effect.promise(() => h.wait(2))
+      yield* Effect.promise(() => plugin.dispose!())
+      expect((yield* Effect.promise(() => h.receipts())).map((r) => r.input)).toEqual([
+        expect.objectContaining({ session_id: root.id, event: "session.status", status: "busy", sequence: 1 }),
+        expect.objectContaining({ session_id: root.id, event: "session.status", status: "idle", sequence: 2 }),
+      ])
+      expect(observed.every((type) => type === "session.status" || type === "session.idle")).toBe(true)
+    }),
+  { config: { formatter: false, lsp: false, plugin: [] } },
 )
 
 for (const kind of ["question", "permission"] as const) {

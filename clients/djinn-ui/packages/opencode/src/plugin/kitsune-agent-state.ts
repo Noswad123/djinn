@@ -28,10 +28,10 @@ const SESSION_STATE_BY_STATUS = new Map([
   ["working", "working"],
 ])
 
-export const KitsuneAgentStatePlugin: PluginInstance = async () => {
+export const KitsuneAgentStatePlugin: PluginInstance = async (input) => {
   if (process.env.KITSUNE_AGENT_MANAGEMENT === "external") {
-    const { createNativeEventReporter } = await import("../coven/native-event-reporter")
-    const reporter = createNativeEventReporter()
+    const { createNativeEventAdapter } = await import("./native-event-adapter")
+    const reporter = createNativeEventAdapter(input)
     return {
       event: async ({ event }) => reporter.event(event),
       dispose: reporter.dispose,
