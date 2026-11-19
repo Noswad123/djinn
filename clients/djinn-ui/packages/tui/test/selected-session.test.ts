@@ -288,6 +288,17 @@ test("implicit-local placement is preserved without a workspace switch", async (
   load.dispose()
 })
 
+test("root and child metadata preserve the generic loaded-view callback; native root proof belongs to worker", async () => {
+  for (const parentID of [undefined, null, "root"]) {
+    const state = fixture({ get: async () => ({ id: "A", directory: "/local", parentID }) })
+    const load = createSelectedSessionLoad(state.input)
+    await load.done
+    expect(state.selections).toEqual([{ sessionID: "A", directory: "/local", workspaceID: undefined }])
+    load.dispose()
+    expect(state.selections.at(-1)).toBeUndefined()
+  }
+})
+
 test("observer throws and rejected promises cannot fail chat loading or cleanup", async () => {
   for (const onSelectedSessionChange of [
     () => {

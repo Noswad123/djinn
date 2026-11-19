@@ -18,6 +18,8 @@ export interface LoadInput {
 }
 
 export interface Interface {
+  /** Observe only an already-active generation; never wait, load or bootstrap. */
+  readonly peek: (directory: string) => Effect.Effect<InstanceContext | undefined>
   readonly load: (input: LoadInput) => Effect.Effect<InstanceContext>
   readonly reload: (input: LoadInput) => Effect.Effect<InstanceContext>
   readonly dispose: (ctx: InstanceContext) => Effect.Effect<void>
@@ -32,6 +34,8 @@ export const use = serviceUse(Service)
 
 interface Entry {
   readonly deferred: Deferred.Deferred<InstanceContext>
+  active?: InstanceContext
+  retiring?: boolean
 }
 
 const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Service> = Layer.effect(
@@ -73,6 +77,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       Effect.gen(function* () {
         const exit = yield* Effect.exit(boot({ ...input, directory }))
         if (Exit.isFailure(exit)) yield* removeEntry(directory, entry)
+        if (Exit.isSuccess(exit) && !entry.retiring && cache.get(directory) === entry) entry.active = exit.value
         yield* Deferred.done(entry.deferred, exit).pipe(Effect.asVoid)
       })
 
@@ -99,10 +104,16 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
 
     const disposeEntry = Effect.fnUntraced(function* (directory: string, entry: Entry, ctx: InstanceContext) {
       if (cache.get(directory) !== entry) return false
+      entry.retiring = true
       yield* disposeContext(ctx)
       if (cache.get(directory) !== entry) return false
       cache.delete(directory)
       return true
+    })
+
+    const peek = (directory: string) => Effect.sync(() => {
+      const entry = cache.get(FSUtil.resolve(directory))
+      return entry?.retiring ? undefined : entry?.active
     })
 
     const load = (input: LoadInput): Effect.Effect<InstanceContext> => {
@@ -147,6 +158,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
     const dispose = Effect.fn("InstanceStore.dispose")(function* (ctx: InstanceContext) {
       const entry = cache.get(ctx.directory)
       if (!entry) return yield* disposeContext(ctx)
+      if (entry.active === ctx) entry.retiring = true
 
       const exit = yield* Deferred.await(entry.deferred).pipe(Effect.exit)
       if (Exit.isFailure(exit)) return yield* removeEntry(ctx.directory, entry).pipe(Effect.asVoid)
@@ -158,12 +170,14 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       const directory = FSUtil.resolve(input)
       const entry = cache.get(directory)
       if (!entry) return
+      entry.retiring = true
       const exit = yield* Deferred.await(entry.deferred).pipe(Effect.exit)
       if (Exit.isFailure(exit)) return yield* removeEntry(directory, entry).pipe(Effect.asVoid)
       yield* disposeEntry(directory, entry, exit.value).pipe(Effect.asVoid)
     })
 
     const disposeAllOnce = Effect.fnUntraced(function* () {
+      for (const entry of cache.values()) entry.retiring = true
       yield* Effect.logInfo("disposing all instances")
       yield* Effect.forEach(
         [...cache.entries()],
@@ -192,6 +206,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
     yield* Effect.addFinalizer(() => disposeAll().pipe(Effect.ignore))
 
     return Service.of({
+      peek,
       load,
       reload,
       dispose,

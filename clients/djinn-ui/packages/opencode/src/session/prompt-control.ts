@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { chmod, link, lstat, realpath, unlink } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import path from "node:path"
+import { ConversationProjection } from "./conversation-projection"
 
 export const CONTRACT = "djinn.interactive-prompt.v1"
 export const MAX_PROMPT_BYTES = 65536
@@ -14,6 +15,7 @@ interface Options {
   socketPath?: string
   inspect: (sessionID: string) => Promise<boolean>
   admit: (sessionID: string, text: string) => Promise<string>
+  conversation?: (sessionID: string) => Promise<ConversationProjection.Projection | undefined>
   warn?: () => void
 }
 
@@ -94,9 +96,34 @@ export async function start(options: Options): Promise<{ close: () => Promise<vo
         return { version: 1, id, runtime_id: runtimeID, result: {
           type: "capabilities", contract: CONTRACT, version: 1, runtime_id: runtimeID,
           max_prompt_bytes: MAX_PROMPT_BYTES,
+          ...(options.conversation ? { conversation_read: ConversationProjection.CAPABILITY } : {}),
         } }
       }
       const params = request.params
+      if (request.method === "conversation") {
+        const reject = (code: string) => ({ version: 1, id, runtime_id: runtimeID, error: { code, delivery: "rejected" } })
+        if (!keys(params, ["expected_runtime_id", "session_id"]) ||
+            typeof params.expected_runtime_id !== "string" || !UUID.test(params.expected_runtime_id) ||
+            typeof params.session_id !== "string" || !SESSION.test(params.session_id)) return reject("request_unavailable")
+        if (params.expected_runtime_id !== runtimeID) return reject("runtime_mismatch")
+        if (!options.conversation) return reject("conversation_unsupported")
+        const projection = await options.conversation(params.session_id)
+        if (!projection) return reject("session_unavailable")
+        const messages = projection.messages.map((m) => ({ id: m.id, role: m.role, text: m.text, truncated: m.truncated }))
+        if (messages.length > 20 || messages.some((m) => !MESSAGE.test(m.id) ||
+            (m.role !== "user" && m.role !== "assistant") || typeof m.text !== "string" || typeof m.truncated !== "boolean") ||
+            messages.reduce((sum, m) => sum + Buffer.byteLength(m.text), 0) > 8192 ||
+            [projection.has_older, projection.truncated, projection.omitted_parts].some((v) => typeof v !== "boolean"))
+          return reject("request_unavailable")
+        const reply = { version: 1, id, runtime_id: runtimeID, result: {
+          type: "conversation", contract: ConversationProjection.CAPABILITY.contract, session_id: params.session_id,
+          messages, has_older: projection.has_older, truncated: projection.truncated,
+          omitted_parts: projection.omitted_parts, projection_sha256: ConversationProjection.digest(messages),
+        } }
+        if (Buffer.byteLength(JSON.stringify(reply) + "\n") > 65536) return reject("request_unavailable")
+        await fence()
+        return reply
+      }
       if (request.method !== "submit" || !keys(params, ["expected_runtime_id", "session_id", "text"]) ||
           typeof params.expected_runtime_id !== "string" || !UUID.test(params.expected_runtime_id) ||
           typeof params.session_id !== "string" || !SESSION.test(params.session_id) || !validText(params.text))

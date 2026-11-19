@@ -82,6 +82,7 @@ describe("InstanceStore", () => {
       const second = yield* store.load({ directory: dir })
 
       expect(second).toBe(first)
+      expect(yield* store.peek(dir)).toBe(first)
       expect(initialized).toBe(1)
     }),
   )
@@ -104,6 +105,7 @@ describe("InstanceStore", () => {
       const first = yield* store.load({ directory: dir }).pipe(Effect.forkScoped)
 
       yield* Deferred.await(started)
+      expect(yield* store.peek(dir)).toBeUndefined()
 
       yield* setBootstrap(
         Effect.sync(() => {
@@ -139,6 +141,7 @@ describe("InstanceStore", () => {
       )
 
       expect(failed).toBe(true)
+      expect(yield* store.peek(dir)).toBeUndefined()
 
       yield* setBootstrap(
         Effect.sync(() => {
@@ -187,6 +190,7 @@ describe("InstanceStore", () => {
       const reload = yield* store.reload({ directory: dir }).pipe(Effect.forkScoped)
 
       yield* Deferred.await(reloading)
+      expect(yield* store.peek(dir)).toBeUndefined()
       const staleDispose = yield* store.dispose(first).pipe(Effect.forkScoped)
       yield* Deferred.succeed(releaseReload, undefined)
 
@@ -195,6 +199,7 @@ describe("InstanceStore", () => {
 
       expect(disposed).toEqual([dir])
       expect(yield* store.load({ directory: dir })).toBe(second)
+      expect(yield* store.peek(dir)).toBe(second)
     }),
   )
 
@@ -216,6 +221,7 @@ describe("InstanceStore", () => {
       yield* store.load({ directory: dir })
       const first = yield* store.disposeAll().pipe(Effect.forkScoped)
       yield* Deferred.await(disposing)
+      expect(yield* store.peek(dir)).toBeUndefined()
       const release = yield* Deferred.await(releaseDispose)
       const second = yield* store.disposeAll().pipe(Effect.forkScoped)
 
@@ -223,6 +229,32 @@ describe("InstanceStore", () => {
       yield* Effect.sync(release)
       yield* Effect.all([Fiber.join(first), Fiber.join(second)])
       expect(disposed).toEqual([dir])
+    }),
+  )
+
+  it.live("peek never bootstraps missing or retiring generations", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const store = yield* InstanceStore.Service
+      let initialized = 0
+      yield* setBootstrap(Effect.sync(() => { initialized++ }))
+      expect(yield* store.peek(dir)).toBeUndefined()
+      expect(initialized).toBe(0)
+      const ctx = yield* store.load({ directory: dir })
+      expect(yield* store.peek(dir)).toBe(ctx)
+      const disposing = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* registerDisposerScoped(() => Effect.runPromise(Effect.gen(function* () {
+        yield* Deferred.succeed(disposing, undefined)
+        yield* Deferred.await(release)
+      })))
+      const pending = yield* store.dispose(ctx).pipe(Effect.forkScoped)
+      yield* Deferred.await(disposing)
+      expect(yield* store.peek(dir)).toBeUndefined()
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(pending)
+      expect(yield* store.peek(dir)).toBeUndefined()
+      expect(initialized).toBe(1)
     }),
   )
 

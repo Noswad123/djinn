@@ -42,10 +42,24 @@ export function client<T extends Definition>(target: {
     }
   }
   return {
-    call<Method extends keyof T>(method: Method, input: Parameters<T[Method]>[0]): Promise<ReturnType<T[Method]>> {
+    call<Method extends keyof T>(
+      method: Method,
+      input: Parameters<T[Method]>[0],
+      timeoutMs?: number,
+    ): Promise<ReturnType<T[Method]>> {
       const requestId = id++
-      return new Promise((resolve) => {
-        pending.set(requestId, resolve)
+      return new Promise((resolve, reject) => {
+        const timer =
+          timeoutMs === undefined
+            ? undefined
+            : setTimeout(() => {
+                pending.delete(requestId)
+                reject(new Error("RPC deadline exceeded"))
+              }, timeoutMs)
+        pending.set(requestId, (result) => {
+          clearTimeout(timer)
+          resolve(result)
+        })
         target.postMessage(JSON.stringify({ type: "rpc.request", method, input, id: requestId }))
       })
     },

@@ -13,6 +13,7 @@ import { Numen, type Input } from "@/numen/service"
 import { LiveObservationPublisher } from "@/session/live-observation-publisher"
 import { startOptionalService, withPublisherClosing } from "./worker-lifecycle"
 import { PromptControl } from "@/session/prompt-control"
+import { createAttachmentWorker, type AttachmentInput } from "@/coven/attachment-worker"
 
 Heap.start()
 const liveObservation = LiveObservationPublisher.start({ warn: (message) => console.warn(message) })
@@ -39,8 +40,14 @@ let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 let generation = 0
 let reloading = false
 let stopping = false
+const covenAttachment = createAttachmentWorker()
 
 export const rpc = {
+  covenAttachmentReady() { return !reloading && !stopping },
+  async covenAttachment(input: AttachmentInput) {
+    if (reloading || stopping) return false
+    return covenAttachment.select(input).catch(() => false)
+  },
   async numenViewer(input: Input) {
     if (reloading || stopping) return false
     const stamp = generation
@@ -91,6 +98,7 @@ export const rpc = {
     reloading = true
     generation++
     try {
+      await covenAttachment.reset()
       await AppRuntime.runPromise(
         Effect.gen(function* () {
           const numen = yield* Numen.Service
@@ -108,6 +116,7 @@ export const rpc = {
 
     stopping = true
     generation++
+    await covenAttachment.close()
     await AppRuntime.runPromise(
       Effect.gen(function* () {
         const numen = yield* Numen.Service

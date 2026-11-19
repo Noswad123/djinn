@@ -1,10 +1,17 @@
 import { expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
 import { connect } from "node:net"
-import { chmod, lstat, rename, symlink, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises"
 import path from "node:path"
+import os from "node:os"
 import { start, validText, CONTRACT } from "../../src/session/prompt-control"
-import { tmpdir } from "../fixture/fixture"
+import { ConversationProjection } from "../../src/session/conversation-projection"
+
+// Keep the internal UUID socket name below AF_UNIX's limit with disk-backed TMPDIR.
+async function tmpdir() {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "s"))
+  return { path: directory, async [Symbol.asyncDispose]() { await rm(directory, { recursive: true, force: true }) } }
+}
 
 type Reply = { id: string; runtime_id: string; result: Record<string, unknown>; error: { code: string; delivery: string } }
 
@@ -33,12 +40,13 @@ function submit(runtimeID: string, text = "Task λ\nno shell: $(false)", id = ra
   } }
 }
 
-async function fixture(inspect = async () => true, admit = async () => "msg_fixture") {
+async function fixture(inspect = async () => true, admit = async () => "msg_fixture",
+  conversation?: (sessionID: string) => Promise<ConversationProjection.Projection | undefined>) {
   const tmp = await tmpdir()
   await chmod(tmp.path, 0o700)
   const address = path.join(tmp.path, "prompt.sock")
   const calls: string[][] = []
-  const endpoint = await start({ socketPath: address, inspect, admit: async (session, text) => {
+  const endpoint = await start({ socketPath: address, inspect, conversation, admit: async (session, text) => {
     calls.push([session, text])
     return admit()
   } })
@@ -53,6 +61,125 @@ test("disabled endpoint does not call native callbacks", async () => {
     admit: async () => { throw Error("called") } })
   await endpoint.close()
 })
+
+function conversation(runtimeID: string, extra = {}) {
+  return { version: 1, id: randomUUID(), method: "conversation", params: {
+    expected_runtime_id: runtimeID, session_id: "ses_fixture", ...extra,
+  } }
+}
+
+function projection(text = "literal $(false) <script>secret</script>\u001b[2J") : ConversationProjection.Projection {
+  return { messages: [{ id: "msg_fixture", role: "user", text, truncated: false }],
+    has_older: false, truncated: false, omitted_parts: false }
+}
+
+test("conversation digest matches the fixed Coven Rust Unicode/control vector", async () => {
+  // coven-web/src/session_conversations/tests.rs::javascript_stringify_digest_vector
+  const value = projection("\0\b\t\n\f\r\u001f\"\\/\u00e9\u2028\u2029\u{1f600}")
+  value.messages[0].role = "assistant"
+  await using endpoint = await fixture(undefined, undefined, async () => value)
+  const reply = await request(endpoint.address, conversation(endpoint.runtimeID))
+  expect(reply.result.projection_sha256).toBe("4b55cfc034c79e9c1f6bbc31c7443fe11a9e18f14777f16f988d520a3a9ddbb8")
+  expect(reply.result.messages).toEqual(value.messages)
+})
+
+test("standalone synthetic fixture serves the real producer and shuts down on stdin EOF", async () => {
+  await using tmp = await tmpdir()
+  const address = path.join(tmp.path, "fixture.sock")
+  const child = Bun.spawn([process.execPath, path.join(import.meta.dir, "conversation-socket.fixture.ts"), address], {
+    cwd: tmp.path, stdin: "pipe", stdout: "pipe", stderr: "pipe", timeout: 5000,
+  })
+  try {
+    const reader = child.stdout.getReader()
+    let line = ""
+    try {
+      while (!line.includes("\n")) {
+        const chunk = await reader.read()
+        if (chunk.done) throw new Error("fixture exited before readiness")
+        line += new TextDecoder().decode(chunk.value)
+      }
+    } finally { reader.releaseLock() }
+    expect(JSON.parse(line)).toEqual({ type: "ready", session_id: "ses_fixture", contract: "djinn.conversation-read.v1" })
+    const cap = await request(address, { version: 1, id: randomUUID(), method: "capabilities", params: {} })
+    expect(cap.result.conversation_read).toEqual(ConversationProjection.CAPABILITY)
+    expect((await request(address, conversation(cap.runtime_id))).result.projection_sha256)
+      .toBe("4b55cfc034c79e9c1f6bbc31c7443fe11a9e18f14777f16f988d520a3a9ddbb8")
+    child.stdin.end()
+    expect(await child.exited).toBe(0)
+    expect(await lstat(address).catch(() => undefined)).toBeUndefined()
+  } finally {
+    child.kill()
+    await child.exited
+  }
+})
+
+test("conversation capability is additive and unsupported readers reject", async () => {
+  await using absent = await fixture()
+  expect(absent.cap.result.conversation_read).toBeUndefined()
+  expect((await request(absent.address, conversation(absent.runtimeID))).error)
+    .toEqual({ code: "conversation_unsupported", delivery: "rejected" })
+  await using present = await fixture(async () => false, async () => "msg_fixture", async () => projection())
+  expect(present.cap.result.conversation_read).toEqual(ConversationProjection.CAPABILITY)
+  const reply = await request(present.address, conversation(present.runtimeID))
+  expect(reply.result).toEqual({ type: "conversation", contract: "djinn.conversation-read.v1", session_id: "ses_fixture",
+    ...projection(), projection_sha256: ConversationProjection.digest(projection().messages) })
+  expect(present.calls).toEqual([])
+  expect((await request(present.address, submit(present.runtimeID))).error.code).toBe("session_unavailable")
+})
+
+test("conversation validates exact target/runtime and never falls back after failure", async () => {
+  let calls = 0
+  await using endpoint = await fixture(undefined, undefined, async () => {
+    calls++
+    if (calls === 1) return projection()
+    if (calls === 2) return undefined
+    throw new Error("private transcript")
+  })
+  expect((await request(endpoint.address, conversation(randomUUID()))).error.code).toBe("runtime_mismatch")
+  for (const extra of [{ page: 1 }, { session_id: "" }, { expected_runtime_id: "bad" }])
+    expect((await request(endpoint.address, conversation(endpoint.runtimeID, extra))).error.code).toBe("request_unavailable")
+  expect(calls).toBe(0)
+  expect((await request(endpoint.address, conversation(endpoint.runtimeID))).result.type).toBe("conversation")
+  expect((await request(endpoint.address, conversation(endpoint.runtimeID))).error.code).toBe("session_unavailable")
+  const failed = await request(endpoint.address, conversation(endpoint.runtimeID))
+  expect(failed.error).toEqual({ code: "request_unavailable", delivery: "rejected" })
+  expect(JSON.stringify(failed)).not.toContain("private transcript")
+})
+
+test("conversation validates message/text bounds and escaped response bytes", async () => {
+  let value = projection("\u0000".repeat(8192))
+  await using endpoint = await fixture(undefined, undefined, async () => value)
+  const reply = await request(endpoint.address, conversation(endpoint.runtimeID))
+  expect(reply.result.type).toBe("conversation")
+  expect(Buffer.byteLength(JSON.stringify(reply) + "\n")).toBeLessThanOrEqual(65536)
+  for (const invalid of [projection("🦊".repeat(2049)), { ...projection(), messages: Array.from({ length: 21 }, () => projection().messages[0]) }]) {
+    value = invalid
+    expect((await request(endpoint.address, conversation(endpoint.runtimeID))).error.code).toBe("request_unavailable")
+  }
+})
+
+for (const change of ["delete", "replace", "permissions", "shutdown"] as const) {
+  test(`conversation rechecks endpoint after asynchronous read: ${change}`, async () => {
+    let entered!: () => void
+    let finish!: () => void
+    const ready = new Promise<void>((resolve) => { entered = resolve })
+    const wait = new Promise<void>((resolve) => { finish = resolve })
+    await using endpoint = await fixture(undefined, undefined, async () => { entered(); await wait; return projection() })
+    const pending = request(endpoint.address, conversation(endpoint.runtimeID))
+    await ready
+    if (change === "delete") await unlink(endpoint.address)
+    if (change === "replace") {
+      await rename(endpoint.address, endpoint.address + ".old")
+      await writeFile(endpoint.address, "replacement")
+    }
+    if (change === "permissions") await chmod(path.dirname(endpoint.address), 0o755)
+    if (change === "shutdown") await endpoint.close()
+    finish()
+    const reply = await pending
+    expect(reply.result).toBeUndefined()
+    if (change !== "shutdown") expect(reply.error).toEqual({ code: "request_unavailable", delivery: "rejected" })
+  })
+}
 
 test("private endpoint advertises exact runtime capability and cleans up", async () => {
   await using endpoint = await fixture()

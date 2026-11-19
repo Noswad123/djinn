@@ -6,6 +6,7 @@ import path from "node:path"
 import { KitsuneAgentStatePlugin } from "../../src/plugin/kitsune-agent-state"
 import { createNativeEventReporter } from "../../src/coven/native-event-reporter"
 import { createNativeEventAdapter } from "../../src/plugin/native-event-adapter"
+import { attachmentReporter } from "../../src/coven/attachment-registry"
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import { Effect, Fiber, Queue } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -46,9 +47,10 @@ async function harness(mode = "ok") {
     adapter(
       get: (options: { path: { id: string }; signal: AbortSignal; throwOnError: true }) => Promise<unknown>,
       now = () => 0,
+      directory?: string,
     ) {
       const adapter = createNativeEventAdapter(
-        { client: { session: { get } } } as unknown as PluginInput,
+        { directory, client: { session: { get } } } as unknown as PluginInput,
         { ...process.env, KITSUNE_INTEGRATION_REPORT_COMMAND: command },
         now,
       )
@@ -145,6 +147,35 @@ test("silent metadata validates identity and parent, keeps children sticky and r
   await h.wait(2)
   await reporter.dispose()
   expect(await h.receipts()).toHaveLength(2)
+})
+
+test("256 quiet attachment roots leave native lifecycle/status/decision capacity unchanged", async () => {
+  await using h = await harness()
+  const adapter = h.adapter(
+    async ({ path }) => ({ data: { id: path.id, directory: h.dir } }),
+    () => 0,
+    h.dir,
+  )
+  const reporter = attachmentReporter(h.dir)!
+  for (let i = 0; i < 256; i++) expect(await reporter.qualify(`quiet-${i}`, new AbortController().signal)).toBe(true)
+  expect(await h.receipts()).toEqual([])
+  adapter.event({ type: "session.created", properties: { info: { id: "live" } } })
+  adapter.event({ type: "session.status", properties: { sessionID: "live", status: "busy" } })
+  adapter.event({ type: "question.asked", properties: { sessionID: "live", id: "q" } })
+  expect((await h.wait(3)).map((r) => [r.input.session_id, r.input.event])).toEqual([
+    ["live", "session.created"],
+    ["live", "session.status"],
+    ["live", "question.asked"],
+  ])
+  for (let i = 0; i < 255; i++)
+    adapter.event({ type: "session.created", properties: { info: { id: `child-${i}`, parentID: "live" } } })
+  adapter.event({ type: "session.created", properties: { info: { id: "overflow" } } })
+  adapter.event({ type: "session.status", properties: { sessionID: "overflow", status: "busy" } })
+  adapter.event({ type: "permission.asked", properties: { sessionID: "overflow", id: "p" } })
+  adapter.event({ type: "question.replied", properties: { sessionID: "live", requestID: "q" } })
+  expect((await h.wait(4)).at(-1)!.input).toMatchObject({ session_id: "live", event: "question.replied", sequence: 4 })
+  await adapter.dispose()
+  expect(await h.receipts()).toHaveLength(4)
 })
 
 test("lookup FIFO deduplicates concurrent ask/reply and preserves cross-session arrival order", async () => {

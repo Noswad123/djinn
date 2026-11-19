@@ -32,6 +32,8 @@ import type { WorkspaceAdapter } from "@/control-plane/types"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstallationChannel } from "@opencode-ai/core/installation/version"
+import { SessionStatus } from "@/session/status"
+import { makeNativeStatusSnapshot, type NativeStatusSnapshot } from "./native-status-snapshot"
 
 type State = {
   hooks: Hooks[]
@@ -63,7 +65,7 @@ export function experimentalWebSocketsEnabled(input: { enabled: boolean; channel
 }
 
 // Built-in plugins that are directly imported (not installed from npm)
-function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
+function internalPlugins(flags: RuntimeFlags.Info, snapshotStatus: NativeStatusSnapshot): PluginInstance[] {
   return [
     // Temporary rollout: pre-release builds use WebSockets by default; releases require explicit opt-in.
     (input) =>
@@ -79,7 +81,7 @@ function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
     DigitalOceanAuthPlugin,
     SnowflakeCortexAuthPlugin,
     XaiAuthPlugin,
-    KitsuneAgentStatePlugin,
+    (input) => KitsuneAgentStatePlugin(input, undefined, snapshotStatus),
   ]
 }
 
@@ -128,11 +130,17 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const config = yield* Config.Service
     const flags = yield* RuntimeFlags.Service
+    const sessions = yield* Session.Service
+    const statuses = yield* SessionStatus.Service
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("Plugin.state")(function* (ctx) {
         const hooks: Hooks[] = []
         const bridge = yield* EffectBridge.make()
+        const snapshotStatus = yield* makeNativeStatusSnapshot.pipe(
+          Effect.provideService(Session.Service, sessions),
+          Effect.provideService(SessionStatus.Service, statuses),
+        )
 
         function publishPluginError(message: string) {
           bridge.fork(events.publish(Session.Event.Error, { error: new NamedError.Unknown({ message }).toObject() }))
@@ -165,7 +173,7 @@ const layer = Layer.effect(
           $: typeof Bun === "undefined" ? undefined : Bun.$,
         }
 
-        for (const plugin of flags.disableDefaultPlugins ? [] : internalPlugins(flags)) {
+        for (const plugin of flags.disableDefaultPlugins ? [] : internalPlugins(flags, snapshotStatus)) {
           const init = yield* Effect.tryPromise({
             try: () => plugin(input),
             catch: errorMessage,
@@ -310,7 +318,7 @@ const layer = Layer.effect(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [EventV2Bridge.node, Config.node, RuntimeFlags.node],
+  deps: [EventV2Bridge.node, Config.node, RuntimeFlags.node, Session.node, SessionStatus.node],
 })
 
 export * as Plugin from "."

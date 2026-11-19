@@ -26,7 +26,7 @@ export function createNativeEventReporter(env: NodeJS.ProcessEnv = process.env, 
   const command = reportCommand(env.KITSUNE_INTEGRATION_REPORT_COMMAND)
   const instance = randomUUID()
   const sessions = new Map<string, { child: boolean; ended?: boolean; retireAt?: number; requests: Set<string> }>()
-  const queue: { payload: string; session: string; time: number }[] = []
+  const queue: { payload: string; session: string; time: number; valid?: () => boolean }[] = []
   const childEnv = { ...env }
   let sequence = 0
   let disposed = false
@@ -43,7 +43,8 @@ export function createNativeEventReporter(env: NodeJS.ProcessEnv = process.env, 
     if (disposed || active || !command) return
     const item = queue.shift()
     if (!item) return
-    if (now() - item.time >= LIMIT || !sessions.has(item.session)) {
+    const age = now() - item.time
+    if (!Number.isFinite(age) || age < 0 || age >= LIMIT || !sessions.has(item.session) || item.valid?.() === false) {
       schedule()
       return
     }
@@ -53,7 +54,7 @@ export function createNativeEventReporter(env: NodeJS.ProcessEnv = process.env, 
         stdio: ["pipe", "ignore", "ignore"],
         env: childEnv,
       })
-      const timer = setTimeout(() => child.kill("SIGKILL"), LIMIT)
+      const timer = setTimeout(() => child.kill("SIGKILL"), LIMIT - age)
       const done = new Promise<void>((resolve) => {
         child.once("close", () => {
           clearTimeout(timer)
@@ -83,6 +84,16 @@ export function createNativeEventReporter(env: NodeJS.ProcessEnv = process.env, 
   }
 
   return {
+    instance,
+    rootEligible(sessionID: string, input: unknown) {
+      if (disposed || !command || !identifier(sessionID)) return false
+      const info = record(input)
+      if (!info || info.id !== sessionID || (info.sessionID !== undefined && info.sessionID !== sessionID)) return false
+      if (info.parentID != null) return false
+      const session = sessions.get(sessionID)
+      // Attachment-only positive observations must not consume native event capacity.
+      return !session?.child && !session?.ended
+    },
     metadataNeeded(input: unknown) {
       if (disposed || !command) return
       const event = record(input)
@@ -109,12 +120,13 @@ export function createNativeEventReporter(env: NodeJS.ProcessEnv = process.env, 
       }
       return true
     },
-    event(input: unknown, arrival = now()) {
+    event(input: unknown, arrival = now(), valid?: () => boolean) {
       if (disposed || !command) return
       const event = record(input)
       const type = nativeEventType(input)
       if (!type) return
-      const stale = now() - arrival >= LIMIT
+      const age = now() - arrival
+      const stale = !Number.isFinite(age) || age < 0 || age >= LIMIT
       if (stale && type !== "session.deleted") return
       const properties = record(event?.properties)
       if (!properties) return
@@ -195,7 +207,7 @@ export function createNativeEventReporter(env: NodeJS.ProcessEnv = process.env, 
           ...extra,
         }) + "\n"
       // At most 32 waiting observations, in addition to the single active child.
-      if (queue.length < 32) queue.push({ payload, session: sessionID, time: arrival })
+      if (queue.length < 32) queue.push({ payload, session: sessionID, time: arrival, valid })
       // Fence late events during retention, including lifecycle metadata.
       if (type === "session.deleted") {
         session.ended = true

@@ -1,5 +1,6 @@
 import net from "node:net"
-import type { Plugin as PluginInstance } from "@opencode-ai/plugin"
+import type { Hooks, PluginInput, PluginOptions } from "@opencode-ai/plugin"
+import type { NativeStatusSnapshot } from "./native-status-snapshot"
 
 const SOURCE = "kitsune:djinn"
 const AGENT = "djinn"
@@ -28,10 +29,14 @@ const SESSION_STATE_BY_STATUS = new Map([
   ["working", "working"],
 ])
 
-export const KitsuneAgentStatePlugin: PluginInstance = async (input) => {
+export const KitsuneAgentStatePlugin = async (
+  input: PluginInput,
+  _options?: PluginOptions,
+  snapshotStatus?: NativeStatusSnapshot,
+): Promise<Hooks> => {
   if (process.env.KITSUNE_AGENT_MANAGEMENT === "external") {
     const { createNativeEventAdapter } = await import("./native-event-adapter")
-    const reporter = createNativeEventAdapter(input)
+    const reporter = createNativeEventAdapter(input, process.env, undefined, snapshotStatus)
     return {
       event: async ({ event }) => reporter.event(event),
       dispose: reporter.dispose,

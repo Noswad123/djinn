@@ -16,6 +16,8 @@ import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
 import { NumenViewer } from "@/numen/viewer"
 import { NumenConfig } from "@/numen/config"
+import { createAttachmentObserver } from "@/coven/attachment-observer"
+import { attachmentCommand, captureAttachmentTarget } from "@/coven/attachment-transport"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -227,6 +229,19 @@ export const TuiThreadCommand = cmd({
         ),
       })
       const client = Rpc.client<typeof rpc>(worker)
+      const network = resolveNetworkOptionsNoConfig(args)
+      const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
+      const attachmentRoute = external ? undefined : attachmentCommand(process.env)
+      const attachment = createAttachmentObserver({
+        // The handshake queues until Rpc.listen is installed. Capture never gates rendering.
+        context: attachmentRoute
+          ? client
+              .call("covenAttachmentReady", undefined, 1500)
+              .then((ready) => (ready ? captureAttachmentTarget(attachmentRoute) : undefined))
+              .catch(() => undefined)
+          : Promise.resolve(undefined),
+        send: (input) => client.call("covenAttachment", input, 4000),
+      })
       const numen = NumenViewer.create({
         enabled: NumenConfig.enabled(process.env),
         send: (input) => client.call("numenViewer", input),
@@ -241,6 +256,7 @@ export const TuiThreadCommand = cmd({
         if (stopped) return
         stopped = true
         numen.close()
+        await attachment.close()
         process.off("SIGUSR2", reload)
         await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
         worker.terminate()
@@ -249,9 +265,6 @@ export const TuiThreadCommand = cmd({
       try {
         const prompt = await input(args.prompt)
         const config = await TuiConfig.get()
-
-        const network = resolveNetworkOptionsNoConfig(args)
-        const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
 
         const headers = external ? ServerAuth.headers() : undefined
 
@@ -292,7 +305,10 @@ export const TuiThreadCommand = cmd({
         await Effect.runPromise(
           run({
             url: transport.url,
-            onSelectedSessionChange: numen.select,
+            onSelectedSessionChange(selection) {
+              numen.select(selection)
+              attachment.select(selection)
+            },
             async onSnapshot() {
               const tui = writeHeapSnapshot("tui.heapsnapshot")
               const server = await client.call("snapshot", undefined)

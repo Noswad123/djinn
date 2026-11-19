@@ -1,5 +1,9 @@
 # Coven / Djinn Interop Proposal
 
+For the implemented optional local full-TUI selected-root producer, see
+[Local Full-TUI Native Attachment](local-native-attachment.md). Its narrow display
+observation contract is separate from the speculative execution bridge below.
+
 ## Current direction — 2026-10-22
 
 [APP_BOUNDARIES.md](../APP_BOUNDARIES.md) supersedes this proposal's implementation
