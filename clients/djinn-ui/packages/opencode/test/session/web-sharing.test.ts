@@ -609,8 +609,11 @@ test("closed config default off, duplicate fields, ownership/mode/symlink and re
   expect(await WebSharingPublication.configuration(env)).toBeUndefined()
   const cfg = { version: 1, mode: "read_write", registry_directory: path.join(tmp.path, "registry") }
   await writeFile(file, JSON.stringify(cfg), { mode: 0o600 })
-  expect(await WebSharingPublication.configuration(env)).toEqual({ mode: "read_write", registry: cfg.registry_directory })
+  expect(await WebSharingPublication.configuration(env)).toEqual({ mode: "read_write", registry: cfg.registry_directory, decisionControl: false })
+  await writeFile(file, JSON.stringify({ ...cfg, decision_control: true }))
+  expect((await WebSharingPublication.configuration(env))?.decisionControl).toBe(true)
   for (const text of [JSON.stringify({ ...cfg, mode: "off" }), JSON.stringify({ ...cfg, extra: true }),
+    JSON.stringify({ ...cfg, decision_control: "true" }), JSON.stringify({ ...cfg, decision_control: null }),
     JSON.stringify({ ...cfg, mode: ["read"] }),
     JSON.stringify(cfg).replace('"version":1', '"version":1,"version":1'), " ".repeat(8193)]) {
     await writeFile(file, text)
@@ -642,7 +645,7 @@ test("config accepts an owned trusted parent alias without trusting symlink perm
   await writeFile(path.join(target, "coven-web.json"), JSON.stringify(cfg), { mode: 0o600 })
   const identity = await lstat(alias)
   expect(identity.isSymbolicLink()).toBe(true)
-  expect(await WebSharingPublication.configuration(env)).toEqual({ mode: "read_write", registry: cfg.registry_directory })
+  expect(await WebSharingPublication.configuration(env)).toEqual({ mode: "read_write", registry: cfg.registry_directory, decisionControl: false })
   expect((await lstat(alias)).ino).toBe(identity.ino)
   await chmod(target, 0o777)
   expect(await WebSharingPublication.configuration(env)).toBeUndefined()
@@ -669,7 +672,7 @@ for (const change of ["alias_retarget", "alias_replace_same_target", "target_rep
       await writeFile(path.join(selected, "coven-web.json"), JSON.stringify(cfg), { mode: 0o600 })
     } else await symlink(target, selected)
     const env = { XDG_CONFIG_HOME: tmp.path }
-    expect(await WebSharingPublication.configuration(env)).toEqual({ mode: "read", registry: cfg.registry_directory })
+    expect(await WebSharingPublication.configuration(env)).toEqual({ mode: "read", registry: cfg.registry_directory, decisionControl: false })
     expect(await WebSharingPublication.configuration(env, async () => {
       if (change === "alias_retarget" || change === "alias_replace_same_target") {
         await rename(selected, selected + ".old")

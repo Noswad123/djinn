@@ -8,6 +8,7 @@ import { ConversationProjection } from "./conversation-projection"
 import { WebSharing } from "./web-sharing"
 import { ClosedJson } from "./closed-json"
 import { attachmentContext } from "../coven/attachment-transport"
+import { DecisionControl } from "./decision-control"
 
 export const CONTRACT = "djinn.interactive-prompt.v1"
 export const MAX_PROMPT_BYTES = 65536
@@ -33,6 +34,7 @@ interface Options {
   warn?: () => void
   sharing?: WebSharing.Sharing
   association?: (sessionID: string) => Promise<AssociationSample | undefined>
+  decisions?: DecisionControl.Callbacks
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -115,6 +117,8 @@ export async function start(options: Options): Promise<{ runtimeID?: string; clo
   async function dispatch(raw: Buffer) {
     let id: unknown = null
     let admitting = false
+    let deciding = false
+    let decisionRequest = false
     try {
       const text = new TextDecoder("utf-8", { fatal: true }).decode(raw)
       const request: unknown = options.sharing ? ClosedJson.parse(text) : JSON.parse(text)
@@ -131,6 +135,7 @@ export async function start(options: Options): Promise<{ runtimeID?: string; clo
           ...(options.conversation ? { conversation_read: ConversationProjection.CAPABILITY } : {}),
           ...(options.sharing ? { web_sharing: { contract: WebSharing.CONTRACT, version: 1 } } : {}),
           ...(options.sharing && options.association ? { card_association: { contract: ASSOCIATION_CONTRACT, version: 1 } } : {}),
+          ...(options.sharing && options.decisions ? { decision_control: DecisionControl.CAPABILITY } : {}),
         } }
       }
       const params = request.params
@@ -145,6 +150,71 @@ export async function start(options: Options): Promise<{ runtimeID?: string; clo
         return { version: 1, id, runtime_id: runtimeID, result: {
           type: "share_status", contract: WebSharing.CONTRACT,
           grant: grant && finalFence() && shared.current(grant.grant_id, grant.session_id) ? grant : null,
+        } }
+      }
+      if (shared && ["shared_attention", "shared_decision", "shared_decide"].includes(request.method as string)) {
+        decisionRequest = true
+        const callbacks = options.decisions
+        if (!callbacks) return rejectShared("decision_unsupported")
+        const mutation = request.method === "shared_decide"
+        const fields = ["expected_runtime_id", "session_id", "grant_id"]
+        if (request.method !== "shared_attention") fields.push("kind", "request_id", "occurrence_id", "details_sha256")
+        if (mutation) fields.push("action")
+        if (!keys(params, fields) || typeof params.expected_runtime_id !== "string" || !UUID.test(params.expected_runtime_id) ||
+            typeof params.session_id !== "string" || !SESSION.test(params.session_id) || typeof params.grant_id !== "string" || !UUID.test(params.grant_id)) return rejectShared("invalid_decision")
+        if (params.expected_runtime_id !== runtimeID) return rejectShared("runtime_mismatch")
+        if (mutation && shared.mode !== "read_write") return rejectShared("sharing_read_only")
+        if (mutation && !callbacks.enabled) return rejectShared("decision_unavailable")
+        const sid = params.session_id
+        const grant = params.grant_id
+        if (!await shared.sample(grant, sid)) return rejectShared("grant_unavailable")
+        const current = (context?: object) => finalFence() && shared.current(grant, sid, context)
+        const respond = (value: object, valid: () => boolean) => () => {
+          if (!current()) return rejectShared("grant_unavailable")
+          if (!valid()) return rejectShared("decision_stale")
+          const reply = { version: 1, id, runtime_id: runtimeID, result: value }
+          return Buffer.byteLength(JSON.stringify(reply) + "\n") <= 65536 ? reply : rejectShared("decision_unavailable")
+        }
+        if (request.method === "shared_attention") {
+          const sample = await callbacks.attention(sid)
+          if (!sample) return rejectShared("decision_unavailable")
+          await fence()
+          return respond({ type: "shared_attention", contract: DecisionControl.CONTRACT, grant_id: grant, session_id: sid,
+            ...sample.value, can_respond: shared.mode === "read_write" && callbacks.enabled }, sample.current)
+        }
+        if ((params.kind !== "question" && params.kind !== "permission") || !DecisionControl.nativeID(params.request_id) ||
+            typeof params.occurrence_id !== "string" || !UUID.test(params.occurrence_id) ||
+            typeof params.details_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(params.details_sha256)) return rejectShared("invalid_decision")
+        const ref: DecisionControl.Reference = { kind: params.kind, request_id: params.request_id,
+          occurrence_id: params.occurrence_id, details_sha256: params.details_sha256 }
+        const sample = await callbacks.detail(sid, ref)
+        if (!sample) return rejectShared("decision_stale")
+        if (!mutation) {
+          await fence()
+          return respond({ type: "shared_decision", contract: DecisionControl.CONTRACT, grant_id: grant, session_id: sid,
+            decision: sample.value }, sample.current)
+        }
+        const action = params.action as DecisionControl.Action
+        if (!DecisionControl.validAction(sample.value, action)) return rejectShared("invalid_decision")
+        if (seen.has(id)) return rejectShared("request_already_seen")
+        if (seen.size >= 1024) return rejectShared("request_capacity")
+        if (!await shared.sample(grant, sid)) return rejectShared("grant_unavailable")
+        await fence()
+        if (!current() || !sample.current()) return rejectShared("decision_stale")
+        if (seen.has(id)) return rejectShared("request_already_seen")
+        if (seen.size >= 1024) return rejectShared("request_capacity")
+        seen.add(id)
+        const result = await callbacks.decide({ ...ref, session_id: sid, action,
+          current: (context) => shared.mode === "read_write" && callbacks.enabled && current(context),
+          onClaim: () => { deciding = true } })
+        if (result !== "applied") {
+          if (deciding) throw new Error("unexpected post-claim result")
+          return rejectShared(result)
+        }
+        if (!deciding) throw new Error("missing claim")
+        return { version: 1, id, runtime_id: runtimeID, result: {
+          type: "shared_decision_applied", contract: DecisionControl.CONTRACT, grant_id: grant, session_id: sid,
+          request_id: ref.request_id, occurrence_id: ref.occurrence_id, action: action.type,
         } }
       }
       if (shared) {
@@ -255,8 +325,8 @@ export async function start(options: Options): Promise<{ runtimeID?: string; clo
       } }
     } catch {
       return { version: 1, id: typeof id === "string" && UUID.test(id) ? id : null, runtime_id: runtimeID,
-        error: { code: admitting ? "admission_uncertain" : "request_unavailable",
-          delivery: admitting ? "uncertain" : "rejected" } }
+        error: { code: deciding ? "decision_uncertain" : admitting ? "admission_uncertain" : decisionRequest ? "decision_unavailable" : "request_unavailable",
+          delivery: deciding || admitting ? "uncertain" : "rejected" } }
     }
   }
 

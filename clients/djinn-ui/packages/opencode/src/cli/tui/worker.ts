@@ -26,7 +26,7 @@ const promptControl = startOptionalService(async () => {
     const cfg = await WebSharingPublication.configuration()
     if (!cfg || stopping) return { close: async () => {} }
     const { PromptControlRuntime } = await import("@/session/prompt-control-runtime")
-    const callbacks = PromptControlRuntime.automaticCallbacks(process.cwd())
+    const callbacks = PromptControlRuntime.automaticCallbacks(process.cwd(), cfg.decisionControl)
     sharing = WebSharing.create({ directory: process.cwd(), mode: cfg.mode, qualify: callbacks.qualify })
     return WebSharingPublication.start({ registry: cfg.registry, sharing,
       callbacks: { ...callbacks, association: async (sessionID) => covenAttachment.association(sessionID) } })

@@ -6,10 +6,17 @@ import { Deferred, Effect, Layer, Context } from "effect"
 import os from "os"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { DecisionControl } from "@/session/decision-control"
 
 export const Event = PermissionV1.Event
 
 export interface Interface {
+  readonly attention: (sessionID: string) => Effect.Effect<DecisionControl.Sample<DecisionControl.Summary>>
+  readonly decision: (
+    sessionID: string,
+    ref: DecisionControl.Reference,
+  ) => Effect.Effect<DecisionControl.Sample<DecisionControl.Detail> | undefined>
+  readonly resolve: (input: DecisionControl.Resolve) => Effect.Effect<DecisionControl.Result>
   readonly ask: (input: PermissionV1.AskInput) => Effect.Effect<void, PermissionV1.Error>
   readonly reply: (input: PermissionV1.ReplyInput) => Effect.Effect<void, PermissionV1.NotFoundError>
   readonly list: () => Effect.Effect<ReadonlyArray<PermissionV1.Request>>
@@ -17,11 +24,13 @@ export interface Interface {
 
 interface PendingEntry {
   info: PermissionV1.Request
+  readonly occurrence_id: string
+  readonly detail?: DecisionControl.Detail
   deferred: Deferred.Deferred<void, PermissionV1.RejectedError | PermissionV1.CorrectedError>
 }
 
 interface State {
-  pending: Map<PermissionV1.ID, PendingEntry>
+  pending: DecisionControl.PendingMap<PermissionV1.ID, PendingEntry>
   approved: PermissionV1.Rule[]
 }
 
@@ -47,20 +56,21 @@ const layer = Layer.effect(
       Effect.fn("Permission.state")(function* (ctx) {
         void ctx
         const state = {
-          pending: new Map<PermissionV1.ID, PendingEntry>(),
+          pending: new DecisionControl.PendingMap<PermissionV1.ID, PendingEntry>(),
           approved: [],
         }
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            for (const item of state.pending.values()) {
-              state.pending.delete(item.info.id)
-              yield* events
-                .publish(Event.Cancelled, { sessionID: item.info.sessionID, requestID: item.info.id })
-                .pipe(Effect.catchCause(() => Effect.void))
-              yield* Deferred.fail(item.deferred, new PermissionV1.RejectedError())
+            const batch = [...state.pending.values()].filter((item) => state.pending.claim(item.info.id, item))
+            for (const item of batch) yield* Deferred.fail(item.deferred, new PermissionV1.RejectedError())
+            for (const item of batch) {
+              yield* events.publish(Event.Cancelled, { sessionID: item.info.sessionID, requestID: item.info.id }).pipe(
+                Effect.interruptible,
+                Effect.timeout("100 millis"),
+                Effect.catchCause(() => Effect.void),
+              )
             }
-            state.pending.clear()
           }),
         )
 
@@ -88,7 +98,7 @@ const layer = Layer.effect(
       if (!needsAsk) return
 
       const id = request.id ?? PermissionV1.ID.ascending()
-      const info: PermissionV1.Request = {
+      const captured = DecisionControl.capture("permission", {
         id,
         sessionID: request.sessionID,
         permission: request.permission,
@@ -96,93 +106,126 @@ const layer = Layer.effect(
         metadata: request.metadata,
         always: request.always,
         tool: request.tool,
-      }
+      })
+      const info: PermissionV1.Request = captured.info
       yield* Effect.logInfo("asking", { id, permission: info.permission, patterns: info.patterns })
 
       const deferred = yield* Deferred.make<void, PermissionV1.RejectedError | PermissionV1.CorrectedError>()
       // Register cleanup before restoring interruption of the native wait.
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          pending.set(id, { info, deferred })
+          const previous = pending.get(id)
+          if (previous) {
+            pending.claim(id, previous)
+            yield* Deferred.fail(previous.deferred, new PermissionV1.RejectedError())
+          }
+          pending.set(id, { ...captured, deferred })
           return yield* Effect.ensuring(
-            events.publish(Event.Asked, info).pipe(Effect.andThen(restore(Deferred.await(deferred)))),
+            events.publish(Event.Asked, info).pipe(
+              Effect.interruptible,
+              Effect.timeout("100 millis"),
+              Effect.catchCause(() => Effect.void),
+              Effect.andThen(restore(Deferred.await(deferred))),
+            ),
             Effect.gen(function* () {
-              if (pending.get(id)?.deferred !== deferred || !pending.delete(id)) return
-              yield* events
-                .publish(Event.Cancelled, { sessionID: info.sessionID, requestID: id })
-                .pipe(Effect.catchCause(() => Effect.void))
+              const entry = pending.get(id)
+              if (!entry || entry.deferred !== deferred || !pending.claim(id, entry)) return
+              yield* events.publish(Event.Cancelled, { sessionID: info.sessionID, requestID: id }).pipe(
+                Effect.interruptible,
+                Effect.timeout("100 millis"),
+                Effect.catchCause(() => Effect.void),
+              )
             }),
           )
         }),
       )
     })
 
-    const reply = Effect.fn("Permission.reply")(function* (input: PermissionV1.ReplyInput) {
-      const { approved, pending } = yield* InstanceState.get(state)
-      const existing = pending.get(input.requestID)
-      if (!existing) return yield* new PermissionV1.NotFoundError({ requestID: input.requestID })
-
-      pending.delete(input.requestID)
-      yield* events.publish(Event.Replied, {
-        sessionID: existing.info.sessionID,
-        requestID: existing.info.id,
-        reply: input.reply,
-      })
-
-      if (input.reply === "reject") {
-        yield* Deferred.fail(
-          existing.deferred,
-          input.message
-            ? new PermissionV1.CorrectedError({ feedback: input.message })
-            : new PermissionV1.RejectedError(),
-        )
-
-        for (const [id, item] of pending.entries()) {
-          if (item.info.sessionID !== existing.info.sessionID) continue
-          pending.delete(id)
-          yield* events.publish(Event.Replied, {
-            sessionID: item.info.sessionID,
-            requestID: item.info.id,
-            reply: "reject",
-          })
-          yield* Deferred.fail(item.deferred, new PermissionV1.RejectedError())
+    // Capture and remove the entire denial/always batch synchronously, before any publication.
+    const claim = (data: State, existing: PendingEntry, reply: PermissionV1.ReplyInput["reply"]) => {
+      if (!data.pending.claim(existing.info.id, existing)) return []
+      const batch = [existing]
+      if (reply === "always")
+        for (const pattern of existing.info.always) {
+          data.approved.push({ permission: existing.info.permission, pattern, action: "allow" })
         }
-        return
-      }
+      if (reply !== "once")
+        for (const [id, item] of data.pending) {
+          if (item.info.sessionID !== existing.info.sessionID) continue
+          if (
+            reply === "always" &&
+            !item.info.patterns.every(
+              (pattern) => evaluate(item.info.permission, pattern, data.approved).action === "allow",
+            )
+          )
+            continue
+          data.pending.claim(id, item)
+          batch.push(item)
+        }
+      return batch
+    }
+    const settle = (batch: PendingEntry[], reply: PermissionV1.ReplyInput["reply"], message?: string) =>
+      Effect.gen(function* () {
+        for (const [i, item] of batch.entries()) {
+          if (reply === "reject")
+            yield* Deferred.fail(
+              item.deferred,
+              i === 0 && message
+                ? new PermissionV1.CorrectedError({ feedback: message })
+                : new PermissionV1.RejectedError(),
+            )
+          else yield* Deferred.succeed(item.deferred, undefined)
+        }
+        for (const item of batch)
+          yield* events
+            .publish(Event.Replied, {
+              sessionID: item.info.sessionID,
+              requestID: item.info.id,
+              reply,
+            })
+            .pipe(
+              Effect.interruptible,
+              Effect.timeout("100 millis"),
+              Effect.catchCause(() => Effect.void),
+            )
+      }).pipe(Effect.uninterruptible)
 
-      yield* Deferred.succeed(existing.deferred, undefined)
-      if (input.reply === "once") return
+    const reply = Effect.fn("Permission.reply")(function* (input: PermissionV1.ReplyInput) {
+      const data = yield* InstanceState.get(state)
+      const existing = data.pending.get(input.requestID)
+      if (!existing) return yield* new PermissionV1.NotFoundError({ requestID: input.requestID })
+      const batch = claim(data, existing, input.reply)
+      yield* settle(batch, input.reply, input.message)
+    }, Effect.uninterruptible)
 
-      for (const pattern of existing.info.always) {
-        approved.push({
-          permission: existing.info.permission,
-          pattern,
-          action: "allow",
-        })
-      }
-
-      for (const [id, item] of pending.entries()) {
-        if (item.info.sessionID !== existing.info.sessionID) continue
-        const ok = item.info.patterns.every(
-          (pattern) => evaluate(item.info.permission, pattern, approved).action === "allow",
-        )
-        if (!ok) continue
-        pending.delete(id)
-        yield* events.publish(Event.Replied, {
-          sessionID: item.info.sessionID,
-          requestID: item.info.id,
-          reply: "always",
-        })
-        yield* Deferred.succeed(item.deferred, undefined)
-      }
+    const attention = Effect.fn("Permission.attention")(function* (sessionID: string) {
+      return DecisionControl.summary((yield* InstanceState.get(state)).pending, sessionID)
     })
+    const decision = Effect.fn("Permission.decision")(function* (sessionID: string, ref: DecisionControl.Reference) {
+      const pending = (yield* InstanceState.get(state)).pending
+      const entry = DecisionControl.lookup(pending, sessionID, ref)
+      return entry?.detail ? { value: entry.detail, current: () => pending.get(entry.info.id) === entry } : undefined
+    })
+    const resolve = Effect.fn("Permission.resolve")(function* (input: DecisionControl.Resolve) {
+      const data = yield* InstanceState.get(state)
+      const entry = DecisionControl.lookup(data.pending, input.session_id, input)
+      if (!entry?.detail) return "decision_stale" as const
+      if (!DecisionControl.validAction(entry.detail, input.action)) return "invalid_decision" as const
+      if (!input.current()) return "decision_stale" as const
+      input.onClaim()
+      const reply = input.action.type === "permission_once" ? "once" : "reject"
+      const batch = claim(data, entry, reply)
+      if (!batch.length) return "decision_stale" as const
+      yield* settle(batch, reply)
+      return "applied" as const
+    }, Effect.uninterruptible)
 
     const list = Effect.fn("Permission.list")(function* () {
       const pending = (yield* InstanceState.get(state)).pending
       return Array.from(pending.values(), (item) => item.info)
     })
 
-    return Service.of({ ask, reply, list })
+    return Service.of({ ask, reply, list, attention, decision, resolve })
   }),
 )
 

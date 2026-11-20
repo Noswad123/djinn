@@ -44,6 +44,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
+import { SessionScope } from "@opencode-ai/core/session/scope"
 
 const parentTitlePrefix = "New session - "
 const childTitlePrefix = "Child session - "
@@ -413,6 +414,8 @@ export class BusyError extends Schema.TaggedErrorClass<BusyError>()("SessionBusy
 export type NotFound = NotFoundError
 
 export interface Interface {
+  /** Private synchronous fence; capture before reading session eligibility. */
+  readonly scopeFence: (sessionID: SessionID) => Effect.Effect<() => boolean>
   readonly list: (input?: ListInput) => Effect.Effect<Info[]>
   readonly listGlobal: (input?: GlobalListInput) => Effect.Effect<GlobalInfo[]>
   readonly create: (input?: {
@@ -498,6 +501,11 @@ const layer: Layer.Layer<
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
 
+    const scopeFence: Interface["scopeFence"] = (sessionID) =>
+      Effect.sync(() => SessionScope.capture(db.$client, sessionID))
+    const scopeMutation = <A, E, R>(sessionID: SessionID, effect: Effect.Effect<A, E, R>) =>
+      SessionScope.mutate(db.$client, sessionID, effect)
+
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
       title?: string
@@ -534,7 +542,7 @@ const layer: Layer.Layer<
       }
       yield* Effect.logInfo("created", result)
 
-      yield* events.publish(SessionV1.Event.Created, { sessionID: result.id, info: result })
+      yield* scopeMutation(result.id, events.publish(SessionV1.Event.Created, { sessionID: result.id, info: result }))
 
       return result
     })
@@ -605,28 +613,31 @@ const layer: Layer.Layer<
       return rows.map(fromRow)
     })
 
-    const remove: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const session = yield* get(sessionID)
-      try {
-        // `remove` needs to work in all cases, such as broken sessions that
-        // run cleanup without instance state.
-        const hasInstance = yield* InstanceState.directory.pipe(
-          Effect.as(true),
-          Effect.catchCause(() => Effect.succeed(false)),
-        )
+    const remove: Interface["remove"] = Effect.fnUntraced(
+      function* (sessionID: SessionID) {
+        const session = yield* get(sessionID)
+        try {
+          // `remove` needs to work in all cases, such as broken sessions that
+          // run cleanup without instance state.
+          const hasInstance = yield* InstanceState.directory.pipe(
+            Effect.as(true),
+            Effect.catchCause(() => Effect.succeed(false)),
+          )
 
-        if (hasInstance) yield* cancelBackgroundJobs(background, sessionID)
-        const kids = yield* children(sessionID)
-        for (const child of kids) {
-          yield* remove(child.id)
+          if (hasInstance) yield* cancelBackgroundJobs(background, sessionID)
+          const kids = yield* children(sessionID)
+          for (const child of kids) {
+            yield* remove(child.id)
+          }
+
+          yield* events.publish(SessionV1.Event.Deleted, { sessionID, info: session })
+          yield* events.remove(sessionID)
+        } catch (error) {
+          yield* Effect.logError("failed to remove session", { sessionID, error })
         }
-
-        yield* events.publish(SessionV1.Event.Deleted, { sessionID, info: session })
-        yield* events.remove(sessionID)
-      } catch (error) {
-        yield* Effect.logError("failed to remove session", { sessionID, error })
-      }
-    })
+      },
+      (effect, sessionID) => scopeMutation(sessionID, effect),
+    )
 
     const updateMessage = <T extends SessionV1.Info>(msg: T): Effect.Effect<T> =>
       Effect.gen(function* () {
@@ -734,19 +745,22 @@ const layer: Layer.Layer<
     })
 
     const patch = (sessionID: SessionID, info: Patch) =>
-      Effect.gen(function* () {
-        const current = yield* get(sessionID)
-        const next = {
-          ...current,
-          ...info,
-          time: info.time ? { ...current.time, ...info.time } : current.time,
-          share: info.share === null ? undefined : info.share ? { ...current.share, ...info.share } : current.share,
-          summary: info.summary === null ? undefined : (info.summary ?? current.summary),
-          revert: info.revert === null ? undefined : (info.revert ?? current.revert),
-          permission: info.permission === null ? undefined : (info.permission ?? current.permission),
-        } as Info
-        yield* events.publish(SessionV1.Event.Updated, { sessionID, info: next })
-      })
+      scopeMutation(
+        sessionID,
+        Effect.gen(function* () {
+          const current = yield* get(sessionID)
+          const next = {
+            ...current,
+            ...info,
+            time: info.time ? { ...current.time, ...info.time } : current.time,
+            share: info.share === null ? undefined : info.share ? { ...current.share, ...info.share } : current.share,
+            summary: info.summary === null ? undefined : (info.summary ?? current.summary),
+            revert: info.revert === null ? undefined : (info.revert ?? current.revert),
+            permission: info.permission === null ? undefined : (info.permission ?? current.permission),
+          } as Info
+          yield* events.publish(SessionV1.Event.Updated, { sessionID, info: next })
+        }),
+      )
 
     const touch = Effect.fn("Session.touch")(function* (sessionID: SessionID) {
       yield* patch(sessionID, { time: { updated: Date.now() } }).pipe(Effect.orDie)
@@ -906,6 +920,7 @@ const layer: Layer.Layer<
     })
 
     return Service.of({
+      scopeFence,
       list,
       listGlobal,
       create,

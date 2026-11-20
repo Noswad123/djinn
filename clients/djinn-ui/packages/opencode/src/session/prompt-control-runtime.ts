@@ -9,6 +9,10 @@ import { SessionPrompt } from "./prompt"
 import { SessionID } from "./schema"
 import { ConversationRead } from "./conversation-read"
 import { WebSharing } from "./web-sharing"
+import { lstatSync, realpathSync } from "node:fs"
+import { Question } from "@/question"
+import { Permission } from "@/permission"
+import { DecisionControl } from "./decision-control"
 
 export function configuration(session: Pick<Session.Info, "agent" | "model">) {
   if (!session.agent || !session.model) return undefined
@@ -78,7 +82,7 @@ export function callbacks(directory: string) {
 }
 
 /** Automatic sharing never bootstraps a context, including at admission. */
-export function automaticCallbacks(directory: string) {
+export function automaticCallbacks(directory: string, decisionEnabled = false) {
   const identity = Promise.all([lstat(directory), realpath(directory)]).catch(() => undefined)
   const unchanged = async () => {
     const startup = await identity
@@ -97,7 +101,63 @@ export function automaticCallbacks(directory: string) {
         (yield* store.peek(directory)) !== ctx) return undefined
     return { context: ctx, canSubmit: configuration(session) !== undefined }
   }).pipe(Effect.catchCause(() => Effect.succeed(undefined))))
+  const decisionContext = async (sessionID: string) => {
+    const scopeCurrent = await AppRuntime.runPromise(
+      Session.Service.use((sessions) => sessions.scopeFence(SessionID.make(sessionID))),
+    )
+    if (!scopeCurrent()) return undefined
+    const qualified = await qualify({ sessionID, directory })
+    const startup = await identity
+    if (!qualified || !startup) return undefined
+    const store = await AppRuntime.runPromise(InstanceStore.Service)
+    const current = () => {
+      try {
+        const stat = lstatSync(directory)
+        return stat.isDirectory() && !stat.isSymbolicLink() && stat.dev === startup[0].dev && stat.ino === startup[0].ino &&
+          realpathSync(directory) === startup[1] && store.activeFence(qualified.context) && scopeCurrent()
+      } catch { return false }
+    }
+    return { context: qualified.context, current }
+  }
+  const decisions: DecisionControl.Callbacks = {
+    enabled: decisionEnabled,
+    async attention(sid) {
+      const ctx = await decisionContext(sid)
+      if (!ctx) return undefined
+      return AppRuntime.runPromise(Effect.gen(function* () {
+        const questions = yield* Question.Service
+        const permissions = yield* Permission.Service
+        const q = yield* questions.attention(sid)
+        const p = yield* permissions.attention(sid)
+        const all = [...q.value.requests, ...p.value.requests]
+        const complete = q.value.complete && p.value.complete && all.length <= 32
+        return { value: { requests: all.slice(0, 32), complete,
+          omitted_count: q.value.omitted_count !== null && p.value.omitted_count !== null
+            ? q.value.omitted_count + p.value.omitted_count + Math.max(0, all.length - 32) : null },
+          current: () => ctx.current() && q.current() && p.current() }
+      }).pipe(Effect.provideService(InstanceRef, ctx.context)))
+    },
+    async detail(sid, ref) {
+      const ctx = await decisionContext(sid)
+      if (!ctx) return undefined
+      return AppRuntime.runPromise(Effect.gen(function* () {
+        const service = ref.kind === "question" ? yield* Question.Service : yield* Permission.Service
+        const sample = yield* service.decision(sid, ref)
+        return sample ? { value: sample.value, current: () => ctx.current() && sample.current() } : undefined
+      }).pipe(Effect.provideService(InstanceRef, ctx.context)))
+    },
+    async decide(input) {
+      if (!decisionEnabled) return "decision_unavailable"
+      const ctx = await decisionContext(input.session_id)
+      if (!ctx) return "decision_stale"
+      return AppRuntime.runPromise(Effect.gen(function* () {
+        const service = input.kind === "question" ? yield* Question.Service : yield* Permission.Service
+        return yield* service.resolve({ ...input, current: () => ctx.current() && input.current(ctx.context) })
+      }).pipe(Effect.provideService(InstanceRef, ctx.context)))
+    },
+  }
   return {
+    decisions,
     qualify,
     async inspect(sessionID: string) {
       return (await qualify({ sessionID, directory }))?.canSubmit === true

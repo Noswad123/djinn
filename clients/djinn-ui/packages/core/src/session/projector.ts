@@ -13,6 +13,7 @@ import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
 import { SessionContextEpoch } from "./context-epoch"
+import { SessionScope } from "./scope"
 import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
 import type { DeepMutable } from "../schema"
 
@@ -213,51 +214,69 @@ const layer = Layer.effectDiscard(
     const events = yield* EventV2.Service
     const { db } = yield* Database.Service
     yield* events.project(SessionV1.Event.Created, (event) =>
-      Effect.gen(function* () {
-        const stored = yield* db
-          .insert(SessionTable)
-          .values(sessionRow(event.data.info))
-          .onConflictDoNothing()
-          .returning({ sessionID: SessionTable.id })
-          .get()
-          .pipe(Effect.orDie)
-        if (!stored) return yield* Effect.die(new SessionAlreadyProjected())
-        if (event.data.info.workspaceID) {
-          yield* db
-            .update(WorkspaceTable)
-            .set({ time_used: Date.now() })
-            .where(eq(WorkspaceTable.id, event.data.info.workspaceID))
-            .run()
+      SessionScope.mutate(
+        db.$client,
+        event.data.sessionID,
+        Effect.gen(function* () {
+          const stored = yield* db
+            .insert(SessionTable)
+            .values(sessionRow(event.data.info))
+            .onConflictDoNothing()
+            .returning({ sessionID: SessionTable.id })
+            .get()
             .pipe(Effect.orDie)
-        }
-      }),
+          if (!stored) return yield* Effect.die(new SessionAlreadyProjected())
+          if (event.data.info.workspaceID) {
+            yield* db
+              .update(WorkspaceTable)
+              .set({ time_used: Date.now() })
+              .where(eq(WorkspaceTable.id, event.data.info.workspaceID))
+              .run()
+              .pipe(Effect.orDie)
+          }
+        }),
+      ),
     )
     yield* events.project(SessionV1.Event.Updated, (event) =>
-      db
-        .update(SessionTable)
-        .set(sessionRow(event.data.info))
-        .where(eq(SessionTable.id, event.data.sessionID))
-        .run()
-        .pipe(Effect.orDie),
-    )
-    yield* events.project(SessionEvent.Moved, (event) =>
-      Effect.gen(function* () {
-        yield* db
+      SessionScope.mutate(
+        db.$client,
+        event.data.sessionID,
+        db
           .update(SessionTable)
-          .set({
-            directory: event.data.location.directory,
-            path: event.data.subdirectory,
-            workspace_id: event.data.location.workspaceID ? WorkspaceV2.ID.make(event.data.location.workspaceID) : null,
-            time_updated: DateTime.toEpochMillis(event.data.timestamp),
-          })
+          .set(sessionRow(event.data.info))
           .where(eq(SessionTable.id, event.data.sessionID))
           .run()
-          .pipe(Effect.orDie)
-        yield* SessionContextEpoch.reset(db, event.data.sessionID)
-      }),
+          .pipe(Effect.orDie),
+      ),
+    )
+    yield* events.project(SessionEvent.Moved, (event) =>
+      SessionScope.mutate(
+        db.$client,
+        event.data.sessionID,
+        Effect.gen(function* () {
+          yield* db
+            .update(SessionTable)
+            .set({
+              directory: event.data.location.directory,
+              path: event.data.subdirectory,
+              workspace_id: event.data.location.workspaceID
+                ? WorkspaceV2.ID.make(event.data.location.workspaceID)
+                : null,
+              time_updated: DateTime.toEpochMillis(event.data.timestamp),
+            })
+            .where(eq(SessionTable.id, event.data.sessionID))
+            .run()
+            .pipe(Effect.orDie)
+          yield* SessionContextEpoch.reset(db, event.data.sessionID)
+        }),
+      ),
     )
     yield* events.project(SessionV1.Event.Deleted, (event) =>
-      db.delete(SessionTable).where(eq(SessionTable.id, event.data.sessionID)).run().pipe(Effect.orDie),
+      SessionScope.mutate(
+        db.$client,
+        event.data.sessionID,
+        db.delete(SessionTable).where(eq(SessionTable.id, event.data.sessionID)).run().pipe(Effect.orDie),
+      ),
     )
     yield* events.project(SessionV1.Event.MessageUpdated, (event) =>
       Effect.gen(function* () {

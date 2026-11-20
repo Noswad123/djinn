@@ -10,6 +10,7 @@ import { DatabaseMigration } from "./migration"
 import { InstallationChannel } from "../installation/version"
 import { makeGlobalNode } from "../effect/app-node"
 import { EventStorageGuard } from "../event/storage-guard"
+import { SessionScope } from "../session/scope"
 
 const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
 type DatabaseShape = Effect.Success<typeof makeDatabase>
@@ -24,6 +25,9 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const db = yield* makeDatabase
+    const transaction = db.transaction.bind(db)
+    db.transaction = (body, config) => SessionScope.transaction(db.$client, transaction(body, config))
+    yield* Effect.addFinalizer(() => Effect.sync(() => SessionScope.close(db.$client)))
 
     yield* db.run("PRAGMA journal_mode = WAL")
     yield* db.run("PRAGMA synchronous = NORMAL")

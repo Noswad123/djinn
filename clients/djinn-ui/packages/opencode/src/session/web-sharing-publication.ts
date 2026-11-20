@@ -48,11 +48,12 @@ export async function configuration(env: NodeJS.ProcessEnv = process.env, before
       const value = ClosedJson.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, read.bytesRead)))
       if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
       const cfg = value as Record<string, unknown>
-      if (Object.keys(cfg).sort().join() !== "mode,registry_directory,version" || cfg.version !== 1 ||
+      if (Object.keys(cfg).some((key) => !["mode", "registry_directory", "version", "decision_control"].includes(key)) ||
+          (cfg.decision_control !== undefined && typeof cfg.decision_control !== "boolean") || cfg.version !== 1 ||
           typeof cfg.mode !== "string" || !["off", "read", "read_write"].includes(cfg.mode) || typeof cfg.registry_directory !== "string" ||
           !path.isAbsolute(cfg.registry_directory) || path.normalize(cfg.registry_directory) !== cfg.registry_directory ||
           /[\x00-\x1f\x7f-\x9f]/u.test(cfg.registry_directory) || cfg.mode === "off") return undefined
-      return { mode: cfg.mode as "read" | "read_write", registry: cfg.registry_directory }
+      return { mode: cfg.mode as "read" | "read_write", registry: cfg.registry_directory, decisionControl: cfg.decision_control === true }
     } finally { await handle.close() }
   } catch { return undefined }
 }
@@ -60,7 +61,7 @@ export async function configuration(env: NodeJS.ProcessEnv = process.env, before
 export async function start(options: {
   registry: string
   sharing: WebSharing.Sharing
-  callbacks: Pick<Parameters<typeof PromptControl.start>[0], "inspect" | "admit" | "conversation" | "association">
+  callbacks: Pick<Parameters<typeof PromptControl.start>[0], "inspect" | "admit" | "conversation" | "association" | "decisions">
   // Short private runtime parent, not the potentially long registry path.
   runtimeParent?: string
 }) {

@@ -18,6 +18,7 @@ export interface LoadInput {
 }
 
 export interface Interface {
+  readonly activeFence: (ctx: InstanceContext) => boolean
   /** Observe only an already-active generation; never wait, load or bootstrap. */
   readonly peek: (directory: string) => Effect.Effect<InstanceContext | undefined>
   readonly load: (input: LoadInput) => Effect.Effect<InstanceContext>
@@ -206,6 +207,10 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
     yield* Effect.addFinalizer(() => disposeAll().pipe(Effect.ignore))
 
     return Service.of({
+      activeFence: (ctx) => {
+        const entry = cache.get(ctx.directory)
+        return entry?.active === ctx && !entry.retiring
+      },
       peek,
       load,
       reload,

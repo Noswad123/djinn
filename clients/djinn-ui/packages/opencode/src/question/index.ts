@@ -5,6 +5,7 @@ import { SessionID } from "@/session/schema"
 import { QuestionID } from "./schema"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { QuestionV1 } from "@opencode-ai/schema/question-v1"
+import { DecisionControl } from "@/session/decision-control"
 
 export const Option = QuestionV1.Option
 export type Option = typeof Option.Type
@@ -36,16 +37,24 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Que
 
 interface PendingEntry {
   info: Request
+  readonly occurrence_id: string
+  readonly detail?: DecisionControl.Detail
   deferred: Deferred.Deferred<ReadonlyArray<Answer>, RejectedError>
 }
 
 interface State {
-  pending: Map<QuestionID, PendingEntry>
+  pending: DecisionControl.PendingMap<QuestionID, PendingEntry>
 }
 
 // Service
 
 export interface Interface {
+  readonly attention: (sessionID: string) => Effect.Effect<DecisionControl.Sample<DecisionControl.Summary>>
+  readonly decision: (
+    sessionID: string,
+    ref: DecisionControl.Reference,
+  ) => Effect.Effect<DecisionControl.Sample<DecisionControl.Detail> | undefined>
+  readonly resolve: (input: DecisionControl.Resolve) => Effect.Effect<DecisionControl.Result>
   readonly ask: (input: {
     sessionID: SessionID
     questions: ReadonlyArray<Info>
@@ -68,19 +77,20 @@ const layer = Layer.effect(
     const state = yield* InstanceState.make<State>(
       Effect.fn("Question.state")(function* () {
         const state = {
-          pending: new Map<QuestionID, PendingEntry>(),
+          pending: new DecisionControl.PendingMap<QuestionID, PendingEntry>(),
         }
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            for (const item of state.pending.values()) {
-              state.pending.delete(item.info.id)
-              yield* events
-                .publish(Event.Cancelled, { sessionID: item.info.sessionID, requestID: item.info.id })
-                .pipe(Effect.catchCause(() => Effect.void))
-              yield* Deferred.fail(item.deferred, new RejectedError())
+            const batch = [...state.pending.values()].filter((item) => state.pending.claim(item.info.id, item))
+            for (const item of batch) yield* Deferred.fail(item.deferred, new RejectedError())
+            for (const item of batch) {
+              yield* events.publish(Event.Cancelled, { sessionID: item.info.sessionID, requestID: item.info.id }).pipe(
+                Effect.interruptible,
+                Effect.timeout("100 millis"),
+                Effect.catchCause(() => Effect.void),
+              )
             }
-            state.pending.clear()
           }),
         )
 
@@ -98,28 +108,59 @@ const layer = Layer.effect(
       yield* Effect.logInfo("asking", { id, questions: input.questions.length })
 
       const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
-      const info: Request = {
+      const captured = DecisionControl.capture("question", {
         id,
         sessionID: input.sessionID,
         questions: input.questions,
         tool: input.tool,
-      }
+      })
+      const info: Request = captured.info
       // Register cleanup before restoring interruption of the native wait.
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          pending.set(id, { info, deferred })
+          pending.set(id, { ...captured, deferred })
           return yield* Effect.ensuring(
-            events.publish(Event.Asked, info).pipe(Effect.andThen(restore(Deferred.await(deferred)))),
+            events.publish(Event.Asked, info).pipe(
+              Effect.interruptible,
+              Effect.timeout("100 millis"),
+              Effect.catchCause(() => Effect.void),
+              Effect.andThen(restore(Deferred.await(deferred))),
+            ),
             Effect.gen(function* () {
-              if (pending.get(id)?.deferred !== deferred || !pending.delete(id)) return
-              yield* events
-                .publish(Event.Cancelled, { sessionID: info.sessionID, requestID: id })
-                .pipe(Effect.catchCause(() => Effect.void))
+              const entry = pending.get(id)
+              if (!entry || entry.deferred !== deferred || !pending.claim(id, entry)) return
+              yield* events.publish(Event.Cancelled, { sessionID: info.sessionID, requestID: id }).pipe(
+                Effect.interruptible,
+                Effect.timeout("100 millis"),
+                Effect.catchCause(() => Effect.void),
+              )
             }),
           )
         }),
       )
     })
+
+    const settle = (existing: PendingEntry, answers?: ReadonlyArray<Answer>) =>
+      Effect.gen(function* () {
+        if (answers) yield* Deferred.succeed(existing.deferred, answers)
+        else yield* Deferred.fail(existing.deferred, new RejectedError())
+        const publication = answers
+          ? events
+              .publish(Event.Replied, {
+                sessionID: existing.info.sessionID,
+                requestID: existing.info.id,
+                answers: answers.map((a) => [...a]),
+              })
+              .pipe(Effect.asVoid)
+          : events
+              .publish(Event.Rejected, { sessionID: existing.info.sessionID, requestID: existing.info.id })
+              .pipe(Effect.asVoid)
+        yield* publication.pipe(
+          Effect.interruptible,
+          Effect.timeout("100 millis"),
+          Effect.catchCause(() => Effect.void),
+        )
+      }).pipe(Effect.uninterruptible)
 
     const reply = Effect.fn("Question.reply")(function* (input: {
       requestID: QuestionID
@@ -131,15 +172,9 @@ const layer = Layer.effect(
         yield* Effect.logWarning("reply for unknown request", { requestID: input.requestID })
         return yield* new NotFoundError({ requestID: input.requestID })
       }
-      pending.delete(input.requestID)
-      yield* Effect.logInfo("replied", { requestID: input.requestID, answers: input.answers })
-      yield* events.publish(Event.Replied, {
-        sessionID: existing.info.sessionID,
-        requestID: existing.info.id,
-        answers: input.answers.map((a) => [...a]),
-      })
-      yield* Deferred.succeed(existing.deferred, input.answers)
-    })
+      pending.claim(input.requestID, existing)
+      yield* settle(existing, input.answers)
+    }, Effect.uninterruptible)
 
     const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
       const pending = (yield* InstanceState.get(state)).pending
@@ -148,21 +183,36 @@ const layer = Layer.effect(
         yield* Effect.logWarning("reject for unknown request", { requestID })
         return yield* new NotFoundError({ requestID })
       }
-      pending.delete(requestID)
-      yield* Effect.logInfo("rejected", { requestID })
-      yield* events.publish(Event.Rejected, {
-        sessionID: existing.info.sessionID,
-        requestID: existing.info.id,
-      })
-      yield* Deferred.fail(existing.deferred, new RejectedError())
+      pending.claim(requestID, existing)
+      yield* settle(existing)
+    }, Effect.uninterruptible)
+
+    const attention = Effect.fn("Question.attention")(function* (sessionID: string) {
+      return DecisionControl.summary((yield* InstanceState.get(state)).pending, sessionID)
     })
+    const decision = Effect.fn("Question.decision")(function* (sessionID: string, ref: DecisionControl.Reference) {
+      const pending = (yield* InstanceState.get(state)).pending
+      const entry = DecisionControl.lookup(pending, sessionID, ref)
+      return entry?.detail ? { value: entry.detail, current: () => pending.get(entry.info.id) === entry } : undefined
+    })
+    const resolve = Effect.fn("Question.resolve")(function* (input: DecisionControl.Resolve) {
+      const pending = (yield* InstanceState.get(state)).pending
+      const entry = DecisionControl.lookup(pending, input.session_id, input)
+      if (!entry?.detail) return "decision_stale" as const
+      if (!DecisionControl.validAction(entry.detail, input.action)) return "invalid_decision" as const
+      if (!input.current()) return "decision_stale" as const
+      input.onClaim()
+      if (!pending.claim(entry.info.id, entry)) return "decision_stale" as const
+      yield* settle(entry, input.action.type === "question_answer" ? input.action.answers : undefined)
+      return "applied" as const
+    }, Effect.uninterruptible)
 
     const list = Effect.fn("Question.list")(function* () {
       const pending = (yield* InstanceState.get(state)).pending
       return Array.from(pending.values(), (x) => x.info)
     })
 
-    return Service.of({ ask, reply, reject, list })
+    return Service.of({ ask, reply, reject, list, attention, decision, resolve })
   }),
 )
 
