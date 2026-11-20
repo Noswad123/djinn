@@ -31,14 +31,19 @@ KITSUNE_INTEGRATION_SOURCE=coven
 KITSUNE_INTEGRATION_REPORT_COMMAND=["/absolute/coven","agent","report-native","--from-kitsune","--state-root","/absolute/state-root"]
 ```
 
-After the worker RPC-ready handshake, the frontend asynchronously invokes once:
+The frontend asynchronously retries the read-only worker RPC-ready handshake and
+target capture until its first valid context, for at most ten attempts and 15 seconds
+with bounded backoff. Each readiness RPC has at most a 1500 ms deadline. Capture uses:
 
 ```text
 /absolute/coven agent attachment-target --from-kitsune --state-root /absolute/state-root --json
 ```
 
 Stdin is closed, stderr ignored, stdout capped at 16 KiB, and a 1500 ms deadline
-kills and reaps the child. The closed result has exactly:
+kills and reaps the child. Shutdown cancels startup before observer close, including
+killing/reaping an owned capture child and clearing its timer. Exhaustion starts no
+attachment heartbeat work. Neither attachment mutations nor native prompts are retried.
+The closed result has exactly:
 
 ```json
 {
@@ -57,7 +62,9 @@ kills and reaps the child. The closed result has exactly:
 Epoch is lowercase 32-digit hex, generation is a UUID, and socket must be an
 absolute normalized path. Device/inode are nonnegative exact JS-safe integers;
 larger u64 values fail closed rather than lose precision. Missing commands, old
-Coven, malformed results and capture failures disable this optional producer.
+Coven, malformed results and capture failures disable this optional producer after
+the bounded initial recovery budget. Only the explicit inherited trusted route is
+used; no PID, title, newest-session or single-candidate inference is made.
 The capture is fixed for the frontend lifetime. It is never resampled after a
 replacement terminal, Kit generation, Coven epoch, or native-plugin reload.
 
@@ -150,7 +157,12 @@ worker subprocess streams are latest-only, one active plus one pending. RPC
 deadlines remove pending callbacks and discard late replies. Native lookups have
 a 1-second bound and abort signal; an uncooperative outstanding lookup blocks new
 lookups in that adapter rather than accumulating more work. Revisions, registry
-identity and worker generation fence late results after every lookup.
+identity and worker generation fence late results after every lookup. Unchanged
+heartbeats coalesce pending observations without aborting or invalidating an active
+qualification/status read. Selection/generation changes abort immediately; older
+queued observations cannot restore provenance. The five-second provenance lease
+starts before I/O and only successful qualification can renew it, never completion
+time or a heartbeat alone. Native status keeps its independent query-start budget.
 
 Leaving Chat, changing session/placement and closing produce newer detaches.
 Registry ambiguity/loss, plugin disposal, worker reload and shutdown invalidate

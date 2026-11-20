@@ -10,6 +10,7 @@ export function createAttachmentObserver(input: {
 }) {
   const client = randomUUID()
   let revision = 0
+  let selection_generation = 0
   let selection: NonNullable<AttachmentInput["selection"]> | undefined
   let context: AttachmentContext | undefined
   let closed = false
@@ -26,10 +27,15 @@ export function createAttachmentObserver(input: {
 
   function pump() {
     if (!context || active || !dirty || revision >= Number.MAX_SAFE_INTEGER) return
+    if (selection && !closed && !stopTimer) stopTimer = repeat(() => {
+      dirty = true
+      pump()
+    })
     dirty = false
     const frame: AttachmentInput = {
       client_id: client,
       revision: ++revision,
+      selection_generation,
       selection: selection ? { ...selection } : null,
       context,
     }
@@ -58,15 +64,14 @@ export function createAttachmentObserver(input: {
   return {
     select(value: NonNullable<AttachmentInput["selection"]> | undefined) {
       if (closed) return
+      if (selection?.sessionID !== value?.sessionID || selection?.directory !== value?.directory ||
+          selection?.workspaceID !== value?.workspaceID) {
+        if (selection_generation === Number.MAX_SAFE_INTEGER) { closed = true; stopTimer?.(); return }
+        selection_generation++
+      }
       selection = value ? { ...value } : undefined
       stopTimer?.()
       stopTimer = undefined
-      if (selection) {
-        stopTimer = repeat(() => {
-          dirty = true
-          pump()
-        })
-      }
       dirty = true
       pump()
     },
@@ -75,6 +80,7 @@ export function createAttachmentObserver(input: {
       closed = true
       stopTimer?.()
       stopTimer = undefined
+      if (selection && selection_generation < Number.MAX_SAFE_INTEGER) selection_generation++
       selection = undefined
       dirty = true
       await attachmentBounded(ready, input.timeoutMs ?? 3200)

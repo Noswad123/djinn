@@ -83,6 +83,15 @@ delete process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]
 delete process.env["OTEL_EXPORTER_OTLP_HEADERS"]
 delete process.env["OTEL_RESOURCE_ATTRIBUTES"]
 
+// Native integration is fixture-owned, never inherited from the invoking TUI.
+// Otherwise runtime bootstrap can register a second reporter (or report to a live receiver).
+delete process.env["KITSUNE_AGENT_MANAGEMENT"]
+delete process.env["KITSUNE_INTEGRATION_SOURCE"]
+delete process.env["KITSUNE_INTEGRATION_REPORT_COMMAND"]
+delete process.env["KITSUNE_ENV"]
+delete process.env["KITSUNE_SOCKET_PATH"]
+delete process.env["KITSUNE_PANE_ID"]
+
 // Use in-memory sqlite
 process.env["OPENCODE_DB"] = ":memory:"
 

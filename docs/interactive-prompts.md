@@ -5,7 +5,200 @@ This is off by default and has no Coven/Kitsune dependency. It uses the existing
 legacy native session/prompt/runner path; it does not adopt an interactive legacy
 session into the independently coordinated SessionV2 runner.
 
-## Explicit startup opt-in
+## Normal-Launch Sharing (Default Off)
+
+Normal local full-TUI launches can publish their exact hydrated selected root after
+one explicit user-owned configuration. No Kit display reporter, manual SID or
+manual socket variable is required. This does not activate a running binary.
+Attach, mini, headless, and explicit network-option launches do not publish automatic
+sharing. `DJINN_PROMPT_SOCKET`, when supplied, selects only the unchanged manual
+endpoint described below, never a second automatic endpoint.
+
+The only authority configuration is
+`${XDG_CONFIG_HOME:-$HOME/.config}/djinn/coven-web.json`:
+
+```json
+{"version":1,"mode":"read","registry_directory":"/absolute/private/registry"}
+```
+
+Missing, invalid, oversized (>8192 bytes), duplicate-key, extra-field or `off`
+configuration disables sharing at worker startup. The file must be a same-user,
+non-symlink regular 0600 file. Its selected parent may be a same-user directory or
+same-user symlink, preserving owned dotfile-directory links without restructuring
+them. The resolved canonical target must be a real same-user directory not writable
+by group/others; symlink permission bits are not treated as directory permissions.
+The loader opens the canonical parent's `coven-web.json` without following a leaf
+symlink, and checks selected-parent owner/type/inode, canonical mapping, and target
+identity/permissions before and after reading. A detected replacement fails closed;
+unsafe parents are never chmodded or adopted. Same-user malicious processes remain
+within the local trust boundary: these checks are not authentication against them.
+`mode` is exactly `off`, `read`, or `read_write`. `read_write` additionally permits
+ordinary native admission only with a current persisted agent/model configuration;
+it does not promise model readiness or execution success. Do not enable writes
+without reviewing the separate gateway's reader/writer ACLs and control workspace.
+
+User-level sharing configuration is captured once at worker startup, not watched
+live. Editing or removing the file, including changing `mode` to `off`, does not
+revoke an already-running worker's sharing policy. Shut down that worker to revoke
+it, or restart it to apply configuration changes. Selection/deselection, lease
+expiry and native context reload fences continue to run independently; a context
+reload does not reread this file.
+
+The registry must be canonical, same-user, non-symlink and 0700. Only a missing
+leaf below an already verified private parent can be exclusively created. Unsafe
+existing paths are never chmodded or adopted. Each launch exclusively publishes an
+atomic 0600 `RUNTIME_UUID.json` containing only:
+
+```json
+{"contract":"djinn.web-discovery.v1","version":1,"native_socket":"/absolute/private/socket","expected_runtime":"UUID"}
+```
+
+The listener uses its own short 0700 directory under `XDG_RUNTIME_DIR` (or home),
+not the potentially long registry. Both socket names must fit 100 bytes. Cleanup
+removes only the runtime's identity-matching artifacts, not replacement files.
+Descriptors are hints: readers must handshake with that endpoint and pinned runtime.
+They confer no login, team, source ACL or control-workspace authority.
+
+Private worker RPC pins one frontend UUID with increasing revisions. A latest-only
+observer publishes hydrated selection and one-second heartbeats, independently of
+Kit attachments. Native Session/Instance services qualify the exact root,
+implicit-local placement, fixed startup directory identity and already-active
+context. Automatic reads, qualification and admission never call `InstanceStore.load`.
+Continuous qualified heartbeats renew the same five-second monotonic grant. Changed
+selection revokes before qualification; deselection, expiry, deletion, reload,
+shutdown and endpoint failure revoke. Reselecting after revocation gets a new UUID.
+Foreign/stale revisions and obsolete qualifications cannot restore an old grant.
+
+Private selection RPC also carries a monotonic `selection_generation`, incremented
+on every selection discontinuity. Latest-only coalescing preserves this counter
+even when it omits an intermediate deselection: disposing and rehydrating the same
+SID still revokes the previous grant before qualification. The worker rejects older
+generations as well as older revisions. Unchanged heartbeats retain the generation
+and, when continuously qualified, the grant UUID. This is private RPC metadata;
+the shared socket wire and discovery descriptor schemas are unchanged.
+
+Each update's five-second deadline starts at native receipt, before qualification,
+not at qualification completion. Completion at or after that deadline cannot mint
+or renew a grant; earlier completion receives only the remaining lease. Slow native
+metadata lookup therefore cannot manufacture fresh frontend liveness. These
+regressions use the actual hydrated-selection callback, observer and native grant
+implementation with synthetic services, not an installed-UI or live-model run.
+
+Automatic capabilities add
+`web_sharing:{contract:"djinn.web-sharing.v1",version:1}`. Automatic endpoints
+reject legacy `conversation` and `submit`, even for a known same-directory SID.
+Shared method parameter objects are closed and duplicate JSON keys are rejected:
+
+| Method | Exact Parameters | Result |
+| --- | --- | --- |
+| `share_status` | `{expected_runtime_id}` | `{type:"share_status",contract:"djinn.web-sharing.v1",grant:null\|{grant_id,session_id,can_submit,lease_ms}}` |
+| `shared_conversation` | `{expected_runtime_id,session_id,grant_id}` | `{type:"shared_conversation",contract:"djinn.web-sharing.v1",grant_id,conversation:CONVERSATION_V1}` |
+| `shared_submit` | `{expected_runtime_id,session_id,grant_id,text}` | `{type:"shared_prompt_accepted",contract:"djinn.web-sharing.v1",grant_id,session_id,message_id,prompt_sha256,prompt_bytes}` |
+
+The existing version-1 envelopes below are unchanged. Lease is an integer 1..5000;
+status is metadata-only and never queries conversations or enumerates sessions.
+Read-only mode rejects direct submits with `sharing_read_only`. Invalid/revoked
+grants use `grant_unavailable`. Existing closed errors and delivery semantics apply.
+Shared projections retain 20 messages/8192 text bytes and a 65536-byte **whole
+wrapper** limit. Requests retain the 524288-byte frame limit and exact 65536-byte
+UTF-8 prompt limit. Native code rechecks grant/context/root/placement/persisted
+configuration at the final boundary before ordinary `admitInteractive`, preserving
+agent, model, variant, policies and user-message processing.
+
+The same endpoint-wide, non-evicting 1024-attempt set spans all grants and selections
+for the runtime lifetime. Changing grants does not authorize replay. Once admission
+may have started, failures are uncertain; disconnect/revocation is not cancellation.
+Never automatically retry an uncertain request.
+
+### Optional Card Association
+
+Automatic endpoints with the private attachment provenance callback also advertise
+`card_association:{contract:"djinn.card-association.v1",version:1}` separately from
+the unchanged `web_sharing` marker. `share_association` accepts exactly
+`{expected_runtime_id,session_id,grant_id}` and returns exactly
+`{type:"share_association",contract:"djinn.card-association.v1",grant_id,session_id,association}`.
+`association` is null or `{instance_id,session_id,receiver_epoch,scope:"local_full_tui_root",lease_ms,target}`,
+where target is exactly `{socket,device,inode,terminal_id,runtime_generation}`.
+UUIDs, epoch (32 lowercase hex), canonical absolute socket, safe nonnegative device/inode,
+bounded terminal ID and integer lease (1..5000ms) are validated at the socket boundary.
+
+Only the actual unique native reporter's successful exact-root qualification can
+produce this snapshot, using the attachment worker's captured receiver epoch and
+target. Its monotonic deadline starts before qualification/status I/O. Unchanged
+heartbeats may retain an unexpired sample during refresh; changed/deselected roots,
+reset/close, reporter loss/replacement/ambiguity and expiry invalidate it. The getter
+does not query status, refresh activity, start a process or assert an attachment.
+The dispatcher checks the exact SID, current grant and native endpoint fences before
+and after the callback. Its private callback returns `{value,current}`: `value` is
+the closed association metadata, while `current()` is a synchronous, no-I/O fence
+checked immediately before socket serialization, after the last await. An opaque
+binding token detects revocation and requalification even when every wire field
+returns to its old value. Unchanged, unexpired heartbeat refreshes retain that
+token, but never extend a previously captured sample's own deadline. No provenance
+or a revoked sample means null, not loss of native sharing.
+
+The independent private attachment observer also carries `selection_generation`,
+incrementing on each selection discontinuity and preserving it through latest-only
+coalescing. Thus A-to-deselected-to-A cannot reuse old provenance under a new web
+grant while qualification is pending. The worker pins its frontend UUID and rejects
+older generations/revisions; a generation change invalidates before asynchronous
+work. Older private producers without this field may still report attachments but
+cannot supply card provenance. These private fields and callbacks never appear in
+installed Coven `report-attachment` frames or native sharing/grant wire schemas.
+
+Normal private-RPC full-TUI startup tolerates transient read-only readiness/capture
+failures within ten attempts and 15 seconds, cancelled on shutdown. The first valid
+context stays pinned; mutations/prompts are never retried. Mini and external HTTP
+remain unsupported. Unchanged heartbeats do not cancel active qualification/status
+I/O; selection/generation changes still revoke immediately. Original query budgets,
+pre-I/O five-second provenance deadlines and final source-token fences remain intact.
+
+This is local qualified metadata, not same-user authentication, transcript content,
+execution permission or ownership transfer. A gateway must independently verify its
+configured Kit target and authorization; labels and same-directory sessions are not
+identity. Manual/older endpoints do not advertise this capability, and old closed
+grant/conversation/submit schemas remain unchanged. Existing UIs need a later
+deliberate restart to run this provenance code; no UI publication is implied.
+
+### Synthetic Sharing Fixture
+
+From `clients/djinn-ui/packages/opencode`, with an existing private registry parent:
+
+```sh
+bun test/session/web-sharing.fixture.ts /absolute/private/registry read_write
+```
+
+This uses actual automatic publication, selection observer, grants and socket code,
+but memory-only fake native callbacks. It does not import native runtime/provider
+services or touch a user database. Keep stdin open. Stdout is JSON Lines:
+`{type:"ready",session_id:"ses_fixture",runtime_id:"UUID"}` announces publication,
+not a selection grant. Discover the descriptor normally and poll `share_status`.
+Send one JSON object per stdin line:
+
+```json
+{"command":"select"}
+{"command":"deselect"}
+{"command":"select","session_id":"ses_other"}
+{"command":"reload"}
+{"command":"active","value":false}
+{"command":"configured","value":false}
+{"command":"lost_ack","value":true}
+{"command":"stop"}
+```
+
+`select` defaults to `ses_fixture`; other SIDs are deliberately unqualified.
+`reload` revokes and replaces the synthetic native context; subsequent heartbeat
+can qualify a new grant. `active`/`configured` accept booleans. `lost_ack:true`
+persists a synthetic admission then throws, yielding `admission_uncertain` without
+an accepted receipt; it does not undo admission. Stdout emits
+`{type:"admitted",count:N}` for each actual admission and
+`{type:"control",command:"...",count:N}` for controls. Controls can precede observer
+qualification: use native status as authority, not stdout or timing. A repeated
+request UUID cannot admit again, including after deselect/reselect. EOF, `stop`,
+SIGINT or SIGTERM revoke, close and remove owned artifacts. The fixture accepts
+`read` as its optional third argument for direct read-only rejection tests.
+
+## Explicit Startup Opt-In
 
 With a feature-bearing build, an operator can create a new private directory and
 start a new full UI explicitly, for example:

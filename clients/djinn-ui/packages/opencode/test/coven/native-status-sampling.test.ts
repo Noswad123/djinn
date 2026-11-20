@@ -103,14 +103,15 @@ async function fixture(gated = false) {
     read(value: NativeStatusSnapshot) {
       read = value
     },
-    async select(id: string | null, placement: { directory?: string; workspaceID?: string } = {}) {
+    async select(id: string | null, placement: { directory?: string; workspaceID?: string } = {}, idle = true, selection_generation?: number) {
       await worker.select({
         client_id,
         revision: ++revision,
+        selection_generation,
         context,
         selection: id === null ? null : { sessionID: id, directory, ...placement },
       })
-      await worker.idle()
+      if (idle) await worker.idle()
     },
     async wait(count: number) {
       const deadline = performance.now() + 5000
@@ -129,6 +130,29 @@ async function fixture(gated = false) {
     },
   }
 }
+
+test("actual adapter publishes a slow native status despite an unchanged one-second heartbeat", async () => {
+  await using h = await fixture()
+  const entered = Promise.withResolvers<void>()
+  let reads = 0
+  h.read(async (id) => {
+    if (++reads === 1) {
+      entered.resolve()
+      await Bun.sleep(1300)
+    }
+    return { info: { id, directory: h.directory }, status: { type: "idle" } }
+  })
+  await h.select("slow-root", {}, false, 1)
+  await entered.promise
+  await Bun.sleep(1000)
+  h.advance(1000)
+  await h.select("slow-root", {}, false, 1)
+  await h.worker.idle()
+  const reports = await h.wait(1)
+  expect(reports[0]).toMatchObject({ session_id: "slow-root", event: "session.status", status: "idle" })
+  expect(h.frames.map((frame) => frame.revision)).toEqual([1, 2])
+  expect(h.frames.every((frame) => frame.operation === "attach")).toBe(true)
+})
 
 test("quiet mounted roots get fresh native idle, busy and retry baselines; renewals read again after 30 seconds", async () => {
   await using h = await fixture()

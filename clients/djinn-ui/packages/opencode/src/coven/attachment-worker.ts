@@ -8,10 +8,13 @@ import {
   type AttachmentContext,
 } from "./attachment-transport"
 import { attachmentReporter, onAttachmentReporterRemoved, type AttachmentReporter } from "./attachment-registry"
+import type { Association, AssociationSample } from "../session/prompt-control"
 
 export type AttachmentInput = {
   client_id: string
   revision: number
+  // Older private producers can still report attachments, but cannot supply card provenance.
+  selection_generation?: number
   selection: { sessionID: string; directory: string; workspaceID?: string } | null
   context: AttachmentContext
 }
@@ -20,22 +23,38 @@ export function createAttachmentWorker(
   options: {
     env?: NodeJS.ProcessEnv
     process?: typeof attachmentProcess
+    now?: () => number
   } = {},
 ) {
   const env = { ...(options.env ?? process.env) }
   const command = attachmentCommand(env)
   const run = options.process ?? attachmentProcess
+  const now = options.now ?? (() => performance.now())
   let context: AttachmentContext | undefined
   let client: string | undefined
   let revision = 0
+  let selectionGeneration: number | undefined
+  let versioned = false
   let generation = 0
+  let provenanceEpoch = 0
   let closed = false
-  let pending: AttachmentInput | undefined
+  let pending: (AttachmentInput & { until: number; provenanceEpoch: number }) | undefined
+  let selection: AttachmentInput["selection"] = null
+  let qualified: { token: object; reporter: AttachmentReporter; directory: string; until: number; association: Association } | undefined
   let active: ReturnType<typeof attachmentProcess> | undefined
   let lookup: AbortController | undefined
   let owner: AttachmentReporter | undefined
   let draining: Promise<void> | undefined
   let closing: Promise<void> | undefined
+
+  function qualifiedCurrent() {
+    if (qualified && (closed || closing || now() >= qualified.until ||
+        attachmentReporter(qualified.directory) !== qualified.reporter ||
+        qualified.reporter.instance !== qualified.association.instance_id ||
+        selection?.sessionID !== qualified.association.session_id || selection.directory !== qualified.directory ||
+        selection.workspaceID !== undefined)) qualified = undefined
+    return !!qualified
+  }
 
   function pump() {
     if (draining) return draining
@@ -44,7 +63,8 @@ export function createAttachmentWorker(
         const item = pending
         pending = undefined
         const stamp = generation
-        const current = () => !closed && stamp === generation && item.revision === revision
+        // Heartbeat revisions order output, not the lifetime of an unchanged lookup.
+        const current = () => !closed && stamp === generation
         const selection = item.selection
         let reporter: AttachmentReporter | undefined
         let eligible = false
@@ -64,7 +84,7 @@ export function createAttachmentWorker(
             const controller = new AbortController()
             lookup = controller
             eligible =
-              (await attachmentBounded(reporter.qualify(selection.sessionID, controller.signal), 1000).catch(
+              (await attachmentBounded(reporter.qualify(selection.sessionID, controller.signal), 1000, controller.signal).catch(
                 () => false,
               )) === true
             controller.abort()
@@ -91,6 +111,17 @@ export function createAttachmentWorker(
           if (!current()) continue
           eligible = selected()
         }
+        if (eligible && reporter && selection && now() < item.until && item.provenanceEpoch === provenanceEpoch &&
+            item.selection_generation !== undefined) {
+          // Refreshing an unchanged live binding preserves outstanding samples;
+          // discontinuity or expiry never resurrects their opaque token.
+          const token = qualifiedCurrent() ? qualified!.token : {}
+          qualified = { token, reporter, directory: selection.directory, until: item.until, association: {
+            instance_id: reporter.instance, session_id: selection.sessionID,
+            receiver_epoch: item.context.server_epoch, scope: "local_full_tui_root", lease_ms: 5000,
+            target: structuredClone(item.context.target),
+          } }
+        } else qualified = undefined
         const frame = {
           contract: "djinn.client-attachment.v1",
           expected_epoch: item.context.server_epoch,
@@ -123,11 +154,13 @@ export function createAttachmentWorker(
   }
 
   async function release() {
+    qualified = undefined
+    selection = null
     generation++
     lookup?.abort()
     active?.kill()
     if (!client || !context || revision >= Number.MAX_SAFE_INTEGER) return
-    pending = { client_id: client, revision: ++revision, selection: null, context }
+    pending = { client_id: client, revision: ++revision, selection: null, context, until: now(), provenanceEpoch }
     await attachmentBounded(pump(), 4000)
   }
 
@@ -138,6 +171,15 @@ export function createAttachmentWorker(
   })
 
   return {
+    association(sessionID: string): AssociationSample | undefined {
+      if (!qualifiedCurrent() || !qualified || sessionID !== qualified.association.session_id) return
+      const captured = qualified
+      return {
+        value: { ...captured.association, target: { ...captured.association.target },
+          lease_ms: Math.max(1, Math.min(5000, Math.floor(captured.until - now()))) },
+        current: () => now() < captured.until && qualifiedCurrent() && qualified?.token === captured.token,
+      }
+    },
     async select(value: AttachmentInput) {
       if (
         !command ||
@@ -150,19 +192,36 @@ export function createAttachmentWorker(
       )
         return revision
       const parsed = attachmentContext(value.context)
-      if (
-        !parsed ||
-        (client && client !== value.client_id) ||
-        (context && JSON.stringify(context) !== JSON.stringify(parsed))
-      )
+      if (parsed && ((client && client !== value.client_id) ||
+          (context && JSON.stringify(context) !== JSON.stringify(parsed)))) {
+        // A new frontend/target cannot adopt this pinned transport or inherit its provenance.
+        qualified = undefined
+        provenanceEpoch++
+        generation++
+        pending = undefined
+        lookup?.abort()
         return revision
-      if (value.revision <= revision) return revision
+      }
+      if (!parsed) return revision
+      if (value.revision <= revision || (value.selection_generation !== undefined &&
+          (!Number.isSafeInteger(value.selection_generation) || value.selection_generation < (selectionGeneration ?? 0)))) return revision
+      if (versioned !== (value.selection_generation !== undefined) ||
+          (value.selection_generation !== undefined && selectionGeneration !== value.selection_generation) ||
+          selection?.sessionID !== value.selection?.sessionID || selection?.directory !== value.selection?.directory ||
+          selection?.workspaceID !== value.selection?.workspaceID) {
+        qualified = undefined
+        owner = undefined
+        generation++
+        lookup?.abort()
+      }
+      selection = value.selection ? { ...value.selection } : null
+      selectionGeneration = value.selection_generation ?? selectionGeneration
+      versioned = value.selection_generation !== undefined
       client = value.client_id
       // Pin a copy: a replacement terminal/runtime can never be sampled or adopted here.
       context ??= structuredClone(parsed)
       revision = value.revision
-      lookup?.abort()
-      pending = { ...value, context }
+      pending = { ...value, selection, context, until: now() + 5000, provenanceEpoch }
       // Acknowledge acceptance, not subprocess completion. New frontend revisions
       // must be able to invalidate an in-flight metadata lookup immediately.
       void pump()

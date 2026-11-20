@@ -1,22 +1,38 @@
 /** Optional native interactive admission, not worker policy or lifecycle authority. */
 import { createHash, randomUUID } from "node:crypto"
+import { lstatSync, realpathSync } from "node:fs"
 import { chmod, link, lstat, realpath, unlink } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import path from "node:path"
 import { ConversationProjection } from "./conversation-projection"
+import { WebSharing } from "./web-sharing"
+import { ClosedJson } from "./closed-json"
+import { attachmentContext } from "../coven/attachment-transport"
 
 export const CONTRACT = "djinn.interactive-prompt.v1"
 export const MAX_PROMPT_BYTES = 65536
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SESSION = /^ses_[A-Za-z0-9_-]{1,128}$/
 const MESSAGE = /^msg_[A-Za-z0-9_-]{1,128}$/
+export const ASSOCIATION_CONTRACT = "djinn.card-association.v1"
+export type Association = {
+  instance_id: string
+  session_id: string
+  receiver_epoch: string
+  scope: "local_full_tui_root"
+  lease_ms: number
+  target: { socket: string; device: number; inode: number; terminal_id: string; runtime_generation: string }
+}
+export type AssociationSample = { value: Association; current: () => boolean }
 
 interface Options {
   socketPath?: string
   inspect: (sessionID: string) => Promise<boolean>
-  admit: (sessionID: string, text: string) => Promise<string>
+  admit: (sessionID: string, text: string, current?: (context?: object) => boolean, admissionStarted?: () => void) => Promise<string>
   conversation?: (sessionID: string) => Promise<ConversationProjection.Projection | undefined>
   warn?: () => void
+  sharing?: WebSharing.Sharing
+  association?: (sessionID: string) => Promise<AssociationSample | undefined>
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -37,7 +53,7 @@ export function validText(text: unknown): text is string {
   )
 }
 
-export async function start(options: Options): Promise<{ close: () => Promise<void> }> {
+export async function start(options: Options): Promise<{ runtimeID?: string; close: () => Promise<void> }> {
   const address = options.socketPath ?? process.env.DJINN_PROMPT_SOCKET
   if (!address) return { close: async () => {} }
   const uid = process.getuid?.()
@@ -68,24 +84,40 @@ export async function start(options: Options): Promise<{ close: () => Promise<vo
   let closed = false
   let closing: Promise<void> | undefined
   let identity: Awaited<ReturnType<typeof lstat>> | undefined
+  const finalFence = () => {
+    try {
+      const current = lstatSync(directory)
+      const leaf = lstatSync(address)
+      if (closed || realpathSync(directory) !== canonical || current.dev !== parent.dev || current.ino !== parent.ino ||
+          current.uid !== uid || (current.mode & 0o7777) !== 0o700 || !leaf.isSocket() || leaf.uid !== uid ||
+          (leaf.mode & 0o7777) !== 0o600 || leaf.dev !== identity?.dev || leaf.ino !== identity?.ino) throw new Error("endpoint changed")
+      return true
+    } catch { options.sharing?.close(); return false }
+  }
   const fence = async () => {
-    const current = await lstat(directory)
-    const leaf = await lstat(address)
-    if (
-      closed ||
-      (await realpath(directory)) !== canonical ||
-      current.dev !== parent.dev || current.ino !== parent.ino ||
-      current.uid !== uid || (current.mode & 0o7777) !== 0o700 ||
-      !leaf.isSocket() || leaf.uid !== uid || (leaf.mode & 0o7777) !== 0o600 ||
-      leaf.dev !== identity?.dev || leaf.ino !== identity?.ino
-    ) throw new Error("prompt endpoint changed")
+    try {
+      const current = await lstat(directory)
+      const leaf = await lstat(address)
+      if (
+        closed ||
+        (await realpath(directory)) !== canonical ||
+        current.dev !== parent.dev || current.ino !== parent.ino ||
+        current.uid !== uid || (current.mode & 0o7777) !== 0o700 ||
+        !leaf.isSocket() || leaf.uid !== uid || (leaf.mode & 0o7777) !== 0o600 ||
+        leaf.dev !== identity?.dev || leaf.ino !== identity?.ino
+      ) throw new Error("prompt endpoint changed")
+    } catch (error) {
+      options.sharing?.close()
+      throw error
+    }
   }
 
   async function dispatch(raw: Buffer) {
     let id: unknown = null
     let admitting = false
     try {
-      const request: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw))
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(raw)
+      const request: unknown = options.sharing ? ClosedJson.parse(text) : JSON.parse(text)
       if (!record(request)) throw new Error("invalid request")
       id = request.id
       if (typeof id !== "string" || !UUID.test(id) || request.version !== 1 ||
@@ -97,12 +129,75 @@ export async function start(options: Options): Promise<{ close: () => Promise<vo
           type: "capabilities", contract: CONTRACT, version: 1, runtime_id: runtimeID,
           max_prompt_bytes: MAX_PROMPT_BYTES,
           ...(options.conversation ? { conversation_read: ConversationProjection.CAPABILITY } : {}),
+          ...(options.sharing ? { web_sharing: { contract: WebSharing.CONTRACT, version: 1 } } : {}),
+          ...(options.sharing && options.association ? { card_association: { contract: ASSOCIATION_CONTRACT, version: 1 } } : {}),
         } }
       }
       const params = request.params
-      if (request.method === "conversation") {
+      const shared = options.sharing
+      const rejectShared = (code: string) => ({ version: 1, id, runtime_id: runtimeID, error: { code, delivery: "rejected" } })
+      if (shared && request.method === "share_status") {
+        if (!keys(params, ["expected_runtime_id"]) || typeof params.expected_runtime_id !== "string" || !UUID.test(params.expected_runtime_id))
+          return rejectShared("request_unavailable")
+        if (params.expected_runtime_id !== runtimeID) return rejectShared("runtime_mismatch")
+        const grant = await shared.sample()
+        await fence()
+        return { version: 1, id, runtime_id: runtimeID, result: {
+          type: "share_status", contract: WebSharing.CONTRACT,
+          grant: grant && finalFence() && shared.current(grant.grant_id, grant.session_id) ? grant : null,
+        } }
+      }
+      if (shared) {
+        const fields = request.method === "shared_conversation" || (request.method === "share_association" && options.association) ? ["expected_runtime_id", "session_id", "grant_id"] :
+          request.method === "shared_submit" ? ["expected_runtime_id", "session_id", "grant_id", "text"] : []
+        if (!fields.length || !keys(params, fields) || typeof params.expected_runtime_id !== "string" || !UUID.test(params.expected_runtime_id) ||
+            typeof params.session_id !== "string" || !SESSION.test(params.session_id) || typeof params.grant_id !== "string" || !UUID.test(params.grant_id) ||
+            (request.method === "shared_submit" && !validText(params.text))) return rejectShared("request_unavailable")
+        if (params.expected_runtime_id !== runtimeID) return rejectShared("runtime_mismatch")
+        if (request.method === "shared_submit" && shared.mode !== "read_write") return rejectShared("sharing_read_only")
+        if (!await shared.sample(params.grant_id, params.session_id)) return rejectShared("grant_unavailable")
+      }
+      if (shared && request.method === "share_association" && options.association) {
+        const sid = params.session_id as string
+        const grant = params.grant_id as string
+        await fence()
+        if (!finalFence() || !shared.current(grant, sid)) return rejectShared("grant_unavailable")
+        // The callback is metadata-only. Its lease includes time spent crossing this boundary.
+        const started = performance.now()
+        const sample = await options.association(sid)
+        if (sample !== undefined && (!record(sample) || !keys(sample, ["value", "current"]) ||
+            typeof sample.current !== "function")) return rejectShared("request_unavailable")
+        const association = sample === undefined ? null : structuredClone(sample.value)
+        if (association !== null && (!record(association) ||
+            !keys(association, ["instance_id", "session_id", "receiver_epoch", "scope", "lease_ms", "target"]) ||
+            typeof association.instance_id !== "string" || !UUID.test(association.instance_id) ||
+            association.session_id !== sid || association.scope !== "local_full_tui_root" ||
+            !Number.isSafeInteger(association.lease_ms) || association.lease_ms < 1 || association.lease_ms > 5000 ||
+            !record(association.target) ||
+            !attachmentContext({ contract: "coven.attachment-target.v1", server_epoch: association.receiver_epoch, target: association.target }) ||
+            !UUID.test(association.target.runtime_generation) || Buffer.byteLength(association.target.socket) > 4096 ||
+            association.target.socket.endsWith("/") ||
+            /[\x7f-\x9f]/u.test(association.target.socket + association.target.terminal_id) ||
+            /[\ud800-\udfff]/u.test(association.target.socket + association.target.terminal_id))) return rejectShared("request_unavailable")
+        if (!await shared.sample(grant, sid)) return rejectShared("grant_unavailable")
+        await fence()
+        if (!finalFence() || !shared.current(grant, sid)) return rejectShared("grant_unavailable")
+        // Run the private synchronous fence in the socket continuation, immediately
+        // before serialization, not before the async dispatch promise resolves.
+        return () => {
+          if (!finalFence() || !shared.current(grant, sid)) return rejectShared("grant_unavailable")
+          if (association) association.lease_ms -= Math.ceil(performance.now() - started)
+          let current = false
+          try { current = sample?.current() === true } catch {}
+          return { version: 1, id, runtime_id: runtimeID, result: {
+            type: "share_association", contract: ASSOCIATION_CONTRACT, grant_id: grant, session_id: sid,
+            association: association && association.lease_ms > 0 && current ? association : null,
+          } }
+        }
+      }
+      if (request.method === "conversation" || (shared && request.method === "shared_conversation")) {
         const reject = (code: string) => ({ version: 1, id, runtime_id: runtimeID, error: { code, delivery: "rejected" } })
-        if (!keys(params, ["expected_runtime_id", "session_id"]) ||
+        if (!keys(params, shared ? ["expected_runtime_id", "session_id", "grant_id"] : ["expected_runtime_id", "session_id"]) ||
             typeof params.expected_runtime_id !== "string" || !UUID.test(params.expected_runtime_id) ||
             typeof params.session_id !== "string" || !SESSION.test(params.session_id)) return reject("request_unavailable")
         if (params.expected_runtime_id !== runtimeID) return reject("runtime_mismatch")
@@ -115,16 +210,21 @@ export async function start(options: Options): Promise<{ close: () => Promise<vo
             messages.reduce((sum, m) => sum + Buffer.byteLength(m.text), 0) > 8192 ||
             [projection.has_older, projection.truncated, projection.omitted_parts].some((v) => typeof v !== "boolean"))
           return reject("request_unavailable")
-        const reply = { version: 1, id, runtime_id: runtimeID, result: {
+        const conversation = {
           type: "conversation", contract: ConversationProjection.CAPABILITY.contract, session_id: params.session_id,
           messages, has_older: projection.has_older, truncated: projection.truncated,
           omitted_parts: projection.omitted_parts, projection_sha256: ConversationProjection.digest(messages),
-        } }
+        }
+        const reply = { version: 1, id, runtime_id: runtimeID, result: shared ? {
+          type: "shared_conversation", contract: WebSharing.CONTRACT, grant_id: params.grant_id, conversation,
+        } : conversation }
         if (Buffer.byteLength(JSON.stringify(reply) + "\n") > 65536) return reject("request_unavailable")
         await fence()
+        if (shared && (!await shared.sample(params.grant_id as string, params.session_id) || !finalFence() || !shared.current(params.grant_id as string, params.session_id)))
+          return reject("grant_unavailable")
         return reply
       }
-      if (request.method !== "submit" || !keys(params, ["expected_runtime_id", "session_id", "text"]) ||
+      if (request.method !== (shared ? "shared_submit" : "submit") || !keys(params, shared ? ["expected_runtime_id", "session_id", "grant_id", "text"] : ["expected_runtime_id", "session_id", "text"]) ||
           typeof params.expected_runtime_id !== "string" || !UUID.test(params.expected_runtime_id) ||
           typeof params.session_id !== "string" || !SESSION.test(params.session_id) || !validText(params.text))
         throw new Error("invalid request")
@@ -136,15 +236,20 @@ export async function start(options: Options): Promise<{ close: () => Promise<vo
       if (seen.size >= 1024) return reject("request_capacity")
       if (!(await options.inspect(params.session_id))) return reject("session_unavailable")
       await fence()
+      if (shared && (!await shared.sample(params.grant_id as string, params.session_id) || !shared.current(params.grant_id as string, params.session_id)))
+        return reject("grant_unavailable")
       // Recheck after awaits: concurrent requests cannot both reserve the same ID.
       if (seen.has(id)) return reject("request_already_seen", "uncertain")
       if (seen.size >= 1024) return reject("request_capacity")
       seen.add(id)
-      admitting = true
-      const messageID = await options.admit(params.session_id, params.text)
+      admitting = !shared
+      const messageID = await options.admit(params.session_id, params.text,
+        shared ? (context) => finalFence() && shared.current(params.grant_id as string, params.session_id as string, context) : undefined,
+        () => { admitting = true })
       if (!MESSAGE.test(messageID)) throw new Error("invalid admission result")
       return { version: 1, id, runtime_id: runtimeID, result: {
-        type: "prompt_accepted", contract: CONTRACT, session_id: params.session_id,
+        type: shared ? "shared_prompt_accepted" : "prompt_accepted", contract: shared ? WebSharing.CONTRACT : CONTRACT, session_id: params.session_id,
+        ...(shared ? { grant_id: params.grant_id } : {}),
         message_id: messageID, prompt_sha256: createHash("sha256").update(params.text, "utf8").digest("hex"),
         prompt_bytes: Buffer.byteLength(params.text, "utf8"),
       } }
@@ -174,7 +279,7 @@ export async function start(options: Options): Promise<{ close: () => Promise<vo
       if (pending >= 32) return socket.destroy()
       pending += 1
       void dispatch(input.subarray(0, newline)).then((reply) => {
-        if (!socket.destroyed) socket.end(JSON.stringify(reply) + "\n")
+        if (!socket.destroyed) socket.end(JSON.stringify(typeof reply === "function" ? reply() : reply) + "\n")
       }).finally(() => { pending -= 1 })
     })
   })
@@ -197,12 +302,15 @@ export async function start(options: Options): Promise<{ close: () => Promise<vo
   }
   server.on("error", () => {
     closed = true
+    options.sharing?.close()
     try { options.warn?.() } catch {}
   })
   return {
+    runtimeID,
     close() {
       if (closing) return closing
       closed = true
+      options.sharing?.close()
       for (const client of clients) client.destroy()
       closing = (async () => {
         await new Promise<void>((resolve) => server.close(() => resolve()))

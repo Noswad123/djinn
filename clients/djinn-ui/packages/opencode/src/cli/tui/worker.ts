@@ -14,11 +14,23 @@ import { LiveObservationPublisher } from "@/session/live-observation-publisher"
 import { startOptionalService, withPublisherClosing } from "./worker-lifecycle"
 import { PromptControl } from "@/session/prompt-control"
 import { createAttachmentWorker, type AttachmentInput } from "@/coven/attachment-worker"
+import { WebSharing } from "@/session/web-sharing"
 
 Heap.start()
 const liveObservation = LiveObservationPublisher.start({ warn: (message) => console.warn(message) })
+let sharing: WebSharing.Sharing | undefined
 const promptControl = startOptionalService(async () => {
-  if (!process.env.DJINN_PROMPT_SOCKET) return { close: async () => {} }
+  if (!process.env.DJINN_PROMPT_SOCKET) {
+    if (process.env.DJINN_LOCAL_WEB_SHARING !== "1") return { close: async () => {} }
+    const { WebSharingPublication } = await import("@/session/web-sharing-publication")
+    const cfg = await WebSharingPublication.configuration()
+    if (!cfg || stopping) return { close: async () => {} }
+    const { PromptControlRuntime } = await import("@/session/prompt-control-runtime")
+    const callbacks = PromptControlRuntime.automaticCallbacks(process.cwd())
+    sharing = WebSharing.create({ directory: process.cwd(), mode: cfg.mode, qualify: callbacks.qualify })
+    return WebSharingPublication.start({ registry: cfg.registry, sharing,
+      callbacks: { ...callbacks, association: async (sessionID) => covenAttachment.association(sessionID) } })
+  }
   const { PromptControlRuntime } = await import("@/session/prompt-control-runtime")
   return PromptControl.start({ ...PromptControlRuntime.callbacks(process.cwd()),
     warn: () => console.warn("Djinn prompt endpoint disabled") })
@@ -33,6 +45,11 @@ process.on("uncaughtException", onUncaughtException)
 
 // Subscribe to global events and forward them via RPC
 GlobalBus.on("event", (event) => {
+  if (event.directory === process.cwd() && event.payload.type === "server.instance.disposed") sharing?.revoke()
+  if (event.payload.type === "session.deleted" && "properties" in event.payload) {
+    const properties = event.payload.properties as { sessionID?: string }
+    if (properties.sessionID && sharing?.current(undefined, properties.sessionID)) sharing.revoke()
+  }
   Rpc.emit("global.event", event)
 })
 
@@ -43,6 +60,14 @@ let stopping = false
 const covenAttachment = createAttachmentWorker()
 
 export const rpc = {
+  webSharingSelection(input: WebSharing.SelectionInput) {
+    if (process.env.DJINN_LOCAL_WEB_SHARING !== "1" || reloading || stopping) return false
+    // Acceptance never waits on metadata qualification. New revisions must be
+    // able to revoke an older pending selection immediately.
+    if (!sharing) return false
+    void sharing.select(input).catch(() => {})
+    return true
+  },
   covenAttachmentReady() { return !reloading && !stopping },
   async covenAttachment(input: AttachmentInput) {
     if (reloading || stopping) return false
@@ -86,6 +111,7 @@ export const rpc = {
     return result
   },
   async server(input: { port: number; hostname: string; mdns?: boolean; cors?: string[] }) {
+    sharing?.close()
     if (server) await server.stop(true)
     server = await Server.listen(input)
     return { url: server.url.toString() }
@@ -96,6 +122,7 @@ export const rpc = {
   async reload() {
     if (reloading || stopping) return
     reloading = true
+    sharing?.revoke()
     generation++
     try {
       await covenAttachment.reset()
@@ -115,7 +142,9 @@ export const rpc = {
   async shutdown() {
 
     stopping = true
+    sharing?.close()
     generation++
+    await promptControl.close().catch(() => {})
     await covenAttachment.close()
     await AppRuntime.runPromise(
       Effect.gen(function* () {
@@ -123,12 +152,6 @@ export const rpc = {
         yield* numen.reset()
       }).pipe(Effect.catchCause(() => Effect.void)),
     ).catch(() => undefined)
-    await InstanceRuntime.disposeAllInstances()
-    if (server) await server.stop(true)
-    process.off("unhandledRejection", onUnhandledRejection)
-    process.off("uncaughtException", onUncaughtException)
-
-    await promptControl.close().catch(() => {})
     await withPublisherClosing(
       () => liveObservation.close(),
       async () => {

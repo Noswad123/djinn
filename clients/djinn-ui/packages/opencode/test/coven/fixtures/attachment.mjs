@@ -5,6 +5,7 @@ import { join } from "node:path"
 const args = process.argv.slice(2)
 const root = args[args.indexOf("--state-root") + 1]
 const mode = process.env.DJINN_ATTACHMENT_TEST_MODE
+if (mode === "hang") appendFileSync(join(root, "pid"), String(process.pid))
 if (args[1] === "attachment-target") {
   if (mode === "overflow") process.stdout.write("x".repeat(17000))
   else if (mode !== "hang") process.stdout.write(process.env.DJINN_ATTACHMENT_TEST_TARGET ?? "{}")

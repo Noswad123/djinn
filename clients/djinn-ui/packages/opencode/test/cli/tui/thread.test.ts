@@ -4,7 +4,7 @@ import fs from "fs/promises"
 import path from "path"
 import yargs from "yargs"
 import { tmpdir } from "../../fixture/fixture"
-import { TuiThreadCommand, resolveThreadDirectory } from "../../../src/cli/cmd/tui"
+import { TuiThreadCommand, resolveThreadDirectory, workerEnvironment } from "../../../src/cli/cmd/tui"
 import { cliIt } from "../../lib/cli-process"
 
 describe("tui thread", () => {
@@ -19,7 +19,31 @@ describe("tui thread", () => {
   test("forwards the CLI environment to the TUI worker", async () => {
     const source = await Bun.file(new URL("../../../src/cli/cmd/tui.ts", import.meta.url)).text()
 
-    expect(source).toMatch(/new Worker\(file, \{\s*env: Object\.fromEntries\(\s*Object\.entries\(process\.env\)/)
+    expect(source).toMatch(/new Worker\(file, \{\s*env: workerEnvironment\(process\.env, sharingEnabled\)/)
+  })
+
+  test("worker environment preserves inherited values except undefined and the internal sharing flag", () => {
+    for (const inherited of [undefined, "0", "1", "untrusted"]) {
+      const env = Object.freeze({
+        PATH: "/synthetic/bin",
+        UNKNOWN_FUTURE_KEY: "preserved=value",
+        EMPTY: "",
+        OMITTED: undefined,
+        DJINN_LOCAL_WEB_SHARING: inherited,
+      })
+      for (const sharingEnabled of [false, true]) {
+        const result = workerEnvironment(env, sharingEnabled)
+        expect(result).toEqual({
+          PATH: "/synthetic/bin",
+          UNKNOWN_FUTURE_KEY: "preserved=value",
+          EMPTY: "",
+          DJINN_LOCAL_WEB_SHARING: sharingEnabled ? "1" : "0",
+        })
+        expect(Object.hasOwn(result, "OMITTED")).toBe(false)
+        expect(env.DJINN_LOCAL_WEB_SHARING).toBe(inherited)
+        expect(Object.hasOwn(env, "OMITTED")).toBe(true)
+      }
+    }
   })
 
   async function check(project?: string) {

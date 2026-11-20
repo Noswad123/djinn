@@ -17,7 +17,7 @@ import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
 import { NumenViewer } from "@/numen/viewer"
 import { NumenConfig } from "@/numen/config"
 import { createAttachmentObserver } from "@/coven/attachment-observer"
-import { attachmentCommand, captureAttachmentTarget } from "@/coven/attachment-transport"
+import { attachmentCommand, captureAttachmentTarget, captureInitialAttachment } from "@/coven/attachment-transport"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -78,6 +78,13 @@ export function resolveThreadDirectory(project?: string, envPWD = process.env.PW
   const root = Filesystem.resolve(envPWD ?? cwd)
   if (project) return Filesystem.resolve(path.isAbsolute(project) ? project : path.join(root, project))
   return Filesystem.resolve(cwd)
+}
+
+export function workerEnvironment(env: NodeJS.ProcessEnv, sharingEnabled: boolean) {
+  return Object.fromEntries(
+    Object.entries({ ...env, DJINN_LOCAL_WEB_SHARING: sharingEnabled ? "1" : "0" })
+      .filter((entry): entry is [string, string] => entry[1] !== undefined),
+  )
 }
 
 export const TuiThreadCommand = cmd({
@@ -223,22 +230,25 @@ export const TuiThreadCommand = cmd({
       }
       const cwd = Filesystem.resolve(process.cwd())
 
-      const worker = new Worker(file, {
-        env: Object.fromEntries(
-          Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-        ),
-      })
-      const client = Rpc.client<typeof rpc>(worker)
       const network = resolveNetworkOptionsNoConfig(args)
       const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
+      const sharingEnabled = !["--port", "--hostname", "--mdns", "--no-mdns", "--mdns-domain", "--cors"].some(hasArg)
+      const worker = new Worker(file, {
+        env: workerEnvironment(process.env, sharingEnabled),
+      })
+      const client = Rpc.client<typeof rpc>(worker)
+      const { createSharingObserver } = await import("../tui/sharing-observer")
+      const sharing = createSharingObserver({ enabled: sharingEnabled, send: (input) => client.call("webSharingSelection", input, 4000) })
       const attachmentRoute = external ? undefined : attachmentCommand(process.env)
+      const attachmentStartup = new AbortController()
       const attachment = createAttachmentObserver({
         // The handshake queues until Rpc.listen is installed. Capture never gates rendering.
         context: attachmentRoute
-          ? client
-              .call("covenAttachmentReady", undefined, 1500)
-              .then((ready) => (ready ? captureAttachmentTarget(attachmentRoute) : undefined))
-              .catch(() => undefined)
+          ? captureInitialAttachment({
+              ready: (timeout) => client.call("covenAttachmentReady", undefined, timeout),
+              capture: (signal) => captureAttachmentTarget(attachmentRoute, process.env, signal),
+              signal: attachmentStartup.signal,
+            })
           : Promise.resolve(undefined),
         send: (input) => client.call("covenAttachment", input, 4000),
       })
@@ -255,7 +265,9 @@ export const TuiThreadCommand = cmd({
       const stop = async () => {
         if (stopped) return
         stopped = true
+        attachmentStartup.abort()
         numen.close()
+        sharing.close()
         await attachment.close()
         process.off("SIGUSR2", reload)
         await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
@@ -308,6 +320,7 @@ export const TuiThreadCommand = cmd({
             onSelectedSessionChange(selection) {
               numen.select(selection)
               attachment.select(selection)
+              sharing.select(selection)
             },
             async onSnapshot() {
               const tui = writeHeapSnapshot("tui.heapsnapshot")

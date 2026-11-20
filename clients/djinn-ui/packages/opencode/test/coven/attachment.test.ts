@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { createAttachmentObserver } from "../../src/coven/attachment-observer"
 import { createAttachmentWorker, type AttachmentInput } from "../../src/coven/attachment-worker"
 import { attachmentCommand, attachmentContext, type AttachmentContext } from "../../src/coven/attachment-transport"
-import { attachmentReporter } from "../../src/coven/attachment-registry"
+import { attachmentReporter, registerAttachmentReporter } from "../../src/coven/attachment-registry"
 import { createNativeEventAdapter } from "../../src/plugin/native-event-adapter"
 import type { PluginInput } from "@opencode-ai/plugin"
 import { Rpc } from "../../src/util/rpc"
@@ -80,7 +80,7 @@ function workerFixture(get: (id: string) => Promise<unknown> = async (id) => ({ 
     frames,
     lookups,
     async select(selection: AttachmentInput["selection"], override: Partial<AttachmentInput> = {}) {
-      const floor = await worker.select({ client_id: client, revision: ++revision, context, selection, ...override })
+      const floor = await worker.select({ client_id: client, revision: ++revision, selection_generation: revision, context, selection, ...override })
       await worker.idle()
       return floor
     },
@@ -210,8 +210,96 @@ test("old Coven/disabled capture never sends and late capture cannot reopen a cl
     },
   })
   disabled.select({ sessionID: "a", directory: "/a" })
+  await settle()
   await disabled.close()
   expect(calls).toBe(0)
+})
+
+test("unavailable initial context starts no heartbeat work", async () => {
+  const time = clock()
+  const observer = createAttachmentObserver({ context: Promise.resolve(undefined), repeat: time.repeat,
+    send: async () => { throw new Error("unavailable capture must not send") } })
+  try {
+    observer.select({ sessionID: "a", directory: "/a" })
+    await settle()
+    expect(time.size).toBe(0)
+    time.tick()
+    await settle()
+  } finally { await observer.close() }
+})
+
+test("unchanged heartbeats cannot starve slow status; frames and leases keep their original observation", async () => {
+  const entered = Promise.withResolvers<void>()
+  const finished = Promise.withResolvers<void>()
+  let now = 0
+  let calls = 0
+  let aborted = false
+  const frames: Record<string, unknown>[] = []
+  const remove = registerAttachmentReporter("/slow-heartbeat", { instance: randomUUID(), qualify: async () => {
+    if (calls === 0) await Bun.sleep(600)
+    return true
+  },
+    observeStatus: async (_id, signal, current) => {
+      if (++calls !== 1) return
+      entered.resolve()
+      await Bun.sleep(1200)
+      aborted = signal.aborted || !current()
+      finished.resolve()
+    } })
+  const worker = createAttachmentWorker({ env, now: () => now, process: (_cmd, _op, frame) => {
+    frames.push(frame as Record<string, unknown>); return { done: Promise.resolve(""), kill() {} }
+  } })
+  const client_id = randomUUID()
+  const selection = { sessionID: "ses_root", directory: "/slow-heartbeat" }
+  try {
+    await worker.select({ client_id, revision: 1, selection_generation: 1, context, selection })
+    await entered.promise
+    await Bun.sleep(400)
+    now = 1000
+    await worker.select({ client_id, revision: 2, selection_generation: 1, context, selection })
+    await finished.promise
+    now = 1800
+    await worker.idle()
+    expect(aborted).toBe(false)
+    expect(frames.map((frame) => frame.revision)).toEqual([1, 2])
+    expect(frames.every((frame) => frame.operation === "attach")).toBe(true)
+    expect(worker.association("ses_root")?.value.lease_ms).toBe(4200)
+  } finally { await worker.close(); await remove() }
+})
+
+test("unchanged qualification survives heartbeats but a generation change aborts immediately", async () => {
+  let held = Promise.withResolvers<boolean>()
+  let signal: AbortSignal | undefined
+  const remove = registerAttachmentReporter("/heartbeat-generation", { instance: randomUUID(),
+    qualify: async (_id, value) => { signal = value; return held.promise } })
+  const frames: Record<string, unknown>[] = []
+  const worker = createAttachmentWorker({ env, process: (_cmd, _op, frame) => {
+    frames.push(frame as Record<string, unknown>); return { done: Promise.resolve(""), kill() {} }
+  } })
+  const client_id = randomUUID()
+  const selection = { sessionID: "ses_root", directory: "/heartbeat-generation" }
+  try {
+    await worker.select({ client_id, revision: 1, selection_generation: 1, context, selection })
+    await worker.select({ client_id, revision: 2, selection_generation: 1, context, selection })
+    expect(signal?.aborted).toBe(false)
+    held.resolve(true)
+    await worker.idle()
+    const sample = worker.association("ses_root")!
+    expect(sample.current()).toBe(true)
+    held = Promise.withResolvers<boolean>()
+    await worker.select({ client_id, revision: 3, selection_generation: 1, context, selection })
+    const previous = signal!
+    await worker.select({ client_id, revision: 4, selection_generation: 2, context, selection: null })
+    expect(previous.aborted).toBe(true)
+    expect(sample.current()).toBe(false)
+    await worker.select({ client_id, revision: 5, selection_generation: 3, context, selection })
+    expect(await worker.select({ client_id, revision: 6, selection_generation: 1, context, selection })).toBe(5)
+    expect(worker.association("ses_root")).toBeUndefined()
+    held.resolve(false)
+    await worker.idle()
+    expect(worker.association("ses_root")).toBeUndefined()
+    expect(frames.map((frame) => frame.revision)).toEqual([1, 2, 5])
+  } finally { held.resolve(false); await worker.close(); await remove() }
 })
 
 test("hung RPC is bounded, close sends only the latest release, and late result is discarded", async () => {
@@ -265,7 +353,11 @@ test("two backend roots remain unbound until selection; quiet root uses actual p
   expect(h.frames).toEqual([])
   const instance = attachmentReporter("/a")!.instance
   await h.select({ sessionID: "root-a", directory: "/a" })
+  expect(h.worker.association("root-a")?.value).toMatchObject({ instance_id: instance, session_id: "root-a",
+    receiver_epoch: context.server_epoch, scope: "local_full_tui_root", target: context.target })
   await h.select({ sessionID: "root-b", directory: "/a" })
+  expect(h.worker.association("root-a")).toBeUndefined()
+  expect(h.worker.association("root-b")?.value.instance_id).toBe(instance)
   expect(h.lookups).toEqual(["root-a", "root-b"])
   expect(h.frames.map((frame) => frame.session_id)).toEqual(["root-a", "root-b"])
   expect(h.frames[0]).toEqual({
@@ -281,6 +373,7 @@ test("two backend roots remain unbound until selection; quiet root uses actual p
   })
   expect(instance).not.toBe(h.frames[0].client_id)
   await h.select(null)
+  expect(h.worker.association("root-b")).toBeUndefined()
   expect(Object.keys(h.frames.at(-1)!).sort()).toEqual([
     "client_id",
     "contract",
@@ -299,6 +392,7 @@ test("child, sticky child, ended, wrong identity/directory and explicit remote m
   }
   await using h = workerFixture(async (id) => metadata[id] ?? { id, directory: "/a" })
   for (const id of Object.keys(metadata)) await h.select({ sessionID: id, directory: "/a" })
+  expect(h.worker.association("remote")).toBeUndefined()
   metadata.child = { id: "child", directory: "/a" }
   await h.select({ sessionID: "child", directory: "/a" })
   h.adapter.event({ type: "session.deleted", properties: { info: { id: "ended" } } })
@@ -360,6 +454,7 @@ test("registry loss releases before dispose and replacement plugin has a distinc
   await h.select({ sessionID: "a", directory: "/a" })
   const old = h.frames[0].instance_id
   await h.adapter.dispose()
+  expect(h.worker.association("a")).toBeUndefined()
   expect(h.frames.at(-1)?.operation).toBe("detach")
   expect(h.frames.at(-1)!.revision).toBe(2)
   expect(attachmentReporter("/a")).toBeUndefined()
@@ -384,6 +479,7 @@ test("ambiguous reporters fail closed without choosing newest", async () => {
   await using h = workerFixture()
   const second = createNativeEventAdapter({ directory: "/a" } as PluginInput, env)
   try {
+    expect(h.worker.association("a")).toBeUndefined()
     expect(attachmentReporter("/a")).toBeUndefined()
     await h.select({ sessionID: "a", directory: "/a" })
     expect(h.frames.at(-1)?.operation).toBe("detach")
@@ -585,4 +681,200 @@ test("disabled worker never qualifies or launches", async () => {
     await worker.close()
   }
   expect(launched).toBe(false)
+})
+
+test("qualified getter retains quiet samples during lookup, anchors expiry before I/O and fences stale owners", async () => {
+  let now = 0
+  let held: ReturnType<typeof Promise.withResolvers<boolean>> | undefined
+  let calls = 0
+  let launches = 0
+  const reporter = { instance: randomUUID(), qualify: async () => { calls++; return held ? held.promise : true } }
+  const remove = registerAttachmentReporter("/qualified", reporter)
+  const worker = createAttachmentWorker({ env, now: () => now,
+    process: () => { launches++; return { done: Promise.resolve(""), kill() {} } } })
+  const client_id = randomUUID()
+  let revision = 0
+  const select = (sessionID: string | null) => worker.select({ client_id, revision: ++revision, selection_generation: 1, context,
+    selection: sessionID ? { sessionID, directory: "/qualified" } : null })
+  try {
+    await select("ses_a")
+    await worker.idle()
+    expect(worker.association("ses_a")?.value.lease_ms).toBe(5000)
+    expect(worker.association("ses_foreign")).toBeUndefined()
+    const snapshot = worker.association("ses_a")!
+    snapshot.value.target.socket = "/mutated"
+    expect(worker.association("ses_a")?.value.target.socket).toBe(context.target.socket)
+    expect(calls).toBe(1)
+    expect(launches).toBe(1)
+    now = 1000
+    held = Promise.withResolvers<boolean>()
+    await select("ses_a")
+    expect(worker.association("ses_a")?.value.lease_ms).toBe(4000)
+    expect(snapshot.current()).toBe(true)
+    now = 5000
+    expect(snapshot.current()).toBe(false)
+    expect(worker.association("ses_a")).toBeUndefined()
+    held.resolve(true)
+    await worker.idle()
+    expect(worker.association("ses_a")?.value.lease_ms).toBe(1000)
+    expect(snapshot.current()).toBe(false)
+    now = 6000
+    expect(worker.association("ses_a")).toBeUndefined()
+    held = undefined
+    await select("ses_a")
+    await worker.idle()
+    held = Promise.withResolvers<boolean>()
+    await select("ses_b")
+    expect(worker.association("ses_a")).toBeUndefined()
+    expect(worker.association("ses_b")).toBeUndefined()
+    // Removing A's old reporter while B is pending must invalidate B too, not
+    // publish A under B's SID or accept the late qualification.
+    const removal = remove()
+    held.resolve(true)
+    await removal
+    await worker.idle()
+    expect(worker.association("ses_b")).toBeUndefined()
+  } finally { held?.resolve(false); await worker.close(); await remove() }
+})
+
+test("failed refresh, reset, deselection and close immediately discard qualified provenance", async () => {
+  let eligible = true
+  const remove = registerAttachmentReporter("/provenance", { instance: randomUUID(), qualify: async () => eligible })
+  const worker = createAttachmentWorker({ env, process: () => ({ done: Promise.resolve(""), kill() {} }) })
+  const client_id = randomUUID()
+  let revision = 0
+  const select = async () => {
+    revision = await worker.select({ client_id, revision: ++revision, selection_generation: revision, context,
+      selection: { sessionID: "ses_root", directory: "/provenance" } })
+    await worker.idle()
+  }
+  try {
+    await select()
+    expect(worker.association("ses_root")).toBeDefined()
+    eligible = false
+    await select()
+    expect(worker.association("ses_root")).toBeUndefined()
+    eligible = true
+    await select()
+    const reset = worker.reset()
+    expect(worker.association("ses_root")).toBeUndefined()
+    await reset
+    revision++
+    await select()
+    expect(worker.association("ses_root")).toBeDefined()
+    const deselect = worker.select({ client_id, revision: ++revision, selection_generation: revision, context, selection: null })
+    expect(worker.association("ses_root")).toBeUndefined()
+    await deselect
+    await select()
+    const close = worker.close()
+    expect(worker.association("ses_root")).toBeUndefined()
+    await close
+  } finally { await worker.close(); await remove() }
+})
+
+test("foreign frontend clears provenance without adopting transport or allowing late lookup to restore it", async () => {
+  let held: ReturnType<typeof Promise.withResolvers<boolean>> | undefined
+  const remove = registerAttachmentReporter("/frontend", { instance: randomUUID(), qualify: async () => held ? held.promise : true })
+  const worker = createAttachmentWorker({ env, process: () => ({ done: Promise.resolve(""), kill() {} }) })
+  const client_id = randomUUID()
+  const selection = { sessionID: "ses_root", directory: "/frontend" }
+  try {
+    await worker.select({ client_id, revision: 1, selection_generation: 1, context, selection })
+    await worker.idle()
+    expect(worker.association(selection.sessionID)).toBeDefined()
+    held = Promise.withResolvers<boolean>()
+    await worker.select({ client_id, revision: 2, selection_generation: 1, context, selection })
+    expect(worker.association(selection.sessionID)).toBeDefined()
+    expect(await worker.select({ client_id: randomUUID(), revision: 3, selection_generation: 1, context, selection })).toBe(2)
+    expect(worker.association(selection.sessionID)).toBeUndefined()
+    held.resolve(true)
+    await worker.idle()
+    expect(worker.association(selection.sessionID)).toBeUndefined()
+    held = undefined
+    await worker.select({ client_id, revision: 3, selection_generation: 1, context, selection })
+    await worker.idle()
+    expect(worker.association(selection.sessionID)).toBeDefined()
+    expect(await worker.select({ client_id, revision: 4, selection_generation: 1, selection,
+      context: { ...context, target: { ...context.target, runtime_generation: randomUUID() } } })).toBe(3)
+    expect(worker.association(selection.sessionID)).toBeUndefined()
+    await worker.select({ client_id, revision: 4, selection_generation: 1, context, selection })
+    await worker.idle()
+    expect(worker.association(selection.sessionID)?.value.target).toEqual(context.target)
+  } finally { held?.resolve(false); await worker.close(); await remove() }
+})
+
+test("status I/O cannot extend the provenance deadline or change existing attachment reporting", async () => {
+  let now = 0
+  const frames: unknown[] = []
+  const remove = registerAttachmentReporter("/status-deadline", { instance: randomUUID(), qualify: async () => true,
+    observeStatus: async () => { now = 5000 } })
+  const worker = createAttachmentWorker({ env, now: () => now, process: (_cmd, _op, frame) => {
+    frames.push(frame); return { done: Promise.resolve(""), kill() {} }
+  } })
+  try {
+    await worker.select({ client_id: randomUUID(), revision: 1, selection_generation: 1, context,
+      selection: { sessionID: "ses_root", directory: "/status-deadline" } })
+    await worker.idle()
+    expect(worker.association("ses_root")).toBeUndefined()
+    expect(frames[0]).toMatchObject({ operation: "attach", session_id: "ses_root" })
+  } finally { await worker.close(); await remove() }
+})
+
+test("legacy attachment frames retain transport but never card authority; older generations cannot reclaim it", async () => {
+  const frames: Record<string, unknown>[] = []
+  const remove = registerAttachmentReporter("/legacy", { instance: randomUUID(), qualify: async () => true })
+  const worker = createAttachmentWorker({ env, process: (_cmd, _op, frame) => {
+    frames.push(frame as Record<string, unknown>); return { done: Promise.resolve(""), kill() {} }
+  } })
+  const client_id = randomUUID()
+  const selection = { sessionID: "ses_root", directory: "/legacy" }
+  try {
+    await worker.select({ client_id, revision: 1, context, selection })
+    await worker.idle()
+    expect(frames[0].operation).toBe("attach")
+    expect(worker.association(selection.sessionID)).toBeUndefined()
+    await worker.select({ client_id, revision: 2, selection_generation: 3, context, selection })
+    await worker.idle()
+    const sample = worker.association(selection.sessionID)!
+    expect(sample.current()).toBe(true)
+    for (const selection_generation of [0, 2, -1, 3.5, NaN]) {
+      expect(await worker.select({ client_id, revision: 3, selection_generation, context, selection })).toBe(2)
+      expect(sample.current()).toBe(true)
+    }
+    await worker.select({ client_id, revision: 3, context, selection })
+    expect(sample.current()).toBe(false)
+    await worker.idle()
+    expect(frames.at(-1)?.operation).toBe("attach")
+    expect(worker.association(selection.sessionID)).toBeUndefined()
+    await worker.select({ client_id, revision: 4, selection_generation: 3, context, selection })
+    await worker.idle()
+    expect(worker.association(selection.sessionID)?.current()).toBe(true)
+    expect(sample.current()).toBe(false)
+    expect(frames.every((frame) => !Object.hasOwn(frame, "selection_generation"))).toBe(true)
+  } finally { await worker.close(); await remove() }
+})
+
+test("unchanged legacy heartbeats preserve active reads without gaining card authority", async () => {
+  const held = Promise.withResolvers<boolean>()
+  let signal: AbortSignal | undefined
+  let calls = 0
+  const remove = registerAttachmentReporter("/legacy-heartbeat", { instance: randomUUID(),
+    qualify: async (_sid, value) => { signal = value; calls++; return held.promise } })
+  const frames: Record<string, unknown>[] = []
+  const worker = createAttachmentWorker({ env, process: (_cmd, _op, frame) => {
+    frames.push(frame as Record<string, unknown>); return { done: Promise.resolve(""), kill() {} }
+  } })
+  const client_id = randomUUID()
+  const selection = { sessionID: "ses_root", directory: "/legacy-heartbeat" }
+  try {
+    await worker.select({ client_id, revision: 1, context, selection })
+    await worker.select({ client_id, revision: 2, context, selection })
+    expect(signal?.aborted).toBe(false)
+    expect(calls).toBe(1)
+    held.resolve(true)
+    await worker.idle()
+    expect(frames.map((frame) => frame.revision)).toEqual([1, 2])
+    expect(frames.every((frame) => frame.operation === "attach")).toBe(true)
+    expect(worker.association(selection.sessionID)).toBeUndefined()
+  } finally { held.resolve(false); await worker.close(); await remove() }
 })

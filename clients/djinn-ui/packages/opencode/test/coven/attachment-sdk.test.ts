@@ -1,6 +1,9 @@
 import { expect } from "bun:test"
 import { randomUUID } from "node:crypto"
 import path from "node:path"
+import os from "node:os"
+import { mkdtemp, rm } from "node:fs/promises"
+import { connect } from "node:net"
 import { Effect } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -12,9 +15,25 @@ import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { KitsuneAgentStatePlugin } from "../../src/plugin/kitsune-agent-state"
 import { attachmentReporter } from "../../src/coven/attachment-registry"
 import { createAttachmentWorker } from "../../src/coven/attachment-worker"
+import { Plugin } from "../../src/plugin"
+import { PromptControl } from "../../src/session/prompt-control"
+import { automaticCallbacks } from "../../src/session/prompt-control-runtime"
+import { WebSharing } from "../../src/session/web-sharing"
+
+function request(socket: string, method: string, params: object): Promise<{ result: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const client = connect(socket)
+    let text = ""
+    client.setTimeout(3000, () => client.destroy(new Error("fixture timeout")))
+    client.on("error", reject)
+    client.on("connect", () => client.write(JSON.stringify({ version: 1, id: randomUUID(), method, params }) + "\n"))
+    client.on("data", (data) => { text += data.toString() })
+    client.on("end", () => resolve(JSON.parse(text)))
+  })
+}
 
 testEffectShared(
-  LayerNode.compile(LayerNode.group([SessionStatus.node, EventV2Bridge.node, CrossSpawnSpawner.node])),
+  LayerNode.compile(LayerNode.group([SessionStatus.node, EventV2Bridge.node, CrossSpawnSpawner.node, Plugin.node])),
 ).instance(
   "real saved roots/child through instance SDK and actual native plugin qualify silently with actual reporter identity",
   () =>
@@ -23,6 +42,11 @@ testEffectShared(
       const { Server } = yield* Effect.promise(() => import("../../src/server/server"))
       const ctx = yield* InstanceRef
       if (!ctx) return yield* Effect.die("missing SDK integration instance")
+      const plugins = yield* Plugin.Service
+      // Complete default-plugin bootstrap before temporarily enabling the synthetic
+      // external plugin, so background initialization cannot race its environment.
+      yield* plugins.init()
+      expect(attachmentReporter(ctx.directory)).toBeUndefined()
       const requests: string[] = []
       const client = createOpencodeClient({
         baseUrl: "http://test",
@@ -107,16 +131,46 @@ testEffectShared(
           runtime_generation: randomUUID(),
         },
       }
+      const directory = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "s")))
+      yield* Effect.addFinalizer(() => Effect.promise(() => rm(directory, { recursive: true, force: true })))
+      const native = automaticCallbacks(ctx.directory)
+      const sharing = WebSharing.create({ directory: ctx.directory, mode: "read", qualify: native.qualify })
+      const socket = path.join(directory, "s")
+      const endpoint = yield* Effect.promise(() => PromptControl.start({ socketPath: socket, sharing,
+        inspect: async () => { throw new Error("metadata must not inspect admission") },
+        admit: async () => { throw new Error("metadata must not admit") },
+        conversation: async () => { throw new Error("metadata must not read chat") },
+        association: async (sid) => worker.association(sid),
+      }))
+      yield* Effect.addFinalizer(() => Effect.promise(() => endpoint.close()))
+      expect((yield* Effect.promise(() => request(socket, "capabilities", {}))).result.card_association)
+        .toEqual({ contract: "djinn.card-association.v1", version: 1 })
       for (const [index, session] of [first, second, child].entries()) {
         yield* Effect.promise(() =>
           worker.select({
             client_id,
             revision: index + 1,
+            selection_generation: index + 1,
             context,
             selection: { sessionID: session.id, directory: ctx.directory },
           }),
         )
         yield* Effect.promise(() => worker.idle())
+        const sample = worker.association(session.id)
+        if (index === 2) expect(sample).toBeUndefined()
+        else {
+          expect(sample?.current()).toBe(true)
+          expect(sample?.value).toMatchObject({ instance_id: reporter!.instance, session_id: session.id, target: context.target })
+          yield* Effect.promise(() => sharing.select({ frontend_id: client_id, revision: index + 1, selection_generation: index + 1,
+            selection: { sessionID: session.id, directory: ctx.directory } }))
+          const grant = yield* Effect.promise(() => sharing.sample())
+          expect(grant).toBeDefined()
+          const reply = yield* Effect.promise(() => request(socket, "share_association", {
+            expected_runtime_id: endpoint.runtimeID, session_id: session.id, grant_id: grant!.grant_id,
+          }))
+          expect(reply.result.association).toMatchObject({ instance_id: reporter!.instance, session_id: session.id,
+            receiver_epoch: context.server_epoch, scope: "local_full_tui_root", target: context.target })
+        }
       }
       expect(requests).toEqual([first, second, child].map((session) => `/session/${session.id}`))
       expect(frames.map((frame) => frame.operation)).toEqual(["attach", "attach", "detach"])
@@ -130,6 +184,7 @@ testEffectShared(
           worker.select({
             client_id,
             revision: index + 4,
+            selection_generation: index + 4,
             context,
             selection: { sessionID: session.id, directory: ctx.directory },
           }),

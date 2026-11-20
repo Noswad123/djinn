@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import { isAbsolute, normalize } from "node:path"
 import { setTimeout, clearTimeout } from "node:timers"
+import { setTimeout as sleep } from "node:timers/promises"
 
 export type AttachmentContext = {
   contract: "coven.attachment-target.v1"
@@ -64,6 +65,7 @@ export function attachmentProcess(
   operation: "attachment-target" | "report-attachment",
   payload?: unknown,
   env = process.env,
+  signal?: AbortSignal,
 ) {
   const text = payload === undefined ? undefined : JSON.stringify(payload) + "\n"
   if (text && Buffer.byteLength(text) > 8192) throw new Error("Attachment frame too large")
@@ -91,6 +93,8 @@ export function attachmentProcess(
     child.kill("SIGKILL")
   }
   const timer = setTimeout(kill, operation === "attachment-target" ? 1500 : 1900)
+  signal?.addEventListener("abort", kill, { once: true })
+  if (signal?.aborted) kill()
   child.on("error", () => {
     failed = true
   })
@@ -104,29 +108,73 @@ export function attachmentProcess(
   const done = new Promise<string | undefined>((resolve) =>
     child.once("close", (code) => {
       clearTimeout(timer)
+      signal?.removeEventListener("abort", kill)
       resolve(!failed && code === 0 ? output : undefined)
     }),
   )
   return { done, kill }
 }
 
-export async function captureAttachmentTarget(command: { exe: string; root: string }, env = process.env) {
-  const result = await attachmentProcess(command, "attachment-target", undefined, env).done
+export async function captureAttachmentTarget(command: { exe: string; root: string }, env = process.env, signal?: AbortSignal) {
+  if (signal?.aborted) return
+  const result = await attachmentProcess(command, "attachment-target", undefined, env, signal).done
   try {
     return attachmentContext(JSON.parse(result ?? ""))
   } catch {}
 }
 
-export async function attachmentBounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+// Only initial read-only acquisition retries. The first valid context ends this lifecycle.
+export async function captureInitialAttachment(input: {
+  ready: (timeoutMs: number) => Promise<boolean>
+  capture: (signal: AbortSignal) => Promise<AttachmentContext | undefined>
+  signal: AbortSignal
+  budgetMs?: number
+  attempts?: number
+  backoffMs?: number
+}) {
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  input.signal.addEventListener("abort", abort, { once: true })
+  if (input.signal.aborted) abort()
+  const deadline = performance.now() + (input.budgetMs ?? 15000)
+  const timer = setTimeout(abort, Math.max(0, deadline - performance.now()))
+  try {
+    for (let attempt = 0; attempt < (input.attempts ?? 10) && !controller.signal.aborted && performance.now() < deadline; attempt++) {
+      const timeout = Math.max(0, Math.min(1500, deadline - performance.now()))
+      const ready = await attachmentBounded(Promise.resolve().then(() => input.ready(timeout)), timeout, controller.signal).catch(() => false)
+      if (controller.signal.aborted) return
+      if (ready) {
+        // Capture owns and joins its child on abort; do not race away from that cleanup.
+        const context = await input.capture(controller.signal).catch(() => undefined)
+        if (controller.signal.aborted) return
+        const parsed = attachmentContext(context)
+        if (parsed) return structuredClone(parsed)
+      }
+      if (attempt + 1 < (input.attempts ?? 10))
+        await sleep(Math.min((input.backoffMs ?? 250) * 2 ** attempt, 1000), undefined, { signal: controller.signal }).catch(() => {})
+    }
+  } finally {
+    clearTimeout(timer)
+    input.signal.removeEventListener("abort", abort)
+    controller.abort()
+  }
+}
+
+export async function attachmentBounded<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined
+  let abort: (() => void) | undefined
   try {
     return await Promise.race([
       promise,
       new Promise<undefined>((resolve) => {
+        abort = () => resolve(undefined)
+        signal?.addEventListener("abort", abort, { once: true })
+        if (signal?.aborted) abort()
         timer = setTimeout(() => resolve(undefined), ms)
       }),
     ])
   } finally {
     clearTimeout(timer)
+    if (abort) signal?.removeEventListener("abort", abort)
   }
 }
